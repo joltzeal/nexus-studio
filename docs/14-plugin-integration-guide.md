@@ -1,0 +1,305 @@
+# 插件对接开发规范
+
+## 1. 文档目的
+
+本文规定 Nexus 插件的开发、接入、运行与验收边界，面向代理、地址生成、平台账号、接码、图片生成和浏览器环境配置六类能力。
+插件负责实现能力，主程序负责窗口、Profile、CloakBrowser 生命周期、权限决策、密钥引用和统一交互。
+
+宿主侧已实现发现、安装、登记表、受管进程、权限检查点与窗口启动阻断，
+代码位于 `apps/desktop/src-tauri/src/core/plugin_host`，实际边界与限制见
+[插件宿主](17-plugin-host.md)。第 7 节协议按此实现；仍属目标的是操作系统级隔离、
+包签名与插件市场，见第 13 节。
+
+仓库内 `plugins/proxy-pool` 已按第 7 节实现插件侧服务端、私有存储与密钥引用，
+可在桌面应用中安装、启用，并作为窗口的代理来源；
+实际范围与限制见[代理池插件](15-proxy-plugin.md)。
+
+仓库内 `plugins/address-generator` 是第二个完整插件，按同一协议提供 `address.*` 方法，
+见[地址生成器插件](19-address-generator-plugin.md)。
+
+## 2. 核心原则
+
+- 一个插件只通过声明的能力与主程序通信，不读取 Rust 内部对象、SQLite、CloakBrowser 进程句柄或其他插件目录。
+- 窗口和 Profile 由主程序唯一管理。插件不能创建第二套 Profile，也不能绕过调度器直接启动浏览器。
+- 浏览器启动参数先由插件提出受限补丁，再由主程序校验并生成不可变启动快照。
+- 代理、账号、验证码和图片服务的密钥只以 `secretRef` 引用传递；manifest、日志、窗口记录和 RPC 报文不得包含明文密钥。
+- 所有外部能力失败都必须显式返回错误；代理为必需项时禁止回退直连。
+- manifest 权限是申请清单，不是安全沙箱。首阶段仅加载工作室信任且版本固定的 TypeScript 插件。
+- 插件不能改变已创建窗口的内核绑定和指纹身份；需要新身份时应创建新窗口。
+
+## 3. 当前可用 SDK
+
+插件 SDK 位于 `packages/plugin-sdk`，包名为 `@nexus/plugin-sdk`。当前公开内容包括：
+
+- `definePluginManifest()`：使用严格 schema 校验 manifest。
+- `PluginManifest`、`PluginPermissions`、`PluginCapability`：manifest 类型。
+- 六类能力接口：`ProxyProvider`、`AddressGenerator`、`PlatformAdapter`、`VerificationProvider`、`ImageProvider`、`EnvironmentConfigurator`。
+- `ProxyResolution`：代理解析结果，只允许返回不透明配置句柄和可选密钥引用。
+
+当前 `ProxyProvider.resolve()` 与 `AddressGenerator` 已有可运行的实现路径；其余四类仅有能力描述符，不能据此编写可运行插件。扩展这些接口时必须先更新 SDK、测试和本文，再实现宿主。
+
+## 4. 插件包结构
+
+目标插件包使用独立目录，不与主程序源码混放：
+
+```text
+plugin-root/
+├── package.json
+├── nexus.plugin.ts
+├── src/
+│   ├── index.ts
+│   └── capabilities/
+└── dist/
+    └── index.js
+```
+
+约束如下：
+
+- 入口使用 ESM，源码使用 strict TypeScript。
+- 生产依赖必须锁定版本，不允许运行时执行远程代码或动态安装依赖。
+- `dist` 由构建生成，不手工维护。
+- 插件不得要求用户为 Nexus 主程序配置 `.env`；插件需要的密码与密钥由插件自己保存在私有目录。
+- 插件 ID 一经发布不得修改；更名使用新的插件 ID，并提供显式迁移。
+
+## 5. Manifest 规范
+
+当前 manifest 必须通过 `definePluginManifest()` 校验，未知字段会被拒绝：
+
+```ts
+import { definePluginManifest } from '@nexus/plugin-sdk'
+
+export default definePluginManifest({
+  apiVersion: 1,
+  id: 'studio.proxy-example',
+  version: '1.0.0',
+  name: 'Example Proxy',
+  minCoreVersion: '0.1.0',
+  capabilities: ['proxy.provider'],
+  permissions: {
+    networkDomains: ['api.example.com'],
+    wantsBrowserAccess: false,
+    storage: 'private',
+    secrets: ['proxy-api-token'],
+  },
+})
+```
+
+字段规则：
+
+| 字段                             | 规则                                                         |
+| -------------------------------- | ------------------------------------------------------------ |
+| `apiVersion`                     | 当前固定为 `1`；不匹配时拒绝加载                             |
+| `id`                             | 反向域名风格，例如 `studio.proxy-example`；全局唯一且不可变  |
+| `version`                        | 完整 SemVer，例如 `1.2.0`                                    |
+| `name`                           | 1–80 个字符，仅用于展示                                      |
+| `minCoreVersion`                 | 最低 Nexus 核心版本，使用完整 SemVer，不使用范围表达式       |
+| `capabilities`                   | 至少一个已知能力；运行时只能调用已声明能力                   |
+| `permissions.networkDomains`     | 精确域名列表，不允许 URL、端口、路径、IP、localhost 或通配符 |
+| `permissions.wantsBrowserAccess` | 申请通过宿主操作受控浏览器页面，不代表已获授权               |
+| `permissions.storage`            | `private` 或 `none`；私有存储不能跨插件访问                  |
+| `permissions.secrets`            | 插件需要的密钥槽名称，不放入密钥值                           |
+
+## 6. 能力规范
+
+### 6.1 代理 `proxy.provider`
+
+代理插件把用户选择或服务端资源解析为宿主可理解的配置引用。当前 SDK 结果为：
+
+```ts
+interface ProxyResolution {
+  readonly configHandle: string
+  readonly secretRef?: string
+}
+```
+
+- `configHandle` 是不透明标识，不得把账号、密码或完整代理 URL 编码其中。
+- `secretRef` 是插件内部的不透明引用，宿主只透传，不解析也不保存其值。
+- 插件不能自行启动浏览器验证代理后再让主程序直连。
+- 目标宿主在启动前解析引用、验证协议和必要字段，并将代理写入不可变启动快照。
+- 解析、鉴权或连通性检查失败时阻断窗口启动，不自动切换直连。
+
+### 6.2 地址生成 `address.generator`
+
+地址生成插件把公开地址查询与资料生成放在插件进程里，页面只负责展示与复制。
+当前实现见[地址生成器插件](19-address-generator-plugin.md)，契约要点：
+
+- 城市必须来自插件自己的白名单，页面不能把任意坐标变成上游查询。
+- 上游失败按原因上报（`RATE_LIMITED` / `TIMEOUT` / `UNAVAILABLE`），不返回空列表冒充"该区域没有地址"。
+- 生成结果只存在于页面内存；插件不为它建表，也不写入私有目录。
+- 唯一被持久化的是地图 Key，保存在插件私有目录的 `secrets.json`（明文，0600），
+  因为页面必须把它交给 Google Maps SDK；它不是服务端凭据。
+
+### 6.3 平台账号 `platform.adapter`
+
+用于 Vinted、Poshmark 等平台的账号元数据和受控操作。目标协议必须满足：
+
+- 账号记录只关联 `windowId` 和凭据引用，不存 Cookie 副本或浏览器 Profile 路径。
+- 页面操作必须通过宿主授予的窗口会话执行，插件不能自行连接调试端口。
+- 每项写操作单独定义输入、结果、超时和幂等性，不能提供任意脚本执行入口。
+- 平台限流、验证挑战和账号状态必须原样上报，不把失败包装成成功。
+
+### 6.4 接码 `verification.provider`
+
+目标协议将“申请号码”和“等待验证码”分成两个调用：
+
+- 申请结果返回宿主生成或验证过的任务 ID，不返回服务商令牌。
+- 等待操作必须支持超时与取消；取消后到达的验证码不得继续写入当前任务。
+- 验证码属于敏感短期数据，默认只在内存中展示，不进入普通日志。
+- 插件不得自动向网页填码，除非同时获得浏览器访问授权并由用户触发对应动作。
+
+### 6.5 图片 `image.provider`
+
+目标协议采用文件句柄或受控二进制流，不传任意本机路径：
+
+- 请求明确尺寸、格式、数量和用途；响应逐项返回结果或分类错误。
+- 临时文件由宿主管理生命周期，插件不能扫描工作区或用户图片目录。
+- 外部服务域名必须在 manifest 中声明。
+- 生成结果不自动发布到平台，发布属于平台适配器的独立操作。
+
+### 6.6 环境配置 `environment.configurator`
+
+该能力只能提出允许字段的配置补丁，例如语言、时区、窗口尺寸或起始地址：
+
+- 插件不能设置 `binaryPath`、`userDataDir`、许可证、调试端口或进程环境变量。
+- 插件不能修改已经固定的指纹种子、内核版本和 Profile 标识。
+- 多个插件修改同一字段时，由主程序按确定规则报冲突，不静默采用最后一个值。
+- 所有补丁必须在启动前完成；运行中修改仅影响下一次启动。
+
+## 7. 宿主协议
+
+首阶段宿主采用“每个已启用插件一个受管 Node.js 子进程”。进程隔离用于故障管理，不作为恶意代码沙箱。
+以下为已实现的协议，实现细节与常量见[插件宿主](17-plugin-host.md)。
+
+生命周期为：
+
+```text
+发现 → 校验 manifest → 校验兼容性 → 用户授权 → 启动进程
+     → 握手 → 可调用 → 停止中 → 已停止/失败
+```
+
+插件只有完成握手后才可调用。目标 RPC 使用逐行 JSON 或等价的有界消息协议，每个请求至少包含：
+
+```ts
+interface PluginRequest<T> {
+  protocolVersion: 1
+  requestId: string
+  capability: string
+  method: string
+  deadlineMs: number
+  payload: T
+}
+
+interface PluginResponse<T> {
+  protocolVersion: 1
+  requestId: string
+  ok: boolean
+  result?: T
+  error?: {
+    code: string
+    message: string
+    retryable: boolean
+  }
+}
+```
+
+实现约束：
+
+- `requestId` 在单次宿主进程生命周期内唯一，响应必须关联原请求。
+- 消息设置大小上限，超限在解析前拒绝。
+- 每个调用有截止时间；超时后结果不得再改变主程序状态。
+- 取消使用独立控制消息；插件需返回最终取消状态。
+- 标准输出只传协议消息，诊断写标准错误并由宿主脱敏。
+- 连续协议错误、崩溃或无法停止时，宿主标记插件失败并回收进程。
+
+已实现的具体取值：
+
+- 握手为插件发 `hello`、宿主回 `handshake`、插件发 `ready`，三者完成后才可调用；
+  `hello` 的插件标识、版本与 `apiVersion` 必须与安装记录一致。
+- 单行上限 1 MiB，握手超时 15 秒，截止时间上限 120 秒，超时后再等 750 毫秒发 `cancel`。
+- 连续 3 次协议错误即回收进程；标准错误只保留最近 4 KiB 并脱敏。
+
+## 8. 权限、安全与数据边界
+
+| 资源   | 插件可做                   | 插件不可做                                        |
+| ------ | -------------------------- | ------------------------------------------------- |
+| 网络   | 请求已声明的精确域名       | 通配访问、绕过宿主代理策略                        |
+| 密钥   | 按声明槽位请求一次能力调用 | 枚举、导出或记录明文密钥                          |
+| 存储   | 访问自己的受限命名空间     | 直接打开业务数据库或其他插件目录                  |
+| 浏览器 | 调用宿主提供的受限窗口操作 | 持有进程句柄、Profile 路径或任意 CDP 连接         |
+| 日志   | 输出脱敏诊断和关联 ID      | 输出 Cookie、令牌、验证码、代理密码或完整页面内容 |
+
+首阶段受信任插件仍可能拥有 Node.js 进程权限。正式开放第三方插件前，必须另行实现操作系统级隔离、包签名/完整性校验、权限执行和来源审查；不能仅凭 manifest 宣称安全。
+
+## 9. 错误约定
+
+错误码应稳定、可分类，错误消息面向开发者但不得包含秘密。建议公共分类：
+
+- `INVALID_REQUEST`：请求字段或状态不合法，不重试。
+- `PERMISSION_DENIED`：未声明或未授权能力，不重试。
+- `NOT_CONFIGURED`：缺少插件配置或密钥引用，配置后重试。
+- `UNAVAILABLE`：外部服务暂不可用，可按宿主策略重试。
+- `RATE_LIMITED`：服务商限流，仅按明确的等待时间重试。
+- `TIMEOUT`：超过截止时间，结果作废。
+- `CANCELLED`：调用已取消。
+- `AUTH_FAILED`：外部服务凭据无效，不自动重试。
+- `PROTOCOL_ERROR`：插件违反宿主协议，停止或隔离该插件。
+
+插件不得吞掉外部服务错误后返回空成功，也不得自行无限重试。重试次数、退避和用户反馈由主程序统一决定。
+
+## 10. 版本与兼容性
+
+- `apiVersion` 表示宿主协议主版本；不兼容变更提升该值。
+- 插件自身 `version` 遵循 SemVer。
+- `minCoreVersion` 高于当前 Nexus 版本时拒绝启用。
+- 新增可选能力或可选字段属于兼容扩展；删除字段、改变语义或收紧已有输入属于不兼容变更。
+- 宿主不得猜测未知能力的行为；未知 capability、method 或字段应返回明确错误。
+- 更新插件前保存旧包和配置迁移结果，迁移失败时保留原版本，不留下半更新状态。
+
+## 11. 开发与测试要求
+
+插件开发至少覆盖：
+
+- manifest 正常、缺字段、未知字段、版本不兼容和权限未声明。
+- 每个能力的成功、无配置、鉴权失败、限流、超时、取消和异常响应。
+- 日志脱敏，确保令牌、代理密码、Cookie 和验证码不出现在输出中。
+- 重复请求、迟到响应和插件进程崩溃不会重复写入主程序状态。
+- 代理失败阻断窗口启动，不能回退直连。
+- 环境配置不能改变 Profile、内核版本或已固定指纹种子。
+- Windows 与 macOS 分别验证路径、退出、子进程回收和打包资源定位。
+
+仓库内 SDK 检查使用：
+
+```bash
+rtk proxy pnpm --filter @nexus/plugin-sdk typecheck
+rtk proxy pnpm run test
+```
+
+这些检查只证明类型和现有 schema 行为。宿主侧另有 Rust 用例覆盖安装、授权、拒绝、调用与启动阻断，
+见[插件宿主](17-plugin-host.md)第 11 节；两者都不证明操作系统级隔离或第三方插件安全。
+
+## 12. 对接验收清单
+
+插件进入工作室使用前必须满足：
+
+- manifest 校验通过，ID、版本、能力和权限与实际行为一致。
+- 依赖来源明确并锁定，构建可复现，不包含远程代码加载。
+- 所有外部域名均已声明，未使用通配符或动态域名绕过。
+- 密钥通过宿主引用，不出现在源码、配置、日志和错误中。
+- 超时、取消、崩溃、重启和停止行为均有测试。
+- 浏览器操作只通过宿主窗口会话，不直接启动 CloakBrowser。
+- 插件失败不会破坏窗口 Profile，也不会改变其他插件状态。
+- 文档注明所需配置、外部服务、费用、数据发送范围和已知限制。
+- macOS 与 Windows 均完成实际验证后，才标记为双平台可用。
+
+## 13. 实施顺序
+
+1. 完善六类能力的 TypeScript 请求/响应契约和 schema。
+2. 定义并测试宿主 RPC、握手、超时、取消与错误协议。**已完成**（第 7 节）。
+3. 实现受管 Node.js 插件进程和 Rust 生命周期管理。**已完成**。
+4. 实现私有存储、密码落盘和权限检查点。**已完成**（密码为插件私有目录内的明文文件）。
+5. 先接入一个工作室自有代理插件，验证窗口启动失败阻断。**已完成**（`studio.proxy-pool`）。
+6. 按同一协议接入第二个插件，验证能力隔离与页面复用。**已完成**（`studio.address-generator`）。
+7. 再按相同边界接入平台、接码、图片和环境配置插件。**未开始**，SDK 侧只有类型。
+8. 完成签名、来源验证和操作系统隔离后，再评估第三方插件开放。**未开始**。
+
+第 1 项与第 6 项的缺口、以及第 7 项需要的隔离能力，见[插件宿主](17-plugin-host.md)第 12 节。

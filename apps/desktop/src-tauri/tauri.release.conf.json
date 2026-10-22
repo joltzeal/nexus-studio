@@ -1,0 +1,18 @@
+{
+  "build": {
+    "beforeBuildCommand": ""
+  },
+  "bundle": {
+    "externalBin": ["binaries/node"],
+    "resources": ["runtime"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBMEFEQzI1RTExRUM3Q0YKUldUUHh4N2hKZHdLT292dzh1TTRIc1pLaVc2RDllNytidGVGZ2IySDhxK2JXcWVmbTJtU0lLQXcK",
+      "endpoints": [
+        "https://github.com/joltzeal/nexus-studio-updates/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

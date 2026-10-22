@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+  - plugins/*
+
+saveExact: true
+
+allowBuilds:
+  esbuild: true

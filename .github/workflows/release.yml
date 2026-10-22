@@ -1,0 +1,58 @@
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    if: github.repository == 'joltzeal/nexus-studio'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm runtime:stage
+      - name: Verify staged runtime
+        shell: bash
+        run: |
+          test -f apps/desktop/src-tauri/runtime/browser-runtime/dist/profile-runner.js
+          test -f apps/desktop/src-tauri/runtime/plugins/proxy-pool/dist/nexus.plugin.json
+          test -f apps/desktop/src-tauri/runtime/plugins/address-generator/dist/nexus.plugin.json
+          test -f "apps/desktop/src-tauri/binaries/node-${{ matrix.target }}${{ runner.os == 'Windows' && '.exe' || '' }}"
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+        with:
+          projectPath: apps/desktop
+          tagName: v__VERSION__
+          releaseName: 'Nexus v__VERSION__'
+          releaseBody: 'Desktop packages and signed update artifacts. Installation requires platform signing before public distribution.'
+          releaseDraft: true
+          uploadUpdaterJson: true
+          args: --config src-tauri/tauri.release.conf.json

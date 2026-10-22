@@ -1,0 +1,50 @@
+{
+  "name": "nexus-studio",
+  "version": "0.1.0",
+  "description": "Nexus consumer desktop workspace foundation",
+  "scripts": {
+    "dev": "pnpm build:packages && pnpm --filter @nexus/desktop dev",
+    "desktop:dev": "pnpm build:packages && pnpm --filter @nexus/desktop tauri dev",
+    "build:packages": "pnpm -r --filter \"./packages/*\" --filter \"./plugins/*\" build",
+    "build": "pnpm build:packages && pnpm --filter @nexus/desktop build",
+    "desktop:build": "pnpm build:packages && pnpm --filter @nexus/desktop tauri build",
+    "runtime:stage": "node scripts/stage-desktop-runtime.mjs",
+    "desktop:package": "node scripts/package-desktop.mjs",
+    "typecheck": "pnpm build:packages && pnpm -r typecheck && tsc -p tsconfig.tests.json",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "pnpm build:packages && vitest run",
+    "rust:check": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked",
+    "rust:test": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked",
+    "rust:lint": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
+    "runtime:check": "pnpm build:packages && node packages/browser-runtime/dist/healthcheck.js",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm rust:check && pnpm rust:test && pnpm rust:lint"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.17.0",
+      "onFail": "download"
+    }
+  },
+  "type": "module",
+  "private": true,
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24.18.0 <25",
+    "pnpm": ">=11.17.0 <12"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.13.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0",
+    "vitest": "5.0.5"
+  }
+}
