@@ -48,6 +48,33 @@ AI 生图只做 OpenAI 官方与 OpenAI 兼容两类服务商，参考实现里�
 未验证：真实 OpenAI 与兼容接口的生成质量、限流与计费表现；明文 Key 在真实安装目录里的
 文件权限表现；`dall-e-3` 尺寸别名的真实接受度；Windows 行为。
 
+### 本地 release 构建（macOS arm64）
+
+`pnpm runtime:stage` → `pnpm --filter @nexus/desktop build` →
+`tauri build --config src-tauri/tauri.release.conf.json`。暂存目录里的四个插件
+（proxy-pool / address-generator / shared-supply / ai-image）与 Node sidecar 都进了包。
+
+| 产物     | 路径                                                                       | 大小   |
+| -------- | -------------------------------------------------------------------------- | ------ |
+| 应用包   | `apps/desktop/src-tauri/target/release/bundle/macos/Nexus.app`             | 174 MB |
+| 磁盘映像 | `apps/desktop/src-tauri/target/release/bundle/dmg/Nexus_0.1.0_aarch64.dmg` | 53 MB  |
+
+验证方式：`hdiutil verify` 校验通过；挂载后确认 `Applications` 软链、
+`Contents/Resources/runtime/plugins/` 下四个插件、`Contents/MacOS/node` 都在；
+用包内的 node 直接 `import` 打包后的 `plugins/ai-image/dist/src/index.js` 成功，
+说明 `pnpm deploy` 出来的依赖在包内可解析。签名是 ad-hoc（`flags=0x20002(adhoc,linker-signed)`），
+没有 Developer ID，因此下载分发仍需先签名，见[插件发布与 CI/CD](18-plugin-release-and-cicd.md)。
+
+`createUpdaterArtifacts` 需要 `TAURI_SIGNING_PRIVATE_KEY`，本地没有该密钥，
+所以这次用 `--config '{"bundle":{"createUpdaterArtifacts":false}}'` 关掉了更新包；
+`.app.tar.gz` 与 `latest.json` 由 tag 触发的 `release.yml` 在 CI 上产出。
+
+环境坑（不是代码问题）：本机 shell 通过 `BASH_ENV` 给所有非交互 bash 前置了一层
+toybox `grep`，Tauri 的 `bundle_dmg.sh` 在 `find_mount_dir` 里用 `grep -E` 找挂载点，
+于是报 `bad regex ... brackets ([ ]) not balanced`，DMG 打包失败并留下一个挂载中的
+`rw.*.dmg`。用 `env -u BASH_ENV` 运行 `tauri build` 即可通过；失败后需要
+`hdiutil detach` 那个卷再重试。
+
 ## 2026-10-22 全局 toast 与共享货源插件接入
 
 两件事在同一轮完成：
