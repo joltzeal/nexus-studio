@@ -1,5 +1,53 @@
 # 质量门禁与验证记录
 
+## 2026-10-22 AI 生图插件接入与共享货源布局调整
+
+两件事在同一轮完成：
+
+- 共享货源页改为“Card 内滚动”：`.app-shell` 锁 `100svh` 且 `overflow: hidden`，
+  `.app-main` 是唯一的滚动容器，页面最外层是一个 Card，标题、分区与操作行固定在卡内顶部，
+  内容区在剩余高度里滚动。窗口本身不再出现滚动条。
+- 新增第四个完整插件 `plugins/ai-image`（`studio.ai-image`，能力 `image.provider`）
+  与桌面页面 `apps/desktop/src/features/ai-image`，导航增加第八个入口。
+
+AI 生图只做 OpenAI 官方与 OpenAI 兼容两类服务商，参考实现里的 `website_tasks`
+（网站异步生图）通道与 `mhoo_images` / `chat_completions` 生图分支都没有迁移。
+生图模型与文案模型都配在插件里，API Key 明文存在插件私有目录的 `ai-image.json`（0600），
+回显只给末四位提示。每次生成是一条记录，主页即记录列表；详情用滑动对比看前后，
+不做左右并排。场景提示词从参考实现的三级级联下拉改成 10 个一键预设。
+差异与未迁移部分记在 [AI 生图插件](22-ai-image-plugin.md)。
+
+图片二进制经分块 RPC 传输（插件侧 192 KiB、页面侧 256 KiB），避开宿主 1 MiB 行上限；
+生成走“先落记录、再后台执行”，慢任务不受 120 s 请求超时约束。
+
+本轮在本机 macOS 实际执行：
+
+| 检查         | 命令                                             | 结果                                             |
+| ------------ | ------------------------------------------------ | ------------------------------------------------ |
+| ESLint       | `eslint . --max-warnings 0`                      | 通过，无输出                                     |
+| Prettier     | `prettier --check .`                             | 首次报 18 个文件，格式化后通过                   |
+| 桌面类型检查 | `tsc --noEmit -p apps/desktop/tsconfig.json`     | 通过                                             |
+| 插件类型检查 | `tsc -p plugins/ai-image/tsconfig.json --noEmit` | 通过                                             |
+| 测试类型检查 | `tsc -p tsconfig.tests.json --noEmit`            | 通过                                             |
+| 前端测试     | `vitest run`                                     | 43 文件、412 用例通过（本轮新增 33）             |
+| 包与插件构建 | `pnpm build:packages`                            | 7 个项目全部完成，含 `dist/nexus.plugin.json`    |
+| 前端构建     | `vite build`（在 `apps/desktop` 下执行）         | 通过，主 chunk 685.39 kB，仍有大于 500 kB 的警告 |
+
+本轮新增用例 33 个，全部在插件侧：预设组合与截断 5、地址归一化与凭据拒绝 3、
+私有存储持久化与损坏拒绝 5、图片分块读写与导出不覆盖 5、能力层 15
+（服务商保存与密钥保留、文生图落盘、改图走 multipart 且带 `image[]`、
+文案读取成片、鉴权失败映射、文案失败不影响图片、空提示词与缺参考图拒绝、
+记录筛选与删除清理文件、上传未完成拒绝、内存存储拒绝导出）。
+能力层用例替换了全局 `fetch`，不发真实请求。
+
+布局用 Playwright 量过：1440×900 下 `documentElement` 的 `scrollHeight` 与 `clientHeight`
+都是 900，`app-main` 与卡片内容区同样相等，即整页无溢出、滚动只发生在内容区。
+四个页面（记录列表、新建生成、生成详情、模型配置）用注入 `window.__TAURI_INTERNALS__`
+的宿主桩渲染过，确认滑动对比的分割线、预设网格、状态徽标与配置表单都按预期显示。
+
+未验证：真实 OpenAI 与兼容接口的生成质量、限流与计费表现；明文 Key 在真实安装目录里的
+文件权限表现；`dall-e-3` 尺寸别名的真实接受度；Windows 行为。
+
 ## 2026-10-22 全局 toast 与共享货源插件接入
 
 两件事在同一轮完成：

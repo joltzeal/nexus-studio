@@ -255,6 +255,9 @@ importers:
       '@nexus/plugin-address-generator':
         specifier: workspace:*
         version: link:../../plugins/address-generator
+      '@nexus/plugin-ai-image':
+        specifier: workspace:*
+        version: link:../../plugins/ai-image
       '@nexus/plugin-proxy-pool':
         specifier: workspace:*
         version: link:../../plugins/proxy-pool
@@ -350,7 +353,7 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  plugins/shared-supply:
+  plugins/ai-image:
     dependencies:
       '@nexus/plugin-sdk':
         specifier: workspace:*
@@ -367,6 +370,15 @@ importers:
       yaml:
         specifier: 2.8.1
         version: 2.8.1
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  plugins/shared-supply:
+    dependencies:
+      '@nexus/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
       zod:
         specifier: 4.4.3
         version: 4.4.3

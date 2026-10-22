@@ -46,12 +46,6 @@ export const DEFAULT_WINDOW_CONFIG: WindowConfig = {
 
 export const PLUGIN_CATALOG = [
   {
-    id: 'demo.image-helper',
-    name: '图片处理',
-    description: '图片处理能力入口，尚未安装执行模块。',
-    capability: 'image.provider',
-  },
-  {
     id: 'demo.platform-tools',
     name: '平台账号',
     description: '平台账号能力入口，尚未连接平台。',
@@ -74,9 +68,10 @@ export const PLUGIN_CATALOG = [
 /**
  * Placeholder ids that earlier local states may still reference. They stay
  * valid on read so an existing record is not rejected, but the page no longer
- * renders them: the proxy slot is now covered by a real plugin package.
+ * renders them: the proxy and image slots are now covered by real plugin
+ * packages.
  */
-export const RETIRED_PLUGIN_IDS = ['demo.connection-notes'] as const
+export const RETIRED_PLUGIN_IDS = ['demo.connection-notes', 'demo.image-helper'] as const
 
 export const DEMO_INITIAL_STATE: DemoState = {
   schemaVersion: 2,

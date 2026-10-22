@@ -204,8 +204,8 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 - 安装来源是本地目录，没有插件市场、下载与自动更新。
   目标形态（`.nexuspkg`、私有分发、L3 会话密钥、收费检查点）见
   [插件发布与 CI/CD](18-plugin-release-and-cicd.md)，均为方案，尚未实现。
-- 只实现了 `proxy.provider`、`address.generator` 与 `supply.catalog` 的真实调用路径；
-  `platform.adapter`、`verification.provider`、`image.provider` 与
+- 只实现了 `proxy.provider`、`address.generator`、`supply.catalog` 与 `image.provider`
+  的真实调用路径；`platform.adapter`、`verification.provider` 与
   `environment.configurator` 只有声明与类型。
 - 地址生成器的公开地址来自 Overpass 镜像，覆盖与时效取决于 OpenStreetMap；
   它不连接任何地址库服务，也不做真实收件验证。

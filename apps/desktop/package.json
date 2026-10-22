@@ -16,6 +16,7 @@
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@nexus/contracts": "workspace:*",
     "@nexus/plugin-address-generator": "workspace:*",
+    "@nexus/plugin-ai-image": "workspace:*",
     "@nexus/plugin-proxy-pool": "workspace:*",
     "@nexus/plugin-shared-supply": "workspace:*",
     "@tauri-apps/api": "2.12.4",

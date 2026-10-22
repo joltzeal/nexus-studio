@@ -30,7 +30,8 @@ describe('plugin center without a host', () => {
     expect(html).toContain('待接入')
     expect(html).toContain('platform.adapter')
     expect(html).toContain('verification.provider')
-    expect(html).toContain('image.provider')
     expect(html).toContain('environment.configurator')
+    // 图片能力已由 studio.ai-image 接入，不再作为占位出现。
+    expect(html).not.toContain('demo.image-helper')
   })
 })

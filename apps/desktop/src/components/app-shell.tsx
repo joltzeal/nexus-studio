@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Settings2,
   ShoppingBag,
+  Sparkles,
   Sun,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -25,6 +26,7 @@ import { PluginsPage } from '@/features/plugins/plugins-page'
 import { ProxyPoolRoute } from '@/features/proxy/proxy-pool-page'
 import { AddressGeneratorRoute } from '@/features/addresses/address-page'
 import { SharedSupplyRoute } from '@/features/supply/supply-page'
+import { AiImageRoute } from '@/features/ai-image/ai-image-page'
 
 const SettingsPage = lazy(() =>
   import('@/features/settings/settings-page').then((module) => ({
@@ -96,6 +98,10 @@ export function AppShell() {
             <ShoppingBag />
             共享货源
           </TabsTrigger>
+          <TabsTrigger value="ai-image">
+            <Sparkles />
+            AI 生图
+          </TabsTrigger>
           <TabsTrigger value="settings">
             <Settings2 />
             应用设置
@@ -118,6 +124,7 @@ export function AppShell() {
                 proxy: '代理池',
                 addresses: '地址生成器',
                 supply: '共享货源',
+                'ai-image': 'AI 生图',
                 settings: '应用设置',
               }[page]
             }
@@ -189,6 +196,9 @@ export function AppShell() {
             </TabsContent>
             <TabsContent value="supply">
               <SharedSupplyRoute />
+            </TabsContent>
+            <TabsContent value="ai-image">
+              <AiImageRoute />
             </TabsContent>
             <TabsContent value="settings">
               <Suspense
