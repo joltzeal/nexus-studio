@@ -12,6 +12,7 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.ts',
       'apps/desktop/src/**/*.test.ts',
+      'scripts/**/*.test.mjs',
     ],
     environment: 'node',
     testTimeout: 10_000,

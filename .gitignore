@@ -19,3 +19,4 @@ runtime-artifacts/
 apps/desktop/src-tauri/runtime/
 apps/desktop/src-tauri/binaries/
 apps/desktop/src-tauri/.staged-runtime
+market/

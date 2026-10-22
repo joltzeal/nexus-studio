@@ -1,0 +1,208 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * Container read by the desktop host. It is deliberately dull: a magic string,
+ * a length-prefixed JSON header and the raw bytes of every file back to back.
+ * The host only has to slice and hash, so installing a package needs no archive
+ * or crypto code on the Rust side.
+ */
+export const PACKAGE_MAGIC = 'NXP1'
+export const PACKAGE_SCHEMA_VERSION = 1
+/** Header for the encrypted blob that replaces the compiled entry point. */
+export const PAYLOAD_MAGIC = 'NXPAY1\n'
+export const NONCE_BYTES = 12
+export const TAG_BYTES = 16
+export const SALT_FILE = resolve(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../apps/desktop/src-tauri/src/core/plugin_host/market.salt',
+)
+
+export function readSalt() {
+  const salt = readFileSync(SALT_FILE, 'utf8').trim()
+  if (!/^[0-9a-f]{16,}$/i.test(salt)) {
+    throw new Error(`${SALT_FILE} does not contain a hex salt`)
+  }
+  return salt
+}
+
+/**
+ * The host derives the same key and hands it to the loader through
+ * `NEXUS_PLUGIN_KEY`. Keep this in sync with `plugin_host::package::key_for`.
+ */
+export function deriveKey(pluginId, version, salt = readSalt()) {
+  return createHash('sha256').update(`${salt}\n${pluginId}\n${version}`, 'utf8').digest()
+}
+
+/** `NXPAY1\n` + nonce + AES-256-GCM ciphertext + tag. */
+export function encryptPayload(code, key) {
+  const nonce = randomBytes(NONCE_BYTES)
+  const cipher = createCipheriv('aes-256-gcm', key, nonce)
+  const ciphertext = Buffer.concat([cipher.update(code), cipher.final()])
+  return Buffer.concat([
+    Buffer.from(PAYLOAD_MAGIC, 'utf8'),
+    nonce,
+    ciphertext,
+    cipher.getAuthTag(),
+  ])
+}
+
+export function decryptPayload(payload, key) {
+  const header = Buffer.from(PAYLOAD_MAGIC, 'utf8')
+  if (payload.length < header.length + NONCE_BYTES + TAG_BYTES) {
+    throw new Error('payload is too short')
+  }
+  if (!payload.subarray(0, header.length).equals(header)) {
+    throw new Error('payload magic mismatch')
+  }
+  const nonce = payload.subarray(header.length, header.length + NONCE_BYTES)
+  const body = payload.subarray(header.length + NONCE_BYTES)
+  const tag = body.subarray(body.length - TAG_BYTES)
+  const data = body.subarray(0, body.length - TAG_BYTES)
+  const instance = createDecipheriv('aes-256-gcm', key, nonce)
+  instance.setAuthTag(tag)
+  return Buffer.concat([instance.update(data), instance.final()])
+}
+
+export function sha256Hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * `files` is an ordered list of `{ path, data }`; the order is preserved in the
+ * header so the host can slice the body without an index.
+ */
+export function writePackage({
+  manifest,
+  entry,
+  description,
+  changelog,
+  files,
+  createdAt,
+}) {
+  const descriptors = files.map((file) => ({
+    path: file.path,
+    size: file.data.length,
+    sha256: sha256Hex(file.data),
+  }))
+  const header = {
+    schemaVersion: PACKAGE_SCHEMA_VERSION,
+    manifest,
+    entry,
+    description: description ?? '',
+    changelog: changelog ?? '',
+    createdAt: createdAt ?? new Date().toISOString(),
+    files: descriptors,
+  }
+  const headerBytes = Buffer.from(JSON.stringify(header), 'utf8')
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(headerBytes.length, 0)
+  return Buffer.concat([
+    Buffer.from(PACKAGE_MAGIC, 'utf8'),
+    length,
+    headerBytes,
+    ...files.map((file) => file.data),
+  ])
+}
+
+export function readPackage(bytes) {
+  const magic = Buffer.from(PACKAGE_MAGIC, 'utf8')
+  if (bytes.length < magic.length + 4 || !bytes.subarray(0, magic.length).equals(magic)) {
+    throw new Error('not a .nexuspkg file')
+  }
+  const headerLength = bytes.readUInt32BE(magic.length)
+  const headerStart = magic.length + 4
+  const headerEnd = headerStart + headerLength
+  if (headerEnd > bytes.length) throw new Error('package header is truncated')
+  const header = JSON.parse(bytes.subarray(headerStart, headerEnd).toString('utf8'))
+  if (header.schemaVersion !== PACKAGE_SCHEMA_VERSION) {
+    throw new Error(`unsupported package schema ${header.schemaVersion}`)
+  }
+  let offset = headerEnd
+  const files = header.files.map((descriptor) => {
+    const data = bytes.subarray(offset, offset + descriptor.size)
+    if (data.length !== descriptor.size) throw new Error('package body is truncated')
+    if (sha256Hex(data) !== descriptor.sha256)
+      throw new Error('package body checksum mismatch')
+    offset += descriptor.size
+    return { path: descriptor.path, data }
+  })
+  return { header, files }
+}
+
+/**
+ * Loader shipped inside every package. It is generated here rather than by the
+ * host so the decryption logic has exactly one implementation.
+ */
+export function bootstrapSource() {
+  return `'use strict'
+
+// Generated by scripts/pack-plugin.mjs. Decrypts payload.bin in memory and runs
+// it as the plugin entry. The key never ships with the package: the host
+// derives it and passes it through NEXUS_PLUGIN_KEY.
+const crypto = require('node:crypto')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { pathToFileURL } = require('node:url')
+
+const MAGIC = '${PAYLOAD_MAGIC.replace(/\n/g, '\\n')}'
+const PAYLOAD = path.join(__dirname, 'payload.bin')
+
+function fail(reason) {
+  process.stderr.write('[nexus] ' + reason + '\\n')
+  process.exit(1)
+}
+
+function decrypt() {
+  const key = process.env.NEXUS_PLUGIN_KEY
+  if (typeof key !== 'string' || !/^[0-9a-f]{64}$/i.test(key)) {
+    fail('宿主没有提供插件解密密钥，请从插件中心重新安装')
+  }
+  const raw = fs.readFileSync(PAYLOAD)
+  if (raw.length < 35 || raw.toString('utf8', 0, MAGIC.length) !== MAGIC) {
+    fail('插件包已损坏')
+  }
+  const nonce = raw.subarray(MAGIC.length, MAGIC.length + 12)
+  const body = raw.subarray(MAGIC.length + 12)
+  const data = body.subarray(0, body.length - 16)
+  const tag = body.subarray(body.length - 16)
+  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(key, 'hex'), nonce)
+  decipher.setAuthTag(tag)
+  return Buffer.concat([decipher.update(data), decipher.final()])
+}
+
+function materialise(code) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-plugin-'))
+  const file = path.join(directory, 'entry.mjs')
+  fs.writeFileSync(file, code, { mode: 0o600 })
+  const cleanup = () => {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true })
+    } catch {}
+  }
+  process.on('exit', cleanup)
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => {
+      cleanup()
+      process.exit(0)
+    })
+  }
+  return file
+}
+
+async function main() {
+  const file = materialise(decrypt())
+  // The bundle treats argv[1] as its own path when deciding whether it is the
+  // process entry, so point it at the materialised file before importing.
+  process.argv[1] = file
+  await import(pathToFileURL(file).href)
+}
+
+main().catch((error) => {
+  fail(error && error.message ? error.message : '插件启动失败')
+})
+`
+}

@@ -1,5 +1,51 @@
 # 质量门禁与验证记录
 
+## 2026-10-22 插件商店、加密打包与在线更新
+
+本轮把插件从「随安装包分发」改成「从商店按需安装」：新增 `.nexuspkg` 容器、加密打包脚本、
+商店拉取与定时检查、安装与升级流程，发布构建默认不再列出任何插件。
+
+- 新增 `core/plugin_host/package.rs`：容器切片、路径白名单、逐文件 SHA-256 与密钥推导。
+- 新增 `core/plugin_host/market.rs`：商店地址归一化、catalog 解析与逐条容错、HTTP/文件拉取、SemVer 比较。
+- `install.rs` 增加 `write_version`，`mod.rs` 增加 `install_from_package` / `install_from_market` /
+  `set_store_url` / `refresh_market` / `watch_market`，`catalog()` 在发布构建只返回已安装插件。
+- `process.rs` 注入 `NEXUS_PLUGIN_KEY`；`runtime_paths.rs` 不再要求 `runtime/plugins` 存在。
+- 新增 `scripts/pack-plugin.mjs`、`build-market.mjs`、`verify-package.mjs` 与 `scripts/lib/market-package.mjs`。
+
+本轮在本机 macOS 实际执行：
+
+| 检查         | 命令                                                         | 结果                                          |
+| ------------ | ------------------------------------------------------------ | --------------------------------------------- |
+| ESLint       | `eslint apps` / `eslint scripts` / `eslint packages plugins` | 通过，无输出                                  |
+| Prettier     | `prettier --check .`                                         | 通过                                          |
+| 桌面类型检查 | `tsc -p apps/desktop/tsconfig.json --noEmit`                 | 通过                                          |
+| 测试类型检查 | `tsc -p tsconfig.tests.json --noEmit`                        | 通过                                          |
+| 前端测试     | `vitest run`                                                 | 52 文件、487 用例通过                         |
+| Rust 测试    | `cargo test --locked`                                        | 73 通过、1 忽略（真实浏览器冒烟），共 74 用例 |
+| Rust 静态    | `cargo fmt --check` + `clippy -D warnings`                   | 通过                                          |
+| 前端构建     | `tsc && vite build`                                          | 通过（主 chunk 722.96 kB，既有体积告警）      |
+| 加密包自检   | `node scripts/verify-package.mjs market/…/1.0.0.nexuspkg`    | 真实解密、握手、`ready`，8 个方法             |
+
+新增用例：
+
+- `package_rejects_paths_that_escape_the_install_directory`：`..`、绝对路径、反斜杠、空路径一律拒绝。
+- `package_rejects_a_corrupted_body`：改一个字节即 `FileDigestMismatch`；非容器报 `BadMagic`。
+- `package_key_matches_the_packer`：与 Node 侧 `deriveKey` 的已知向量对齐，任一侧漂移立即失败。
+- `store_url_normalisation_accepts_a_bucket_root`：桶根、完整 catalog 地址、无协议、`file://`、`ftp://`、空白。
+- `catalog_drops_rows_it_cannot_trust`：未知能力行与短摘要行被丢弃，合法行保留。
+- `a_package_installs_from_the_store_and_starts`：`file://` 商店 → 校验 → 安装 → 真进程握手 → 调用 → 状态转 `current`。
+- `the_store_refuses_a_package_whose_checksum_does_not_match`：摘要不符时拒绝且不写入登记表。
+- `a_package_installs_from_an_http_store`：本地 `TcpListener` 起一个最小商店，走真实 HTTP 分支安装并握手。
+- `a_newer_package_replaces_the_installed_version`：升级后只剩一个版本目录，降级被拒绝。
+- `a_released_build_lists_no_plugins_until_one_is_installed`：关闭候选扫描后列表为空。
+- `scripts/lib/market-package.test.mjs`：加密往返、错密钥必须抛错、容器往返与篡改检测。
+
+会起 Node 子进程的用例加了一个 4 槽信号量：并行跑满时 15 秒握手预算会随机器负载波动，
+同一批用例曾出现 5 个随机失败，加槽后连跑三次稳定通过。
+
+页面验证：用 1440×900 的 Playwright 截图检查了「有商店 + 有更新」「未配置商店」「首次运行空列表」
+三种状态，`documentElement.scrollHeight` 与视口同为 900。
+
 ## 2026-10-22 AI 生图插件接入与共享货源布局调整
 
 两件事在同一轮完成：

@@ -16,6 +16,9 @@ pub enum InstallError {
     DigestMismatch,
     EntryMissing,
     AlreadyInstalled,
+    Package(super::package::PackageError),
+    ChecksumMismatch,
+    Downgrade,
     Io,
 }
 
@@ -28,6 +31,9 @@ impl InstallError {
             InstallError::DigestMismatch => "插件清单在复制过程中发生变化，已拒绝安装",
             InstallError::EntryMissing => "插件缺少入口文件",
             InstallError::AlreadyInstalled => "该版本已安装",
+            InstallError::Package(error) => error.message(),
+            InstallError::ChecksumMismatch => "插件包校验失败，已拒绝安装",
+            InstallError::Downgrade => "已安装更高版本，不能降级安装",
             InstallError::Io => "无法写入插件目录",
         }
     }
@@ -79,6 +85,54 @@ pub fn install(candidate: &Candidate, root: &Path) -> Result<PathBuf, InstallErr
 
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|_| InstallError::Io)?;
+    }
+    if fs::rename(&staging, &target).is_err() {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(InstallError::Io);
+    }
+    Ok(target)
+}
+
+/// Writes an already-verified package into the host directory. Same staging
+/// discipline as `install`: the version directory appears complete or not at
+/// all, and reinstalling the same version replaces it in one rename.
+pub fn write_version(
+    root: &Path,
+    plugin_id: &str,
+    version: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<PathBuf, InstallError> {
+    let target = version_directory(root, plugin_id, version);
+    let staging_root = root.join(".staging");
+    fs::create_dir_all(&staging_root).map_err(|_| InstallError::Io)?;
+    let staging = staging_root.join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&staging).map_err(|_| InstallError::Io)?;
+
+    for (path, bytes) in files {
+        if !super::package::safe_relative_path(path) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(InstallError::Package(
+                super::package::PackageError::UnsafePath,
+            ));
+        }
+        let destination = staging.join(path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|_| {
+                let _ = fs::remove_dir_all(&staging);
+                InstallError::Io
+            })?;
+        }
+        fs::write(&destination, bytes).map_err(|_| {
+            let _ = fs::remove_dir_all(&staging);
+            InstallError::Io
+        })?;
+    }
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|_| InstallError::Io)?;
+    }
+    if target.exists() {
+        fs::remove_dir_all(&target).map_err(|_| InstallError::Io)?;
     }
     if fs::rename(&staging, &target).is_err() {
         let _ = fs::remove_dir_all(&staging);

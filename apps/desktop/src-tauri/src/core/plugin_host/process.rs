@@ -194,11 +194,15 @@ impl PluginProcess {
         storage_directory: Option<&Path>,
         manifest: PluginManifest,
         node: &Path,
+        key: &str,
     ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
         let mut command = Command::new(node);
         command
             .arg(entry)
             .env("NEXUS_PLUGIN_ID", &manifest.id)
+            // Derived by the host, never shipped inside the package. Only the
+            // generated loader reads it.
+            .env("NEXUS_PLUGIN_KEY", key)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

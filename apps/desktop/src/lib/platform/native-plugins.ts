@@ -68,3 +68,46 @@ export function callPlugin<T>(
     input: { id, capability, method, payload, deadlineMs: deadlineMs ?? null },
   })
 }
+
+/** `install` means the store has a plugin this machine does not run yet. */
+export type MarketEntryState = 'install' | 'update' | 'current'
+
+export interface MarketEntry {
+  id: string
+  name: string
+  version: string
+  apiVersion: number
+  minCoreVersion: string
+  description: string
+  changelog: string
+  capabilities: string[]
+  installedVersion: string | null
+  state: MarketEntryState
+  size: number
+  checksum: string
+}
+
+export interface MarketStatus {
+  storeUrl: string | null
+  catalogUrl: string | null
+  /** Unix seconds, or null when the store was never reached. */
+  lastCheckedAt: string | null
+  lastError: string | null
+  entries: MarketEntry[]
+}
+
+export function marketStatus(): Promise<MarketStatus> {
+  return invoke<MarketStatus>('plugin_market_status')
+}
+
+export function setMarketStore(url: string | null): Promise<MarketStatus> {
+  return invoke<MarketStatus>('plugin_market_set_store', { url })
+}
+
+export function refreshMarket(): Promise<MarketStatus> {
+  return invoke<MarketStatus>('plugin_market_refresh')
+}
+
+export function installFromMarket(id: string): Promise<PluginView> {
+  return invoke<PluginView>('plugin_market_install', { id })
+}

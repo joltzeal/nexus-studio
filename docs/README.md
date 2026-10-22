@@ -5,6 +5,7 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 主页面为“窗口管理、分组管理、插件中心、代理池、地址生成器、共享货源、AI 生图、Vinted 账号、Vinted 监控、应用设置”，设置包含“外观、工作区、关于”。
 分组与偏好存于 localStorage；真实 Profile 与 CloakBrowser 授权由桌面 Rust 核心管理，配置与详情不代表账号已接入。
 真实 Profile 调用 CloakBrowser；插件由独立 Node.js 子进程托管，页面状态来自实际检查。
+发布构建默认不带任何插件，插件以加密包从用户填写的商店安装，见[插件商店与在线更新](25-plugin-market.md)。
 保留纸白与钴蓝，以紧凑侧栏、轻量顶栏、窗口 Table 与工具栏组织操作。
 分组采用简洁卡片，插件能力卡无彩色装饰，设置不展示 ThemePreview，见[主题规范](04-theme.md)。
 
@@ -29,13 +30,14 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [15 · 代理池插件](15-proxy-plugin.md)                    | 仓库内 `studio.proxy-pool` 的实际范围、方法与限制       |
 | [16 · CloakBrowser 授权](16-cloakbrowser-license.md)     | 应用内密钥管理、SQLite 存储、内核选择与并发边界         |
 | [17 · 插件宿主](17-plugin-host.md)                       | 发现、安装、进程托管、权限检查与窗口启动阻断            |
-| [18 · 插件发布与 CI/CD](18-plugin-release-and-cicd.md)   | 暂缓方案：打包加密、私有分发、L3 密钥与流水线           |
+| [18 · 插件发布与 CI/CD](18-plugin-release-and-cicd.md)   | 完整方案：加密打包已落地，服务端与收费部分暂缓          |
 | [19 · 地址生成器插件](19-address-generator-plugin.md)    | 仓库内 `studio.address-generator` 的方法、上游与限制    |
 | [20 · 桌面发行与更新](20-desktop-release-and-updates.md) | Node sidecar、发行工作流、签名与更新源边界              |
 | [21 · 共享货源插件](21-shared-supply-plugin.md)          | 仓库内 `studio.shared-supply` 的目录协议、收藏与限制    |
 | [22 · AI 生图插件](22-ai-image-plugin.md)                | 仓库内 `studio.ai-image` 的生图改图、明文模型配置与记录 |
 | [23 · Vinted 监控插件](23-vinted-monitor-plugin.md)      | 仓库内 `studio.vinted-monitor` 的采集、运行记录与归档   |
 | [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)   | 仓库内 `studio.vinted-accounts` 的账密、导入与窗口关联  |
+| [25 · 插件商店与在线更新](25-plugin-market.md)           | 商店地址、`catalog.json`、`.nexuspkg` 加密包与定时更新  |
 
 ## 阅读与维护
 

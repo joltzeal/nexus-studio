@@ -25,7 +25,11 @@ pub fn run() {
             core::plugin_service::plugin_proxy_providers,
             core::plugin_service::plugin_install,
             core::plugin_service::plugin_uninstall,
-            core::plugin_service::plugin_call
+            core::plugin_service::plugin_call,
+            core::plugin_service::plugin_market_status,
+            core::plugin_service::plugin_market_set_store,
+            core::plugin_service::plugin_market_refresh,
+            core::plugin_service::plugin_market_install
         ])
         .run(tauri::generate_context!())
         .expect("Nexus could not initialize its desktop runtime");

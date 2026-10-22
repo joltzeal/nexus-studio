@@ -13,6 +13,8 @@
 | `core/plugin_host/manifest.rs`    | 严格解析并校验 manifest，拒绝未知字段与不兼容项 |
 | `core/plugin_host/discovery.rs`   | 扫描插件包，读取入口与 digest，汇总扫描问题     |
 | `core/plugin_host/install.rs`     | 复制安装、校验复制结果、卸载与目录清理          |
+| `core/plugin_host/package.rs`     | `.nexuspkg` 切片与逐文件校验、密钥推导          |
+| `core/plugin_host/market.rs`      | 商店地址、catalog 解析、HTTP/文件拉取、版本比较 |
 | `core/plugin_host/registry.rs`    | `registry.json` 读写、上限读取与原子写入        |
 | `core/plugin_host/process.rs`     | 受管 Node.js 子进程、握手、调用、取消、脱敏     |
 | `core/plugin_host/permissions.rs` | 能力与域名的检查点                              |
@@ -24,6 +26,7 @@
 ```text
 plugins/
 ├── registry.json              # 已安装登记表，写入后权限 0600
+├── store.json                 # 插件商店地址与上次检查结果，权限 0600
 ├── installed/<id>/<version>/  # 安装副本
 ├── storage/<id>/              # 声明 storage: private 时的私有目录，权限 0700
 └── .staging/<uuid>/           # 安装中间目录，成功后 rename 到 installed
@@ -52,7 +55,7 @@ plugins/
 扫描 `installed/` 与开发根目录，每个候选目录读取：
 
 - manifest：包根目录的 `nexus.plugin.json`，或 `dist/nexus.plugin.json`。
-- 入口：`package.json` 的 `main`（必须是 `.js`，不允许 `..`），缺省为 `dist/src/index.js`。
+- 入口：`package.json` 的 `main`（必须是 `.js` / `.cjs` / `.mjs`，不允许 `..`），缺省为 `dist/src/index.js`。
 
 开发根目录来自环境变量 `NEXUS_PLUGIN_DEV_ROOTS`（冒号分隔），
 默认追加仓库内 `plugins/`，因此 `plugins/proxy-pool` 构建后可直接出现在插件中心。
@@ -60,17 +63,39 @@ plugins/
 缺 manifest、manifest 非法、缺入口都以 `DiscoveryProblem` 上报，不静默跳过整批扫描。
 扫描结果不写入登记表，只有安装才会持久化。
 
+`catalog()` 只在开发构建（`cfg!(debug_assertions)`）里把扫描到的候选列成 `available`。
+发布构建的插件列表只有两种来源：已安装的插件与商店清单，因此全新安装的应用默认没有任何插件。
+发布构建也不再向安装包内放置插件目录，插件统一从商店安装，见[插件商店与在线更新](25-plugin-market.md)。
+
 ## 4. 安装与卸载
 
-安装以本地目录为来源，没有网络下载入口：
+安装有两条来源，写入磁盘的方式相同：先写 `.staging/<uuid>`，再整体 `rename` 到
+`installed/<id>/<version>`，失败不会留下半个版本。
+
+**本地目录**（开发用）：
 
 1. 重新读取候选包的 manifest 并校验，不接受界面传入的字段。
 2. 复制到 `.staging/<uuid>`，最多 20000 个条目、深度 24，跳过 `.git` 与 `.DS_Store`。
 3. 重新读取复制后的 manifest，digest 与来源不一致则拒绝安装。
 4. `rename` 到 `installed/<id>/<version>`，再写入登记表。
 
-同一 ID 已安装时返回 `INVALID_REQUEST` 与中文原因，不做覆盖式升级。
+**商店包**（`.nexuspkg`）：
+
+1. catalog 里的 SHA-256 与下载字节比对，不符直接拒绝。
+2. 解析容器，逐个文件比对 header 里的 `sha256` 与路径合法性。
+3. 写入版本目录并登记，随后启动进程。
+
+同一 ID 已安装时：版本更高则替换记录、停旧进程、装新版本、删旧版本目录、启动新进程；
+版本相同则原地重装；版本更低直接返回 `INVALID_REQUEST`。
+插件私有目录 `storage/<id>` 与版本无关，升级不丢数据。
 卸载会先停止进程、删除该版本目录并清理空的父目录。
+
+## 4.1 商店
+
+`store.json` 保存商店地址、上次检查时间与最后一次错误。地址支持 `https` / `http` / `file`，
+保存后立即检查一次；启动约 40 秒后首次扫描，之后每 30 分钟一次，失败只记录不弹窗。
+拉取在 Rust 侧完成，商店不需要配置 CORS。完整协议与发布流程见
+[插件商店与在线更新](25-plugin-market.md)。
 
 ## 5. 登记表
 
@@ -90,6 +115,8 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 - `NEXUS_PLUGIN_ID`：插件标识。
 - `NEXUS_PLUGIN_STORAGE_DIR`：仅当 `storage: private` 时注入。
+- `NEXUS_PLUGIN_KEY`：由 id 与版本推导的解密密钥，只有商店包的 `bootstrap.cjs` 会读它；
+  本地目录安装的插件忽略这个变量。
 
 握手顺序为插件发 `hello`、宿主回 `handshake`、插件发 `ready`：
 

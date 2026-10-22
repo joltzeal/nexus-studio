@@ -1,6 +1,8 @@
 pub mod discovery;
 pub mod install;
 pub mod manifest;
+pub mod market;
+pub mod package;
 pub mod permissions;
 pub mod process;
 pub mod registry;
@@ -11,6 +13,7 @@ mod tests;
 use self::discovery::{CandidateSource, DiscoveryReport};
 use self::install::InstallError;
 use self::manifest::{Capability, ManifestError, PluginManifest, PluginPermissions, StorageScope};
+use self::market::{Catalog, MarketError, MarketStore, StoreSettings};
 use self::permissions::PermissionError;
 use self::process::{PluginProcess, ProcessError, ReadyInfo};
 use self::registry::{InstalledPlugin, RegistryDocument, RegistryError, RegistryStore};
@@ -45,6 +48,7 @@ pub enum HostError {
     Manifest(ManifestError),
     Permission(PermissionError),
     Process(ProcessError),
+    Market(MarketError),
     NotFound,
 }
 
@@ -57,6 +61,7 @@ impl HostError {
             HostError::Manifest(_) => "INVALID_REQUEST",
             HostError::Permission(error) => error.code(),
             HostError::Process(error) => error.code(),
+            HostError::Market(error) => error.code(),
         }
     }
 
@@ -69,13 +74,14 @@ impl HostError {
             HostError::Manifest(error) => error.message().into(),
             HostError::Permission(error) => error.message().into(),
             HostError::Process(error) => error.message(),
+            HostError::Market(error) => error.message(),
         }
     }
 
     pub fn retryable(&self) -> bool {
         match self {
             HostError::Process(error) => error.retryable(),
-            HostError::Registry => true,
+            HostError::Registry | HostError::Market(MarketError::Offline) => true,
             _ => false,
         }
     }
@@ -105,6 +111,12 @@ impl From<ManifestError> for HostError {
     }
 }
 
+impl From<MarketError> for HostError {
+    fn from(error: MarketError) -> Self {
+        HostError::Market(error)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginView {
@@ -130,6 +142,35 @@ pub struct PluginView {
     pub source_directory: Option<String>,
 }
 
+/// One row of the configured store. `state` is derived by comparing the
+/// published version with what is installed: `install`, `update` or `current`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketEntryView {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub api_version: u32,
+    pub min_core_version: String,
+    pub description: String,
+    pub changelog: String,
+    pub capabilities: Vec<String>,
+    pub installed_version: Option<String>,
+    pub state: String,
+    pub size: u64,
+    pub checksum: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketStatusView {
+    pub store_url: Option<String>,
+    pub catalog_url: Option<String>,
+    pub last_checked_at: Option<String>,
+    pub last_error: Option<String>,
+    pub entries: Vec<MarketEntryView>,
+}
+
 pub struct PluginHost {
     root: PathBuf,
     node: PathBuf,
@@ -139,6 +180,12 @@ pub struct PluginHost {
     attempts: Mutex<HashMap<String, Attempt>>,
     supervisor: Mutex<Option<Supervisor>>,
     dev_roots: Vec<(PathBuf, CandidateSource)>,
+    /// Uninstalled packages are only listed while developing the host. A
+    /// released build shows what is installed plus whatever the store offers.
+    lists_candidates: bool,
+    market_store: MarketStore,
+    market: Mutex<Catalog>,
+    market_watch: Mutex<Option<Supervisor>>,
 }
 
 /// Start/retry bookkeeping for one plugin.
@@ -180,7 +227,12 @@ impl PluginHost {
         let document = store.load().map_err(|error| match error {
             RegistryError::Corrupt | RegistryError::Io => HostError::Registry,
         })?;
+        let market_store = MarketStore::new(&root);
         let host = Self {
+            market_store,
+            market: Mutex::new(Catalog::default()),
+            market_watch: Mutex::new(None),
+            lists_candidates: cfg!(debug_assertions),
             root,
             node,
             store,
@@ -252,38 +304,43 @@ impl PluginHost {
 
     pub fn catalog(&self) -> Result<Vec<PluginView>, HostError> {
         let document = self.snapshot()?;
-        let report = self.discover();
         let mut views: Vec<PluginView> = Vec::new();
         for plugin in &document.plugins {
             views.push(self.view(plugin));
         }
-        for candidate in report.candidates {
-            if document
-                .plugins
-                .iter()
-                .any(|plugin| plugin.id == candidate.manifest.id)
-            {
-                continue;
+        // A shipped build starts with an empty plugin list: what is installed
+        // plus what the store offers. Listing packages that merely sit next to
+        // the binary made the app look like it came with plugins.
+        if self.lists_candidates {
+            let report = self.discover();
+            for candidate in report.candidates {
+                if document
+                    .plugins
+                    .iter()
+                    .any(|plugin| plugin.id == candidate.manifest.id)
+                {
+                    continue;
+                }
+                views.push(PluginView {
+                    id: candidate.manifest.id.clone(),
+                    name: candidate.manifest.name.clone(),
+                    version: candidate.manifest.version.clone(),
+                    api_version: candidate.manifest.api_version,
+                    min_core_version: candidate.manifest.min_core_version.clone(),
+                    capabilities: capability_names(&candidate.manifest),
+                    granted: Vec::new(),
+                    permissions: candidate.manifest.permissions.clone(),
+                    source: source_name(candidate.source).to_string(),
+                    state: "available".into(),
+                    enabled: false,
+                    methods: Vec::new(),
+                    status: Value::Null,
+                    last_error: None,
+                    storage_durable: false,
+                    secret_slots: Vec::new(),
+                    source_directory: Some(candidate.directory.to_string_lossy().into_owned()),
+                });
             }
-            views.push(PluginView {
-                id: candidate.manifest.id.clone(),
-                name: candidate.manifest.name.clone(),
-                version: candidate.manifest.version.clone(),
-                api_version: candidate.manifest.api_version,
-                min_core_version: candidate.manifest.min_core_version.clone(),
-                capabilities: capability_names(&candidate.manifest),
-                granted: Vec::new(),
-                permissions: candidate.manifest.permissions.clone(),
-                source: source_name(candidate.source).to_string(),
-                state: "available".into(),
-                enabled: false,
-                methods: Vec::new(),
-                status: Value::Null,
-                last_error: None,
-                storage_durable: false,
-                secret_slots: Vec::new(),
-                source_directory: Some(candidate.directory.to_string_lossy().into_owned()),
-            });
         }
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
@@ -416,9 +473,238 @@ impl PluginHost {
         Ok(())
     }
 
+    /// Installs a `.nexuspkg` that was already downloaded and checksummed.
+    /// Installing a higher version replaces the record in place and starts the
+    /// new process; the previous version directory is removed afterwards.
+    pub fn install_from_package(&self, bytes: &[u8]) -> Result<PluginView, HostError> {
+        let contents = package::parse(bytes)
+            .map_err(|error| HostError::Install(InstallError::Package(error)))?;
+        let manifest = contents.manifest.clone();
+        let existing = self
+            .snapshot()?
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.id == manifest.id);
+        if let Some(plugin) = &existing {
+            if matches!(
+                market::compare_versions(&manifest.version, &plugin.version),
+                Some(std::cmp::Ordering::Less)
+            ) {
+                return Err(HostError::Install(InstallError::Downgrade));
+            }
+            // The running process holds the old entry file open on Windows, so
+            // it has to stop before the version directory is replaced.
+            self.stop(&plugin.id);
+            self.forget_attempt(&plugin.id);
+        }
+
+        let directory =
+            install::write_version(&self.root, &manifest.id, &manifest.version, &contents.files)?;
+        let manifest_bytes = contents
+            .read("nexus.plugin.json")
+            .map(<[u8]>::to_vec)
+            .unwrap_or_else(|| serde_json::to_vec(&manifest).unwrap_or_default());
+        let record = InstalledPlugin {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            manifest: manifest.clone(),
+            directory,
+            entry: contents.entry.clone(),
+            manifest_digest: registry::digest(&manifest_bytes),
+            enabled: true,
+            granted_capabilities: manifest.capabilities.clone(),
+            granted_domains: manifest.permissions.network_domains.clone(),
+            installed_at: timestamp(),
+        };
+        let mut document = self.snapshot()?;
+        document.plugins.retain(|plugin| plugin.id != record.id);
+        document.plugins.push(record.clone());
+        self.persist(&document)?;
+        if let Ok(mut current) = self.registry.lock() {
+            *current = document;
+        }
+        if let Some(previous) = existing
+            && previous.version != record.version
+        {
+            let _ = install::uninstall(&self.root, &previous.id, &previous.version);
+        }
+        let _ = self.ensure_started(&record.id);
+        self.view_of(&record.id)
+    }
+
+    pub fn market_status(&self) -> Result<MarketStatusView, HostError> {
+        let settings = self.market_store.load();
+        let catalog = self
+            .market
+            .lock()
+            .map(|catalog| catalog.clone())
+            .unwrap_or_default();
+        let document = self.snapshot()?;
+        let mut entries: Vec<MarketEntryView> = catalog
+            .entries
+            .iter()
+            .map(|entry| {
+                let installed = document
+                    .plugins
+                    .iter()
+                    .find(|plugin| plugin.id == entry.manifest.id);
+                let state = match installed {
+                    None => "install",
+                    Some(plugin) => {
+                        match market::compare_versions(&plugin.version, &entry.manifest.version) {
+                            Some(std::cmp::Ordering::Less) => "update",
+                            _ => "current",
+                        }
+                    }
+                };
+                MarketEntryView {
+                    id: entry.manifest.id.clone(),
+                    name: entry.manifest.name.clone(),
+                    version: entry.manifest.version.clone(),
+                    api_version: entry.manifest.api_version,
+                    min_core_version: entry.manifest.min_core_version.clone(),
+                    description: entry.description.clone(),
+                    changelog: entry.changelog.clone(),
+                    capabilities: capability_names(&entry.manifest),
+                    installed_version: installed.map(|plugin| plugin.version.clone()),
+                    state: state.into(),
+                    size: entry.package.size,
+                    checksum: entry.package.sha256.clone(),
+                }
+            })
+            .collect();
+        entries.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(MarketStatusView {
+            catalog_url: settings
+                .store_url
+                .as_deref()
+                .and_then(|url| market::normalize_store_url(url).ok()),
+            store_url: settings.store_url,
+            last_checked_at: settings.last_checked_at,
+            last_error: settings.last_error,
+            entries,
+        })
+    }
+
+    /// Stores the URL and refreshes once so the page shows the result of the
+    /// address it just saved. An empty value clears the store.
+    pub fn set_store_url(&self, url: Option<String>) -> Result<MarketStatusView, HostError> {
+        let mut settings = self.market_store.load();
+        match url {
+            Some(value) if !value.trim().is_empty() => {
+                let normalized = market::normalize_store_url(&value)?;
+                settings.store_url = Some(normalized);
+                settings.last_checked_at = None;
+                settings.last_error = None;
+                self.market_store.save(&settings)?;
+                self.refresh_market()
+            }
+            _ => {
+                settings.store_url = None;
+                settings.last_checked_at = None;
+                settings.last_error = None;
+                self.market_store.save(&settings)?;
+                if let Ok(mut catalog) = self.market.lock() {
+                    *catalog = Catalog::default();
+                }
+                self.market_status()
+            }
+        }
+    }
+
+    pub fn refresh_market(&self) -> Result<MarketStatusView, HostError> {
+        let mut settings = self.market_store.load();
+        let Some(store_url) = settings.store_url.clone() else {
+            return Err(HostError::Market(MarketError::NotConfigured));
+        };
+        let catalog_url = market::normalize_store_url(&store_url)?;
+        let fetched = market::fetch(&catalog_url, market::MAX_CATALOG_BYTES)
+            .and_then(|bytes| Catalog::parse(&bytes));
+        match fetched {
+            Ok(catalog) => {
+                if let Ok(mut slot) = self.market.lock() {
+                    *slot = catalog;
+                }
+                settings.last_checked_at = Some(market::now_timestamp());
+                settings.last_error = None;
+                let _ = self.market_store.save(&settings);
+                self.market_status()
+            }
+            Err(error) => {
+                settings.last_error = Some(error.message());
+                let _ = self.market_store.save(&settings);
+                Err(HostError::Market(error))
+            }
+        }
+    }
+
+    pub fn install_from_market(&self, id: &str) -> Result<PluginView, HostError> {
+        let mut entry = self
+            .market
+            .lock()
+            .ok()
+            .and_then(|catalog| catalog.find(id).cloned());
+        if entry.is_none() {
+            self.refresh_market()?;
+            entry = self
+                .market
+                .lock()
+                .ok()
+                .and_then(|catalog| catalog.find(id).cloned());
+        }
+        let entry = entry.ok_or(HostError::NotFound)?;
+        let settings: StoreSettings = self.market_store.load();
+        let store_url = settings
+            .store_url
+            .ok_or(HostError::Market(MarketError::NotConfigured))?;
+        let catalog_url = market::normalize_store_url(&store_url)?;
+        let base = market::store_base(&catalog_url);
+        let url = market::resolve_package_url(&base, &entry.package.url);
+        let bytes = market::fetch(&url, market::MAX_PACKAGE_BYTES)?;
+        if registry::digest(&bytes) != entry.package.sha256 {
+            return Err(HostError::Install(InstallError::ChecksumMismatch));
+        }
+        let view = self.install_from_package(&bytes)?;
+        if view.id != entry.manifest.id {
+            // The catalog and the package disagree about identity: roll the
+            // install back rather than leave a surprise behind.
+            let _ = self.uninstall(&view.id);
+            return Err(HostError::Install(InstallError::Package(
+                package::PackageError::MalformedHeader,
+            )));
+        }
+        Ok(view)
+    }
+
+    /// Checks the store on a timer. Failures are recorded on the settings and
+    /// never surface as an error the user has to dismiss.
+    pub fn watch_market(self: &Arc<Self>) {
+        let Ok(mut slot) = self.market_watch.lock() else {
+            return;
+        };
+        if slot.is_some() {
+            return;
+        }
+        let running = Arc::new(AtomicBool::new(true));
+        let host = Arc::clone(self);
+        let flag = Arc::clone(&running);
+        let handle = thread::spawn(move || {
+            if !sleep_unless_stopped(&flag, market::CHECK_DELAY) {
+                return;
+            }
+            while flag.load(Ordering::Relaxed) {
+                if host.market_store.load().store_url.is_some() {
+                    let _ = host.refresh_market();
+                }
+                if !sleep_unless_stopped(&flag, market::CHECK_INTERVAL) {
+                    break;
+                }
+            }
+        });
+        *slot = Some(Supervisor { running, handle });
+    }
+
     /// Starts every installed plugin and keeps restarting the ones that die.
-    /// Called once when the app boots; the loop owns retries so a failing
-    /// plugin never turns into an error the user has to clear.
     pub fn supervise(self: &Arc<Self>) {
         let Ok(mut slot) = self.supervisor.lock() else {
             return;
@@ -556,6 +842,9 @@ impl PluginHost {
             storage.as_deref(),
             plugin.manifest.clone(),
             &self.node,
+            // Packages carry an encrypted entry; the loader needs this to run.
+            // A plain directory install simply ignores it.
+            &package::key_for(&plugin.id, &plugin.version),
         )?;
         let _ = ready;
         if let Ok(mut processes) = self.processes.lock() {
@@ -640,6 +929,12 @@ impl PluginHost {
     }
 
     pub fn shutdown(&self) {
+        if let Ok(mut slot) = self.market_watch.lock()
+            && let Some(watcher) = slot.take()
+        {
+            watcher.running.store(false, Ordering::Relaxed);
+            let _ = watcher.handle.join();
+        }
         if let Ok(mut slot) = self.supervisor.lock()
             && let Some(supervisor) = slot.take()
         {

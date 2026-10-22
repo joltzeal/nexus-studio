@@ -80,14 +80,11 @@ try {
   for (const key of Object.keys(deployEnv)) {
     if (key.toLowerCase().startsWith('npm_')) delete deployEnv[key]
   }
+  // Plugins are not staged into the app any more: they are published to the
+  // plugin store as encrypted packages and installed on demand, so the shipped
+  // bundle carries the browser runtime only.
   for (const [name, destination] of [
     ['@nexus/browser-runtime', join(runtime, 'browser-runtime')],
-    ['@nexus/plugin-proxy-pool', join(runtime, 'plugins/proxy-pool')],
-    ['@nexus/plugin-address-generator', join(runtime, 'plugins/address-generator')],
-    ['@nexus/plugin-shared-supply', join(runtime, 'plugins/shared-supply')],
-    ['@nexus/plugin-ai-image', join(runtime, 'plugins/ai-image')],
-    ['@nexus/plugin-vinted-monitor', join(runtime, 'plugins/vinted-monitor')],
-    ['@nexus/plugin-vinted-accounts', join(runtime, 'plugins/vinted-accounts')],
   ]) {
     await mkdir(resolve(destination, '..'), { recursive: true })
     const result = spawnSync(

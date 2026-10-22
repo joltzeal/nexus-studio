@@ -30,12 +30,14 @@ import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { FieldError } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
 import {
   Table,
   TableBody,
@@ -45,10 +47,15 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
+  installFromMarket,
   installPlugin,
   listPlugins,
+  marketStatus,
   pluginHostAvailable,
+  refreshMarket,
+  setMarketStore,
   uninstallPlugin,
+  type MarketStatus,
   type PluginView,
 } from '@/lib/platform/native-plugins'
 import { BUNDLED_PLUGINS } from './bundled-plugins'
@@ -100,24 +107,51 @@ function message(error: unknown): string {
       : '操作失败，请重试。'
 }
 
+function checkedText(seconds: string | null): string {
+  if (seconds === null) return '还没检查过'
+  const at = Number(seconds)
+  if (!Number.isFinite(at) || at <= 0) return '还没检查过'
+  const minutes = Math.floor((Date.now() / 1000 - at) / 60)
+  if (minutes < 1) return '刚刚检查'
+  if (minutes < 60) return `${minutes} 分钟前检查`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前检查`
+  return `${Math.floor(hours / 24)} 天前检查`
+}
+
+function sizeText(bytes: number): string {
+  if (bytes <= 0) return '—'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export function PluginsPage() {
   const native = pluginHostAvailable()
   const [plugins, setPlugins] = useState<PluginView[]>([])
+  const [market, setMarket] = useState<MarketStatus | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [inspecting, setInspecting] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [storeOpen, setStoreOpen] = useState(false)
+  const [storeDraft, setStoreDraft] = useState('')
+  const [storeError, setStoreError] = useState<string | null>(null)
+  const [storeBusy, setStoreBusy] = useState(false)
 
   const load = useCallback(async () => {
-    setPlugins(await listPlugins())
+    const [catalog, status] = await Promise.all([listPlugins(), marketStatus()])
+    setPlugins(catalog)
+    setMarket(status)
   }, [])
 
   useEffect(() => {
     if (!native) return
     let active = true
-    void listPlugins().then(
-      (catalog) => {
-        if (active) setPlugins(catalog)
+    void Promise.all([listPlugins(), marketStatus()]).then(
+      ([catalog, status]) => {
+        if (!active) return
+        setPlugins(catalog)
+        setMarket(status)
       },
       (cause: unknown) => {
         if (active) setError(message(cause))
@@ -164,6 +198,10 @@ export function PluginsPage() {
   const inspected = plugins.find((plugin) => plugin.id === inspecting) ?? null
   const removingRow = rows.find((row) => row.id === removing) ?? null
   const runningCount = plugins.filter((plugin) => plugin.state === 'running').length
+  const updates = new Map((market?.entries ?? []).map((entry) => [entry.id, entry]))
+  const updateCount = [...updates.values()].filter(
+    (entry) => entry.state === 'update',
+  ).length
 
   async function run(key: string, action: () => Promise<void>) {
     setBusy(key)
@@ -178,6 +216,25 @@ export function PluginsPage() {
     }
   }
 
+  function openStore() {
+    setStoreDraft(market?.storeUrl ?? '')
+    setStoreError(null)
+    setStoreOpen(true)
+  }
+
+  async function saveStore(url: string | null) {
+    setStoreBusy(true)
+    setStoreError(null)
+    try {
+      setMarket(await setMarketStore(url))
+      setStoreOpen(false)
+    } catch (cause) {
+      setStoreError(message(cause))
+    } finally {
+      setStoreBusy(false)
+    }
+  }
+
   return (
     <section className="collection-page page-reveal" aria-labelledby="plugins-heading">
       <div className="section-intro">
@@ -187,13 +244,19 @@ export function PluginsPage() {
         <div className="section-actions">
           <Button
             variant="ghost"
-            disabled={!native || busy !== null}
+            disabled={!native || busy !== null || storeBusy}
             onClick={() => {
-              void run('refresh', async () => undefined)
+              void run('refresh', async () => {
+                if (market?.storeUrl) await refreshMarket()
+              })
             }}
           >
             <RefreshCw data-icon="inline-start" />
-            刷新
+            检查更新
+          </Button>
+          <Button variant="ghost" disabled={!native} onClick={openStore}>
+            <Store data-icon="inline-start" />
+            商店设置
           </Button>
         </div>
       </div>
@@ -203,8 +266,12 @@ export function PluginsPage() {
       {native && rows.length === 0 ? (
         <Empty>
           <EmptyHeader>
-            <EmptyTitle>没有可用的插件包</EmptyTitle>
-            <EmptyDescription>把插件包放到 plugins 目录后重新打开应用。</EmptyDescription>
+            <EmptyTitle>还没有插件</EmptyTitle>
+            <EmptyDescription>
+              {market?.storeUrl
+                ? '到下面的插件商店安装需要的插件。'
+                : '配置插件商店地址后即可安装。'}
+            </EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
@@ -213,6 +280,9 @@ export function PluginsPage() {
             <h2>插件</h2>
             <Badge variant="secondary">{rows.length}</Badge>
             <span>{native ? `${runningCount} 个运行中` : ''}</span>
+            {updateCount > 0 ? (
+              <Badge variant="outline">{updateCount} 个可更新</Badge>
+            ) : null}
           </div>
           <Table aria-label="插件列表">
             <TableHeader>
@@ -227,6 +297,7 @@ export function PluginsPage() {
             <TableBody>
               {rows.map((row) => {
                 const Icon = iconFor(row.capabilities[0] ?? '')
+                const published = updates.get(row.id)
                 return (
                   <TableRow key={row.id}>
                     <TableCell>
@@ -245,7 +316,14 @@ export function PluginsPage() {
                         {row.capabilities.join(' · ') || '—'}
                       </code>
                     </TableCell>
-                    <TableCell>v{row.version}</TableCell>
+                    <TableCell>
+                      <span className="plugin-version">
+                        v{row.version}
+                        {published?.state === 'update' ? (
+                          <Badge variant="outline">→ v{published.version}</Badge>
+                        ) : null}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <Badge variant={row.state === 'running' ? 'secondary' : 'outline'}>
                         {row.state === 'starting' || row.state === 'retrying' ? (
@@ -268,6 +346,20 @@ export function PluginsPage() {
                           >
                             <Download data-icon="inline-start" />
                             安装
+                          </Button>
+                        ) : null}
+                        {published?.state === 'update' ? (
+                          <Button
+                            size="sm"
+                            disabled={busy !== null}
+                            onClick={() => {
+                              void run(`update-${row.id}`, async () => {
+                                await installFromMarket(row.id)
+                              })
+                            }}
+                          >
+                            <Download data-icon="inline-start" />
+                            更新
                           </Button>
                         ) : null}
                         {row.plugin === null ? null : (
@@ -301,8 +393,92 @@ export function PluginsPage() {
         </div>
       )}
 
+      {native && market !== null ? (
+        <div className="plugin-panel store-panel">
+          <div className="panel-heading">
+            <h2>插件商店</h2>
+            {market.storeUrl === null ? null : (
+              <code className="plugin-id">{market.storeUrl}</code>
+            )}
+            <span>
+              {market.storeUrl === null ? '' : checkedText(market.lastCheckedAt)}
+            </span>
+          </div>
+          {market.lastError ? (
+            <FieldError role="alert">{market.lastError}</FieldError>
+          ) : null}
+          {market.storeUrl === null ? (
+            <div className="store-empty">
+              <p>还没有配置商店地址。</p>
+              <Button size="sm" variant="outline" onClick={openStore}>
+                填写地址
+              </Button>
+            </div>
+          ) : market.entries.length === 0 ? (
+            <p className="store-empty">这个商店还没有发布插件。</p>
+          ) : (
+            <Table aria-label="商店插件列表">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>插件</TableHead>
+                  <TableHead>版本</TableHead>
+                  <TableHead>大小</TableHead>
+                  <TableHead>说明</TableHead>
+                  <TableHead className="text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {market.entries.map((entry) => {
+                  const Icon = iconFor(entry.capabilities[0] ?? '')
+                  return (
+                    <TableRow key={entry.id}>
+                      <TableCell>
+                        <div className="plugin-cell">
+                          <span className="plugin-icon">
+                            <Icon />
+                          </span>
+                          <div className="plugin-cell-text">
+                            <strong>{entry.name}</strong>
+                            <code className="plugin-id">{entry.id}</code>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell>v{entry.version}</TableCell>
+                      <TableCell>{sizeText(entry.size)}</TableCell>
+                      <TableCell className="store-description">
+                        {entry.changelog || entry.description || '—'}
+                      </TableCell>
+                      <TableCell>
+                        <div className="plugin-actions">
+                          {entry.state === 'current' ? (
+                            <Badge variant="secondary">已是最新</Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              disabled={busy !== null || storeBusy}
+                              onClick={() => {
+                                void run(`${entry.state}-${entry.id}`, async () => {
+                                  await installFromMarket(entry.id)
+                                })
+                              }}
+                            >
+                              <Download data-icon="inline-start" />
+                              {entry.state === 'update' ? '更新' : '安装'}
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+      ) : null}
+
       <Dialog
-        open={inspected !== null}
+        open={inspecting !== null}
         onOpenChange={(open) => {
           if (!open) setInspecting(null)
         }}
@@ -353,6 +529,61 @@ export function PluginsPage() {
           </dl>
           <DialogFooter>
             <Button onClick={() => setInspecting(null)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={storeOpen}
+        onOpenChange={(open) => {
+          if (!open) setStoreOpen(false)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>插件商店地址</DialogTitle>
+            <DialogDescription>
+              填写商店根地址或 catalog.json 的完整地址，保存后会立即检查一次。
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            aria-label="插件商店地址"
+            placeholder="https://market.example.com/nexus-studio-market"
+            value={storeDraft}
+            disabled={storeBusy}
+            onChange={(event) => setStoreDraft(event.target.value)}
+          />
+          {storeError ? <FieldError role="alert">{storeError}</FieldError> : null}
+          <DialogFooter>
+            {market?.storeUrl ? (
+              <Button
+                variant="ghost"
+                disabled={storeBusy}
+                onClick={() => {
+                  void saveStore(null)
+                }}
+              >
+                清除
+              </Button>
+            ) : null}
+            <Button
+              variant="ghost"
+              disabled={storeBusy}
+              onClick={() => setStoreOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              disabled={storeBusy || storeDraft.trim() === ''}
+              onClick={() => {
+                void saveStore(storeDraft)
+              }}
+            >
+              {storeBusy ? (
+                <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+              ) : null}
+              保存并检查
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

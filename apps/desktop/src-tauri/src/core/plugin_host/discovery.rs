@@ -101,7 +101,7 @@ fn read_entry(directory: &Path) -> String {
             !main.is_empty()
                 && !main.starts_with('/')
                 && !main.contains("..")
-                && main.ends_with(".js")
+                && (main.ends_with(".js") || main.ends_with(".cjs") || main.ends_with(".mjs"))
         })
         .map_or_else(|| DEFAULT_ENTRY.to_string(), ToString::to_string)
 }

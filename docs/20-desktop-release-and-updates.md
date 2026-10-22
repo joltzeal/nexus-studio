@@ -6,10 +6,13 @@
 `scripts/stage-desktop-runtime.mjs`，最后使用 Tauri 发行配置构建。
 脚本从 Node.js 官方发行地址获取固定版本 `24.18.0`，用同一官方来源的
 `SHASUMS256.txt` 校验后，按当前 Rust target 放入 `src-tauri/binaries`。
-浏览器适配器、代理池、地址生成、共享货源、AI 生图、Vinted 账号与 Vinted 监控插件通过 pnpm deploy 复制到
-`src-tauri/runtime`。发行分阶段使用 hoisted 布局，使 Node 依赖以实际目录
-进入 Tauri 资源包；默认 pnpm 软链接不会被当前 Tauri 打包流程保留。
+浏览器适配器通过 pnpm deploy 复制到 `src-tauri/runtime`。发行分阶段使用 hoisted 布局，
+使 Node 依赖以实际目录进入 Tauri 资源包；默认 pnpm 软链接不会被当前 Tauri 打包流程保留。
 以上两个目录是忽略的生成物，不提交到 Git。
+
+插件不再随安装包分发：发布构建的插件列表只有「已安装」与「商店清单」两个来源，
+安装包内只带 Node 与浏览器适配器，插件以加密的 `.nexuspkg` 从商店按需安装。
+因此 `RuntimePaths` 也不再要求 `runtime/plugins` 存在。见[插件商店与在线更新](25-plugin-market.md)。
 发行版从自身资源目录运行适配器，并从自身可执行目录运行 Node sidecar。
 
 浏览器内核不随 Nexus 安装包分发。用户不需要配置 Node、Rust、Python、

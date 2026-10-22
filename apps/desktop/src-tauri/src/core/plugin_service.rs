@@ -3,7 +3,7 @@ use super::license_service::LicenseService;
 use super::license_store::LicenseStore;
 use super::plugin_host::discovery::development_roots;
 use super::plugin_host::manifest::Capability;
-use super::plugin_host::{HostError, PluginHost, PluginView};
+use super::plugin_host::{HostError, MarketStatusView, PluginHost, PluginView};
 use super::runtime_paths::RuntimePaths;
 use serde::Deserialize;
 use serde_json::Value;
@@ -53,6 +53,45 @@ pub async fn plugin_uninstall(state: State<'_, Arc<PluginHost>>, id: String) -> 
         .map_err(|_| "插件卸载任务中断".to_string())?
 }
 
+#[tauri::command]
+pub fn plugin_market_status(state: State<'_, Arc<PluginHost>>) -> Result<MarketStatusView, String> {
+    state.market_status().map_err(message)
+}
+
+#[tauri::command]
+pub async fn plugin_market_set_store(
+    state: State<'_, Arc<PluginHost>>,
+    url: Option<String>,
+) -> Result<MarketStatusView, String> {
+    let state = Arc::clone(&state);
+    // The fetch blocks, so it runs off the main thread; the page keeps painting
+    // while a slow store is being reached.
+    tauri::async_runtime::spawn_blocking(move || state.set_store_url(url).map_err(message))
+        .await
+        .map_err(|_| "插件商店设置中断".to_string())?
+}
+
+#[tauri::command]
+pub async fn plugin_market_refresh(
+    state: State<'_, Arc<PluginHost>>,
+) -> Result<MarketStatusView, String> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.refresh_market().map_err(message))
+        .await
+        .map_err(|_| "插件商店检查中断".to_string())?
+}
+
+#[tauri::command]
+pub async fn plugin_market_install(
+    state: State<'_, Arc<PluginHost>>,
+    id: String,
+) -> Result<PluginView, String> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.install_from_market(&id).map_err(message))
+        .await
+        .map_err(|_| "插件下载任务中断".to_string())?
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallInput {
@@ -97,13 +136,12 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     let host = Arc::new(
         PluginHost::open_with_node(
             root,
+            // A released build installs everything from the plugin store, so
+            // there is nothing to discover next to the binary.
             if cfg!(debug_assertions) {
                 development_roots()
             } else {
-                vec![(
-                    runtime.plugins.clone(),
-                    super::plugin_host::discovery::CandidateSource::Workspace,
-                )]
+                Vec::new()
             },
             runtime.node.clone(),
         )
@@ -113,6 +151,9 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     // Plugins installed in an earlier session start on their own; the
     // supervisor owns restarts, so the app never asks the user to fix a process.
     host.supervise();
+    // The store is polled in the background so a new plugin version shows up
+    // without the user opening the plugin page.
+    host.watch_market();
     let license_store =
         LicenseStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
     let groups = GroupStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;

@@ -832,6 +832,37 @@
   justify-content: flex-end;
   gap: 4px;
 }
+/* The plugin center stacks two panels; the store one sits under the table. */
+.store-panel {
+  margin-top: 16px;
+}
+.store-panel .panel-heading code {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plugin-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.store-description {
+  max-width: 320px;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.store-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 16px 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
 
 .settings-tabs {
   gap: 16px;
