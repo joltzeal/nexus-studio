@@ -32,6 +32,13 @@ export type VerificationProvider = CapabilityDescriptor
 export type ImageProvider = CapabilityDescriptor
 export type EnvironmentConfigurator = CapabilityDescriptor
 
+/**
+ * Listing monitor: periodic collection of a marketplace's public listing
+ * endpoints into a local item table, with one run record per collection. The
+ * DTOs live in the plugin's own method table.
+ */
+export type MonitorCollector = CapabilityDescriptor
+
 export interface PluginCapabilityContracts {
   'proxy.provider': ProxyProvider
   'address.generator': AddressGenerator
@@ -40,4 +47,5 @@ export interface PluginCapabilityContracts {
   'verification.provider': VerificationProvider
   'image.provider': ImageProvider
   'environment.configurator': EnvironmentConfigurator
+  'monitor.collector': MonitorCollector
 }

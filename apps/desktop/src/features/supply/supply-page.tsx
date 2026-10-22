@@ -24,7 +24,13 @@ import {
   searchProducts,
 } from './api'
 import { ProductDialog } from './product-dialog'
-import { Pager, ProductGrid, ProductViewToggle, type ProductView } from './product-grid'
+import {
+  LoadMore,
+  Pager,
+  ProductGrid,
+  ProductViewToggle,
+  type ProductView,
+} from './product-grid'
 import { checkImageFile, prepareJpeg } from './image-prepare'
 import {
   SUPPLY_CAPABILITY,
@@ -48,6 +54,21 @@ const SECTIONS: { value: Section; label: string }[] = [
 ]
 
 const COPY_FAILED = '复制失败，请检查剪贴板权限后重试。'
+
+/**
+ * Appending pages can overlap when a merchant publishes between two requests,
+ * so the merge drops ids that are already on screen.
+ */
+function mergeProducts(current: Product[], incoming: Product[]): Product[] {
+  const seen = new Set(current.map((item) => item.id))
+  const merged = [...current]
+  for (const item of incoming) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    merged.push(item)
+  }
+  return merged
+}
 
 export interface SupplyPageProps {
   plugin: PluginView | null
@@ -73,17 +94,21 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
   const [products, setProducts] = useState<Product[] | null>(null)
   const [productPage, setProductPage] = useState(0)
   const [productMore, setProductMore] = useState(false)
+  const [productBusy, setProductBusy] = useState(false)
   const [draft, setDraft] = useState('')
   const [keyword, setKeyword] = useState('')
   const [searchPage, setSearchPage] = useState(0)
   const [searchRows, setSearchRows] = useState<Product[] | null>(null)
   const [searchMore, setSearchMore] = useState(false)
-  const [searching, setSearching] = useState(false)
+  const [searchBusy, setSearchBusy] = useState(false)
   const [imageRows, setImageRows] = useState<Product[] | null>(null)
   const [imageBusy, setImageBusy] = useState(false)
   const [favorites, setFavorites] = useState<Favorite[]>([])
   const [favoritesDurable, setFavoritesDurable] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Bumped by the refresh button so every query re-runs even when its
+  // page/keyword is unchanged.
+  const [reload, setReload] = useState(0)
   const [selected, setSelected] = useState<Product | null>(null)
   const imageInput = useRef<HTMLInputElement>(null)
 
@@ -153,48 +178,79 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
     return () => {
       active = false
     }
-  }, [running, typeId, merchantPage])
+  }, [running, typeId, merchantPage, reload])
 
-  // Products follow the selected merchant and page.
+  // Products follow the selected merchant. Page 0 replaces the list; later
+  // pages append, which is what makes the bottom sentinel work.
   useEffect(() => {
     if (!running || merchantId === '') return
     let active = true
     void listProducts(merchantId, productPage).then(
       (result) => {
         if (!active) return
-        setProducts(result.items)
+        setProducts((current) =>
+          productPage === 0 || current === null
+            ? result.items
+            : mergeProducts(current, result.items),
+        )
         setProductMore(result.hasMore)
+        setProductBusy(false)
         setError(null)
       },
       (cause: unknown) => {
         if (!active) return
-        setProducts([])
+        setProducts((current) => (productPage === 0 || current === null ? [] : current))
         setProductMore(false)
+        setProductBusy(false)
         setError(message(cause))
       },
     )
     return () => {
       active = false
     }
-  }, [running, merchantId, productPage])
+  }, [running, merchantId, productPage, reload])
 
-  async function runSearch(page: number) {
-    if (keyword === '') return
-    setSearching(true)
-    try {
-      const result = await searchProducts(keyword, page)
-      setSearchRows(result.items)
-      setSearchMore(result.hasMore)
-      setSearchPage(page)
-      setError(null)
-    } catch (cause) {
-      setSearchRows([])
-      setSearchMore(false)
-      setError(message(cause))
-    } finally {
-      setSearching(false)
+  // Keyword search, paged the same way as the merchant product list.
+  useEffect(() => {
+    if (!running || keyword === '') return
+    let active = true
+    void searchProducts(keyword, searchPage).then(
+      (result) => {
+        if (!active) return
+        setSearchRows((current) =>
+          searchPage === 0 || current === null
+            ? result.items
+            : mergeProducts(current, result.items),
+        )
+        setSearchMore(result.hasMore)
+        setSearchBusy(false)
+        setError(null)
+      },
+      (cause: unknown) => {
+        if (!active) return
+        setSearchRows((current) => (searchPage === 0 || current === null ? [] : current))
+        setSearchMore(false)
+        setSearchBusy(false)
+        setError(message(cause))
+      },
+    )
+    return () => {
+      active = false
     }
-  }
+  }, [running, keyword, searchPage, reload])
+
+  /** Starts the next page; the effect above appends whatever comes back. */
+  const loadMoreProducts = useCallback(() => {
+    if (!productMore || productBusy) return
+    setProductBusy(true)
+    setProductPage((current) => current + 1)
+  }, [productMore, productBusy])
+
+  const loadMoreSearch = useCallback(() => {
+    if (!searchMore || searchBusy) return
+    setSearchBusy(true)
+    setSearchPage((current) => current + 1)
+  }, [searchMore, searchBusy])
 
   async function runImageSearch(file: File) {
     const invalid = checkImageFile(file)
@@ -305,15 +361,9 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
     <SupplyViewport>
       <Card className="supply-shell">
         <div className="supply-shell-head">
-          <div>
-            <h1 className="page-heading" id="supply-heading">
-              共享货源
-            </h1>
-            <p className="page-description">
-              按分类浏览商户商品、按关键词或以图搜索，收藏保存在插件私有目录。
-              商品资料来自供货方公开接口，不代表可直接下单。
-            </p>
-          </div>
+          <h1 className="page-heading" id="supply-heading">
+            共享货源
+          </h1>
           <div className="section-actions">
             <ProductViewToggle value={view} onChange={setView} />
             <Button
@@ -324,6 +374,11 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                 setProducts(null)
                 setMerchantPage(0)
                 setProductPage(0)
+                setProductBusy(false)
+                setSearchRows(null)
+                setSearchPage(0)
+                setSearchBusy(false)
+                setReload((current) => current + 1)
                 void loadFavorites()
               }}
             >
@@ -365,6 +420,7 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                       setProducts(null)
                       setMerchantPage(0)
                       setProductPage(0)
+                      setProductBusy(false)
                       setMerchantId('')
                     }}
                   >
@@ -401,6 +457,8 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                           setMerchantId(merchant.uid)
                           setProducts(null)
                           setProductPage(0)
+                          setProductBusy(false)
+                          setProductMore(false)
                         }}
                       >
                         <Store aria-hidden="true" />
@@ -427,6 +485,8 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                       setProducts(null)
                       setMerchantId('')
                       setProductPage(0)
+                      setProductBusy(false)
+                      setProductMore(false)
                     }}
                   />
                 </div>
@@ -440,24 +500,25 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                       {productsLoading ? '加载中' : `${products?.length ?? 0} 件`}
                     </span>
                   </div>
-                  {productsLoading ? <p className="supply-empty">正在加载商品…</p> : null}
-                  <ProductGrid
-                    rows={products ?? []}
-                    view={view}
-                    onOpen={setSelected}
-                    empty={merchantId === '' ? '先选择一个商户' : '该商户暂无商品'}
-                  />
-                  {merchantId === '' ? null : (
-                    <Pager
-                      page={productPage}
-                      hasMore={productMore}
-                      disabled={productsLoading}
-                      onChange={(page) => {
-                        setProductPage(page)
-                        setProducts(null)
-                      }}
+                  <div className="supply-products-scroll">
+                    {productsLoading ? (
+                      <p className="supply-empty">正在加载商品…</p>
+                    ) : null}
+                    <ProductGrid
+                      rows={products ?? []}
+                      view={view}
+                      onOpen={setSelected}
+                      empty={merchantId === '' ? '先选择一个商户' : '该商户暂无商品'}
                     />
-                  )}
+                    {merchantId === '' ? null : (
+                      <LoadMore
+                        hasMore={productMore}
+                        busy={productBusy}
+                        loaded={products?.length ?? 0}
+                        onLoadMore={loadMoreProducts}
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -470,8 +531,19 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                 onSubmit={(event) => {
                   event.preventDefault()
                   const next = draft.trim()
+                  if (next === '') return
+                  if (next === keyword) {
+                    // Same keyword: re-run from the first page.
+                    setSearchRows(null)
+                    setSearchPage(0)
+                    setSearchBusy(true)
+                    setReload((current) => current + 1)
+                    return
+                  }
+                  setSearchRows(null)
+                  setSearchPage(0)
+                  setSearchBusy(true)
                   setKeyword(next)
-                  if (next !== '') void runSearch(0)
                 }}
               >
                 <Input
@@ -481,8 +553,8 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                   aria-label="商品关键词"
                   onChange={(event) => setDraft(event.target.value)}
                 />
-                <Button type="submit" disabled={searching || draft.trim() === ''}>
-                  {searching ? (
+                <Button type="submit" disabled={searchBusy || draft.trim() === ''}>
+                  {searchBusy ? (
                     <Loader2 className="size-4 animate-spin" aria-hidden="true" />
                   ) : (
                     <Search data-icon="inline-start" />
@@ -498,13 +570,13 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
                     rows={searchRows ?? []}
                     view={view}
                     onOpen={setSelected}
-                    empty={searching ? '正在搜索…' : '没有匹配的商品'}
+                    empty={searchBusy ? '正在搜索…' : '没有匹配的商品'}
                   />
-                  <Pager
-                    page={searchPage}
+                  <LoadMore
                     hasMore={searchMore}
-                    disabled={searching}
-                    onChange={(page) => void runSearch(page)}
+                    busy={searchBusy}
+                    loaded={searchRows?.length ?? 0}
+                    onLoadMore={loadMoreSearch}
                   />
                 </>
               )}
@@ -626,14 +698,9 @@ function SupplyState({ children }: { children: ReactNode }) {
     <SupplyViewport>
       <Card className="supply-shell">
         <div className="supply-shell-head">
-          <div>
-            <h1 className="page-heading" id="supply-heading">
-              共享货源
-            </h1>
-            <p className="page-description">
-              按分类浏览商户商品、按关键词或以图搜索，收藏保存在插件私有目录。
-            </p>
-          </div>
+          <h1 className="page-heading" id="supply-heading">
+            共享货源
+          </h1>
         </div>
         <div className="supply-body">{children}</div>
       </Card>

@@ -1,4 +1,5 @@
-import { ImageOff, LayoutGrid, List } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { ImageOff, LayoutGrid, List, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { publishedText, type Product } from './types'
 
@@ -116,6 +117,59 @@ export function Pager({
       >
         下一页
       </Button>
+    </div>
+  )
+}
+
+/**
+ * Bottom-of-list sentinel: fetches the next page once it scrolls into view.
+ *
+ * `loaded` is part of the observer dependencies on purpose. When a page arrives
+ * but the sentinel is still visible (short page, tall window), the observer is
+ * rebuilt and reports the current intersection again, which keeps filling the
+ * viewport instead of waiting for a scroll that may never happen.
+ */
+export function LoadMore({
+  hasMore,
+  busy,
+  loaded,
+  onLoadMore,
+}: {
+  hasMore: boolean
+  busy: boolean
+  loaded: number
+  onLoadMore: () => void
+}) {
+  const node = useRef<HTMLDivElement | null>(null)
+  const handler = useRef(onLoadMore)
+
+  useEffect(() => {
+    handler.current = onLoadMore
+  })
+
+  useEffect(() => {
+    const element = node.current
+    if (element === null || !hasMore || busy) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) handler.current()
+      },
+      { rootMargin: '160px' },
+    )
+    observer.observe(element)
+    return () => {
+      observer.disconnect()
+    }
+  }, [hasMore, busy, loaded])
+
+  if (!hasMore && !busy) {
+    return loaded === 0 ? null : <p className="supply-more-end">已经到底了</p>
+  }
+
+  return (
+    <div className="supply-more" ref={node} role="status">
+      {busy ? <Loader2 className="size-3 animate-spin" aria-hidden="true" /> : null}
+      {busy ? '正在加载更多…' : '继续下拉加载更多'}
     </div>
   )
 }

@@ -75,14 +75,13 @@ describe('shared supply page', () => {
     expect(html).toContain('先选择一个商户')
   })
 
-  it('says the catalogue is third-party data, not an order channel', () => {
+  it('keeps the card header to the title and the action cluster', () => {
     const html = render({ plugin: plugin() })
-    expect(html).toContain('供货方公开接口')
-    expect(html).toContain('不代表可直接下单')
-  })
-
-  it('keeps favourites described as local to the plugin directory', () => {
-    const html = render({ plugin: plugin() })
-    expect(html).toContain('插件私有目录')
+    // The description paragraph was removed on request, so the header carries
+    // no explanatory copy any more.
+    expect(html).not.toContain('按分类浏览商户商品')
+    expect(html).not.toContain('不代表可直接下单')
+    expect(html).toContain('共享货源')
+    expect(html).toContain('section-actions')
   })
 })

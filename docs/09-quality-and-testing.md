@@ -53,6 +53,8 @@ AI 生图只做 OpenAI 官方与 OpenAI 兼容两类服务商，参考实现里�
 `pnpm runtime:stage` → `pnpm --filter @nexus/desktop build` →
 `tauri build --config src-tauri/tauri.release.conf.json`。暂存目录里的四个插件
 （proxy-pool / address-generator / shared-supply / ai-image）与 Node sidecar 都进了包。
+（本轮之后 `runtime:stage` 与 `release.yml` 已把 `vinted-monitor` 加进同一份清单，
+下一次构建会是五个插件。）
 
 | 产物     | 路径                                                                       | 大小   |
 | -------- | -------------------------------------------------------------------------- | ------ |
@@ -338,6 +340,41 @@ Vitest 覆盖偏好校验与顺序写入、演示数据持久化、损坏数据�
 修复了多个行操作共用受控 Dialog 时，关闭后焦点落到 body 的问题。
 截图保存在本机 `/tmp/nexus-foundation-qa/`，最终交付使用实际渲染截图，概念图不作为通过证据。
 临时视口覆盖在完成检查后恢复，不改变用户长期窗口偏好。
+
+## 2026-10-22 共享货源布局调整与 Vinted 监控插件
+
+两件事在同一轮完成：
+
+- 共享货源页去掉两段说明文案（卡片标题栏的说明与页脚“窗口的浏览器环境保存在本机”），
+  左栏商户列固定在原位、不再自带 `max-height`，只有右栏商品区滚动；
+  右栏与搜索结果的翻页按钮换成触底加载（IntersectionObserver 哨兵），追加时按商品 id 去重。
+- 新增第五个插件 `plugins/vinted-monitor`（`studio.vinted-monitor`，能力 `monitor.collector`）
+  与桌面页面 `apps/desktop/src/features/vinted-monitor`，导航增加第九个入口。
+- 修复右上角操作组：`.section-actions` 这个类名在三个页面里都在用，但 CSS 里从来没有定义过，
+  于是视图切换与刷新按钮按块级流排列、错位。现在补上统一的右对齐 flex 规则。
+
+插件侧按[Vinted 监控插件](23-vinted-monitor-plugin.md)的规则实现：URL 归一化与筛选白名单、
+逐页采集与去重入库、运行记录、进程内调度器、私有 JSON 文档。采集调用立即返回，
+页面轮询记录；`monitor.collector` 已加进 plugin-sdk 的能力枚举与 Rust 的 `Capability`。
+
+本轮在本机 macOS 实际执行：
+
+| 检查         | 命令                                                   | 结果                                          |
+| ------------ | ------------------------------------------------------ | --------------------------------------------- |
+| ESLint       | `eslint . --max-warnings 0`                            | 通过，无输出                                  |
+| Prettier     | `prettier --check .`                                   | 首次报 12 个新文件，格式化后通过              |
+| 桌面类型检查 | `tsc -p apps/desktop/tsconfig.json --noEmit`           | 通过                                          |
+| 插件类型检查 | `tsc -p plugins/vinted-monitor/tsconfig.json --noEmit` | 通过                                          |
+| 测试类型检查 | `tsc -p tsconfig.tests.json --noEmit`                  | 通过                                          |
+| 前端测试     | `vitest run`                                           | 48 文件、459 用例通过（本轮新增 48）          |
+| Rust 测试    | `cargo test --locked`                                  | 59 通过、1 忽略（真实浏览器冒烟），共 60 用例 |
+
+本轮新增用例 48 个：插件 43（URL 归一化与接口拼装 11、列表解析 6、HTTP 状态映射与超时 12、
+能力层 14）、页面 5（宿主不可用 / 插件缺失 / 未启用 / 进程失败 / 首屏骨架）。
+共享货源页面测试改为断言标题栏只剩标题与操作组，不再断言已删除的说明文案。
+
+未验证：真实 Vinted 接口的返回结构与限流表现（所有用例都替换了 `fetch` 或注入假客户端）；
+直连 IP 被拒时的真实错误文本；长时间定时采集的内存与文件增长；Windows 行为。
 
 ## 尚未验证与后续门禁
 

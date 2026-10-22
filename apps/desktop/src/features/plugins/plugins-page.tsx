@@ -6,6 +6,7 @@ import {
   KeyRound,
   MapPinned,
   Play,
+  Radar,
   RefreshCw,
   ShoppingBag,
   SlidersHorizontal,
@@ -54,6 +55,7 @@ const capabilityIcons = {
   'verification.provider': KeyRound,
   'image.provider': Image,
   'environment.configurator': SlidersHorizontal,
+  'monitor.collector': Radar,
 }
 
 function iconFor(capability: string) {

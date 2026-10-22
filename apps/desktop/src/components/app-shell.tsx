@@ -8,6 +8,7 @@ import {
   MapPinned,
   Moon,
   Network,
+  Radar,
   RefreshCw,
   Settings2,
   ShoppingBag,
@@ -27,6 +28,7 @@ import { ProxyPoolRoute } from '@/features/proxy/proxy-pool-page'
 import { AddressGeneratorRoute } from '@/features/addresses/address-page'
 import { SharedSupplyRoute } from '@/features/supply/supply-page'
 import { AiImageRoute } from '@/features/ai-image/ai-image-page'
+import { VintedMonitorRoute } from '@/features/vinted-monitor/vinted-monitor-page'
 
 const SettingsPage = lazy(() =>
   import('@/features/settings/settings-page').then((module) => ({
@@ -102,6 +104,10 @@ export function AppShell() {
             <Sparkles />
             AI 生图
           </TabsTrigger>
+          <TabsTrigger value="vinted">
+            <Radar />
+            Vinted 监控
+          </TabsTrigger>
           <TabsTrigger value="settings">
             <Settings2 />
             应用设置
@@ -125,6 +131,7 @@ export function AppShell() {
                 addresses: '地址生成器',
                 supply: '共享货源',
                 'ai-image': 'AI 生图',
+                vinted: 'Vinted 监控',
                 settings: '应用设置',
               }[page]
             }
@@ -200,6 +207,9 @@ export function AppShell() {
             <TabsContent value="ai-image">
               <AiImageRoute />
             </TabsContent>
+            <TabsContent value="vinted">
+              <VintedMonitorRoute />
+            </TabsContent>
             <TabsContent value="settings">
               <Suspense
                 fallback={
@@ -218,7 +228,6 @@ export function AppShell() {
       </main>
 
       <footer className="app-footer">
-        <span>窗口的浏览器环境保存在本机</span>
         <span>Nexus Studio</span>
       </footer>
     </Tabs>

@@ -5,7 +5,7 @@
 
 ## 当前插件页面
 
-插件中心是八个主页面之一。页面分两组：宿主发现到的插件包，以及未接入的能力占位。
+插件中心是九个主页面之一。页面分两组：宿主发现到的插件包，以及未接入的能力占位。
 插件包读取真实 manifest，按状态提供安装、启用、停用、重启、卸载与清单查看；
 授权弹窗展示能力、网络域名、密钥槽与存储范围；密码由插件保存在私有目录，页面不回显。
 状态只有“可安装、已安装未启用、运行中、进程失败”四种，全部来自宿主检查。
@@ -38,8 +38,16 @@ manifest 在安装时严格校验，能力在启用时授权，调用前逐项�
 以图搜图与本地收藏，见[共享货源插件](21-shared-supply-plugin.md)。
 它不需要任何密钥槽，收藏写在插件私有目录。
 
-仓库内存在插件实现不等于插件系统已经通用可用：只有 `proxy.provider`、`address.generator`
-与 `supply.catalog` 具备真实调用路径。
+`plugins/ai-image` 是第四个已实现的插件包：`image.provider` 能力提供 OpenAI 官方与兼容接口的
+生图改图、参考图文案与生成记录，见[AI 生图插件](22-ai-image-plugin.md)。
+
+`plugins/vinted-monitor` 是第五个已实现的插件包：`monitor.collector` 能力按间隔采集 Vinted
+搜索页或会员衣柜，留下运行记录与去重后的商品归档，见
+[Vinted 监控插件](23-vinted-monitor-plugin.md)。它同样不需要密钥槽。
+
+仓库内存在插件实现不等于插件系统已经通用可用：只有 `proxy.provider`、`address.generator`、
+`supply.catalog`、`image.provider` 与 `monitor.collector` 具备真实调用路径；
+`platform.adapter`、`verification.provider` 与 `environment.configurator` 仍只有声明与类型。
 
 ## 长期首阶段信任模型
 

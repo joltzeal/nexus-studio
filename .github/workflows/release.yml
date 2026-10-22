@@ -44,6 +44,7 @@ jobs:
           test -f apps/desktop/src-tauri/runtime/plugins/address-generator/dist/nexus.plugin.json
           test -f apps/desktop/src-tauri/runtime/plugins/shared-supply/dist/nexus.plugin.json
           test -f apps/desktop/src-tauri/runtime/plugins/ai-image/dist/nexus.plugin.json
+          test -f apps/desktop/src-tauri/runtime/plugins/vinted-monitor/dist/nexus.plugin.json
           test -f "apps/desktop/src-tauri/binaries/node-${{ matrix.target }}${{ runner.os == 'Windows' && '.exe' || '' }}"
       - uses: tauri-apps/tauri-action@v0
         env:

@@ -2,6 +2,7 @@ import addressManifest from '@nexus/plugin-address-generator/manifest'
 import aiImageManifest from '@nexus/plugin-ai-image/manifest'
 import proxyManifest from '@nexus/plugin-proxy-pool/manifest'
 import supplyManifest from '@nexus/plugin-shared-supply/manifest'
+import vintedMonitorManifest from '@nexus/plugin-vinted-monitor/manifest'
 
 /**
  * Plugins whose package is built from this repository.
@@ -35,6 +36,11 @@ export const BUNDLED_PLUGINS: readonly BundledPlugin[] = [
   {
     manifest: aiImageManifest,
     summary: 'OpenAI 与兼容接口生图改图、参考图文案、场景预设与生成记录。',
+    status: '插件包已构建，宿主未接入',
+  },
+  {
+    manifest: vintedMonitorManifest,
+    summary: 'Vinted 搜索页与会员衣柜定时采集、采集记录与商品归档。',
     status: '插件包已构建，宿主未接入',
   },
 ]

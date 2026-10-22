@@ -15,6 +15,7 @@ export const PluginCapabilitySchema = z.enum([
   'verification.provider',
   'image.provider',
   'environment.configurator',
+  'monitor.collector',
 ])
 
 export const NetworkDomainSchema = z.string().max(253).regex(domainPattern)

@@ -86,6 +86,7 @@ try {
     ['@nexus/plugin-address-generator', join(runtime, 'plugins/address-generator')],
     ['@nexus/plugin-shared-supply', join(runtime, 'plugins/shared-supply')],
     ['@nexus/plugin-ai-image', join(runtime, 'plugins/ai-image')],
+    ['@nexus/plugin-vinted-monitor', join(runtime, 'plugins/vinted-monitor')],
   ]) {
     await mkdir(resolve(destination, '..'), { recursive: true })
     const result = spawnSync(

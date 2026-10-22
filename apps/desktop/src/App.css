@@ -400,6 +400,19 @@
   gap: 16px;
   margin-bottom: 12px;
 }
+/* Right-aligned action cluster next to a page heading. Without this the toggle
+   group and the buttons inherit block layout and stack out of line. */
+.section-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.section-actions > * {
+  flex: none;
+}
 .native-profiles {
   margin-bottom: 16px;
   padding: 14px 16px;
@@ -2120,11 +2133,24 @@ a.address-source:hover {
   gap: 10px;
   min-height: 0;
   padding: 12px 16px 16px;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
+/* Each section owns its own scrolling so the page never grows a scrollbar. */
 .supply-body > * {
   flex: none;
+  min-height: 0;
+}
+
+.supply-body > .supply-browse {
+  flex: 1;
+  overflow: hidden;
+}
+
+.supply-body > .supply-section {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .supply-tabs {
@@ -2159,25 +2185,37 @@ a.address-source:hover {
 }
 
 .supply-browse {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .supply-categories {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 .supply-browse-body {
   display: grid;
+  flex: 1;
   gap: 12px;
   grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
-  align-items: start;
+  align-items: stretch;
+  min-height: 0;
 }
 
 .supply-merchants,
-.supply-products,
+.supply-products {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
 .supply-section {
   display: grid;
   gap: 8px;
@@ -2191,11 +2229,43 @@ a.address-source:hover {
   background: var(--card);
 }
 
+/*
+ * The merchant column holds its position; only the product list scrolls. The
+ * list still gets `overflow-y: auto` as a fallback, but it is never given a
+ * fixed max-height, so it uses the whole column before it ever scrolls.
+ */
 .supply-merchant-list {
   display: grid;
+  align-content: start;
   gap: 2px;
-  max-height: min(420px, 44vh);
+  min-height: 0;
   overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.supply-products-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.supply-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 0 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.supply-more-end {
+  margin: 0;
+  padding: 12px 0 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-align: center;
 }
 
 .supply-merchant {
@@ -3303,6 +3373,297 @@ a.address-source:hover {
   }
 
   .ai-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- Vinted 商品监控 ---- */
+
+.vinted-viewport {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.vinted-shell {
+  flex: 1;
+  gap: 0;
+  min-height: 0;
+  padding-block: 0;
+}
+
+.vinted-shell-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.vinted-shell-head .page-description {
+  margin-top: 2px;
+}
+
+.vinted-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.vinted-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 16px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.vinted-body > * {
+  flex: none;
+}
+
+.vinted-skeleton {
+  display: grid;
+  gap: 8px;
+}
+
+.vinted-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.vinted-table-scroll [data-slot='table'] {
+  min-width: 900px;
+}
+
+.vinted-table-scroll [data-slot='table-head'] {
+  height: 36px;
+  padding-inline: 12px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.vinted-table-scroll [data-slot='table-cell'] {
+  padding: 8px 12px;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.vinted-col-kind,
+.vinted-col-small {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.vinted-col-actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.vinted-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+/* Timestamps in the table are short; letting them wrap only squeezes the
+   neighbouring URL column for no gain. */
+.vinted-table-scroll [data-slot='table-cell'] .vinted-muted {
+  white-space: nowrap;
+}
+
+.vinted-url {
+  display: block;
+  max-width: 320px;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vinted-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.vinted-muted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.vinted-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: 11px;
+}
+
+.vinted-inline-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.vinted-form {
+  display: grid;
+  gap: 14px;
+}
+
+.vinted-form-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vinted-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.vinted-switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.vinted-switch-row label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.vinted-switch-row p {
+  margin: 2px 0 0;
+}
+
+.vinted-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vinted-search input {
+  flex: 1;
+}
+
+.vinted-run-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vinted-run {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.vinted-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vinted-run-time {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.vinted-run-summary {
+  margin: 0;
+  font-size: 12px;
+}
+
+.vinted-items {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.vinted-item {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.vinted-item-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 4 / 5;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+.vinted-item-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vinted-item-body {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px 10px;
+}
+
+.vinted-item-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.vinted-item-price {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.vinted-item-body .vinted-muted {
+  font-size: 10px;
+}
+
+@media (max-width: 1000px) {
+  .vinted-form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
