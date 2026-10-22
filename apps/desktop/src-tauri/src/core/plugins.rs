@@ -73,5 +73,6 @@ pub trait ProxyProviderPort {
         &self,
         plugin_id: &str,
         window_id: &str,
+        endpoint_id: Option<i64>,
     ) -> impl Future<Output = Result<ProxyReference, PluginError>> + Send;
 }

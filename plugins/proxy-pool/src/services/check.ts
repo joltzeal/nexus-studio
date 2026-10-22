@@ -1,4 +1,4 @@
-import { buildRedactedUrl } from '../domain/credentials.js'
+import { buildRedactedUrl, parseProxyUrl } from '../domain/credentials.js'
 import { invalidRequest } from '../domain/errors.js'
 import type {
   CheckInput,
@@ -81,33 +81,46 @@ export async function performCheck(
       : input.scheme
   const scheme = chooseScheme(row, preferred)
   const password = row.secretRef === null ? '' : await deps.vault.resolve(row.secretRef)
-  const checkedAt = deps.now()
+  const measured = await measureTarget(
+    {
+      scheme,
+      host: row.host,
+      port: row.port,
+      username: row.username,
+      password,
+    },
+    deps,
+    deps.now(),
+  )
+  return { id: String(row.id), saved: false, ...measured }
+}
+
+/**
+ * The network half of a check: exit IP, then geo and reputation for that IP.
+ * Both `proxy.check` and `proxy.probe` go through it, so a window gate and the
+ * pool table can never disagree about what "available" means.
+ */
+export async function measureTarget(
+  target: ProxyTarget,
+  deps: Pick<CheckDependencies, 'transport' | 'reputation'>,
+  checkedAt: Date,
+): Promise<Omit<CheckResult, 'id' | 'saved'>> {
   const started = performance.now()
-  const result: CheckResult = {
-    id: String(row.id),
+  const result: Omit<CheckResult, 'id' | 'saved'> = {
     ok: false,
-    scheme,
+    scheme: target.scheme,
     exitIp: null,
     geo: null,
     reputation: null,
     latencyMs: 0,
     error: null,
     checkedAt: checkedAt.toISOString(),
-    saved: false,
   }
 
   try {
-    const response = await deps.transport(
-      {
-        scheme,
-        host: row.host,
-        port: row.port,
-        username: row.username,
-        password,
-      },
-      EXIT_IP_URL,
-      { timeoutMs: REQUEST_TIMEOUT_MS },
-    )
+    const response = await deps.transport(target, EXIT_IP_URL, {
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    })
     if (response.status === 407) {
       result.error = '代理认证失败（HTTP 407）'
     } else if (response.status !== 200) {
@@ -134,6 +147,29 @@ export async function performCheck(
     result.geo = reputation.geo ?? unavailableGeo(reputation)
   }
   return result
+}
+
+/**
+ * Checks a proxy URL the user typed but has not saved. Nothing is written to
+ * the pool: this answers "does it work right now", not "add it".
+ */
+export async function probeProxy(
+  url: string,
+  deps: Pick<CheckDependencies, 'transport' | 'reputation' | 'now'>,
+): Promise<CheckResult> {
+  const parsed = parseProxyUrl(url)
+  const measured = await measureTarget(
+    {
+      scheme: parsed.scheme,
+      host: parsed.host,
+      port: parsed.port,
+      username: parsed.username,
+      password: parsed.password,
+    },
+    deps,
+    deps.now(),
+  )
+  return { id: '', saved: false, ...measured }
 }
 
 interface Snapshot {

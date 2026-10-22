@@ -12,7 +12,9 @@ import {
   ListInputSchema,
   ProxyGroupInputSchema,
   ProxyInputSchema,
+  ProbeInputSchema,
   ProxyUrlInputSchema,
+  ResolveInputSchema,
   SelectionInputSchema,
   SubscriptionInputSchema,
   SubscriptionTokenInputSchema,
@@ -27,6 +29,7 @@ import {
   checkEndpoint,
   chooseScheme,
   describeTarget,
+  probeProxy,
   type CheckDependencies,
 } from '../services/check.js'
 import { createGroup, listGroups, requireGroup } from '../services/groups.js'
@@ -63,6 +66,7 @@ export const PROXY_METHODS = [
   'proxy.import',
   'proxy.strategy.decodo',
   'proxy.check',
+  'proxy.probe',
   'proxy.exportUrls',
   'proxy.resolve',
   'proxy.describe',
@@ -119,15 +123,34 @@ export class ProxyPool implements ProxyProvider {
 
   /** ProxyProvider contract: the selected endpoint, never a silent direct connection. */
   async resolve(): Promise<ProxyResolution | null> {
+    return this.resolveEndpoint(null)
+  }
+
+  /**
+   * `endpointId` pins one row of the pool to a window. Without it the window
+   * follows the plugin's default endpoint, which is what an older window
+   * record implies.
+   */
+  private async resolveEndpoint(
+    endpointId: number | null,
+  ): Promise<ProxyResolution | null> {
     const document = await this.store.read()
-    const id = document.config.defaultEndpointId
+    const id = endpointId ?? document.config.defaultEndpointId
     if (id === null) return null
     const row = document.endpoints.find((entry) => entry.id === id && !entry.deleted)
     if (row === undefined) {
-      throw notConfigured('默认代理已被删除，请在插件配置中重新选择')
+      throw notConfigured(
+        endpointId === null
+          ? '默认代理已被删除，请在插件配置中重新选择'
+          : '窗口指定的代理已被删除，请重新选择',
+      )
     }
     if (!row.enabled) {
-      throw notConfigured('默认代理已停用，窗口启动被阻断')
+      throw notConfigured(
+        endpointId === null
+          ? '默认代理已停用，窗口启动被阻断'
+          : '窗口指定的代理已停用，窗口启动被阻断',
+      )
     }
     return {
       configHandle: handleFor(row),
@@ -165,10 +188,18 @@ export class ProxyPool implements ProxyProvider {
         return this.decodo(payload)
       case 'proxy.check':
         return this.check(payload, context)
+      case 'proxy.probe':
+        return this.probe(payload)
       case 'proxy.exportUrls':
         return this.exportUrls(payload)
       case 'proxy.resolve': {
-        const resolution = await this.resolve()
+        // A window may pin one endpoint; otherwise the default applies.
+        const { endpointId } = parseOrThrow(
+          ResolveInputSchema,
+          payload ?? {},
+          '代理解析参数',
+        )
+        const resolution = await this.resolveEndpoint(endpointId)
         return resolution === null
           ? { configured: false, configHandle: null, secretRef: null }
           : { configured: true, ...resolution }
@@ -344,6 +375,12 @@ export class ProxyPool implements ProxyProvider {
       { ...this.checkDeps, vault: this.vault },
       { assertAlive: context.assertAlive },
     )
+  }
+
+  /** Same measurement as `proxy.check`, for a URL that is not in the pool. */
+  private async probe(payload: unknown): Promise<unknown> {
+    const input = parseOrThrow(ProbeInputSchema, payload, '代理地址')
+    return probeProxy(input.url, { ...this.checkDeps, now: this.now })
   }
 
   private async exportUrls(payload: unknown): Promise<unknown> {

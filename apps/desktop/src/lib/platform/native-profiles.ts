@@ -6,9 +6,15 @@ export interface NativeProfile {
   version: string
   proxy: string | null
   proxyPlugin: string | null
+  /** One row of the proxy plugin's inventory; null follows its default. */
+  proxyEndpoint: number | null
   running: boolean
   groupId: string | null
   settings: WindowSettings
+  /** Unix seconds; 0 for records written before the field existed. */
+  createdAt: number
+  /** Unix seconds of the last successful launch, or null when never opened. */
+  lastOpenedAt: number | null
 }
 
 export interface WindowSettings {
@@ -34,6 +40,7 @@ export function createNativeProfile(
   name: string,
   proxy: string | null,
   proxyPlugin: string | null,
+  proxyEndpoint: number | null,
   settings: WindowSettings,
   browserVersion?: string,
   groupId?: string | null,
@@ -42,6 +49,7 @@ export function createNativeProfile(
     name,
     proxy,
     proxyPlugin,
+    proxyEndpoint,
     settings,
     browserVersion: browserVersion ?? null,
     groupId: groupId ?? null,
@@ -53,6 +61,7 @@ export function updateNativeProfile(
   name: string,
   proxy: string | null,
   proxyPlugin: string | null,
+  proxyEndpoint: number | null,
   settings: WindowSettings,
   groupId?: string | null,
 ): Promise<void> {
@@ -61,6 +70,7 @@ export function updateNativeProfile(
     name,
     proxy,
     proxyPlugin,
+    proxyEndpoint,
     settings,
     groupId: groupId ?? null,
   })

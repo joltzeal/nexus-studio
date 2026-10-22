@@ -1,7 +1,7 @@
 use super::license_store::LicenseStore;
 use super::plugin_host::PluginHost;
 use super::profile_store::{
-    PreparedBinary, ProfileRecord, ProfileStore, StoreError, WindowSettings,
+    PreparedBinary, ProfileRecord, ProfileStore, ProxySource, StoreError, WindowSettings,
 };
 use super::runtime_paths::RuntimePaths;
 use super::scheduler::{
@@ -45,9 +45,13 @@ pub struct ProfileSummary {
     version: String,
     proxy: Option<String>,
     proxy_plugin: Option<String>,
+    proxy_endpoint: Option<i64>,
     running: bool,
     settings: WindowSettings,
     group_id: Option<String>,
+    /// Unix seconds; 0 for records written before the field existed.
+    created_at: i64,
+    last_opened_at: Option<i64>,
 }
 
 fn channel(record: &ProfileRecord) -> EngineChannel {
@@ -190,7 +194,10 @@ impl ProfileService {
                     version: record.binding.channel_version,
                     proxy: record.proxy,
                     proxy_plugin: record.proxy_plugin,
+                    proxy_endpoint: record.proxy_endpoint,
                     settings: record.settings,
+                    created_at: record.created_at,
+                    last_opened_at: record.last_opened_at,
                 })
             })
             .collect::<Result<Vec<_>, String>>()
@@ -199,8 +206,7 @@ impl ProfileService {
     pub fn create(
         &self,
         name: String,
-        proxy: Option<String>,
-        proxy_plugin: Option<String>,
+        proxy: ProxySource,
         settings: WindowSettings,
         browser_version: Option<String>,
         group_id: Option<String>,
@@ -251,28 +257,20 @@ impl ProfileService {
             .ok_or("无法识别 CloakBrowser 内核信息")?;
         let binary: PreparedBinary =
             serde_json::from_slice(line).map_err(|_| "无法识别 CloakBrowser 内核信息")?;
-        self.create_prepared(
-            &name,
-            proxy,
-            proxy_plugin,
-            settings,
-            binary,
-            group_id.as_deref(),
-        )
+        self.create_prepared(&name, proxy, settings, binary, group_id.as_deref())
     }
 
     fn create_prepared(
         &self,
         name: &str,
-        proxy: Option<String>,
-        proxy_plugin: Option<String>,
+        proxy: ProxySource,
         settings: WindowSettings,
         binary: PreparedBinary,
         group_id: Option<&str>,
     ) -> Result<ProfileSummary, String> {
         let record = self
             .store
-            .create_with_group(name, proxy, proxy_plugin, settings, binary, group_id)
+            .create_with_group(name, proxy, settings, binary, group_id)
             .map_err(error_message)?;
         let mut state = self.state.lock().map_err(|_| "Profile 状态不可用")?;
         let _ = state.scheduler.register_channel(channel(&record));
@@ -286,9 +284,12 @@ impl ProfileService {
             version: record.binding.channel_version,
             proxy: record.proxy,
             proxy_plugin: record.proxy_plugin,
+            proxy_endpoint: record.proxy_endpoint,
             running: false,
             settings: record.settings,
             group_id: group_id.map(str::to_owned),
+            created_at: record.created_at,
+            last_opened_at: record.last_opened_at,
         })
     }
 
@@ -296,8 +297,7 @@ impl ProfileService {
         &self,
         id: &str,
         name: String,
-        proxy: Option<String>,
-        proxy_plugin: Option<String>,
+        proxy: ProxySource,
         settings: WindowSettings,
         group_id: Option<String>,
     ) -> Result<(), String> {
@@ -307,14 +307,7 @@ impl ProfileService {
             return Err("请先停止窗口，再修改浏览器配置".into());
         }
         self.store
-            .update_with_group(
-                id,
-                &name,
-                proxy,
-                proxy_plugin,
-                settings,
-                group_id.as_deref(),
-            )
+            .update_with_group(id, &name, proxy, settings, group_id.as_deref())
             .map_err(error_message)?;
         Ok(())
     }
@@ -344,7 +337,7 @@ impl ProfileService {
                     .as_ref()
                     .ok_or_else(|| "代理插件宿主未初始化，窗口启动被阻断".to_string())?;
                 let reference = host
-                    .resolve_proxy(plugin_id, &record.id)
+                    .resolve_proxy(plugin_id, &record.id, record.proxy_endpoint)
                     .map_err(|error| format!("代理插件未提供可用代理：{}", error.message()))?;
                 ProxyBinding::Required {
                     plugin_id: plugin_id.clone(),
@@ -385,6 +378,10 @@ impl ProfileService {
                         stop_requested: false,
                     },
                 );
+                drop(state);
+                // Display data only: a failed timestamp write must not undo a
+                // window that is already up.
+                let _ = self.store.mark_opened(id);
                 Ok(())
             }
             Err(error) => {
@@ -577,12 +574,16 @@ pub fn profile_list(state: State<'_, Arc<ProfileService>>) -> Result<Vec<Profile
     state.list()
 }
 
+/// A Tauri command receives flat arguments; the three proxy fields are folded
+/// into one `ProxySource` before they reach the store.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn profile_create(
     state: State<'_, Arc<ProfileService>>,
     name: String,
     proxy: Option<String>,
     proxy_plugin: Option<String>,
+    proxy_endpoint: Option<i64>,
     settings: WindowSettings,
     browser_version: Option<String>,
     group_id: Option<String>,
@@ -591,8 +592,11 @@ pub async fn profile_create(
     tauri::async_runtime::spawn_blocking(move || {
         state.create(
             name,
-            proxy,
-            proxy_plugin,
+            ProxySource {
+                server: proxy,
+                plugin: proxy_plugin,
+                endpoint: proxy_endpoint,
+            },
             settings,
             browser_version,
             group_id,
@@ -602,6 +606,7 @@ pub async fn profile_create(
     .map_err(|_| "Profile 创建任务中断".to_string())?
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn profile_update(
     state: State<'_, Arc<ProfileService>>,
@@ -609,12 +614,23 @@ pub async fn profile_update(
     name: String,
     proxy: Option<String>,
     proxy_plugin: Option<String>,
+    proxy_endpoint: Option<i64>,
     settings: WindowSettings,
     group_id: Option<String>,
 ) -> Result<(), String> {
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        state.update(&id, name, proxy, proxy_plugin, settings, group_id)
+        state.update(
+            &id,
+            name,
+            ProxySource {
+                server: proxy,
+                plugin: proxy_plugin,
+                endpoint: proxy_endpoint,
+            },
+            settings,
+            group_id,
+        )
     })
     .await
     .map_err(|_| "窗口修改任务中断".to_string())?
@@ -653,7 +669,7 @@ pub async fn profile_stop(state: State<'_, Arc<ProfileService>>, id: String) -> 
 #[cfg(test)]
 mod tests {
     use super::ProfileService;
-    use crate::core::profile_store::{PreparedBinary, WindowSettings};
+    use crate::core::profile_store::{PreparedBinary, ProxySource, WindowSettings};
     use std::process::Command;
     use std::time::{Duration, Instant};
 
@@ -676,8 +692,7 @@ mod tests {
         let created = service
             .create_prepared(
                 "New window",
-                None,
-                None,
+                ProxySource::direct(),
                 WindowSettings::default(),
                 PreparedBinary {
                     version: "145.0.7632.109".into(),
@@ -700,8 +715,7 @@ mod tests {
         service
             .create(
                 "Smoke Profile".into(),
-                None,
-                None,
+                ProxySource::direct(),
                 WindowSettings::default(),
                 None,
                 None,

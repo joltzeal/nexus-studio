@@ -142,6 +142,20 @@ export const CheckInputSchema = z.strictObject({
 })
 export type CheckInput = z.infer<typeof CheckInputSchema>
 
+/**
+ * Ad-hoc check for a proxy the user typed but has not saved. It runs the same
+ * exit-IP and reputation path as `proxy.check`, minus the persistence.
+ */
+export const ProbeInputSchema = z.strictObject({
+  url: z.string().trim().min(1).max(4096),
+})
+export type ProbeInput = z.infer<typeof ProbeInputSchema>
+
+export const ResolveInputSchema = z.strictObject({
+  endpointId: z.number().int().min(1).nullable().default(null),
+})
+export type ResolveInput = z.infer<typeof ResolveInputSchema>
+
 export const SubscriptionInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(128),
   enabled: z.boolean().default(true),

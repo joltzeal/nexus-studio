@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import {
   AlertCircle,
   Blocks,
+  ChevronDown,
   ChevronRight,
   Folders,
   LayoutGrid,
@@ -38,8 +39,30 @@ const SettingsPage = lazy(() =>
   })),
 )
 
+/**
+ * Plugin pages are not top-level destinations: they sit under 插件中心 the same
+ * way an installed extension sits inside its manager.
+ */
+const PLUGIN_PAGES = [
+  { value: 'proxy', label: '代理池', icon: Network },
+  { value: 'addresses', label: '地址生成器', icon: MapPinned },
+  { value: 'supply', label: '共享货源', icon: ShoppingBag },
+  { value: 'ai-image', label: 'AI 生图', icon: Sparkles },
+  { value: 'accounts', label: 'Vinted 账号', icon: Users },
+  { value: 'vinted', label: 'Vinted 监控', icon: Radar },
+] as const
+
+const PAGE_LABELS: Record<string, string> = {
+  spaces: '窗口管理',
+  groups: '分组管理',
+  plugins: '插件中心',
+  settings: '应用设置',
+  ...Object.fromEntries(PLUGIN_PAGES.map((page) => [page.value, page.label])),
+}
+
 export function AppShell() {
   const [page, setPage] = useState('spaces')
+  const [pluginsOpen, setPluginsOpen] = useState(true)
   const {
     loading,
     loadError,
@@ -52,11 +75,19 @@ export function AppShell() {
   } = usePreferences()
   const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark'
   const themeAction = nextTheme === 'dark' ? '切换为深色' : '切换为浅色'
+  const pluginPage = PLUGIN_PAGES.find((entry) => entry.value === page) ?? null
+
+  function openPage(value: string) {
+    setPage(value)
+    if (value === 'plugins' || PLUGIN_PAGES.some((entry) => entry.value === value)) {
+      setPluginsOpen(true)
+    }
+  }
 
   return (
     <Tabs
       value={page}
-      onValueChange={setPage}
+      onValueChange={openPage}
       orientation="vertical"
       className="app-shell"
     >
@@ -77,7 +108,7 @@ export function AppShell() {
           </div>
         </div>
         <span className="nav-caption">工作区</span>
-        <TabsList variant="navigation" aria-label="主导航">
+        <TabsList variant="navigation" aria-label="主导航" className="sidebar-nav">
           <TabsTrigger value="spaces">
             <LayoutGrid />
             窗口管理
@@ -86,34 +117,40 @@ export function AppShell() {
             <Folders />
             分组管理
           </TabsTrigger>
-          <TabsTrigger value="plugins">
+          <TabsTrigger value="plugins" className="nav-group-trigger">
             <Blocks />
             插件中心
+            <span
+              className="nav-group-toggle"
+              role="presentation"
+              data-open={pluginsOpen ? 'true' : undefined}
+              onPointerDown={(event) => {
+                // Radix activates a tab on mousedown, so the fold has to be
+                // decided here: the row navigates, only the chevron folds.
+                event.preventDefault()
+                event.stopPropagation()
+                setPluginsOpen((open) => !open)
+              }}
+            >
+              <ChevronDown />
+            </span>
           </TabsTrigger>
-          <TabsTrigger value="proxy">
-            <Network />
-            代理池
-          </TabsTrigger>
-          <TabsTrigger value="addresses">
-            <MapPinned />
-            地址生成器
-          </TabsTrigger>
-          <TabsTrigger value="supply">
-            <ShoppingBag />
-            共享货源
-          </TabsTrigger>
-          <TabsTrigger value="ai-image">
-            <Sparkles />
-            AI 生图
-          </TabsTrigger>
-          <TabsTrigger value="accounts">
-            <Users />
-            Vinted 账号
-          </TabsTrigger>
-          <TabsTrigger value="vinted">
-            <Radar />
-            Vinted 监控
-          </TabsTrigger>
+          {pluginsOpen
+            ? PLUGIN_PAGES.map((entry) => {
+                const Icon = entry.icon
+                return (
+                  <TabsTrigger
+                    key={entry.value}
+                    value={entry.value}
+                    data-depth="sub"
+                    className="nav-sub-trigger"
+                  >
+                    <Icon />
+                    {entry.label}
+                  </TabsTrigger>
+                )
+              })
+            : null}
           <TabsTrigger value="settings">
             <Settings2 />
             应用设置
@@ -127,22 +164,15 @@ export function AppShell() {
         <div className="header-breadcrumb">
           <span>工作区</span>
           <ChevronRight />
-          <strong>
-            {
-              {
-                spaces: '窗口管理',
-                groups: '分组管理',
-                plugins: '插件中心',
-                proxy: '代理池',
-                addresses: '地址生成器',
-                supply: '共享货源',
-                'ai-image': 'AI 生图',
-                accounts: 'Vinted 账号',
-                vinted: 'Vinted 监控',
-                settings: '应用设置',
-              }[page]
-            }
-          </strong>
+          {pluginPage === null ? (
+            <strong>{PAGE_LABELS[page]}</strong>
+          ) : (
+            <>
+              <span>插件中心</span>
+              <ChevronRight />
+              <strong>{pluginPage.label}</strong>
+            </>
+          )}
         </div>
         <div className="header-actions">
           <Tooltip>

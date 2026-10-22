@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   ArrowUpRight,
   Check,
+  Dices,
   Ellipsis,
+  Loader2,
   Pencil,
   Play,
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Square,
   Trash2,
   Unlink,
@@ -96,6 +99,18 @@ import {
   type LicenseStatus,
 } from '@/lib/platform/native-license'
 import { DEFAULT_WINDOW_CONFIG, parseWindowConfig, type WindowConfig } from '@/demo/model'
+import { formatAbsolute, formatRelative, majorVersion } from '@/lib/format-time'
+import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
+import {
+  EMPTY_QUERY,
+  flagOf,
+  type CheckResult,
+  type ProxyRow,
+} from '@/features/proxy/types'
+import { listProxies } from '@/features/proxy/api'
+import { ProxyCheckSummary } from '@/features/proxy/proxy-check-summary'
+import { checkWindowProxy, hasProxy } from './window-proxy'
+import { ProxyGateDialog, type GateStage } from './proxy-gate'
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -103,6 +118,12 @@ function message(error: unknown): string {
     : error instanceof Error
       ? error.message
       : '操作失败，请重试。'
+}
+
+/** One launch in flight, either from the row button or from the gate dialog. */
+interface GateState {
+  window: NativeProfile
+  stage: GateStage
 }
 
 export function SpacesPage() {
@@ -118,10 +139,12 @@ export function SpacesPage() {
   const [operatingWindows, setOperatingWindows] = useState<Set<string>>(() => new Set())
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [accountHost, setAccountHost] = useState<PluginView | null>(null)
+  const [accountPlugin, setAccountPlugin] = useState<PluginView | null>(null)
   const [bindings, setBindings] = useState<BindingView[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [binding, setBinding] = useState<NativeProfile | null>(null)
+  const [gate, setGate] = useState<GateState | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const [conflict, setConflict] = useState<{
     window: NativeProfile
     accountId: string
@@ -201,7 +224,14 @@ export function SpacesPage() {
     }
   }, [native])
 
-  const accountsRunning = accountHost !== null && accountHost.state === 'running'
+  // Relative times ("3 分钟前") go stale while the page sits open.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const accountsInstalled = accountPlugin !== null && accountPlugin.state !== 'available'
+  const accountsRunning = accountsInstalled && accountPlugin.state === 'running'
 
   useEffect(() => {
     if (!native) return
@@ -209,11 +239,13 @@ export function SpacesPage() {
     void listPlugins().then(
       (catalog) => {
         if (active) {
-          setAccountHost(catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null)
+          setAccountPlugin(
+            catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null,
+          )
         }
       },
       () => {
-        // Without a catalog the account column simply stays empty.
+        // Without a catalog the account column simply stays hidden.
       },
     )
     return () => {
@@ -227,7 +259,9 @@ export function SpacesPage() {
     const timer = setInterval(() => {
       void listPlugins().then(
         (catalog) => {
-          setAccountHost(catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null)
+          setAccountPlugin(
+            catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null,
+          )
         },
         () => undefined,
       )
@@ -320,25 +354,76 @@ export function SpacesPage() {
     return accounts.find((entry) => entry.id === id)?.account ?? id
   }
 
-  async function operate(window: NativeProfile) {
+  async function withOperating<T>(
+    window: NativeProfile,
+    run: () => Promise<T>,
+  ): Promise<T> {
     setOperatingWindows((current) => new Set(current).add(window.id))
-    setError(null)
     try {
-      await operateNativeProfile(window.id, window.running)
-      await load()
-    } catch (cause) {
-      setError(message(cause))
-      try {
-        await load()
-      } catch {
-        // Keep the operation error visible; the user can refresh explicitly.
-      }
+      return await run()
     } finally {
       setOperatingWindows((current) => {
         const next = new Set(current)
         next.delete(window.id)
         return next
       })
+    }
+  }
+
+  async function stop(window: NativeProfile) {
+    setError(null)
+    try {
+      await withOperating(window, async () => {
+        await operateNativeProfile(window.id, true)
+        await load()
+      })
+    } catch (cause) {
+      setError(message(cause))
+      await load().catch(() => undefined)
+    }
+  }
+
+  /** Launches and records the outcome. Throws so callers can show it inline. */
+  async function launch(window: NativeProfile) {
+    await operateNativeProfile(window.id, false)
+    await load()
+  }
+
+  async function open(window: NativeProfile) {
+    if (!hasProxy(window)) {
+      setError(null)
+      try {
+        await withOperating(window, () => launch(window))
+      } catch (cause) {
+        setError(message(cause))
+        await load().catch(() => undefined)
+      }
+      return
+    }
+    // A proxy has to answer before the browser gets a slot.
+    setError(null)
+    setGate({ window, stage: { stage: 'checking' } })
+    const outcome = await checkWindowProxy(window)
+    if (outcome.kind === 'checked' && outcome.result.ok) {
+      await proceed(window, outcome)
+      return
+    }
+    setGate({ window, stage: { stage: 'blocked', outcome } })
+  }
+
+  async function proceed(
+    window: NativeProfile,
+    outcome: Extract<GateStage, { stage: 'launching' }>['outcome'] = null,
+  ) {
+    setGate({ window, stage: { stage: 'launching', outcome } })
+    try {
+      await withOperating(window, () => launch(window))
+      // Stay open: the exit IP the window actually used is worth reading.
+      setGate({ window, stage: { stage: 'launched', outcome } })
+      toast.success(`「${window.name}」已打开`)
+    } catch (cause) {
+      setGate({ window, stage: { stage: 'failed', error: message(cause) } })
+      await load().catch(() => undefined)
     }
   }
 
@@ -354,6 +439,11 @@ export function SpacesPage() {
   )
   const selected = windows.find((window) => window.id === viewing)
   const target = windows.find((window) => window.id === deleting)
+  const running = windows.filter((window) => window.running).length
+  const proxied = windows.filter((window) => hasProxy(window)).length
+  const bound = accountsInstalled
+    ? windows.filter((window) => bindingOf(window.id) !== null).length
+    : 0
 
   return (
     <section className="collection-page page-reveal" aria-labelledby="spaces-heading">
@@ -364,7 +454,7 @@ export function SpacesPage() {
           </h1>
           <p className="page-description">管理窗口配置与运行状态。</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="section-actions">
           <Button
             variant="outline"
             disabled={!native || refreshing}
@@ -394,13 +484,32 @@ export function SpacesPage() {
         </p>
       ) : null}
       {error ? <FieldError role="alert">{error}</FieldError> : null}
+
+      {native ? (
+        <div className="space-stats" aria-label="窗口概览">
+          <div className="space-stat">
+            <span>窗口</span>
+            <strong>{windows.length}</strong>
+          </div>
+          <div className="space-stat" data-tone="success">
+            <span>运行中</span>
+            <strong>{running}</strong>
+          </div>
+          <div className="space-stat" data-tone="info">
+            <span>已配代理</span>
+            <strong>{proxied}</strong>
+          </div>
+          {accountsInstalled ? (
+            <div className="space-stat" data-tone="warning">
+              <span>已关联账号</span>
+              <strong>{bound}</strong>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="collection-toolbar">
         <span className="result-count">{visible.length} 个窗口</span>
-        {native ? (
-          <span className="result-count">
-            {windows.filter((window) => window.running).length} 个运行中
-          </span>
-        ) : null}
         <div className="search-field">
           <Search aria-hidden="true" />
           <Input
@@ -427,6 +536,7 @@ export function SpacesPage() {
           </Select>
         ) : null}
       </div>
+
       <div className="space-table-panel">
         <div className="panel-heading">
           <h2>全部窗口</h2>
@@ -437,54 +547,99 @@ export function SpacesPage() {
             <TableRow>
               <TableHead>窗口名称</TableHead>
               <TableHead>平台</TableHead>
-              <TableHead>Vinted 账号</TableHead>
+              {accountsInstalled ? <TableHead>Vinted 账号</TableHead> : null}
               <TableHead>分组</TableHead>
-              <TableHead>内核版本</TableHead>
+              <TableHead>内核</TableHead>
               <TableHead>代理</TableHead>
+              <TableHead>创建时间</TableHead>
+              <TableHead>上次打开</TableHead>
               <TableHead>状态</TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {visible.map((window) => {
-              const bound = bindingOf(window.id)
+              const account = bindingOf(window.id)
+              const busy = operatingWindows.has(window.id)
               return (
-                <TableRow key={window.id}>
+                <TableRow
+                  key={window.id}
+                  data-running={window.running ? 'true' : undefined}
+                >
                   <TableCell>
-                    <strong>{window.name}</strong>
-                    <small className="block text-muted-foreground">
-                      {window.settings.note}
-                    </small>
-                  </TableCell>
-                  <TableCell>{window.settings.platform}</TableCell>
-                  <TableCell>
-                    {bound === null ? (
-                      <span className="text-muted-foreground">未关联</span>
-                    ) : (
-                      <span className="account-cell">
-                        <strong>{bound.account?.account ?? '账号已删除'}</strong>
-                        <small className="block text-muted-foreground">
-                          {bound.account ? STATUS_LABELS[bound.account.status] : ''}
-                        </small>
+                    <div className="space-name-cell">
+                      <span
+                        className="space-avatar"
+                        data-tone={window.running ? 'blue' : undefined}
+                        aria-hidden="true"
+                      >
+                        {window.name.slice(0, 1).toUpperCase()}
                       </span>
-                    )}
+                      <div>
+                        <strong>{window.name}</strong>
+                        <small>{window.settings.note || '无备注'}</small>
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell>
-                    {groups.find((group) => group.id === window.groupId)?.name ??
-                      '未分组'}
+                    <Badge variant="outline">{window.settings.platform}</Badge>
                   </TableCell>
-                  <TableCell>{window.version}</TableCell>
-                  <TableCell>{window.proxy ?? '直连'}</TableCell>
-                  <TableCell>{window.running ? '运行中' : '已停止'}</TableCell>
+                  {accountsInstalled ? (
+                    <TableCell>
+                      {account === null ? (
+                        <span className="table-muted">未关联</span>
+                      ) : (
+                        <span className="account-cell">
+                          <strong>{account.account?.account ?? '账号已删除'}</strong>
+                          <small>
+                            {account.account ? STATUS_LABELS[account.account.status] : ''}
+                          </small>
+                        </span>
+                      )}
+                    </TableCell>
+                  ) : null}
+                  <TableCell>
+                    <span className="table-group">
+                      {groups.find((group) => group.id === window.groupId)?.name ??
+                        '未分组'}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <span className="kernel-version" title={window.version}>
+                      {majorVersion(window.version)}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <ProxyCell window={window} />
+                  </TableCell>
+                  <TableCell>
+                    <TimeCell at={window.createdAt} now={now} fallback="—" />
+                  </TableCell>
+                  <TableCell>
+                    <TimeCell at={window.lastOpenedAt} now={now} fallback="从未打开" />
+                  </TableCell>
+                  <TableCell>
+                    <span
+                      className="status-badge"
+                      data-state={window.running ? 'running' : 'stopped'}
+                    >
+                      <span className="status-dot" aria-hidden="true" />
+                      {window.running ? '运行中' : '已停止'}
+                    </span>
+                  </TableCell>
                   <TableCell>
                     <div className="table-actions">
                       <Button
                         variant={window.running ? 'outline' : 'default'}
                         size="sm"
-                        disabled={operatingWindows.has(window.id)}
-                        onClick={() => void operate(window)}
+                        disabled={busy}
+                        onClick={() =>
+                          void (window.running ? stop(window) : open(window))
+                        }
                       >
-                        {window.running ? (
+                        {busy ? (
+                          <Loader2 data-icon="inline-start" className="animate-spin" />
+                        ) : window.running ? (
                           <Square data-icon="inline-start" />
                         ) : (
                           <Play data-icon="inline-start" />
@@ -495,63 +650,66 @@ export function SpacesPage() {
                         variant="ghost"
                         size="icon"
                         aria-label={`编辑 ${window.name}`}
-                        disabled={window.running || operatingWindows.has(window.id)}
+                        disabled={window.running || busy}
                         onClick={() => setEditing(window.id)}
                       >
                         <Pencil />
                       </Button>
                       <Button
-                        variant="outline"
-                        size="sm"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`查看 ${window.name} 详情`}
                         onClick={() => setViewing(window.id)}
                       >
-                        详情 <ArrowUpRight data-icon="inline-end" />
+                        <ArrowUpRight />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
                         aria-label={`删除 ${window.name}`}
-                        disabled={window.running || operatingWindows.has(window.id)}
+                        disabled={window.running || busy}
                         onClick={() => setDeleting(window.id)}
                       >
                         <Trash2 />
                       </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`更多操作 ${window.name}`}
-                          >
-                            <Ellipsis />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              setBindingError(null)
-                              setBinding(window)
-                            }}
-                          >
-                            <UserRound />
-                            {bound === null ? '关联账号' : '更换账号'}
-                          </DropdownMenuItem>
-                          {bound === null ? null : (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                variant="destructive"
-                                disabled={bindingPending}
-                                onSelect={() => void bind(window, null)}
-                              >
-                                <Unlink />
-                                解除关联
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      {accountsInstalled ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`更多操作 ${window.name}`}
+                            >
+                              <Ellipsis />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
+                            <DropdownMenuItem
+                              onSelect={() => {
+                                setBindingError(null)
+                                setBinding(window)
+                              }}
+                            >
+                              <UserRound />
+                              {account === null ? '关联账号' : '更换账号'}
+                            </DropdownMenuItem>
+                            {account === null ? null : (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  disabled={bindingPending}
+                                  onSelect={() => void bind(window, null)}
+                                >
+                                  <Unlink />
+                                  解除关联
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : null}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -572,6 +730,7 @@ export function SpacesPage() {
           </Empty>
         ) : null}
       </div>
+
       <Dialog
         open={editing !== null}
         onOpenChange={(open) => {
@@ -587,10 +746,12 @@ export function SpacesPage() {
                 : (windows.find((item) => item.id === editing) ?? null)
             }
             groups={groups}
+            takenNames={windows.map((item) => item.name)}
             onSave={async (
               name,
               proxy,
               proxyPlugin,
+              proxyEndpoint,
               settings,
               browserVersion,
               groupId,
@@ -600,6 +761,7 @@ export function SpacesPage() {
                   name,
                   proxy,
                   proxyPlugin,
+                  proxyEndpoint,
                   settings,
                   browserVersion,
                   groupId,
@@ -611,6 +773,7 @@ export function SpacesPage() {
                   name,
                   proxy,
                   proxyPlugin,
+                  proxyEndpoint,
                   settings,
                   groupId,
                 )
@@ -625,6 +788,7 @@ export function SpacesPage() {
           />
         ) : null}
       </Dialog>
+
       <Dialog
         open={!!selected}
         onOpenChange={(open) => {
@@ -636,7 +800,7 @@ export function SpacesPage() {
             <DialogHeader>
               <DialogTitle>{selected.name}</DialogTitle>
               <DialogDescription>
-                独立浏览器环境 · 内核 {selected.version}
+                独立浏览器环境 · 内核 {majorVersion(selected.version)}
               </DialogDescription>
             </DialogHeader>
             <dl className="about-details">
@@ -644,10 +808,12 @@ export function SpacesPage() {
                 <dt>平台</dt>
                 <dd>{selected.settings.platform}</dd>
               </div>
-              <div className="about-row">
-                <dt>Vinted 账号</dt>
-                <dd>{bindingOf(selected.id)?.account?.account ?? '未关联'}</dd>
-              </div>
+              {accountsInstalled ? (
+                <div className="about-row">
+                  <dt>Vinted 账号</dt>
+                  <dd>{bindingOf(selected.id)?.account?.account ?? '未关联'}</dd>
+                </div>
+              ) : null}
               <div className="about-row">
                 <dt>分组</dt>
                 <dd>
@@ -661,7 +827,11 @@ export function SpacesPage() {
               </div>
               <div className="about-row">
                 <dt>代理</dt>
-                <dd>{selected.proxy ?? '直连'}</dd>
+                <dd>
+                  {selected.proxyPlugin
+                    ? `代理池${selected.proxyEndpoint === null ? '（默认代理）' : ` · #${selected.proxyEndpoint}`}`
+                    : (selected.proxy ?? '直连')}
+                </dd>
               </div>
               <div className="about-row">
                 <dt>GeoIP</dt>
@@ -686,6 +856,24 @@ export function SpacesPage() {
                 <dt>起始地址</dt>
                 <dd>{selected.settings.startUrl || '未设置'}</dd>
               </div>
+              <div className="about-row">
+                <dt>创建时间</dt>
+                <dd>
+                  {formatAbsolute(selected.createdAt)} ·{' '}
+                  {formatRelative(selected.createdAt, now)}
+                </dd>
+              </div>
+              <div className="about-row">
+                <dt>上次打开</dt>
+                <dd>
+                  {selected.lastOpenedAt === null
+                    ? '从未打开'
+                    : `${formatAbsolute(selected.lastOpenedAt)} · ${formatRelative(
+                        selected.lastOpenedAt,
+                        now,
+                      )}`}
+                </dd>
+              </div>
             </dl>
             <DialogFooter>
               <Button onClick={() => setViewing(null)}>关闭</Button>
@@ -693,6 +881,7 @@ export function SpacesPage() {
           </DialogContent>
         ) : null}
       </Dialog>
+
       <AlertDialog
         open={!!target}
         onOpenChange={(open) => {
@@ -725,6 +914,28 @@ export function SpacesPage() {
           </AlertDialogContent>
         ) : null}
       </AlertDialog>
+
+      <Dialog
+        open={gate !== null}
+        onOpenChange={(open) => {
+          // Only the footer buttons decide; a stray click must not orphan a launch.
+          if (!open && gate?.stage.stage === 'blocked') setGate(null)
+        }}
+      >
+        {gate === null ? null : (
+          <ProxyGateDialog
+            name={gate.window.name}
+            stage={gate.stage}
+            onCancel={() => setGate(null)}
+            onProceed={() =>
+              void proceed(
+                gate.window,
+                gate.stage.stage === 'launching' ? gate.stage.outcome : null,
+              )
+            }
+          />
+        )}
+      </Dialog>
 
       <Dialog
         open={binding !== null}
@@ -781,6 +992,49 @@ export function SpacesPage() {
   )
 }
 
+function ProxyCell({ window }: { window: NativeProfile }) {
+  if (window.proxyPlugin !== null) {
+    return (
+      <span className="proxy-cell">
+        <Badge variant="secondary">代理池</Badge>
+        <small>
+          {window.proxyEndpoint === null ? '默认代理' : `#${window.proxyEndpoint}`}
+        </small>
+      </span>
+    )
+  }
+  if (window.proxy !== null) {
+    return (
+      <span className="proxy-cell">
+        <span className="proxy-address" title={window.proxy}>
+          {window.proxy}
+        </span>
+      </span>
+    )
+  }
+  return <span className="table-muted">直连</span>
+}
+
+function TimeCell({
+  at,
+  now,
+  fallback,
+}: {
+  at: number | null
+  now: number
+  fallback: string
+}) {
+  if (at === null || at <= 0) {
+    return <span className="table-muted">{fallback}</span>
+  }
+  return (
+    <span className="time-cell">
+      <strong>{formatAbsolute(at, now)}</strong>
+      <small>{formatRelative(at, now)}</small>
+    </span>
+  )
+}
+
 function AccountBindDialog({
   window,
   ready,
@@ -828,7 +1082,7 @@ function AccountBindDialog({
           </p>
         ) : accounts.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            还没有账号。先到「Vinted 账号」页新增或导入。
+            还没有账号。先到「插件中心 → Vinted 账号」新增或导入。
           </p>
         ) : (
           <div className="account-picker" role="listbox" aria-label="可关联账号">
@@ -880,17 +1134,20 @@ function AccountBindDialog({
 function WindowEditor({
   window,
   groups,
+  takenNames,
   canPinBrowserVersion: canPinVersion,
   onSave,
   onCancel,
 }: {
   window: NativeProfile | null
   groups: WindowGroup[]
+  takenNames: string[]
   canPinBrowserVersion: boolean
   onSave: (
     name: string,
     proxy: string | null,
     proxyPlugin: string | null,
+    proxyEndpoint: number | null,
     settings: WindowSettings,
     browserVersion?: string,
     groupId?: string | null,
@@ -920,7 +1177,15 @@ function WindowEditor({
   const [proxyPlugin, setProxyPlugin] = useState<string | null>(
     window?.proxyPlugin ?? null,
   )
+  const [endpointId, setEndpointId] = useState<number | null>(
+    window?.proxyEndpoint ?? null,
+  )
   const [providers, setProviders] = useState<PluginView[]>([])
+  const [proxies, setProxies] = useState<ProxyRow[] | null>(null)
+  const [proxyQuery, setProxyQuery] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
+  const [checkNote, setCheckNote] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -941,15 +1206,62 @@ function WindowEditor({
       active = false
     }
   }, [])
+
+  // The picker reads the pool itself: a window pins one row, not the default.
+  useEffect(() => {
+    if (proxySource !== 'plugin' || providers.length === 0) return
+    let active = true
+    void listProxies({ ...EMPTY_QUERY, limit: 500 }).then(
+      (result) => {
+        if (active) setProxies(result.items)
+      },
+      () => {
+        if (active) setProxies([])
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [proxySource, providers.length])
+
   function patch(changes: Partial<WindowConfig>) {
     setConfig((current) => ({ ...current, ...changes }))
     setError(null)
   }
 
+  const visibleProxies = useMemo(() => {
+    if (proxies === null) return []
+    const keyword = proxyQuery.trim().toLowerCase()
+    if (keyword === '') return proxies
+    return proxies.filter((row) =>
+      `${row.name} ${row.host}:${row.port}`.toLowerCase().includes(keyword),
+    )
+  }, [proxies, proxyQuery])
+
+  async function runCheck() {
+    setChecking(true)
+    setCheckResult(null)
+    setCheckNote(null)
+    const outcome = await checkWindowProxy(
+      proxySource === 'manual'
+        ? { proxy: config.proxy.server.trim(), proxyPlugin: null, proxyEndpoint: null }
+        : { proxy: null, proxyPlugin, proxyEndpoint: endpointId },
+    )
+    if (outcome.kind === 'checked') {
+      setCheckResult(outcome.result)
+      if (outcome.result.ok) toast.success('代理可用')
+      else toast.error(outcome.result.error ?? '代理不可用')
+    } else {
+      setCheckNote(outcome.reason)
+      toast.error(outcome.reason)
+    }
+    setChecking(false)
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!name.trim() || name.trim().length > 40 || note.trim().length > 120) {
-      setError('窗口名称需要包含 1 至 40 个字符，备注最多 120 个字符。')
+    if (name.trim().length > 40 || note.trim().length > 120) {
+      setError('窗口名称最多 40 个字符，备注最多 120 个字符。')
       return
     }
     if (browserVersion.trim() && !/^\d+(?:\.\d+){3,4}$/.test(browserVersion.trim())) {
@@ -972,14 +1284,22 @@ function WindowEditor({
         setError('请选择一个已启用的代理插件。')
         return
       }
+      if (proxySource === 'manual' && checked.proxy.protocol !== 'direct') {
+        if (checked.proxy.server.trim() === '') {
+          setError('请填写代理地址，或把代理来源改为直连。')
+          return
+        }
+      }
       setPending(true)
       setError(null)
       await onSave(
-        name.trim(),
+        // An unnamed window still needs a label: one English word will do.
+        name.trim() === '' ? randomWindowName(takenNames) : name.trim(),
         proxySource === 'manual' && checked.proxy.protocol !== 'direct'
           ? checked.proxy.server
           : null,
         proxySource === 'plugin' ? proxyPlugin : null,
+        proxySource === 'plugin' ? endpointId : null,
         settings,
         browserVersion.trim() || undefined,
         groupId === 'ungrouped' ? null : groupId,
@@ -997,7 +1317,7 @@ function WindowEditor({
         <DialogTitle>{window ? '编辑窗口' : '创建窗口'}</DialogTitle>
         <DialogDescription>
           {window
-            ? `内核 ${window.version} 已固定；配置在下次打开时生效。`
+            ? `内核 ${majorVersion(window.version)} 已固定；配置在下次打开时生效。`
             : '创建独立浏览器环境。创建后才会下载或准备所需内核。'}
         </DialogDescription>
       </DialogHeader>
@@ -1014,6 +1334,7 @@ function WindowEditor({
               autoFocus
               maxLength={40}
               disabled={pending}
+              placeholder="留空自动生成，例如 meadow"
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
@@ -1095,14 +1416,19 @@ function WindowEditor({
                   if (value !== 'direct' && value !== 'manual' && value !== 'plugin')
                     return
                   setProxySource(value)
+                  setCheckResult(null)
+                  setCheckNote(null)
                   if (value === 'direct') {
                     setProxyPlugin(null)
+                    setEndpointId(null)
                     patch({ proxy: { protocol: 'direct', server: '' }, geoip: false })
                   } else if (value === 'manual') {
                     setProxyPlugin(null)
+                    setEndpointId(null)
                     patch({ proxy: { protocol: 'http', server: '' } })
                   } else {
                     setProxyPlugin(providers[0]?.id ?? null)
+                    setEndpointId(null)
                     patch({ proxy: { protocol: 'direct', server: '' } })
                   }
                 }}
@@ -1113,7 +1439,7 @@ function WindowEditor({
                 <SelectContent>
                   <SelectItem value="direct">直连</SelectItem>
                   <SelectItem value="manual">手动填写</SelectItem>
-                  <SelectItem value="plugin">代理池插件</SelectItem>
+                  <SelectItem value="plugin">代理池</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
@@ -1127,6 +1453,7 @@ function WindowEditor({
                     onValueChange={(value) => {
                       if (value === 'http' || value === 'socks5') {
                         patch({ proxy: { protocol: value, server: config.proxy.server } })
+                        setCheckResult(null)
                       }
                     }}
                   >
@@ -1147,25 +1474,30 @@ function WindowEditor({
                     disabled={pending}
                     placeholder={`${config.proxy.protocol}://host:port`}
                     value={config.proxy.server}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       patch({ proxy: { ...config.proxy, server: event.target.value } })
-                    }
+                      setCheckResult(null)
+                    }}
                   />
                 </Field>
               </>
             ) : null}
             {proxySource === 'plugin' ? (
-              <Field>
+              <Field className="window-proxy-plugin-field">
                 <FieldLabel htmlFor="window-proxy-plugin">代理插件</FieldLabel>
                 {providers.length === 0 ? (
                   <p className="window-plugin-hint">
-                    没有运行中的代理插件。先到插件中心启用「代理池」并选择默认代理。
+                    没有运行中的代理插件。先到「插件中心 → 代理池」启用并添加代理。
                   </p>
                 ) : (
                   <Select
                     value={proxyPlugin ?? ''}
                     disabled={pending}
-                    onValueChange={setProxyPlugin}
+                    onValueChange={(value) => {
+                      setProxyPlugin(value)
+                      setEndpointId(null)
+                      setCheckResult(null)
+                    }}
                   >
                     <SelectTrigger id="window-proxy-plugin">
                       <SelectValue />
@@ -1182,6 +1514,109 @@ function WindowEditor({
               </Field>
             ) : null}
           </div>
+
+          {proxySource === 'plugin' && providers.length > 0 ? (
+            <div className="proxy-picker">
+              <div className="proxy-picker-head">
+                <span>从代理池选择</span>
+                <small>{proxies === null ? '加载中…' : `${proxies.length} 条`}</small>
+              </div>
+              <div className="search-field">
+                <Search aria-hidden="true" />
+                <Input
+                  aria-label="搜索代理"
+                  placeholder="搜索名称、主机或端口"
+                  value={proxyQuery}
+                  onChange={(event) => setProxyQuery(event.target.value)}
+                />
+              </div>
+              <div className="account-picker" role="listbox" aria-label="代理池代理">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={endpointId === null}
+                  className="account-option"
+                  data-selected={endpointId === null ? 'true' : undefined}
+                  disabled={pending}
+                  onClick={() => {
+                    setEndpointId(null)
+                    setCheckResult(null)
+                  }}
+                >
+                  <span>
+                    <strong>使用插件默认代理</strong>
+                    <small>跟随「代理池」页设置的默认项</small>
+                  </span>
+                  {endpointId === null ? <Check aria-hidden="true" /> : null}
+                </button>
+                {visibleProxies.map((row) => (
+                  <button
+                    key={row.id}
+                    type="button"
+                    role="option"
+                    aria-selected={endpointId === Number(row.id)}
+                    className="account-option"
+                    data-selected={endpointId === Number(row.id) ? 'true' : undefined}
+                    disabled={pending}
+                    onClick={() => {
+                      setEndpointId(Number(row.id))
+                      setCheckResult(null)
+                    }}
+                  >
+                    <span>
+                      <strong>
+                        {flagOf(row.geo?.countryCode ?? null)} {row.name}
+                      </strong>
+                      <small>
+                        {row.schemes.map((scheme) => scheme.toUpperCase()).join(' / ')} ·{' '}
+                        {row.host}:{row.port}
+                        {row.checkStatus === 'ok' ? ' · 上次检测通过' : ''}
+                      </small>
+                    </span>
+                    {endpointId === Number(row.id) ? <Check aria-hidden="true" /> : null}
+                  </button>
+                ))}
+                {proxies !== null && visibleProxies.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">代理池还没有代理。</p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {proxySource !== 'direct' ? (
+            <div className="proxy-check-block">
+              <div className="proxy-check-actions">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    pending ||
+                    checking ||
+                    (proxySource === 'manual' && config.proxy.server.trim() === '')
+                  }
+                  onClick={() => void runCheck()}
+                >
+                  {checking ? (
+                    <Loader2 data-icon="inline-start" className="animate-spin" />
+                  ) : (
+                    <ShieldCheck data-icon="inline-start" />
+                  )}
+                  {checking ? '检测中…' : '检测代理'}
+                </Button>
+                <span className="proxy-check-hint">
+                  使用代理池插件的检测逻辑；不可用时会说明原因。
+                </span>
+              </div>
+              {checkResult === null ? null : <ProxyCheckSummary result={checkResult} />}
+              {checkNote === null ? null : (
+                <p className="proxy-check-error" role="alert">
+                  {checkNote}
+                </p>
+              )}
+            </div>
+          ) : null}
+
           <Field className="window-switch-field" orientation="horizontal">
             <FieldLabel htmlFor="window-geoip">
               通过代理 IP 匹配时区、语言和 WebRTC IP
@@ -1246,19 +1681,31 @@ function WindowEditor({
             </Field>
             <Field>
               <FieldLabel htmlFor="window-seed">指纹种子</FieldLabel>
-              <Input
-                id="window-seed"
-                inputMode="numeric"
-                disabled={pending || !!window}
-                placeholder="自动保持"
-                value={config.fingerprintSeed ?? ''}
-                onChange={(event) =>
-                  patch({
-                    fingerprintSeed:
-                      event.target.value === '' ? null : Number(event.target.value),
-                  })
-                }
-              />
+              <div className="seed-field">
+                <Input
+                  id="window-seed"
+                  inputMode="numeric"
+                  disabled={pending || !!window}
+                  placeholder="自动保持"
+                  value={config.fingerprintSeed ?? ''}
+                  onChange={(event) =>
+                    patch({
+                      fingerprintSeed:
+                        event.target.value === '' ? null : Number(event.target.value),
+                    })
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label="随机生成指纹种子"
+                  disabled={pending || !!window}
+                  onClick={() => patch({ fingerprintSeed: randomFingerprintSeed() })}
+                >
+                  <Dices />
+                </Button>
+              </div>
             </Field>
           </div>
           <Field>

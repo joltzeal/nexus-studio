@@ -15,7 +15,11 @@ use scheduler::{LaunchRequest, LaunchSnapshot, ProxyBinding, Scheduler, Schedule
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProxyChoice {
     Direct,
-    Required { plugin_id: String },
+    /// `endpoint_id` pins one row of the provider's inventory.
+    Required {
+        plugin_id: String,
+        endpoint_id: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,13 +58,16 @@ impl<P: ProxyProviderPort> Core<P> {
     ) -> Result<LaunchSnapshot, CoreError> {
         let proxy = match &intent.proxy {
             ProxyChoice::Direct => ProxyBinding::Direct,
-            ProxyChoice::Required { plugin_id } => {
+            ProxyChoice::Required {
+                plugin_id,
+                endpoint_id,
+            } => {
                 self.plugins
                     .require(plugin_id, Capability::ProxyProvider)
                     .map_err(CoreError::Plugin)?;
                 let reference = self
                     .proxy_port
-                    .resolve_proxy(plugin_id, &intent.window_id)
+                    .resolve_proxy(plugin_id, &intent.window_id, *endpoint_id)
                     .await
                     .map_err(|_| CoreError::ProxyResolutionFailed)?;
                 if reference.config_handle.trim().is_empty()

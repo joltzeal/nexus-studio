@@ -1,4 +1,6 @@
-use super::profile_store::{PreparedBinary, ProfileStore, WindowSettings};
+use super::profile_store::{
+    PreparedBinary, ProfileRecord, ProfileStore, ProxySource, WindowSettings,
+};
 use std::fs;
 
 #[test]
@@ -175,8 +177,7 @@ fn window_settings_survive_edit_without_changing_the_browser_binding() {
         .update(
             &created.id,
             "Second",
-            Some("http://proxy.local:8080".into()),
-            None,
+            ProxySource::server("http://proxy.local:8080".into()),
             settings.clone(),
         )
         .unwrap();
@@ -234,8 +235,7 @@ fn existing_window_cannot_change_its_fingerprint_seed() {
     let result = store.update(
         &created.id,
         "Identity",
-        None,
-        None,
+        ProxySource::direct(),
         WindowSettings {
             fingerprint_seed: Some(18),
             ..WindowSettings::default()
@@ -246,4 +246,98 @@ fn existing_window_cannot_change_its_fingerprint_seed() {
         store.get(&created.id).unwrap().settings.fingerprint_seed,
         Some(17)
     );
+}
+
+#[test]
+fn a_new_window_records_when_it_was_created_and_when_it_last_opened() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("chrome");
+    fs::write(&binary, b"binary").unwrap();
+    let store = ProfileStore::new(root.path().join("profiles"));
+    let created = store
+        .create(
+            "Timestamps",
+            None,
+            PreparedBinary {
+                version: "146.0.7680.177.5".into(),
+                binary_path: binary,
+            },
+        )
+        .unwrap();
+    assert!(created.created_at > 0);
+    assert_eq!(created.last_opened_at, None);
+
+    store.mark_opened(&created.id).unwrap();
+    let opened = store.get(&created.id).unwrap();
+    assert!(opened.last_opened_at.is_some_and(|value| value > 0));
+    assert_eq!(opened.created_at, created.created_at);
+}
+
+#[test]
+fn a_record_written_before_the_timestamp_fields_still_loads() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("chrome");
+    fs::write(&binary, b"binary").unwrap();
+    let store = ProfileStore::new(root.path().join("profiles"));
+    let created = store
+        .create(
+            "Legacy",
+            None,
+            PreparedBinary {
+                version: "146.0.7680.177.5".into(),
+                binary_path: binary,
+            },
+        )
+        .unwrap();
+
+    // Simulate an older build: the same record without the new keys at all.
+    let mut value = serde_json::to_value(&created).unwrap();
+    let object = value.as_object_mut().unwrap();
+    object.remove("created_at");
+    object.remove("last_opened_at");
+    object.remove("proxy_endpoint");
+    let record: ProfileRecord = serde_json::from_value(value).unwrap();
+    assert_eq!(record.created_at, 0);
+    assert_eq!(record.last_opened_at, None);
+    assert_eq!(record.proxy_endpoint, None);
+}
+
+#[test]
+fn a_pinned_proxy_endpoint_requires_the_plugin_that_owns_it() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("chrome");
+    fs::write(&binary, b"binary").unwrap();
+    let store = ProfileStore::new(root.path().join("profiles"));
+    let prepared = PreparedBinary {
+        version: "146.0.7680.177.5".into(),
+        binary_path: binary,
+    };
+    let rejected = store
+        .create_with_group(
+            "Pinned without plugin",
+            ProxySource {
+                server: None,
+                plugin: None,
+                endpoint: Some(3),
+            },
+            WindowSettings::default(),
+            prepared.clone(),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(
+        rejected,
+        super::profile_store::StoreError::InvalidProxyPlugin
+    );
+
+    let created = store
+        .create_with_group(
+            "Pinned",
+            ProxySource::plugin("studio.proxy-pool".into(), Some(3)),
+            WindowSettings::default(),
+            prepared,
+            None,
+        )
+        .unwrap();
+    assert_eq!(created.proxy_endpoint, Some(3));
 }

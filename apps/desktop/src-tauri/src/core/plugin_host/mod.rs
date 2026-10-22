@@ -874,17 +874,19 @@ impl PluginHost {
 
     /// Window launch gate. A required proxy that cannot be resolved is an
     /// error: the caller must block the launch instead of falling back to a
-    /// direct connection.
+    /// direct connection. `endpoint_id` pins one row of the provider's
+    /// inventory; `None` keeps the provider's own default.
     pub fn resolve_proxy(
         &self,
         plugin_id: &str,
         window_id: &str,
+        endpoint_id: Option<i64>,
     ) -> Result<ProxyReference, HostError> {
         let value = self.call(
             plugin_id,
             Capability::ProxyProvider,
             "proxy.resolve",
-            json!({ "windowId": window_id }),
+            json!({ "windowId": window_id, "endpointId": endpoint_id }),
             RESOLVE_DEADLINE,
         )?;
         let configured = value

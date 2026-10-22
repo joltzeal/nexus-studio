@@ -515,7 +515,7 @@ fn host_blocks_launch_when_the_plugin_has_no_proxy() {
     host.install(&temporary.path().join("source")).unwrap();
 
     let blocked = host
-        .resolve_proxy("test.fixture-plugin", "window-1")
+        .resolve_proxy("test.fixture-plugin", "window-1", None)
         .unwrap_err();
     assert_eq!(blocked.code(), "NOT_CONFIGURED");
     assert!(blocked.message().contains("窗口启动被阻断"));
@@ -530,7 +530,7 @@ fn host_resolves_a_configured_proxy_handle() {
     host.install(&temporary.path().join("source")).unwrap();
 
     let reference = host
-        .resolve_proxy("test.fixture-plugin", "window-1")
+        .resolve_proxy("test.fixture-plugin", "window-1", None)
         .unwrap();
     assert_eq!(reference.config_handle, "fixture:endpoint:1");
     assert!(reference.secret_ref.is_none());

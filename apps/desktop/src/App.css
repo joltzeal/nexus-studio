@@ -3699,3 +3699,327 @@ a.address-source:hover {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---------------------------------------------------------------- sidebar */
+
+/* Plugin pages are second-level: they sit under 插件中心 with a folded
+   chevron, so the top level stays a short list of destinations. */
+.sidebar-nav {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.nav-group-trigger {
+  position: relative;
+}
+.nav-group-toggle {
+  display: grid;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  transform: rotate(-90deg);
+  transition:
+    transform 120ms ease,
+    background 120ms ease;
+}
+.nav-group-toggle[data-open='true'] {
+  transform: rotate(0deg);
+}
+.nav-group-toggle:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.nav-group-toggle > svg {
+  width: 14px;
+  height: 14px;
+}
+.nav-sub-trigger {
+  height: 30px;
+  padding-left: 32px;
+  font-size: 12px;
+}
+.nav-sub-trigger > svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.75;
+}
+
+/* ------------------------------------------------------------ window page */
+
+.space-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.space-stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+.space-stat::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--border);
+}
+.space-stat[data-tone='success']::before {
+  background: var(--success-foreground);
+}
+.space-stat[data-tone='info']::before {
+  background: var(--primary);
+}
+.space-stat[data-tone='warning']::before {
+  background: var(--warning-foreground);
+}
+.space-stat > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.space-stat > strong {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.table-muted {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.kernel-version {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding-inline: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.proxy-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.proxy-cell small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.proxy-address {
+  display: block;
+  max-width: 170px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.time-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.time-cell strong {
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.time-cell small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding-inline: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-badge[data-state='running'] {
+  border-color: transparent;
+  background: var(--success);
+  color: var(--success-foreground);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+.status-badge[data-state='running'] .status-dot {
+  opacity: 1;
+}
+.space-table-panel [data-slot='table-row'][data-running='true'] {
+  background: color-mix(in oklab, var(--success) 45%, transparent);
+}
+
+/* ------------------------------------------------------- proxy check UI */
+
+.proxy-check-block {
+  display: grid;
+  gap: 8px;
+}
+.proxy-check-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.proxy-check-hint {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.proxy-check {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+}
+.proxy-check[data-state='ok'] {
+  border-color: color-mix(in oklab, var(--success-foreground) 35%, var(--border));
+  background: var(--success);
+}
+.proxy-check[data-state='failed'] {
+  border-color: color-mix(in oklab, var(--destructive) 35%, var(--border));
+}
+.proxy-check-grid {
+  display: grid;
+  /* Three fixed columns keep "Germany · Berlin" readable inside a dialog. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+.proxy-check-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.proxy-check-grid span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.proxy-check[data-state='ok'] .proxy-check-grid span {
+  color: var(--success-foreground);
+  opacity: 0.75;
+}
+.proxy-check-grid strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proxy-check-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.proxy-check-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: 11px;
+}
+.proxy-gate .proxy-gate-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.proxy-gate .proxy-gate-title > svg {
+  width: 16px;
+  height: 16px;
+}
+.proxy-gate-body {
+  display: grid;
+  gap: 10px;
+}
+.proxy-gate-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.proxy-gate-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--warning);
+  color: var(--warning-foreground);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.proxy-picker {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+}
+.proxy-picker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.proxy-picker-head small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 400;
+}
+.proxy-picker .search-field {
+  width: 100%;
+}
+.proxy-picker .account-picker {
+  max-height: 220px;
+  background: var(--card);
+}
+.window-proxy-plugin-field {
+  grid-column: 1 / -1;
+}
+.seed-field {
+  display: flex;
+  gap: 8px;
+}
+.seed-field > input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  /* The sidebar turns into a single row of tabs: nesting would not fit. */
+  .nav-sub-trigger,
+  .nav-group-toggle {
+    display: none;
+  }
+  .space-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -88,6 +88,14 @@ export function checkProxy(
   )
 }
 
+/**
+ * Checks a proxy that is not in the pool yet — the address a user just typed.
+ * Same measurement as `checkProxy`, nothing is stored.
+ */
+export function probeProxy(url: string): Promise<CheckResult> {
+  return call<CheckResult>('proxy.probe', { url }, 60_000)
+}
+
 export function exportUrls(
   ids: string[],
   preferredScheme: Scheme | null,

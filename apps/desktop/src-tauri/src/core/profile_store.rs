@@ -7,6 +7,37 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// Where a window's traffic goes. One of the three, never two: a manual server
+/// and a plugin endpoint in the same record would make the launch ambiguous.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxySource {
+    pub server: Option<String>,
+    pub plugin: Option<String>,
+    /// One row of the plugin's inventory; `None` follows its default.
+    pub endpoint: Option<i64>,
+}
+
+impl ProxySource {
+    pub fn direct() -> Self {
+        Self::default()
+    }
+
+    pub fn server(server: String) -> Self {
+        Self {
+            server: Some(server),
+            ..Self::default()
+        }
+    }
+
+    pub fn plugin(plugin: String, endpoint: Option<i64>) -> Self {
+        Self {
+            plugin: Some(plugin),
+            endpoint,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PreparedBinary {
     pub version: String,
@@ -54,8 +85,19 @@ pub struct ProfileRecord {
     /// never fall back to a direct connection.
     #[serde(default)]
     pub proxy_plugin: Option<String>,
+    /// One row of the proxy plugin's inventory. `None` keeps the window on the
+    /// plugin's default endpoint, which is what records written before this
+    /// field existed imply.
+    #[serde(default)]
+    pub proxy_endpoint: Option<i64>,
     #[serde(default)]
     pub settings: WindowSettings,
+    /// Unix seconds. Records written before this field existed read as 0.
+    #[serde(default)]
+    pub created_at: i64,
+    /// Unix seconds of the last successful launch; `None` means never opened.
+    #[serde(default)]
+    pub last_opened_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,14 +149,23 @@ impl ProfileStore {
         settings: WindowSettings,
         binary: PreparedBinary,
     ) -> Result<ProfileRecord, StoreError> {
-        self.create_with_group(name, proxy, proxy_plugin, settings, binary, None)
+        self.create_with_group(
+            name,
+            ProxySource {
+                server: proxy,
+                plugin: proxy_plugin,
+                endpoint: None,
+            },
+            settings,
+            binary,
+            None,
+        )
     }
 
     pub fn create_with_group(
         &self,
         name: &str,
-        proxy: Option<String>,
-        proxy_plugin: Option<String>,
+        proxy: ProxySource,
         settings: WindowSettings,
         binary: PreparedBinary,
         group_id: Option<&str>,
@@ -122,11 +173,11 @@ impl ProfileStore {
         if name.trim().is_empty() || name.trim().chars().count() > 40 {
             return Err(StoreError::InvalidName);
         }
-        if let Some(ref server) = proxy {
+        if let Some(ref server) = proxy.server {
             validate_proxy(server)?;
         }
-        validate_proxy_plugin(&proxy, &proxy_plugin)?;
-        validate_settings(&settings, proxy.is_some() || proxy_plugin.is_some())?;
+        validate_proxy_plugin(&proxy.server, &proxy.plugin, proxy.endpoint)?;
+        validate_settings(&settings, proxy.server.is_some() || proxy.plugin.is_some())?;
         if let Some(group_id) = group_id {
             Uuid::parse_str(group_id).map_err(|_| StoreError::InvalidSettings)?;
         }
@@ -150,9 +201,12 @@ impl ProfileStore {
                 channel_version: binary.version,
             },
             binary_path: binary.binary_path,
-            proxy,
-            proxy_plugin,
+            proxy: proxy.server,
+            proxy_plugin: proxy.plugin,
+            proxy_endpoint: proxy.endpoint,
             settings,
+            created_at: now_seconds(),
+            last_opened_at: None,
         };
         let result = open_database(&self.database_path())
             .map_err(|_| StoreError::Io)?
@@ -175,31 +229,29 @@ impl ProfileStore {
         &self,
         id: &str,
         name: &str,
-        proxy: Option<String>,
-        proxy_plugin: Option<String>,
+        proxy: ProxySource,
         settings: WindowSettings,
     ) -> Result<ProfileRecord, StoreError> {
         let group_id = self.group_id(id)?;
-        self.update_with_group(id, name, proxy, proxy_plugin, settings, group_id.as_deref())
+        self.update_with_group(id, name, proxy, settings, group_id.as_deref())
     }
 
     pub fn update_with_group(
         &self,
         id: &str,
         name: &str,
-        proxy: Option<String>,
-        proxy_plugin: Option<String>,
+        proxy: ProxySource,
         settings: WindowSettings,
         group_id: Option<&str>,
     ) -> Result<ProfileRecord, StoreError> {
         if name.trim().is_empty() || name.trim().chars().count() > 40 {
             return Err(StoreError::InvalidName);
         }
-        if let Some(ref server) = proxy {
+        if let Some(ref server) = proxy.server {
             validate_proxy(server)?;
         }
-        validate_proxy_plugin(&proxy, &proxy_plugin)?;
-        validate_settings(&settings, proxy.is_some() || proxy_plugin.is_some())?;
+        validate_proxy_plugin(&proxy.server, &proxy.plugin, proxy.endpoint)?;
+        validate_settings(&settings, proxy.server.is_some() || proxy.plugin.is_some())?;
         if let Some(group_id) = group_id {
             Uuid::parse_str(group_id).map_err(|_| StoreError::InvalidSettings)?;
         }
@@ -208,8 +260,9 @@ impl ProfileStore {
             return Err(StoreError::ImmutableFingerprint);
         }
         record.name = name.trim().to_owned();
-        record.proxy = proxy;
-        record.proxy_plugin = proxy_plugin;
+        record.proxy = proxy.server;
+        record.proxy_plugin = proxy.plugin;
+        record.proxy_endpoint = proxy.endpoint;
         record.settings = settings;
         let changed = open_database(&self.database_path())
             .map_err(|_| StoreError::Io)?
@@ -247,6 +300,24 @@ impl ProfileStore {
         fs::remove_dir_all(removed).map_err(|_| StoreError::Io)
     }
 
+    /// Records a successful launch. The timestamp is display data only, so a
+    /// failed write must never fail the launch itself.
+    pub fn mark_opened(&self, id: &str) -> Result<(), StoreError> {
+        let mut record = self.get(id)?;
+        record.last_opened_at = Some(now_seconds());
+        open_database(&self.database_path())
+            .map_err(|_| StoreError::Io)?
+            .execute(
+                "UPDATE profile_records SET record_json = ?2 WHERE id = ?1",
+                params![
+                    id,
+                    serde_json::to_string(&record).map_err(|_| StoreError::Io)?
+                ],
+            )
+            .map_err(|_| StoreError::Io)?;
+        Ok(())
+    }
+
     pub fn get(&self, id: &str) -> Result<ProfileRecord, StoreError> {
         self.migrate_legacy()?;
         reject_symlink(&self.root.join(id))?;
@@ -277,7 +348,8 @@ impl ProfileStore {
                 .proxy
                 .as_deref()
                 .is_some_and(|server| validate_proxy(server).is_err())
-            || validate_proxy_plugin(&record.proxy, &record.proxy_plugin).is_err()
+            || validate_proxy_plugin(&record.proxy, &record.proxy_plugin, record.proxy_endpoint)
+                .is_err()
             || validate_settings(
                 &record.settings,
                 record.proxy.is_some() || record.proxy_plugin.is_some(),
@@ -443,11 +515,19 @@ fn valid_version(version: &str) -> bool {
 }
 
 /// A window takes its proxy either from a manual server or from a plugin, not
-/// both: two sources would make the launch snapshot ambiguous.
+/// both: two sources would make the launch snapshot ambiguous. A pinned
+/// endpoint only makes sense with the plugin that owns the inventory.
 fn validate_proxy_plugin(
     proxy: &Option<String>,
     proxy_plugin: &Option<String>,
+    proxy_endpoint: Option<i64>,
 ) -> Result<(), StoreError> {
+    if proxy_endpoint.is_some() && proxy_plugin.is_none() {
+        return Err(StoreError::InvalidProxyPlugin);
+    }
+    if proxy_endpoint.is_some_and(|id| id < 1) {
+        return Err(StoreError::InvalidProxyPlugin);
+    }
     match proxy_plugin {
         None => Ok(()),
         Some(id) => {
@@ -457,6 +537,13 @@ fn validate_proxy_plugin(
             Ok(())
         }
     }
+}
+
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 fn validate_proxy(server: &str) -> Result<(), StoreError> {

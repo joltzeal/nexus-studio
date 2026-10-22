@@ -259,6 +259,7 @@ impl ProxyProviderPort for ProxyPort {
         &self,
         _plugin_id: &str,
         _window_id: &str,
+        _endpoint_id: Option<i64>,
     ) -> Result<ProxyReference, PluginError> {
         if self.fails {
             Err(PluginError::Unavailable)
@@ -283,6 +284,7 @@ fn intent() -> WindowIntent {
         channel_id: "current".into(),
         proxy: ProxyChoice::Required {
             plugin_id: "proxy.sample".into(),
+            endpoint_id: Some(7),
         },
     }
 }
