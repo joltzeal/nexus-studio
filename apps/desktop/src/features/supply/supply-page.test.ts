@@ -39,9 +39,9 @@ function render(overrides: Partial<Parameters<typeof SupplyPage>[0]>): string {
 }
 
 describe('shared supply page', () => {
-  it('explains that browsing needs the desktop host', () => {
+  it('says the page needs the desktop host', () => {
     const html = render({ hostAvailable: false })
-    expect(html).toContain('只能在 Nexus 桌面应用中运行')
+    expect(html).toContain('共享货源需要桌面应用')
     expect(html).not.toContain('分类商户')
   })
 
@@ -50,17 +50,18 @@ describe('shared supply page', () => {
     expect(html).toContain('共享货源插件尚未安装')
   })
 
-  it('does not pretend a stopped plugin can browse', () => {
-    const html = render({ plugin: plugin({ state: 'stopped', enabled: false }) })
-    expect(html).toContain('共享货源插件未启用')
-    expect(html).toContain('supply.catalog')
+  it('waits for a starting process instead of offering a restart', () => {
+    const html = render({ plugin: plugin({ state: 'starting' }) })
+    expect(html).toContain('共享货源插件正在启动')
+    expect(html).not.toContain('重新启动插件进程')
     expect(html).not.toContain('以图搜图')
   })
 
-  it('surfaces the real process error instead of a generic message', () => {
-    const html = render({ plugin: plugin({ state: 'failed', lastError: '握手超时' }) })
-    expect(html).toContain('插件进程启动失败')
-    expect(html).toContain('握手超时')
+  it('reports a retrying process without the raw error', () => {
+    const html = render({ plugin: plugin({ state: 'retrying', lastError: '握手超时' }) })
+    expect(html).toContain('共享货源插件正在启动')
+    expect(html).toContain('后台会自动重试')
+    expect(html).not.toContain('握手超时')
   })
 
   it('shows the four sections and an honest empty state once running', () => {

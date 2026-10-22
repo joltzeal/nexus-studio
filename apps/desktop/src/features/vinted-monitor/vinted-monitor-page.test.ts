@@ -43,7 +43,7 @@ function render(overrides: Partial<Parameters<typeof VintedMonitorPage>[0]>): st
 }
 
 describe('vinted monitor page', () => {
-  it('explains that collection needs the desktop host', () => {
+  it('says the page needs the desktop host', () => {
     const html = render({ hostAvailable: false })
     expect(html).toContain('Vinted 监控需要桌面应用')
     // The actions stay in place but disabled: there is no host to call.
@@ -55,17 +55,18 @@ describe('vinted monitor page', () => {
     expect(render({ plugin: null })).toContain('Vinted 监控插件尚未安装')
   })
 
-  it('does not pretend a stopped plugin can collect', () => {
-    const html = render({ plugin: plugin({ state: 'stopped', enabled: false }) })
-    expect(html).toContain('Vinted 监控插件未启用')
-    expect(html).toContain('monitor.collector')
+  it('waits for a starting process instead of offering a restart', () => {
+    const html = render({ plugin: plugin({ state: 'starting' }) })
+    expect(html).toContain('Vinted 监控插件正在启动')
+    expect(html).not.toContain('重新启动插件进程')
     expect(html).not.toContain('vinted-table-scroll')
   })
 
-  it('surfaces the real process error instead of a generic message', () => {
-    const html = render({ plugin: plugin({ state: 'failed', lastError: '握手超时' }) })
-    expect(html).toContain('插件进程启动失败')
-    expect(html).toContain('握手超时')
+  it('reports a retrying process without the raw error', () => {
+    const html = render({ plugin: plugin({ state: 'retrying', lastError: '握手超时' }) })
+    expect(html).toContain('Vinted 监控插件正在启动')
+    expect(html).toContain('后台会自动重试')
+    expect(html).not.toContain('握手超时')
   })
 
   it('shows the table skeleton, not an empty state, before the first load', () => {

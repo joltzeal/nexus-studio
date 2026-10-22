@@ -55,50 +55,6 @@ pub async fn plugin_uninstall(state: State<'_, Arc<PluginHost>>, id: String) -> 
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EnableInput {
-    pub id: String,
-    pub capabilities: Vec<String>,
-}
-
-#[tauri::command]
-pub async fn plugin_enable(
-    state: State<'_, Arc<PluginHost>>,
-    input: EnableInput,
-) -> Result<PluginView, String> {
-    let mut granted = Vec::new();
-    for name in &input.capabilities {
-        granted.push(capability(name)?);
-    }
-    let state = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || state.enable(&input.id, &granted).map_err(message))
-        .await
-        .map_err(|_| "插件启用任务中断".to_string())?
-}
-
-#[tauri::command]
-pub async fn plugin_disable(
-    state: State<'_, Arc<PluginHost>>,
-    id: String,
-) -> Result<PluginView, String> {
-    let state = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || state.disable(&id).map_err(message))
-        .await
-        .map_err(|_| "插件停用任务中断".to_string())?
-}
-
-#[tauri::command]
-pub async fn plugin_restart(
-    state: State<'_, Arc<PluginHost>>,
-    id: String,
-) -> Result<PluginView, String> {
-    let state = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || state.restart(&id).map_err(message))
-        .await
-        .map_err(|_| "插件重启任务中断".to_string())?
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CallInput {
     pub id: String,
     pub capability: String,
@@ -154,6 +110,9 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         .map_err(|error| std::io::Error::other(error.message()))?,
     );
     app.manage(Arc::clone(&host));
+    // Plugins installed in an earlier session start on their own; the
+    // supervisor owns restarts, so the app never asks the user to fix a process.
+    host.supervise();
     let license_store =
         LicenseStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
     let groups = GroupStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;

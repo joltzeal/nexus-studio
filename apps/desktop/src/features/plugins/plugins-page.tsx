@@ -1,34 +1,34 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  ArrowUpRight,
   Cable,
+  Download,
   Image,
+  Info,
   KeyRound,
+  Loader2,
   MapPinned,
-  Play,
   Radar,
   RefreshCw,
   ShoppingBag,
   SlidersHorizontal,
-  Square,
   Store,
   Trash2,
 } from 'lucide-react'
-import { PLUGIN_CATALOG } from '@/demo/model'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -36,12 +36,17 @@ import {
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { FieldError } from '@/components/ui/field'
 import {
-  disablePlugin,
-  enablePlugin,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import {
   installPlugin,
   listPlugins,
   pluginHostAvailable,
-  restartPlugin,
   uninstallPlugin,
   type PluginView,
 } from '@/lib/platform/native-plugins'
@@ -62,12 +67,28 @@ function iconFor(capability: string) {
   return capabilityIcons[capability as keyof typeof capabilityIcons] ?? Cable
 }
 
-function stateLabel(plugin: PluginView): string {
-  if (plugin.state === 'available') return '可安装'
-  if (plugin.state === 'running') return '运行中'
-  if (plugin.state === 'failed') return '进程失败'
-  return '已安装未启用'
+type RowState = 'available' | 'starting' | 'running' | 'retrying' | 'bundled'
+
+interface Row {
+  id: string
+  name: string
+  version: string
+  capabilities: string[]
+  state: RowState
+  plugin: PluginView | null
+  sourceDirectory: string | null
 }
+
+const stateText: Record<RowState, string> = {
+  available: '未安装',
+  starting: '启动中',
+  running: '运行中',
+  retrying: '重试中',
+  bundled: '仅桌面应用',
+}
+
+/** How often the table re-reads the catalog while a process is coming up. */
+const POLL_MS = 3000
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -83,12 +104,10 @@ export function PluginsPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [inspecting, setInspecting] = useState<string | null>(null)
-  const [granting, setGranting] = useState<string | null>(null)
-  const [granted, setGranted] = useState<string[]>([])
+  const [removing, setRemoving] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const catalog = await listPlugins()
-    setPlugins(catalog)
+    setPlugins(await listPlugins())
   }, [])
 
   useEffect(() => {
@@ -107,8 +126,42 @@ export function PluginsPage() {
     }
   }, [native])
 
+  // The host has no push channel, so a plugin that is still coming up needs the
+  // page to look again instead of sitting on a stale badge.
+  const pending = plugins.some(
+    (plugin) => plugin.state === 'starting' || plugin.state === 'retrying',
+  )
+  useEffect(() => {
+    if (!native || !pending) return
+    const timer = setInterval(() => {
+      void load()
+    }, POLL_MS)
+    return () => clearInterval(timer)
+  }, [native, pending, load])
+
+  const rows: Row[] = native
+    ? plugins.map((plugin) => ({
+        id: plugin.id,
+        name: plugin.name,
+        version: plugin.version,
+        capabilities: plugin.capabilities,
+        state: plugin.state,
+        plugin,
+        sourceDirectory: plugin.sourceDirectory,
+      }))
+    : BUNDLED_PLUGINS.map((manifest) => ({
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        capabilities: [...manifest.capabilities],
+        state: 'bundled' as const,
+        plugin: null,
+        sourceDirectory: null,
+      }))
+
   const inspected = plugins.find((plugin) => plugin.id === inspecting) ?? null
-  const grantingPlugin = plugins.find((plugin) => plugin.id === granting) ?? null
+  const removingRow = rows.find((row) => row.id === removing) ?? null
+  const runningCount = plugins.filter((plugin) => plugin.state === 'running').length
 
   async function run(key: string, action: () => Promise<void>) {
     setBusy(key)
@@ -126,18 +179,13 @@ export function PluginsPage() {
   return (
     <section className="collection-page page-reveal" aria-labelledby="plugins-heading">
       <div className="section-intro">
-        <div>
-          <h1 className="page-heading" id="plugins-heading">
-            插件中心
-          </h1>
-          <p className="page-description">
-            安装、授权并运行插件；能力范围以插件清单为准。
-          </p>
-        </div>
-        {native ? (
+        <h1 className="page-heading" id="plugins-heading">
+          插件中心
+        </h1>
+        <div className="section-actions">
           <Button
             variant="ghost"
-            disabled={busy !== null}
+            disabled={!native || busy !== null}
             onClick={() => {
               void run('refresh', async () => undefined)
             }}
@@ -145,291 +193,111 @@ export function PluginsPage() {
             <RefreshCw data-icon="inline-start" />
             刷新
           </Button>
-        ) : null}
+        </div>
       </div>
-
-      {!native ? (
-        <p className="native-profiles-hint" role="status">
-          插件宿主只在 Nexus
-          桌面应用中运行；这里显示仓库内插件包的清单声明，不能安装或启用。
-        </p>
-      ) : null}
 
       {error ? <FieldError role="alert">{error}</FieldError> : null}
 
-      {native ? (
-        <section className="plugin-group" aria-labelledby="plugins-installed-heading">
-          <div className="plugin-group-heading">
-            <h2 id="plugins-installed-heading">插件宿主</h2>
-            <p>每个已启用插件运行在独立 Node.js 进程中，能力需逐项授权。</p>
+      {native && rows.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>没有可用的插件包</EmptyTitle>
+            <EmptyDescription>把插件包放到 plugins 目录后重新打开应用。</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <div className="plugin-panel">
+          <div className="panel-heading">
+            <h2>插件</h2>
+            <Badge variant="secondary">{rows.length}</Badge>
+            <span>{native ? `${runningCount} 个运行中` : ''}</span>
           </div>
-          {plugins.length === 0 ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>没有可用的插件包</EmptyTitle>
-                <EmptyDescription>
-                  把插件包放到仓库的 plugins 目录，或在开发环境设置
-                  NEXUS_PLUGIN_DEV_ROOTS。
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <div className="plugin-grid">
-              {plugins.map((plugin, index) => {
-                const Icon = iconFor(plugin.capabilities[0] ?? '')
+          <Table aria-label="插件列表">
+            <TableHeader>
+              <TableRow>
+                <TableHead>插件</TableHead>
+                <TableHead>能力</TableHead>
+                <TableHead>版本</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead className="text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => {
+                const Icon = iconFor(row.capabilities[0] ?? '')
                 return (
-                  <Card
-                    key={plugin.id}
-                    className="plugin-card"
-                    data-tone={
-                      index % 3 === 0 ? 'blue' : index % 3 === 1 ? 'peach' : 'cream'
-                    }
-                  >
-                    <CardHeader>
-                      <div className="plugin-card-top">
+                  <TableRow key={row.id}>
+                    <TableCell>
+                      <div className="plugin-cell">
                         <span className="plugin-icon">
                           <Icon />
                         </span>
-                        <Badge
-                          variant={plugin.state === 'failed' ? 'destructive' : 'outline'}
-                        >
-                          {stateLabel(plugin)}
-                        </Badge>
+                        <div className="plugin-cell-text">
+                          <strong>{row.name}</strong>
+                          <code className="plugin-id">{row.id}</code>
+                        </div>
                       </div>
-                      <CardTitle>{plugin.name}</CardTitle>
-                      <CardDescription>
-                        {plugin.capabilities.join(' · ')} · v{plugin.version}
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <code className="capability-name">{plugin.id}</code>
-                      {plugin.lastError ? (
-                        <p className="plugin-error">{plugin.lastError}</p>
-                      ) : null}
-                    </CardContent>
-                    <CardFooter className="plugin-card-actions">
-                      {plugin.state === 'available' ? (
-                        <Button
-                          disabled={busy !== null}
-                          onClick={() => {
-                            void run(`install-${plugin.id}`, async () => {
-                              await installPlugin(plugin.sourceDirectory ?? '')
-                            })
-                          }}
-                        >
-                          安装
-                        </Button>
-                      ) : null}
-                      {plugin.enabled ? (
-                        <>
+                    </TableCell>
+                    <TableCell>
+                      <code className="capability-name">
+                        {row.capabilities.join(' · ') || '—'}
+                      </code>
+                    </TableCell>
+                    <TableCell>v{row.version}</TableCell>
+                    <TableCell>
+                      <Badge variant={row.state === 'running' ? 'secondary' : 'outline'}>
+                        {row.state === 'starting' || row.state === 'retrying' ? (
+                          <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                        ) : null}
+                        {stateText[row.state]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="plugin-actions">
+                        {row.state === 'available' ? (
                           <Button
-                            variant="ghost"
+                            size="sm"
                             disabled={busy !== null}
                             onClick={() => {
-                              void run(`disable-${plugin.id}`, async () => {
-                                await disablePlugin(plugin.id)
+                              void run(`install-${row.id}`, async () => {
+                                await installPlugin(row.sourceDirectory ?? '')
                               })
                             }}
                           >
-                            <Square data-icon="inline-start" />
-                            停用
+                            <Download data-icon="inline-start" />
+                            安装
                           </Button>
+                        ) : null}
+                        {row.plugin === null ? null : (
                           <Button
+                            size="sm"
                             variant="ghost"
-                            disabled={busy !== null}
-                            onClick={() => {
-                              void run(`restart-${plugin.id}`, async () => {
-                                await restartPlugin(plugin.id)
-                              })
-                            }}
+                            aria-label={`查看 ${row.name} 的清单`}
+                            onClick={() => setInspecting(row.id)}
                           >
-                            <RefreshCw data-icon="inline-start" />
-                            重启
+                            <Info />
                           </Button>
-                        </>
-                      ) : plugin.state !== 'available' ? (
-                        <Button
-                          disabled={busy !== null}
-                          onClick={() => {
-                            setGranting(plugin.id)
-                            setGranted(plugin.capabilities)
-                          }}
-                        >
-                          <Play data-icon="inline-start" />
-                          启用
-                        </Button>
-                      ) : null}
-                      <Button variant="ghost" onClick={() => setInspecting(plugin.id)}>
-                        查看清单
-                        <ArrowUpRight data-icon="inline-end" />
-                      </Button>
-                      {plugin.state !== 'available' ? (
-                        <Button
-                          variant="ghost"
-                          disabled={busy !== null}
-                          onClick={() => {
-                            void run(`uninstall-${plugin.id}`, async () => {
-                              await uninstallPlugin(plugin.id)
-                            })
-                          }}
-                        >
-                          <Trash2 data-icon="inline-start" />
-                          卸载
-                        </Button>
-                      ) : null}
-                    </CardFooter>
-                  </Card>
+                        )}
+                        {row.plugin === null || row.state === 'available' ? null : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`卸载 ${row.name}`}
+                            disabled={busy !== null}
+                            onClick={() => setRemoving(row.id)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
                 )
               })}
-            </div>
-          )}
-        </section>
-      ) : (
-        <section className="plugin-group" aria-labelledby="plugins-bundled-heading">
-          <div className="plugin-group-heading">
-            <h2 id="plugins-bundled-heading">随仓库提供</h2>
-            <p>已构建的插件包，需要桌面应用才能安装。</p>
-          </div>
-          <div className="plugin-grid">
-            {BUNDLED_PLUGINS.map((plugin, index) => {
-              const Icon = iconFor(plugin.manifest.capabilities[0] ?? '')
-              return (
-                <Card
-                  key={plugin.manifest.id}
-                  className="plugin-card"
-                  data-tone={
-                    index % 3 === 0 ? 'blue' : index % 3 === 1 ? 'peach' : 'cream'
-                  }
-                >
-                  <CardHeader>
-                    <div className="plugin-card-top">
-                      <span className="plugin-icon">
-                        <Icon />
-                      </span>
-                      <Badge variant="outline">仅桌面应用</Badge>
-                    </div>
-                    <CardTitle>{plugin.manifest.name}</CardTitle>
-                    <CardDescription>{plugin.summary}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <code className="capability-name">
-                      {plugin.manifest.capabilities.join(' · ')}
-                    </code>
-                  </CardContent>
-                </Card>
-              )
-            })}
-          </div>
-        </section>
+            </TableBody>
+          </Table>
+        </div>
       )}
-
-      <section className="plugin-group" aria-labelledby="plugins-demo-heading">
-        <div className="plugin-group-heading">
-          <h2 id="plugins-demo-heading">演示占位</h2>
-          <p>只展示能力入口，不包含执行模块。</p>
-        </div>
-        <div className="plugin-grid">
-          {PLUGIN_CATALOG.map((plugin, index) => {
-            const Icon = iconFor(plugin.capability)
-            return (
-              <Card
-                key={plugin.id}
-                className="plugin-card"
-                data-tone={index % 3 === 0 ? 'blue' : index % 3 === 1 ? 'peach' : 'cream'}
-              >
-                <CardHeader>
-                  <div className="plugin-card-top">
-                    <span className="plugin-icon">
-                      <Icon />
-                    </span>
-                    <Badge variant="outline">待接入</Badge>
-                  </div>
-                  <CardTitle>{plugin.name}</CardTitle>
-                  <CardDescription>{plugin.description}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <code className="capability-name">{plugin.capability}</code>
-                </CardContent>
-              </Card>
-            )
-          })}
-        </div>
-      </section>
-
-      <p className="demo-footnote">
-        插件由宿主进程托管：清单在安装时校验，能力在启用时授权；密码由插件保存在私有目录。
-        演示占位仍未接入执行模块，也不代表能力已授权。
-      </p>
-
-      <Dialog
-        open={grantingPlugin !== null}
-        onOpenChange={(open) => {
-          if (!open) setGranting(null)
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>授权并启用 {grantingPlugin?.name}</DialogTitle>
-            <DialogDescription>
-              只勾选需要的声明能力；未授权的能力在调用时会被宿主拒绝。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="plugin-grant">
-            {grantingPlugin?.capabilities.map((capability) => (
-              <label key={capability} className="plugin-grant-row">
-                <input
-                  type="checkbox"
-                  checked={granted.includes(capability)}
-                  onChange={(event) => {
-                    setGranted((current) =>
-                      event.target.checked
-                        ? [...current, capability]
-                        : current.filter((entry) => entry !== capability),
-                    )
-                  }}
-                />
-                <code>{capability}</code>
-              </label>
-            ))}
-          </div>
-          <dl className="about-details">
-            <div className="about-row">
-              <dt>网络域名</dt>
-              <dd>{grantingPlugin?.permissions.networkDomains.join('、') || '未申请'}</dd>
-            </div>
-            <div className="about-row">
-              <dt>密钥槽</dt>
-              <dd>{grantingPlugin?.permissions.secrets.join('、') || '未申请'}</dd>
-            </div>
-            <div className="about-row">
-              <dt>插件存储</dt>
-              <dd>
-                {grantingPlugin?.permissions.storage === 'private'
-                  ? '插件私有命名空间'
-                  : '不使用存储'}
-              </dd>
-            </div>
-          </dl>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setGranting(null)}>
-              取消
-            </Button>
-            <Button
-              disabled={busy !== null || granted.length === 0}
-              onClick={() => {
-                const target = grantingPlugin
-                if (target === null) return
-                void run(`enable-${target.id}`, async () => {
-                  await enablePlugin(target.id, granted)
-                  setGranting(null)
-                })
-              }}
-            >
-              启用并授权
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={inspected !== null}
@@ -437,14 +305,9 @@ export function PluginsPage() {
           if (!open) setInspecting(null)
         }}
       >
-        <DialogContent>
+        <DialogContent aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>{inspected?.name}</DialogTitle>
-            <DialogDescription>
-              {inspected?.state === 'available'
-                ? '这是插件包声明的范围，安装后才会启动进程。'
-                : '以下是宿主校验过的清单与实际运行状态。'}
-            </DialogDescription>
           </DialogHeader>
           <dl className="about-details">
             <div className="about-row">
@@ -461,53 +324,68 @@ export function PluginsPage() {
               </dd>
             </div>
             <div className="about-row">
-              <dt>声明能力</dt>
+              <dt>能力</dt>
               <dd>
                 <code>{inspected?.capabilities.join(' · ')}</code>
               </dd>
             </div>
             <div className="about-row">
-              <dt>已授权</dt>
-              <dd>
-                {inspected && inspected.granted.length > 0
-                  ? inspected.granted.join(' · ')
-                  : '无'}
-              </dd>
+              <dt>方法</dt>
+              <dd>{inspected?.methods.length ?? 0} 个</dd>
             </div>
             <div className="about-row">
               <dt>网络域名</dt>
               <dd>{inspected?.permissions.networkDomains.join('、') || '未申请'}</dd>
             </div>
             <div className="about-row">
-              <dt>运行状态</dt>
-              <dd>
-                {inspected ? stateLabel(inspected) : ''}
-                {inspected?.status ? ' · 进程已上报状态' : ''}
-              </dd>
+              <dt>密钥槽</dt>
+              <dd>{inspected?.secretSlots.join('、') || '未申请'}</dd>
             </div>
             <div className="about-row">
-              <dt>已声明方法</dt>
-              <dd>{inspected?.methods.length ?? 0} 个</dd>
+              <dt>状态</dt>
+              <dd>
+                {inspected ? stateText[inspected.state] : ''}
+                {inspected?.lastError ? ` · ${inspected.lastError}` : ''}
+              </dd>
             </div>
           </dl>
-          {inspected && inspected.secretSlots.length > 0 ? (
-            <div className="plugin-secrets">
-              <h3>声明的密钥槽</h3>
-              <p className="plugin-note">
-                密码由插件保存在自己的私有目录，宿主不读取也不代为保管；在代理池页面填写。
-              </p>
-              <div className="plugin-secret-row">
-                {inspected.secretSlots.map((slot) => (
-                  <code key={slot}>{slot}</code>
-                ))}
-              </div>
-            </div>
-          ) : null}
           <DialogFooter>
             <Button onClick={() => setInspecting(null)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={removingRow !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoving(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>卸载 {removingRow?.name}</AlertDialogTitle>
+            <AlertDialogDescription>
+              插件文件与它保存的数据都会被删除，重新使用需要再次安装。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                const target = removingRow
+                if (target === null) return
+                setRemoving(null)
+                void run(`uninstall-${target.id}`, async () => {
+                  await uninstallPlugin(target.id)
+                })
+              }}
+            >
+              卸载
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }

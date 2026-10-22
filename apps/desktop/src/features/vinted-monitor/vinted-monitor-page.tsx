@@ -35,18 +35,16 @@ import {
 } from '@/components/ui/table'
 import { toast } from '@/components/ui/toast'
 import {
-  enablePlugin,
   listPlugins,
   pluginHostAvailable,
-  restartPlugin,
   type PluginView,
 } from '@/lib/platform/native-plugins'
+import { PluginGate } from '@/features/plugins/plugin-gate'
 import { listMonitors, removeMonitor, runMonitor } from './api'
 import { ItemsSheet } from './items-sheet'
 import { MonitorFormSheet } from './monitor-form-sheet'
 import { RunsSheet } from './runs-sheet'
 import {
-  VINTED_CAPABILITY,
   VINTED_PLUGIN_ID,
   formatTime,
   intervalText,
@@ -68,14 +66,9 @@ function statusBadge(status: RunStatus | null): 'secondary' | 'destructive' | 'o
 export interface VintedMonitorPageProps {
   plugin: PluginView | null
   hostAvailable: boolean
-  onEnable?: () => Promise<void>
 }
 
-export function VintedMonitorPage({
-  plugin,
-  hostAvailable,
-  onEnable,
-}: VintedMonitorPageProps) {
+export function VintedMonitorPage({ plugin, hostAvailable }: VintedMonitorPageProps) {
   const running = plugin !== null && plugin.state === 'running'
   const [monitors, setMonitors] = useState<Monitor[] | null>(null)
   const [itemCounts, setItemCounts] = useState<Record<string, number>>({})
@@ -219,50 +212,7 @@ export function VintedMonitorPage({
         ) : null}
 
         <div className="vinted-body">
-          {!hostAvailable ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>Vinted 监控需要桌面应用</EmptyTitle>
-                <EmptyDescription>
-                  采集由插件进程请求 Vinted 的公开接口，网页预览没有插件宿主。
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : plugin === null ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>Vinted 监控插件尚未安装</EmptyTitle>
-                <EmptyDescription>
-                  到插件中心安装并启用「Vinted 商品监控」后，这里可以创建采集任务。
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : !running ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>
-                  {plugin.state === 'failed'
-                    ? '插件进程启动失败'
-                    : 'Vinted 监控插件未启用'}
-                </EmptyTitle>
-                <EmptyDescription>
-                  {plugin.lastError ??
-                    (plugin.enabled
-                      ? '插件已授权，但进程没有运行；采集需要进程就绪。'
-                      : `到插件中心启用并授予 ${VINTED_CAPABILITY} 能力后，这里可以创建监控。`)}
-                </EmptyDescription>
-              </EmptyHeader>
-              {plugin.enabled && onEnable ? (
-                <Button
-                  onClick={() => {
-                    void onEnable()
-                  }}
-                >
-                  重新启动插件进程
-                </Button>
-              ) : null}
-            </Empty>
-          ) : (
+          {showContent ? (
             <>
               {error === null ? null : <FieldError role="alert">{error}</FieldError>}
               {monitors === null ? (
@@ -403,6 +353,12 @@ export function VintedMonitorPage({
                 </div>
               )}
             </>
+          ) : (
+            <PluginGate
+              label="Vinted 监控"
+              plugin={plugin}
+              hostAvailable={hostAvailable}
+            />
           )}
         </div>
       </Card>
@@ -462,8 +418,12 @@ export function VintedMonitorRoute() {
 
   const refresh = useCallback(async () => {
     if (!hostAvailable) return
-    const catalog = await listPlugins()
-    setPlugin(catalog.find((entry) => entry.id === VINTED_PLUGIN_ID) ?? null)
+    try {
+      const catalog = await listPlugins()
+      setPlugin(catalog.find((entry) => entry.id === VINTED_PLUGIN_ID) ?? null)
+    } catch (cause) {
+      setError(message(cause))
+    }
   }, [hostAvailable])
 
   useEffect(() => {
@@ -484,26 +444,20 @@ export function VintedMonitorRoute() {
     }
   }, [hostAvailable])
 
-  async function enable() {
-    if (plugin === null) return
-    setError(null)
-    try {
-      if (plugin.enabled) await restartPlugin(plugin.id)
-      else await enablePlugin(plugin.id, plugin.capabilities)
-      await refresh()
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }
+  // The host has no push channel: keep looking while the process is coming up.
+  const pending = plugin === null || plugin.state !== 'running'
+  useEffect(() => {
+    if (!hostAvailable || !pending) return
+    const timer = setInterval(() => {
+      void refresh()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [hostAvailable, pending, refresh])
 
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <VintedMonitorPage
-        plugin={plugin}
-        hostAvailable={hostAvailable}
-        onEnable={enable}
-      />
+      <VintedMonitorPage plugin={plugin} hostAvailable={hostAvailable} />
     </>
   )
 }

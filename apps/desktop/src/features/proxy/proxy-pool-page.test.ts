@@ -39,21 +39,21 @@ function render(overrides: Partial<Parameters<typeof ProxyPoolPage>[0]>): string
 }
 
 describe('proxy pool page', () => {
-  it('explains that the pool needs the desktop host', () => {
+  it('says the page needs the desktop host', () => {
     const html = render({ hostAvailable: false })
-    expect(html).toContain('只能在 Nexus 桌面应用中运行')
+    expect(html).toContain('代理池需要桌面应用')
     expect(html).not.toContain('新增代理')
   })
 
   it('points to the plugin center when the plugin is missing', () => {
     const html = render({ plugin: null })
-    expect(html).toContain('代理插件尚未安装')
+    expect(html).toContain('代理池插件尚未安装')
   })
 
-  it('does not pretend a disabled plugin can serve data', () => {
-    const html = render({ plugin: plugin({ state: 'stopped', enabled: false }) })
-    expect(html).toContain('代理插件未启用')
-    expect(html).toContain('启用并授予 proxy.provider')
+  it('waits for a starting process instead of offering a restart', () => {
+    const html = render({ plugin: plugin({ state: 'starting' }) })
+    expect(html).toContain('代理池插件正在启动')
+    expect(html).not.toContain('重新启动插件进程')
     expect(html).not.toContain('新增代理')
   })
 

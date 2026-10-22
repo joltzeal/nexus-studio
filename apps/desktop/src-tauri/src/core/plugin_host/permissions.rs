@@ -68,19 +68,7 @@ pub fn check_domain(plugin: &InstalledPlugin, domain: &str) -> Result<(), Permis
     }
 }
 
-/// Capabilities the user may grant: only the ones the manifest declares.
+/// Capabilities an installation grants: everything the manifest declares.
 pub fn grantable(plugin: &InstalledPlugin) -> Vec<Capability> {
     plugin.manifest.capabilities.clone()
-}
-
-/// Filters a requested grant down to declared capabilities, so a forged
-/// request cannot widen the plugin's scope.
-pub fn narrow_grant(plugin: &InstalledPlugin, requested: &[Capability]) -> Vec<Capability> {
-    plugin
-        .manifest
-        .capabilities
-        .iter()
-        .copied()
-        .filter(|capability| requested.contains(capability))
-        .collect()
 }

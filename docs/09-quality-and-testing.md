@@ -376,6 +376,51 @@ Vitest 覆盖偏好校验与顺序写入、演示数据持久化、损坏数据�
 未验证：真实 Vinted 接口的返回结构与限流表现（所有用例都替换了 `fetch` 或注入假客户端）；
 直连 IP 被拒时的真实错误文本；长时间定时采集的内存与文件增长；Windows 行为。
 
+## 2026-10-22 插件安装即启用、进程自愈与插件中心改版
+
+按“装上就跑、坏了自己重启”重做插件生命周期：
+
+- `install()` 直接写入 `enabled: true` 与 manifest 声明的全部能力、域名，随后立刻 `ensure_started()`；
+  `enable()` / `disable()` / `restart()` 与对应命令 `plugin_enable` / `plugin_disable` / `plugin_restart` 一并删除。
+- 新增监督线程：应用启动 600 ms 后开始，每 3 秒扫一遍已安装插件，
+  进程缺失、退出或握手失败就重新拉起；失败按 500 ms 起、逐次翻倍、上限 30 秒退避，
+  进程存活超过 30 秒后失败计数归零。`shutdown()` 先停线程再停子进程。
+- 状态收敛为 `available` / `running` / `starting` / `retrying`，不再有“进程失败”这种需要用户处理的状态；
+  `lastError` 只在清单详情里出现。
+- `open()` 会把旧登记表里 `enabled: false` 或授权不全的记录补齐为“已启用 + 全量声明能力”，
+  避免升级后插件停在不可用状态。
+- 插件中心从三列卡片网格改成一张紧凑表格（插件 / 能力 / 版本 / 状态 / 操作），
+  删除“演示占位”整段、页脚说明、分组说明与页面描述；清单按钮换成一个 `i` 图标，
+  卸载加了 AlertDialog 确认。
+- 五个功能页（共享货源、地址生成器、AI 生图、代理池、Vinted 监控）改用统一的 `PluginGate`，
+  去掉“插件进程启动失败 / 重新启动插件进程”按钮与 `onEnable` 管道，
+  并在插件未就绪时每 2 秒重读一次目录，进程起来后自动放行。
+
+本轮在本机 macOS 实际执行：
+
+| 检查         | 命令                                         | 结果                                          |
+| ------------ | -------------------------------------------- | --------------------------------------------- |
+| ESLint       | `eslint . --max-warnings 0`                  | 通过，无输出                                  |
+| Prettier     | `prettier --check .`                         | 首次报 `plugin-gate.tsx`，格式化后通过        |
+| 桌面类型检查 | `tsc -p apps/desktop/tsconfig.json --noEmit` | 通过                                          |
+| 测试类型检查 | `tsc -p tsconfig.tests.json --noEmit`        | 通过                                          |
+| 前端测试     | `vitest run`                                 | 48 文件、459 用例通过                         |
+| Rust 测试    | `cargo test --locked`                        | 60 通过、1 忽略（真实浏览器冒烟），共 61 用例 |
+| Rust 静态    | `cargo fmt --check` + `clippy -D warnings`   | 通过                                          |
+
+新增 Rust 用例：`installing_a_plugin_grants_and_starts_it`（安装即授权并启动、未声明能力仍被拒）、
+`supervisor_restarts_a_plugin_that_exits`（`test.crash` 打断进程后由 `supervise_once()` 拉起）、
+`a_disabled_registry_entry_is_adopted_on_open`（旧登记表补齐并写回）；
+删除 `disabling_a_plugin_stops_its_process`。页面用例改为断言“正在启动 / 后台会自动重试”，
+不再断言已删除的“插件进程启动失败”与重启按钮。
+
+Playwright 1440×900 实测：插件中心六行表格、页面无滚动条（900/900）；
+`i` 图标弹出清单详情；点“安装”后该行从“未安装”变为“启动中”；
+共享货源在插件 `starting` 时显示“共享货源插件正在启动 / 进程就绪后自动加载。”
+
+未验证：真实应用里五个插件同时启动的耗时与内存；进程被系统杀死（而非自杀）时的重启时延；
+Windows 上 `node` 子进程的回收；插件进程反复崩溃时退避上限（30 秒）是否符合体感。
+
 ## 尚未验证与后续门禁
 
 | 后续事项             | 当前状态                                       |

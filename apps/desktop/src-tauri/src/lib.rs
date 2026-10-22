@@ -25,9 +25,6 @@ pub fn run() {
             core::plugin_service::plugin_proxy_providers,
             core::plugin_service::plugin_install,
             core::plugin_service::plugin_uninstall,
-            core::plugin_service::plugin_enable,
-            core::plugin_service::plugin_disable,
-            core::plugin_service::plugin_restart,
             core::plugin_service::plugin_call
         ])
         .run(tauri::generate_context!())

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowDown,
   ArrowUp,
@@ -83,12 +83,11 @@ import {
   type Scheme,
 } from './types'
 import {
-  enablePlugin,
   listPlugins,
   pluginHostAvailable,
-  restartPlugin,
   type PluginView,
 } from '@/lib/platform/native-plugins'
+import { PluginGate } from '@/features/plugins/plugin-gate'
 
 export const PROXY_PLUGIN_ID = 'studio.proxy-pool'
 
@@ -147,11 +146,23 @@ function sortValue(row: ProxyRow, key: SortKey): string | number {
 export interface ProxyPoolPageProps {
   plugin: PluginView | null
   hostAvailable: boolean
-  /** Restarts or enables the plugin from the page itself. */
-  onEnable?: () => Promise<void>
 }
 
-export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPageProps) {
+/** Page shell shared by the table and the placeholder states. */
+function ProxyShell({ children }: { children: ReactNode }) {
+  return (
+    <section className="collection-page page-reveal" aria-labelledby="proxy-heading">
+      <div className="section-intro">
+        <h1 className="page-heading" id="proxy-heading">
+          代理池
+        </h1>
+      </div>
+      {children}
+    </section>
+  )
+}
+
+export function ProxyPoolPage({ plugin, hostAvailable }: ProxyPoolPageProps) {
   const running = plugin?.state === 'running'
   const [rows, setRows] = useState<ProxyRow[]>([])
   const [total, setTotal] = useState(0)
@@ -371,87 +382,11 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
     )
   }
 
-  if (!hostAvailable) {
-    return (
-      <section className="collection-page page-reveal" aria-labelledby="proxy-heading">
-        <div className="section-intro">
-          <div>
-            <h1 className="page-heading" id="proxy-heading">
-              代理池
-            </h1>
-            <p className="page-description">
-              管理代理库存、检测出口 IP 并生成 Clash 订阅。
-            </p>
-          </div>
-        </div>
-        <p className="native-profiles-hint" role="status">
-          代理池由插件进程提供，只能在 Nexus 桌面应用中运行；网页预览没有插件宿主。
-        </p>
-      </section>
-    )
-  }
-
-  if (plugin === null) {
-    return (
-      <section className="collection-page page-reveal" aria-labelledby="proxy-heading">
-        <div className="section-intro">
-          <div>
-            <h1 className="page-heading" id="proxy-heading">
-              代理池
-            </h1>
-            <p className="page-description">
-              管理代理库存、检测出口 IP 并生成 Clash 订阅。
-            </p>
-          </div>
-        </div>
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>代理插件尚未安装</EmptyTitle>
-            <EmptyDescription>
-              到插件中心安装并启用「代理池」后，这里会显示库存与检测结果。
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      </section>
-    )
-  }
-
   if (!running) {
     return (
-      <section className="collection-page page-reveal" aria-labelledby="proxy-heading">
-        <div className="section-intro">
-          <div>
-            <h1 className="page-heading" id="proxy-heading">
-              代理池
-            </h1>
-            <p className="page-description">
-              管理代理库存、检测出口 IP 并生成 Clash 订阅。
-            </p>
-          </div>
-        </div>
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>
-              {plugin.state === 'failed' ? '插件进程启动失败' : '代理插件未启用'}
-            </EmptyTitle>
-            <EmptyDescription>
-              {plugin.lastError ??
-                (plugin.enabled
-                  ? '插件已授权，但进程没有运行；库存需要进程就绪后才能读取。'
-                  : '到插件中心启用并授予 proxy.provider 能力后，这里会显示库存与检测结果。')}
-            </EmptyDescription>
-          </EmptyHeader>
-          {plugin.enabled && onEnable ? (
-            <Button
-              onClick={() => {
-                void onEnable()
-              }}
-            >
-              重新启动插件进程
-            </Button>
-          ) : null}
-        </Empty>
-      </section>
+      <ProxyShell>
+        <PluginGate label="代理池" plugin={plugin} hostAvailable={hostAvailable} />
+      </ProxyShell>
     )
   }
 
@@ -967,8 +902,12 @@ export function ProxyPoolRoute() {
 
   const refresh = useCallback(async () => {
     if (!hostAvailable) return
-    const catalog = await listPlugins()
-    setPlugin(catalog.find((entry) => entry.id === PROXY_PLUGIN_ID) ?? null)
+    try {
+      const catalog = await listPlugins()
+      setPlugin(catalog.find((entry) => entry.id === PROXY_PLUGIN_ID) ?? null)
+    } catch (cause) {
+      setError(message(cause))
+    }
   }, [hostAvailable])
 
   useEffect(() => {
@@ -988,22 +927,20 @@ export function ProxyPoolRoute() {
     }
   }, [hostAvailable])
 
-  async function enable() {
-    if (plugin === null) return
-    setError(null)
-    try {
-      if (plugin.enabled) await restartPlugin(plugin.id)
-      else await enablePlugin(plugin.id, plugin.capabilities)
-      await refresh()
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }
+  // The host has no push channel: keep looking while the process is coming up.
+  const pending = plugin === null || plugin.state !== 'running'
+  useEffect(() => {
+    if (!hostAvailable || !pending) return
+    const timer = setInterval(() => {
+      void refresh()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [hostAvailable, pending, refresh])
 
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <ProxyPoolPage plugin={plugin} hostAvailable={hostAvailable} onEnable={enable} />
+      <ProxyPoolPage plugin={plugin} hostAvailable={hostAvailable} />
     </>
   )
 }

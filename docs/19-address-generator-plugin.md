@@ -145,6 +145,6 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
 CSV 公式注入防护、密钥保存与清除、能力方法表与错误码；
 页面侧 14 个用例覆盖工具栏与服务卡片渲染、Google 结果归一化。
 
-最后一条会启动真实 `node` 进程，把本插件从 `dist` 安装进宿主、以 `address.generator`
-启用并调用 `address.catalog`，同时验证用 `proxy.provider` 调用会被拒绝。
+最后一条会启动真实 `node` 进程，把本插件从 `dist` 安装进宿主（安装即启动），
+再调用 `address.catalog`，同时验证用 `proxy.provider` 调用会被拒绝。
 这些结果不证明上游地址质量，也不代表 Windows 行为。

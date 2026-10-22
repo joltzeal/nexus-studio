@@ -515,7 +515,8 @@
   background: var(--card);
 }
 
-.space-table-panel {
+.space-table-panel,
+.plugin-panel {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -539,10 +540,12 @@
   color: var(--muted-foreground);
   font-size: 11px;
 }
-.space-table-panel [data-slot='table'] {
+.space-table-panel [data-slot='table'],
+.plugin-panel [data-slot='table'] {
   min-width: 850px;
 }
-.space-table-panel [data-slot='table-head'] {
+.space-table-panel [data-slot='table-head'],
+.plugin-panel [data-slot='table-head'] {
   height: 36px;
   padding-inline: 12px;
   background: var(--muted);
@@ -550,7 +553,8 @@
   font-size: 11px;
   font-weight: 500;
 }
-.space-table-panel [data-slot='table-cell'] {
+.space-table-panel [data-slot='table-cell'],
+.plugin-panel [data-slot='table-cell'] {
   padding: 8px 12px;
   font-size: 12px;
 }
@@ -642,8 +646,7 @@
   line-height: 1.8;
 }
 
-.group-grid,
-.plugin-grid {
+.group-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: stretch;
@@ -707,62 +710,49 @@
 .group-member-list small {
   color: var(--muted-foreground);
 }
-.plugin-card-top {
+.plugin-cell {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 .plugin-icon {
   display: grid;
-  width: 32px;
-  height: 32px;
+  flex: 0 0 28px;
+  height: 28px;
   place-items: center;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--muted);
   color: var(--foreground);
 }
 .plugin-icon svg {
-  width: 19px;
-  height: 19px;
+  width: 16px;
+  height: 16px;
 }
-.plugin-card [data-slot='card-description'] {
-  min-height: 36px;
-  line-height: 1.8;
+.plugin-cell-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
-.plugin-card [data-slot='card-content'] {
-  margin-top: auto;
+.plugin-cell-text strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.plugin-id {
+  color: var(--muted-foreground);
+  font-size: 10px;
 }
 .capability-name {
   color: var(--muted-foreground);
   font-size: 10px;
 }
-.plugin-switch {
+.plugin-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--muted-foreground);
-  font-size: 10px;
-}
-.plugin-group + .plugin-group {
-  margin-top: 20px;
-}
-.plugin-group-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.plugin-group-heading h2 {
-  font-size: 13px;
-  font-weight: 650;
-}
-.plugin-group-heading p {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: 11px;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .settings-tabs {
@@ -1031,8 +1021,7 @@
 }
 
 @media (max-width: 1200px) {
-  .group-grid,
-  .plugin-grid {
+  .group-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .appearance-layout {
@@ -1148,8 +1137,7 @@
   .panel-heading > span:last-child {
     display: none;
   }
-  .group-grid,
-  .plugin-grid {
+  .group-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .mode-options {
@@ -1175,65 +1163,7 @@
   }
 }
 
-/* Plugin host and proxy pool */
-
-.plugin-card-actions {
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: flex-start;
-}
-
-.plugin-error {
-  margin-top: 8px;
-  color: var(--destructive);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.plugin-grant {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-
-.plugin-grant-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.plugin-grant-row code {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-}
-
-.plugin-secrets {
-  display: grid;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.plugin-secrets h3 {
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-
-.plugin-secret-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 11px;
-}
-
-.plugin-secret-row code {
-  flex: 1;
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
+/* Proxy pool */
 
 .proxy-key-row {
   display: flex;
@@ -1243,13 +1173,6 @@
 
 .proxy-key-row > input {
   flex: 1;
-}
-
-.plugin-note {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 /* ---- 代理池页面 ---- */

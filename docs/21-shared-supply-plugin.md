@@ -124,6 +124,6 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
 收藏去重与上限、CSV 公式注入防护、存储损坏时失败关闭；
 页面侧 13 个用例覆盖工具栏与空状态、图片校验与 base64 编码。
 
-最后一条会启动真实 `node` 进程，把本插件从 `dist` 安装进宿主、以 `supply.catalog`
-启用并调用 `supply.catalog` 与 `supply.favorites.list`，同时验证用 `address.generator`
+最后一条会启动真实 `node` 进程，把本插件从 `dist` 安装进宿主（安装即启动），
+再调用 `supply.catalog` 与 `supply.favorites.list`，同时验证用 `address.generator`
 调用会被拒绝。这些结果不代表上游数据质量，也不代表 Windows 行为。

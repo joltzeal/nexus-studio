@@ -17,12 +17,11 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
 import {
-  enablePlugin,
   listPlugins,
   pluginHostAvailable,
-  restartPlugin,
   type PluginView,
 } from '@/lib/platform/native-plugins'
+import { PluginGate } from '@/features/plugins/plugin-gate'
 import { AddressCard } from './address-card'
 import { AddressMap } from './address-map'
 import { AddressSettingsSheet } from './address-settings-sheet'
@@ -35,7 +34,6 @@ import {
   profileFromPick,
 } from './api'
 import {
-  ADDRESS_CAPABILITY,
   ADDRESS_PLUGIN_ID,
   MAX_RESULTS,
   addressKey,
@@ -54,10 +52,9 @@ const COPY_FAILED = '复制失败，请检查剪贴板权限后重试。'
 export interface AddressPageProps {
   plugin: PluginView | null
   hostAvailable: boolean
-  onEnable?: () => Promise<void>
 }
 
-export function AddressPage({ plugin, hostAvailable, onEnable }: AddressPageProps) {
+export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
   const [catalog, setCatalog] = useState<AddressCatalog | null>(null)
   const [config, setConfig] = useState<MapsConfig | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -205,56 +202,10 @@ export function AddressPage({ plugin, hostAvailable, onEnable }: AddressPageProp
     setExportedPath(null)
   }
 
-  if (!hostAvailable) {
-    return (
-      <PageHeader>
-        <p className="native-profiles-hint" role="status">
-          地址生成器由插件进程提供，只能在 Nexus 桌面应用中运行；网页预览没有插件宿主。
-        </p>
-      </PageHeader>
-    )
-  }
-
-  if (plugin === null) {
-    return (
-      <PageHeader>
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>地址生成器插件尚未安装</EmptyTitle>
-            <EmptyDescription>
-              到插件中心安装并启用「地址生成器」后，这里可以生成地址与地图选点。
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      </PageHeader>
-    )
-  }
-
   if (!running) {
     return (
       <PageHeader>
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>
-              {plugin.state === 'failed' ? '插件进程启动失败' : '地址生成器插件未启用'}
-            </EmptyTitle>
-            <EmptyDescription>
-              {plugin.lastError ??
-                (plugin.enabled
-                  ? '插件已授权，但进程没有运行；地址查询需要进程就绪。'
-                  : `到插件中心启用并授予 ${ADDRESS_CAPABILITY} 能力后，这里可以生成地址。`)}
-            </EmptyDescription>
-          </EmptyHeader>
-          {plugin.enabled && onEnable ? (
-            <Button
-              onClick={() => {
-                void onEnable()
-              }}
-            >
-              重新启动插件进程
-            </Button>
-          ) : null}
-        </Empty>
+        <PluginGate label="地址生成器" plugin={plugin} hostAvailable={hostAvailable} />
       </PageHeader>
     )
   }
@@ -537,8 +488,12 @@ export function AddressGeneratorRoute() {
 
   const refresh = useCallback(async () => {
     if (!hostAvailable) return
-    const catalog = await listPlugins()
-    setPlugin(catalog.find((entry) => entry.id === ADDRESS_PLUGIN_ID) ?? null)
+    try {
+      const catalog = await listPlugins()
+      setPlugin(catalog.find((entry) => entry.id === ADDRESS_PLUGIN_ID) ?? null)
+    } catch (cause) {
+      setError(message(cause))
+    }
   }, [hostAvailable])
 
   useEffect(() => {
@@ -559,22 +514,20 @@ export function AddressGeneratorRoute() {
     }
   }, [hostAvailable])
 
-  async function enable() {
-    if (plugin === null) return
-    setError(null)
-    try {
-      if (plugin.enabled) await restartPlugin(plugin.id)
-      else await enablePlugin(plugin.id, plugin.capabilities)
-      await refresh()
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }
+  // The host has no push channel: keep looking while the process is coming up.
+  const pending = plugin === null || plugin.state !== 'running'
+  useEffect(() => {
+    if (!hostAvailable || !pending) return
+    const timer = setInterval(() => {
+      void refresh()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [hostAvailable, pending, refresh])
 
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <AddressPage plugin={plugin} hostAvailable={hostAvailable} onEnable={enable} />
+      <AddressPage plugin={plugin} hostAvailable={hostAvailable} />
     </>
   )
 }

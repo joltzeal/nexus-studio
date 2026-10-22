@@ -2,18 +2,16 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Camera, Copy, Download, Loader2, RefreshCw, Search, Store } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { FieldError } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
 import {
-  enablePlugin,
   listPlugins,
   pluginHostAvailable,
-  restartPlugin,
   type PluginView,
 } from '@/lib/platform/native-plugins'
+import { PluginGate } from '@/features/plugins/plugin-gate'
 import {
   favoritesCsv,
   getCatalog,
@@ -33,7 +31,6 @@ import {
 } from './product-grid'
 import { checkImageFile, prepareJpeg } from './image-prepare'
 import {
-  SUPPLY_CAPABILITY,
   SUPPLY_PLUGIN_ID,
   merchantLocation,
   merchantTitle,
@@ -73,7 +70,6 @@ function mergeProducts(current: Product[], incoming: Product[]): Product[] {
 export interface SupplyPageProps {
   plugin: PluginView | null
   hostAvailable: boolean
-  onEnable?: () => Promise<void>
 }
 
 /**
@@ -81,7 +77,7 @@ export interface SupplyPageProps {
  * apart from `[]` ("loaded, nothing there") is what makes the empty states
  * honest.
  */
-export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps) {
+export function SupplyPage({ plugin, hostAvailable }: SupplyPageProps) {
   const running = plugin !== null && plugin.state === 'running'
   const [section, setSection] = useState<Section>('browse')
   const [view, setView] = useState<ProductView>('waterfall')
@@ -303,56 +299,10 @@ export function SupplyPage({ plugin, hostAvailable, onEnable }: SupplyPageProps)
   const merchantsLoading = merchants === null
   const productsLoading = products === null && merchantId !== ''
 
-  if (!hostAvailable) {
-    return (
-      <SupplyState>
-        <p className="native-profiles-hint" role="status">
-          共享货源由插件进程提供，只能在 Nexus 桌面应用中运行；网页预览没有插件宿主。
-        </p>
-      </SupplyState>
-    )
-  }
-
-  if (plugin === null) {
-    return (
-      <SupplyState>
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>共享货源插件尚未安装</EmptyTitle>
-            <EmptyDescription>
-              到插件中心安装并启用「共享货源」后，这里可以浏览商户商品与收藏。
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      </SupplyState>
-    )
-  }
-
   if (!running) {
     return (
       <SupplyState>
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>
-              {plugin.state === 'failed' ? '插件进程启动失败' : '共享货源插件未启用'}
-            </EmptyTitle>
-            <EmptyDescription>
-              {plugin.lastError ??
-                (plugin.enabled
-                  ? '插件已授权，但进程没有运行；浏览货源需要进程就绪。'
-                  : `到插件中心启用并授予 ${SUPPLY_CAPABILITY} 能力后，这里可以浏览货源。`)}
-            </EmptyDescription>
-          </EmptyHeader>
-          {plugin.enabled && onEnable ? (
-            <Button
-              onClick={() => {
-                void onEnable()
-              }}
-            >
-              重新启动插件进程
-            </Button>
-          ) : null}
-        </Empty>
+        <PluginGate label="共享货源" plugin={plugin} hostAvailable={hostAvailable} />
       </SupplyState>
     )
   }
@@ -715,8 +665,12 @@ export function SharedSupplyRoute() {
 
   const refresh = useCallback(async () => {
     if (!hostAvailable) return
-    const catalog = await listPlugins()
-    setPlugin(catalog.find((entry) => entry.id === SUPPLY_PLUGIN_ID) ?? null)
+    try {
+      const catalog = await listPlugins()
+      setPlugin(catalog.find((entry) => entry.id === SUPPLY_PLUGIN_ID) ?? null)
+    } catch (cause) {
+      setError(message(cause))
+    }
   }, [hostAvailable])
 
   useEffect(() => {
@@ -737,22 +691,20 @@ export function SharedSupplyRoute() {
     }
   }, [hostAvailable])
 
-  async function enable() {
-    if (plugin === null) return
-    setError(null)
-    try {
-      if (plugin.enabled) await restartPlugin(plugin.id)
-      else await enablePlugin(plugin.id, plugin.capabilities)
-      await refresh()
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }
+  // The host has no push channel: keep looking while the process is coming up.
+  const pending = plugin === null || plugin.state !== 'running'
+  useEffect(() => {
+    if (!hostAvailable || !pending) return
+    const timer = setInterval(() => {
+      void refresh()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [hostAvailable, pending, refresh])
 
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <SupplyPage plugin={plugin} hostAvailable={hostAvailable} onEnable={enable} />
+      <SupplyPage plugin={plugin} hostAvailable={hostAvailable} />
     </>
   )
 }

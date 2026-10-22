@@ -15,19 +15,17 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
-  enablePlugin,
   listPlugins,
   pluginHostAvailable,
-  restartPlugin,
   type PluginView,
 } from '@/lib/platform/native-plugins'
+import { PluginGate } from '@/features/plugins/plugin-gate'
 import { listPresets, listProviders, listRecords } from './api'
 import { RecordDetailDialog } from './detail-dialog'
 import { GenerateDialog } from './generate-dialog'
 import { ProvidersSheet } from './providers-sheet'
 import { RecordImage } from './record-image'
 import {
-  AI_IMAGE_CAPABILITY,
   AI_IMAGE_PLUGIN_ID,
   formatTime,
   message,
@@ -51,10 +49,9 @@ const FILTERS: { value: RecordStatus | 'all'; label: string }[] = [
 export interface AiImagePageProps {
   plugin: PluginView | null
   hostAvailable: boolean
-  onEnable?: () => Promise<void>
 }
 
-export function AiImagePage({ plugin, hostAvailable, onEnable }: AiImagePageProps) {
+export function AiImagePage({ plugin, hostAvailable }: AiImagePageProps) {
   const running = plugin !== null && plugin.state === 'running'
   // Rows remember the query they belong to, so switching filter or page shows the
   // skeleton during the fetch without an effect that resets state by hand.
@@ -246,48 +243,7 @@ export function AiImagePage({ plugin, hostAvailable, onEnable }: AiImagePageProp
         ) : null}
 
         <div className="ai-body">
-          {!hostAvailable ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>AI 生图需要桌面应用</EmptyTitle>
-                <EmptyDescription>
-                  生图与文案都由插件进程请求外部接口，网页预览没有插件宿主。
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : plugin === null ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>AI 生图插件尚未安装</EmptyTitle>
-                <EmptyDescription>
-                  到插件中心安装并启用「AI 生图」后，这里可以配置模型并生成图片。
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : !running ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>
-                  {plugin.state === 'failed' ? '插件进程启动失败' : 'AI 生图插件未启用'}
-                </EmptyTitle>
-                <EmptyDescription>
-                  {plugin.lastError ??
-                    (plugin.enabled
-                      ? '插件已授权，但进程没有运行；生成需要进程就绪。'
-                      : `到插件中心启用并授予 ${AI_IMAGE_CAPABILITY} 能力后，这里可以生成图片。`)}
-                </EmptyDescription>
-              </EmptyHeader>
-              {plugin.enabled && onEnable ? (
-                <Button
-                  onClick={() => {
-                    void onEnable()
-                  }}
-                >
-                  重新启动插件进程
-                </Button>
-              ) : null}
-            </Empty>
-          ) : (
+          {showHeader ? (
             <>
               {error === null ? null : <FieldError role="alert">{error}</FieldError>}
               {records === null ? (
@@ -417,6 +373,8 @@ export function AiImagePage({ plugin, hostAvailable, onEnable }: AiImagePageProp
                 </div>
               )}
             </>
+          ) : (
+            <PluginGate label="AI 生图" plugin={plugin} hostAvailable={hostAvailable} />
           )}
         </div>
 
@@ -488,8 +446,12 @@ export function AiImageRoute() {
 
   const refresh = useCallback(async () => {
     if (!hostAvailable) return
-    const catalog = await listPlugins()
-    setPlugin(catalog.find((entry) => entry.id === AI_IMAGE_PLUGIN_ID) ?? null)
+    try {
+      const catalog = await listPlugins()
+      setPlugin(catalog.find((entry) => entry.id === AI_IMAGE_PLUGIN_ID) ?? null)
+    } catch (cause) {
+      setError(message(cause))
+    }
   }, [hostAvailable])
 
   useEffect(() => {
@@ -510,22 +472,20 @@ export function AiImageRoute() {
     }
   }, [hostAvailable])
 
-  async function enable() {
-    if (plugin === null) return
-    setError(null)
-    try {
-      if (plugin.enabled) await restartPlugin(plugin.id)
-      else await enablePlugin(plugin.id, plugin.capabilities)
-      await refresh()
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }
+  // The host has no push channel: keep looking while the process is coming up.
+  const pending = plugin === null || plugin.state !== 'running'
+  useEffect(() => {
+    if (!hostAvailable || !pending) return
+    const timer = setInterval(() => {
+      void refresh()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [hostAvailable, pending, refresh])
 
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <AiImagePage plugin={plugin} hostAvailable={hostAvailable} onEnable={enable} />
+      <AiImagePage plugin={plugin} hostAvailable={hostAvailable} />
     </>
   )
 }

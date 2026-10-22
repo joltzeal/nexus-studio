@@ -51,9 +51,13 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       pluginId: manifest.id,
       version: manifest.version,
       capabilities: manifest.capabilities,
-      methods: ['proxy.resolve', 'proxy.groups.list', 'test.echo'],
+      methods: ['proxy.resolve', 'proxy.groups.list', 'test.echo', 'test.crash'],
       status: { fixture: true },
     })
+    return
+  }
+  if (message.method === 'test.crash') {
+    process.exit(1)
     return
   }
   if (message.method === 'test.echo') {
@@ -308,7 +312,7 @@ fn host_with_fixture(temporary: &tempfile::TempDir, configured: bool) -> PluginH
 }
 
 #[test]
-fn host_installs_enables_and_calls_a_plugin() {
+fn installing_a_plugin_grants_and_starts_it() {
     let temporary = tempfile::tempdir().unwrap();
     let host = host_with_fixture(&temporary, false);
 
@@ -318,27 +322,12 @@ fn host_installs_enables_and_calls_a_plugin() {
 
     let source = temporary.path().join("source");
     let view = host.install(&source).unwrap();
-    assert_eq!(view.state, "stopped");
-    assert!(view.granted.is_empty());
-
-    // Declared but not granted: the call is refused before the process runs.
-    let denied = host
-        .call(
-            "test.fixture-plugin",
-            Capability::ProxyProvider,
-            "test.echo",
-            serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .unwrap_err();
-    assert_eq!(denied.code(), "PERMISSION_DENIED");
-
-    let enabled = host
-        .enable("test.fixture-plugin", &[Capability::ProxyProvider])
-        .unwrap();
-    assert!(enabled.enabled);
-    assert_eq!(enabled.state, "running");
-    assert!(enabled.methods.contains(&"test.echo".to_string()));
+    // No separate enable step: install grants the declared capabilities and
+    // starts the process.
+    assert!(view.enabled);
+    assert_eq!(view.granted, vec!["proxy.provider".to_string()]);
+    assert_eq!(view.state, "running", "lastError: {:?}", view.last_error);
+    assert!(view.methods.contains(&"test.echo".to_string()));
 
     let echoed = host
         .call(
@@ -351,8 +340,20 @@ fn host_installs_enables_and_calls_a_plugin() {
         .unwrap();
     assert_eq!(echoed["value"], 7);
 
-    // A method the plugin never declared cannot be reached even when the
-    // capability is granted.
+    // A capability the manifest does not declare stays out of reach even
+    // though installation granted everything it asked for.
+    let undeclared = host
+        .call(
+            "test.fixture-plugin",
+            Capability::ImageProvider,
+            "test.echo",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+    assert_eq!(undeclared.code(), "PERMISSION_DENIED");
+
+    // A method the plugin never declared cannot be reached either.
     let unknown = host
         .call(
             "test.fixture-plugin",
@@ -368,12 +369,93 @@ fn host_installs_enables_and_calls_a_plugin() {
 }
 
 #[test]
+fn supervisor_restarts_a_plugin_that_exits() {
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_fixture(&temporary, false);
+    host.install(&temporary.path().join("source")).unwrap();
+
+    // The fixture kills its own process when asked to crash.
+    let _ = host.call(
+        "test.fixture-plugin",
+        Capability::ProxyProvider,
+        "test.crash",
+        serde_json::json!({}),
+        Duration::from_secs(5),
+    );
+    let dead = host.view_of("test.fixture-plugin").unwrap();
+    assert_eq!(dead.state, "retrying", "lastError: {:?}", dead.last_error);
+
+    // The first retry waits out the base delay before the next pass picks it up.
+    std::thread::sleep(Duration::from_millis(700));
+    host.supervise_once();
+
+    let revived = host.view_of("test.fixture-plugin").unwrap();
+    assert_eq!(
+        revived.state, "running",
+        "lastError: {:?}",
+        revived.last_error
+    );
+    let echoed = host
+        .call(
+            "test.fixture-plugin",
+            Capability::ProxyProvider,
+            "test.echo",
+            serde_json::json!({ "value": 1 }),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(echoed["value"], 1);
+    host.shutdown();
+}
+
+#[test]
+fn a_disabled_registry_entry_is_adopted_on_open() {
+    // Registries written by a build that still had a manual enable step must
+    // not stay inert: opening the host enables and grants them.
+    let temporary = tempfile::tempdir().unwrap();
+    let source = write_package(&temporary.path().join("source"), MANIFEST, false);
+    let candidate = inspect(&source, CandidateSource::Development)
+        .unwrap()
+        .unwrap();
+    let root = temporary.path().join("host");
+    let directory = install::install(&candidate, &root).unwrap();
+    let store = RegistryStore::new(root.join("registry.json"));
+    store
+        .save(&super::registry::RegistryDocument {
+            schema_version: super::registry::REGISTRY_SCHEMA_VERSION,
+            plugins: vec![super::registry::InstalledPlugin {
+                id: candidate.manifest.id.clone(),
+                version: candidate.manifest.version.clone(),
+                manifest: candidate.manifest.clone(),
+                directory,
+                entry: candidate.entry.clone(),
+                manifest_digest: candidate.digest.clone(),
+                enabled: false,
+                granted_capabilities: Vec::new(),
+                granted_domains: Vec::new(),
+                installed_at: "0".into(),
+            }],
+        })
+        .unwrap();
+
+    let host = PluginHost::open(root, Vec::new()).unwrap();
+    let view = host.view_of("test.fixture-plugin").unwrap();
+    assert!(view.enabled);
+    assert_eq!(view.granted, vec!["proxy.provider".to_string()]);
+    let persisted = store.load().unwrap();
+    assert!(persisted.plugins[0].enabled);
+    assert_eq!(
+        persisted.plugins[0].granted_domains,
+        vec!["example.com".to_string()]
+    );
+    host.shutdown();
+}
+
+#[test]
 fn host_blocks_launch_when_the_plugin_has_no_proxy() {
     let temporary = tempfile::tempdir().unwrap();
     let host = host_with_fixture(&temporary, false);
     host.install(&temporary.path().join("source")).unwrap();
-    host.enable("test.fixture-plugin", &[Capability::ProxyProvider])
-        .unwrap();
 
     let blocked = host
         .resolve_proxy("test.fixture-plugin", "window-1")
@@ -388,8 +470,6 @@ fn host_resolves_a_configured_proxy_handle() {
     let temporary = tempfile::tempdir().unwrap();
     let host = host_with_fixture(&temporary, true);
     host.install(&temporary.path().join("source")).unwrap();
-    host.enable("test.fixture-plugin", &[Capability::ProxyProvider])
-        .unwrap();
 
     let reference = host
         .resolve_proxy("test.fixture-plugin", "window-1")
@@ -404,8 +484,6 @@ fn uninstall_stops_the_process_and_forgets_the_plugin() {
     let temporary = tempfile::tempdir().unwrap();
     let host = host_with_fixture(&temporary, false);
     host.install(&temporary.path().join("source")).unwrap();
-    host.enable("test.fixture-plugin", &[Capability::ProxyProvider])
-        .unwrap();
 
     host.uninstall("test.fixture-plugin").unwrap();
     // The development source is still discoverable, but nothing is installed.
@@ -415,30 +493,6 @@ fn uninstall_stops_the_process_and_forgets_the_plugin() {
     assert_eq!(
         host.view_of("test.fixture-plugin").unwrap_err().code(),
         "NOT_CONFIGURED"
-    );
-}
-
-#[test]
-fn disabling_a_plugin_stops_its_process() {
-    let temporary = tempfile::tempdir().unwrap();
-    let host = host_with_fixture(&temporary, false);
-    host.install(&temporary.path().join("source")).unwrap();
-    host.enable("test.fixture-plugin", &[Capability::ProxyProvider])
-        .unwrap();
-    let disabled = host.disable("test.fixture-plugin").unwrap();
-    assert!(!disabled.enabled);
-    assert_eq!(disabled.state, "stopped");
-    assert_eq!(
-        host.call(
-            "test.fixture-plugin",
-            Capability::ProxyProvider,
-            "test.echo",
-            serde_json::json!({}),
-            Duration::from_secs(5),
-        )
-        .unwrap_err()
-        .code(),
-        "PERMISSION_DENIED"
     );
 }
 
@@ -460,16 +514,10 @@ fn workspace_plugin_installs_from_its_built_dist_and_runs() {
 
     let installed = host.install(&plugins.join("proxy-pool")).unwrap();
     assert_eq!(installed.id, "studio.proxy-pool");
-    assert_eq!(installed.state, "stopped");
-    assert!(!installed.enabled);
-
-    let enabled = host
-        .enable("studio.proxy-pool", &[Capability::ProxyProvider])
-        .unwrap();
     assert_eq!(
-        enabled.state, "running",
+        installed.state, "running",
         "lastError: {:?}",
-        enabled.last_error
+        installed.last_error
     );
 
     let listed = host
@@ -554,15 +602,10 @@ fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
 
     let installed = host.install(&plugins.join("address-generator")).unwrap();
     assert_eq!(installed.id, "studio.address-generator");
-    assert!(!installed.enabled);
-
-    let enabled = host
-        .enable("studio.address-generator", &[Capability::AddressGenerator])
-        .unwrap();
     assert_eq!(
-        enabled.state, "running",
+        installed.state, "running",
         "lastError: {:?}",
-        enabled.last_error
+        installed.last_error
     );
 
     // `address.catalog` is served from the plugin's own table, so this stays offline.
@@ -609,15 +652,10 @@ fn workspace_supply_plugin_installs_enables_and_lists_favourites() {
 
     let installed = host.install(&plugins.join("shared-supply")).unwrap();
     assert_eq!(installed.id, "studio.shared-supply");
-    assert!(!installed.enabled);
-
-    let enabled = host
-        .enable("studio.shared-supply", &[Capability::SupplyCatalog])
-        .unwrap();
     assert_eq!(
-        enabled.state, "running",
+        installed.state, "running",
         "lastError: {:?}",
-        enabled.last_error
+        installed.last_error
     );
 
     // Both calls below are served from the plugin itself, so no upstream request

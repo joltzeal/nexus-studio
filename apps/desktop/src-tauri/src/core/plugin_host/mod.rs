@@ -19,11 +19,23 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_CALL_DEADLINE: Duration = Duration::from_secs(30);
 pub const RESOLVE_DEADLINE: Duration = Duration::from_secs(20);
+/// How often the supervisor looks for a plugin process that needs starting.
+pub const SUPERVISE_INTERVAL: Duration = Duration::from_secs(3);
+/// First retry delay after a failed start; doubled on every further failure.
+const RETRY_BASE: Duration = Duration::from_millis(500);
+const RETRY_CEILING: Duration = Duration::from_secs(30);
+/// A process that stayed up this long counts as healthy, so its next crash
+/// starts the delay from the base again instead of escalating forever.
+const HEALTHY_UPTIME: Duration = Duration::from_secs(30);
+/// Delay before the first start so the window paints before the spawn work.
+const SUPERVISE_DELAY: Duration = Duration::from_millis(600);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostError {
@@ -124,7 +136,31 @@ pub struct PluginHost {
     store: RegistryStore,
     registry: Mutex<RegistryDocument>,
     processes: Mutex<HashMap<String, Arc<PluginProcess>>>,
+    attempts: Mutex<HashMap<String, Attempt>>,
+    supervisor: Mutex<Option<Supervisor>>,
     dev_roots: Vec<(PathBuf, CandidateSource)>,
+}
+
+/// Start/retry bookkeeping for one plugin.
+#[derive(Debug, Clone, Default)]
+struct Attempt {
+    failures: u32,
+    /// `None` means the plugin may be started on the next pass.
+    next_at: Option<Instant>,
+    started_at: Option<Instant>,
+}
+
+impl Attempt {
+    fn delay(&self) -> Duration {
+        let exponent = self.failures.saturating_sub(1).min(8);
+        let scaled = RETRY_BASE.saturating_mul(1u32 << exponent);
+        scaled.min(RETRY_CEILING)
+    }
+}
+
+struct Supervisor {
+    running: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
 }
 
 impl PluginHost {
@@ -144,14 +180,45 @@ impl PluginHost {
         let document = store.load().map_err(|error| match error {
             RegistryError::Corrupt | RegistryError::Io => HostError::Registry,
         })?;
-        Ok(Self {
+        let host = Self {
             root,
             node,
             store,
             registry: Mutex::new(document),
             processes: Mutex::new(HashMap::new()),
+            attempts: Mutex::new(HashMap::new()),
+            supervisor: Mutex::new(None),
             dev_roots,
-        })
+        };
+        // Installations written by an older build may still be disabled or carry
+        // a partial grant. There is no manual enable step any more, so they are
+        // adopted on open instead of being left inert.
+        let _ = host.adopt_installed();
+        Ok(host)
+    }
+
+    /// Every installed plugin is enabled and holds the full grant its manifest
+    /// declares. Installation is the only decision point.
+    fn adopt_installed(&self) -> Result<(), HostError> {
+        let mut document = self.snapshot()?;
+        let mut changed = false;
+        for entry in &mut document.plugins {
+            let declared = permissions::grantable(entry);
+            if !entry.enabled || entry.granted_capabilities != declared {
+                entry.enabled = true;
+                entry.granted_capabilities = declared;
+                entry.granted_domains = entry.manifest.permissions.network_domains.clone();
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        self.persist(&document)?;
+        if let Ok(mut current) = self.registry.lock() {
+            *current = document;
+        }
+        Ok(())
     }
 
     pub fn root(&self) -> &Path {
@@ -227,51 +294,45 @@ impl PluginHost {
         Ok(self.view(&plugin))
     }
 
+    fn failures_of(&self, id: &str) -> u32 {
+        self.attempts
+            .lock()
+            .ok()
+            .and_then(|attempts| attempts.get(id).map(|attempt| attempt.failures))
+            .unwrap_or(0)
+    }
+
     fn view(&self, plugin: &InstalledPlugin) -> PluginView {
         let process = self
             .processes
             .lock()
             .ok()
             .and_then(|processes| processes.get(&plugin.id).cloned());
-        let (state, methods, status, last_error) = match process {
-            Some(process) => {
-                let failure = process.failure();
-                let ready = process.ready();
-                let alive = process.is_alive();
-                let state = if failure.is_some() || !alive {
-                    "failed"
-                } else if plugin.enabled {
-                    "running"
-                } else {
-                    "stopped"
-                };
-                let error = failure.or_else(|| {
-                    if alive || !plugin.enabled {
-                        None
-                    } else {
-                        Some("插件进程已退出".to_string())
-                    }
-                });
-                (
-                    state.to_string(),
-                    ready
-                        .as_ref()
-                        .map(|ready| ready.methods.clone())
-                        .unwrap_or_default(),
-                    ready.map(|ready| ready.status).unwrap_or(Value::Null),
-                    error,
-                )
-            }
-            None => (
-                if plugin.enabled { "failed" } else { "stopped" }.to_string(),
-                Vec::new(),
-                Value::Null,
-                if plugin.enabled {
-                    Some("插件进程未启动".to_string())
-                } else {
-                    None
-                },
-            ),
+        let ready = process.as_ref().and_then(|process| process.ready());
+        let healthy = process
+            .as_ref()
+            .is_some_and(|process| process.failure().is_none() && process.is_alive());
+        let running = healthy && ready.is_some();
+        let failures = self.failures_of(&plugin.id);
+        // A plugin the host owns is never reported as failed: the supervisor
+        // keeps restarting it, so the honest states are running, starting and
+        // retrying. The reason stays available for the manifest dialog.
+        let state = if running {
+            "running"
+        } else if process.is_some() || failures > 0 {
+            // A process entry that is not usable means it died or misbehaved.
+            "retrying"
+        } else {
+            "starting"
+        };
+        let last_error = if running {
+            None
+        } else if let Some(reason) = process.as_ref().and_then(|process| process.failure()) {
+            Some(reason)
+        } else if failures > 0 {
+            Some(format!("已连续失败 {failures} 次，后台继续重试"))
+        } else {
+            None
         };
         PluginView {
             id: plugin.id.clone(),
@@ -287,10 +348,13 @@ impl PluginHost {
                 .collect(),
             permissions: plugin.manifest.permissions.clone(),
             source: "installed".into(),
-            state,
+            state: state.into(),
             enabled: plugin.enabled,
-            methods,
-            status,
+            methods: ready
+                .as_ref()
+                .map(|ready| ready.methods.clone())
+                .unwrap_or_default(),
+            status: ready.map(|ready| ready.status).unwrap_or(Value::Null),
             last_error,
             storage_durable: plugin.manifest.permissions.storage == StorageScope::Private,
             secret_slots: plugin.manifest.permissions.secrets.clone(),
@@ -319,9 +383,11 @@ impl PluginHost {
             directory,
             entry: candidate.entry.clone(),
             manifest_digest: candidate.digest.clone(),
-            enabled: false,
-            granted_capabilities: Vec::new(),
-            granted_domains: Vec::new(),
+            // Installing is the only decision: the plugin is enabled and holds
+            // the whole grant its manifest declares.
+            enabled: true,
+            granted_capabilities: candidate.manifest.capabilities.clone(),
+            granted_domains: candidate.manifest.permissions.network_domains.clone(),
             installed_at: timestamp(),
         };
         let mut document = self.snapshot()?;
@@ -330,12 +396,16 @@ impl PluginHost {
         if let Ok(mut current) = self.registry.lock() {
             *current = document;
         }
-        Ok(self.view(&record))
+        // Start right away so the page that installs a plugin can use it. A
+        // start failure is not fatal: the supervisor retries with backoff.
+        let _ = self.ensure_started(&record.id);
+        self.view_of(&record.id)
     }
 
     pub fn uninstall(&self, id: &str) -> Result<(), HostError> {
         let plugin = self.find(id)?;
         self.stop(id);
+        self.forget_attempt(id);
         install::uninstall(&self.root, &plugin.id, &plugin.version)?;
         let mut document = self.snapshot()?;
         document.plugins.retain(|entry| entry.id != id);
@@ -346,57 +416,99 @@ impl PluginHost {
         Ok(())
     }
 
-    /// Enabling is the authorization step: the requested capabilities are
-    /// narrowed to the declared ones and persisted before the process starts.
-    pub fn enable(&self, id: &str, requested: &[Capability]) -> Result<PluginView, HostError> {
-        let plugin = self.find(id)?;
-        let granted = permissions::narrow_grant(&plugin, requested);
-        if granted.is_empty() {
-            return Err(HostError::Permission(PermissionError::CapabilityNotGranted));
-        }
-        {
-            let mut document = self.snapshot()?;
-            let Some(entry) = document.plugins.iter_mut().find(|entry| entry.id == id) else {
-                return Err(HostError::NotInstalled);
-            };
-            entry.enabled = true;
-            entry.granted_capabilities = granted;
-            entry.granted_domains = entry.manifest.permissions.network_domains.clone();
-            self.persist(&document)?;
-            if let Ok(mut current) = self.registry.lock() {
-                *current = document;
-            }
-        }
-        match self.ensure_started(id) {
-            Ok(_) => self.view_of(id),
-            Err(error) => {
-                // Keep the persisted grant but report the real state: enabled
-                // does not mean running.
-                let view = self.view_of(id)?;
-                let _ = error;
-                Ok(view)
-            }
-        }
-    }
-
-    pub fn disable(&self, id: &str) -> Result<PluginView, HostError> {
-        let mut document = self.snapshot()?;
-        let Some(entry) = document.plugins.iter_mut().find(|entry| entry.id == id) else {
-            return Err(HostError::NotInstalled);
+    /// Starts every installed plugin and keeps restarting the ones that die.
+    /// Called once when the app boots; the loop owns retries so a failing
+    /// plugin never turns into an error the user has to clear.
+    pub fn supervise(self: &Arc<Self>) {
+        let Ok(mut slot) = self.supervisor.lock() else {
+            return;
         };
-        entry.enabled = false;
-        self.persist(&document)?;
-        if let Ok(mut current) = self.registry.lock() {
-            *current = document;
+        if slot.is_some() {
+            return;
         }
-        self.stop(id);
-        self.view_of(id)
+        let running = Arc::new(AtomicBool::new(true));
+        let host = Arc::clone(self);
+        let flag = Arc::clone(&running);
+        let handle = thread::spawn(move || {
+            if !sleep_unless_stopped(&flag, SUPERVISE_DELAY) {
+                return;
+            }
+            while flag.load(Ordering::Relaxed) {
+                host.supervise_once();
+                if !sleep_unless_stopped(&flag, SUPERVISE_INTERVAL) {
+                    break;
+                }
+            }
+        });
+        *slot = Some(Supervisor { running, handle });
     }
 
-    pub fn restart(&self, id: &str) -> Result<PluginView, HostError> {
-        self.stop(id);
-        self.ensure_started(id)?;
-        self.view_of(id)
+    /// One supervision pass. Exposed so tests can drive it deterministically.
+    pub fn supervise_once(&self) {
+        let Ok(document) = self.snapshot() else {
+            return;
+        };
+        for plugin in document.plugins.iter().filter(|plugin| plugin.enabled) {
+            let healthy = self
+                .processes
+                .lock()
+                .ok()
+                .and_then(|processes| processes.get(&plugin.id).cloned())
+                .is_some_and(|process| {
+                    process.failure().is_none() && process.is_alive() && process.ready().is_some()
+                });
+            if healthy {
+                continue;
+            }
+            if !self.attempt_due(&plugin.id) {
+                continue;
+            }
+            self.stop(&plugin.id);
+            match self.ensure_started(&plugin.id) {
+                Ok(_) => self.note_started(&plugin.id),
+                Err(_) => self.note_failure(&plugin.id),
+            }
+        }
+    }
+
+    fn attempt_due(&self, id: &str) -> bool {
+        self.attempts
+            .lock()
+            .ok()
+            .and_then(|attempts| attempts.get(id).and_then(|attempt| attempt.next_at))
+            .is_none_or(|next_at| Instant::now() >= next_at)
+    }
+
+    fn note_started(&self, id: &str) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            let attempt = attempts.entry(id.to_string()).or_default();
+            attempt.started_at = Some(Instant::now());
+            attempt.next_at = None;
+        }
+    }
+
+    fn note_failure(&self, id: &str) {
+        let Ok(mut attempts) = self.attempts.lock() else {
+            return;
+        };
+        let attempt = attempts.entry(id.to_string()).or_default();
+        // A process that ran long enough is treated as healthy, so a one-off
+        // crash does not keep escalating the delay.
+        if attempt
+            .started_at
+            .is_some_and(|at| at.elapsed() >= HEALTHY_UPTIME)
+        {
+            attempt.failures = 0;
+        }
+        attempt.failures = attempt.failures.saturating_add(1);
+        attempt.started_at = None;
+        attempt.next_at = Some(Instant::now() + attempt.delay());
+    }
+
+    fn forget_attempt(&self, id: &str) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            attempts.remove(id);
+        }
     }
 
     fn stop(&self, id: &str) {
@@ -528,6 +640,12 @@ impl PluginHost {
     }
 
     pub fn shutdown(&self) {
+        if let Ok(mut slot) = self.supervisor.lock()
+            && let Some(supervisor) = slot.take()
+        {
+            supervisor.running.store(false, Ordering::Relaxed);
+            let _ = supervisor.handle.join();
+        }
         let ids: Vec<String> = self
             .processes
             .lock()
@@ -537,6 +655,20 @@ impl PluginHost {
             self.stop(&id);
         }
     }
+}
+
+/// Sleeps in slices so a shutdown does not wait for a full interval.
+fn sleep_unless_stopped(flag: &AtomicBool, total: Duration) -> bool {
+    let deadline = Instant::now() + total;
+    while Instant::now() < deadline {
+        if !flag.load(Ordering::Relaxed) {
+            return false;
+        }
+        thread::sleep(
+            Duration::from_millis(50).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    flag.load(Ordering::Relaxed)
 }
 
 pub fn capability_names(manifest: &PluginManifest) -> Vec<String> {

@@ -39,9 +39,9 @@ function render(overrides: Partial<Parameters<typeof AddressPage>[0]>): string {
 }
 
 describe('address generator page', () => {
-  it('explains that generation needs the desktop host', () => {
+  it('says the page needs the desktop host', () => {
     const html = render({ hostAvailable: false })
-    expect(html).toContain('只能在 Nexus 桌面应用中运行')
+    expect(html).toContain('地址生成器需要桌面应用')
     expect(html).not.toContain('生成地址')
   })
 
@@ -50,10 +50,10 @@ describe('address generator page', () => {
     expect(html).toContain('地址生成器插件尚未安装')
   })
 
-  it('does not pretend a stopped plugin can generate', () => {
-    const html = render({ plugin: plugin({ state: 'stopped', enabled: false }) })
-    expect(html).toContain('地址生成器插件未启用')
-    expect(html).toContain('address.generator')
+  it('waits for a starting process instead of offering a restart', () => {
+    const html = render({ plugin: plugin({ state: 'starting' }) })
+    expect(html).toContain('地址生成器插件正在启动')
+    expect(html).not.toContain('重新启动插件进程')
     expect(html).not.toContain('生成数量')
   })
 

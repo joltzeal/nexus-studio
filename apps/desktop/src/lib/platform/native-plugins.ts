@@ -7,7 +7,12 @@ export interface PluginPermissions {
   secrets: string[]
 }
 
-export type PluginState = 'available' | 'stopped' | 'running' | 'failed'
+/**
+ * `available` is a discovered package that is not installed yet. Everything
+ * else is owned by the host: it starts installed plugins on boot and restarts
+ * them when they die, so there is no stopped or failed state to act on.
+ */
+export type PluginState = 'available' | 'starting' | 'running' | 'retrying'
 
 export interface PluginView {
   id: string
@@ -50,18 +55,6 @@ export function installPlugin(source: string): Promise<PluginView> {
 
 export function uninstallPlugin(id: string): Promise<void> {
   return invoke('plugin_uninstall', { id })
-}
-
-export function enablePlugin(id: string, capabilities: string[]): Promise<PluginView> {
-  return invoke<PluginView>('plugin_enable', { input: { id, capabilities } })
-}
-
-export function disablePlugin(id: string): Promise<PluginView> {
-  return invoke<PluginView>('plugin_disable', { id })
-}
-
-export function restartPlugin(id: string): Promise<PluginView> {
-  return invoke<PluginView>('plugin_restart', { id })
 }
 
 export function callPlugin<T>(
