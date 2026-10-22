@@ -205,21 +205,15 @@ npx wrangler login
 npx wrangler r2 bucket create nexus-studio-market
 ```
 
-`catalog.json` 必须短缓存，插件包按内容寻址、可以长缓存：
+日常上传用仓库脚本，它按 catalog 只传最新包，先传包再传 catalog，缓存头也写好了：
 
 ```bash
-npx wrangler r2 object put nexus-studio-market/catalog.json \
-  --file market/catalog.json \
-  --content-type application/json \
-  --cache-control "public, max-age=60"
-
-npx wrangler r2 object put nexus-studio-market/plugins/studio.vinted-accounts/1.0.0.nexuspkg \
-  --file market/plugins/studio.vinted-accounts/1.0.0.nexuspkg \
-  --content-type application/octet-stream \
-  --cache-control "public, max-age=31536000, immutable"
+pnpm market:publish                      # 默认桶 nexus-studio-market
+pnpm market:publish -- --dry-run         # 只打印命令，不真的上传
+pnpm market:publish -- --bucket 其他桶名
 ```
 
-整目录上传（wrangler 没有 `r2 sync`，用循环）：
+不想用脚本时，手动等价命令是（`catalog.json` 必须短缓存，插件包可以长缓存）：
 
 ```bash
 for file in $(find market -name '*.nexuspkg'); do
@@ -231,6 +225,14 @@ npx wrangler r2 object put nexus-studio-market/catalog.json \
   --file market/catalog.json --content-type application/json \
   --cache-control "public, max-age=60"
 ```
+
+顺序很重要：先传包，最后传 catalog。中途失败时线上 catalog 仍然只指向已经存在的包。
+
+> **`npx` 报 `EBADDEVENGINES`**：`package.json` 的 `devEngines.packageManager` 声明了 pnpm，
+> 而 npm 只认识 `onFail` 的 `warn` / `error` / `ignore` 三个值。历史上这里写的是 pnpm 专用的
+> `download`，npm 会把它当成非法配置直接报错，导致仓库内任何 `npx` 都跑不起来。
+> 现已改为 `warn`：版本不匹配时 pnpm 只提示而不自动下载，npm 也能正常执行 `npx`。
+> 如果你的分支还是旧值，改成 `warn` 即可，或改用 `pnpm dlx wrangler@4 …`。
 
 开放读取（二选一）：
 
@@ -249,9 +251,9 @@ https://market.example.com
 ### 6.5 发一个新版本
 
 1. 改 `plugins/<name>/nexus.plugin.ts` 的 `version`。
-2. `pnpm build:packages && pnpm market:pack && pnpm market:catalog`。
+2. `pnpm build:packages && pnpm market:build`。
 3. `pnpm market:verify market/plugins/<id>/<新版本>.nexuspkg`。
-4. 上传新的 `.nexuspkg` 与 `catalog.json`。
+4. `pnpm market:publish`。
 5. 应用侧最迟 30 分钟看到更新；点「检查更新」立即生效。
 
 旧版本的 `.nexuspkg` 留在桶里没有害处：catalog 只引用最新版，旧包可以在需要时手工回滚。

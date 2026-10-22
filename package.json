@@ -13,6 +13,7 @@
     "market:catalog": "node scripts/build-market.mjs",
     "market:build": "node scripts/pack-plugin.mjs && node scripts/build-market.mjs",
     "market:verify": "node scripts/verify-package.mjs",
+    "market:publish": "node scripts/publish-market.mjs",
     "desktop:package": "node scripts/package-desktop.mjs",
     "typecheck": "pnpm build:packages && pnpm -r typecheck && tsc -p tsconfig.tests.json",
     "lint": "eslint . --max-warnings 0",
@@ -29,7 +30,7 @@
     "packageManager": {
       "name": "pnpm",
       "version": "11.17.0",
-      "onFail": "download"
+      "onFail": "warn"
     }
   },
   "type": "module",
