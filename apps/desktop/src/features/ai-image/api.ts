@@ -165,6 +165,18 @@ export async function uploadImage(input: {
   }
 }
 
+/**
+ * The webview cannot read a picture from a supplier's CDN (CORS), so the plugin
+ * downloads it and stores it like any other upload.
+ */
+export function uploadRemoteImage(url: string, name?: string): Promise<StoredFile> {
+  return call<{ file: StoredFile }>(
+    'image.upload.remote',
+    name === undefined ? { url } : { url, name },
+    UPLOAD_DEADLINE,
+  ).then((result) => result.file)
+}
+
 interface ChunkReply {
   data: string
   next: number

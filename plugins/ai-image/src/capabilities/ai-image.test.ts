@@ -423,3 +423,78 @@ describe('记录', () => {
     )
   })
 })
+
+describe('remote image uploads', () => {
+  it('下载远程图片并按字节判断格式', async () => {
+    const { call, images } = setup()
+    const mock = stubFetch(
+      () =>
+        new Response(PNG, {
+          status: 200,
+          // A CDN that serves photos as octet-stream must still work.
+          headers: { 'content-type': 'application/octet-stream' },
+        }),
+    )
+    const result = await call<{ file: { id: string; name: string; mime: string } }>(
+      'image.upload.remote',
+      { url: 'https://cdn.example.com/photos/abc123.jpg' },
+    )
+    expect(mock).toHaveBeenCalledWith(
+      'https://cdn.example.com/photos/abc123.jpg',
+      expect.objectContaining({ redirect: 'follow' }),
+    )
+    expect(result.file.mime).toBe('image/png')
+    expect(result.file.name).toBe('abc123.png')
+    const stored = await images.readAll(result.file.id)
+    expect(stored.mime).toBe('image/png')
+    expect(stored.bytes.byteLength).toBe(PNG.byteLength)
+  })
+
+  it('调用方给的名字优先于链接里的文件名', async () => {
+    const { call } = setup()
+    stubFetch(() => new Response(PNG, { status: 200 }))
+    const result = await call<{ file: { name: string } }>('image.upload.remote', {
+      url: 'https://cdn.example.com/photos/abc123.jpg',
+      name: '商品主图.png',
+    })
+    expect(result.file.name).toBe('商品主图.png')
+  })
+
+  it('不是图片的内容被拒绝', async () => {
+    const { call } = setup()
+    stubFetch(() => new Response('<html>not an image</html>', { status: 200 }))
+    await expect(
+      call('image.upload.remote', { url: 'https://cdn.example.com/page.html' }),
+    ).rejects.toThrow('不是 JPEG、PNG 或 WebP 图片')
+  })
+
+  it('链接返回错误状态时报错', async () => {
+    const { call } = setup()
+    stubFetch(() => new Response('', { status: 404 }))
+    await expect(
+      call('image.upload.remote', { url: 'https://cdn.example.com/missing.jpg' }),
+    ).rejects.toThrow('404')
+  })
+
+  it('声明体积超过上限时不下载', async () => {
+    const { call } = setup()
+    const mock = stubFetch(
+      () =>
+        new Response(PNG, {
+          status: 200,
+          headers: { 'content-length': String(9 * 1024 * 1024) },
+        }),
+    )
+    await expect(
+      call('image.upload.remote', { url: 'https://cdn.example.com/huge.jpg' }),
+    ).rejects.toThrow('8 MB')
+    expect(mock).toHaveBeenCalledTimes(1)
+  })
+
+  it('只接受 http(s) 链接', async () => {
+    const { call } = setup()
+    await expect(
+      call('image.upload.remote', { url: 'file:///etc/passwd' }),
+    ).rejects.toThrow('请求参数无效')
+  })
+})

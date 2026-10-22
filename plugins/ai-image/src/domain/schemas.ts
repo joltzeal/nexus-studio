@@ -13,27 +13,23 @@ const MAX_CHUNK_BASE64 = Math.ceil(UPLOAD_CHUNK_BYTES / 3) * 4 + 8
  * trailing slash and a missing `/v1` are normalised by the caller so every
  * request path stays predictable.
  */
-export const baseUrlSchema = z
-  .string()
-  .trim()
-  .min(8)
-  .max(300)
-  .refine(
-    (value) => {
-      try {
-        const url = new URL(value)
-        return (
-          (url.protocol === 'http:' || url.protocol === 'https:') &&
-          url.hostname !== '' &&
-          url.username === '' &&
-          url.password === ''
-        )
-      } catch {
-        return false
-      }
-    },
-    { message: '接口地址必须是完整的 http(s) 地址，且不能包含账号密码' },
-  )
+export function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.hostname !== '' &&
+      url.username === '' &&
+      url.password === ''
+    )
+  } catch {
+    return false
+  }
+}
+
+export const baseUrlSchema = z.string().trim().min(8).max(300).refine(isHttpUrl, {
+  message: '接口地址必须是完整的 http(s) 地址，且不能包含账号密码',
+})
 
 export const ProviderSaveInputSchema = z.strictObject({
   id: z.string().trim().min(1).max(64).optional(),
@@ -69,6 +65,21 @@ export const UploadFinishInputSchema = z.strictObject({
 
 export const UploadAbortInputSchema = z.strictObject({
   uploadId: z.string().trim().min(1).max(64),
+})
+
+/**
+ * A picture that lives on someone else's CDN, such as a supplier's product
+ * photo. The page cannot fetch it itself: the webview enforces CORS and those
+ * hosts do not send the headers.
+ */
+export const RemoteUploadInputSchema = z.strictObject({
+  url: z
+    .string()
+    .trim()
+    .min(8)
+    .max(2048)
+    .refine(isHttpUrl, { message: '图片地址必须是完整的 http(s) 地址' }),
+  name: z.string().trim().max(120).optional(),
 })
 
 export const FileChunkInputSchema = z.strictObject({
@@ -128,6 +139,8 @@ export type ProviderSaveInput = z.infer<typeof ProviderSaveInputSchema>
 export type UploadBeginInput = z.infer<typeof UploadBeginInputSchema>
 export type UploadChunkInput = z.infer<typeof UploadChunkInputSchema>
 export type UploadFinishInput = z.infer<typeof UploadFinishInputSchema>
+export type UploadAbortInput = z.infer<typeof UploadAbortInputSchema>
+export type RemoteUploadInput = z.infer<typeof RemoteUploadInputSchema>
 export type FileChunkInput = z.infer<typeof FileChunkInputSchema>
 export type RecordsListInput = z.infer<typeof RecordsListInputSchema>
 export type GenerateInput = z.infer<typeof GenerateInputSchema>

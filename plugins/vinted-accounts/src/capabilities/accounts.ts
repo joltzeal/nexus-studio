@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { invalidRequest } from '../domain/errors.js'
+import { invalidRequest, unavailable } from '../domain/errors.js'
 import {
   TEMPLATE_HEADERS,
   normalizeHomepage,
@@ -11,10 +11,12 @@ import {
   AccountSaveInputSchema,
   BindInputSchema,
   ImportInputSchema,
+  OtpInputSchema,
   TemplateInputSchema,
   WindowIdInputSchema,
   parseOrThrow,
 } from '../domain/schemas.js'
+import { extractOtp } from '../domain/otp.js'
 import { buildXlsx, parseCsv, parseXlsx, serializeCsv } from '../domain/table.js'
 import type {
   AccountRecord,
@@ -32,6 +34,7 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.remove',
   'vinted.accounts.import',
   'vinted.accounts.template',
+  'vinted.accounts.otp',
   'vinted.accounts.bind',
   'vinted.accounts.unbind',
   'vinted.accounts.bindings',
@@ -44,12 +47,17 @@ export const MAX_IMPORT_ERRORS = 50
 
 const CSV_MIME = 'text/csv;charset=utf-8'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+/** A mailbox page is small; anything larger is a misconfigured link. */
+const MAX_OTP_BODY = 512 * 1024
+const OTP_TIMEOUT_MS = 20_000
 
 export interface AccountPoolOptions {
   store: AccountStore
   logger: Logger
   now?: () => Date
   idFactory?: () => string
+  /** Injected so a test can answer an inbox link without a network. */
+  fetchImpl?: typeof fetch
 }
 
 /** Identity for duplicate detection: the same login on the same method. */
@@ -83,12 +91,14 @@ export class AccountPool {
   private readonly logger: Logger
   private readonly now: () => Date
   private readonly idFactory: () => string
+  private readonly fetchImpl: typeof fetch | null
 
   constructor(options: AccountPoolOptions) {
     this.store = options.store
     this.logger = options.logger
     this.now = options.now ?? (() => new Date())
     this.idFactory = options.idFactory ?? randomUUID
+    this.fetchImpl = options.fetchImpl ?? null
   }
 
   status(): Record<string, unknown> {
@@ -110,6 +120,8 @@ export class AccountPool {
         return await this.importAccounts(context)
       case 'vinted.accounts.template':
         return await this.template(context)
+      case 'vinted.accounts.otp':
+        return await this.readOtp(context)
       case 'vinted.accounts.bind':
         return await this.bind(context)
       case 'vinted.accounts.unbind':
@@ -290,6 +302,48 @@ export class AccountPool {
       base64: Buffer.from(buildXlsx(header)).toString('base64'),
     }
     return file
+  }
+
+  /**
+   * Reads the account's own inbox link and pulls the code out of the answer.
+   * The URL is never echoed back: it usually carries a one-time token.
+   */
+  private async readOtp(context: DispatchContext): Promise<unknown> {
+    const input = parseOrThrow(OtpInputSchema, context.payload)
+    const document = await this.store.read()
+    context.assertAlive()
+    const account = document.accounts.find((entry) => entry.id === input.accountId)
+    if (account === undefined) throw invalidRequest('账号不存在或已被删除')
+    const url = input.channel === 'email' ? account.emailOtpUrl : account.smsOtpUrl
+    if (url === '') {
+      throw invalidRequest(
+        input.channel === 'email'
+          ? '这个账号没有填写邮箱验证码链接'
+          : '这个账号没有填写手机验证码链接',
+      )
+    }
+
+    const doFetch = this.fetchImpl ?? globalThis.fetch
+    let response: Response
+    try {
+      response = await doFetch(url, {
+        redirect: 'follow',
+        headers: { accept: 'text/html,application/json,text/plain' },
+        signal: AbortSignal.timeout(OTP_TIMEOUT_MS),
+      })
+    } catch (error) {
+      throw unavailable('取码链接请求失败，请检查链接是否可以访问', error)
+    }
+    if (!response.ok) {
+      throw unavailable(`取码链接返回 ${String(response.status)}，无法获取验证码`)
+    }
+    const body = (await response.text()).slice(0, MAX_OTP_BODY)
+    context.assertAlive()
+    const code = extractOtp(body, response.headers.get('content-type') ?? '')
+    if (code === null) throw invalidRequest('在取码链接的响应里没有找到验证码')
+    // The code itself is deliberately left out of the log line.
+    this.logger.info('已读取验证码', { accountId: account.id, channel: input.channel })
+    return { channel: input.channel, code, fetchedAt: this.now().toISOString() }
   }
 
   private async bind(context: DispatchContext): Promise<unknown> {

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Copy, Heart, Loader2, Trash2 } from 'lucide-react'
+import { Copy, Heart, Loader2, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
+import { sendToAiImage } from '@/lib/page-handoff'
 import { addFavorite, removeFavorite } from './api'
 import { message, productText, publishedText, type Favorite, type Product } from './types'
 
@@ -26,12 +27,15 @@ async function copy(text: string, what: string) {
 export function ProductDialog({
   product,
   favorite,
+  aiImageReady,
   onClose,
   onChanged,
 }: {
   product: Product | null
   /** Set when this product is already in favourites. */
   favorite: Favorite | null
+  /** The AI image plugin is running, so its page can accept these photos. */
+  aiImageReady: boolean
   onClose: () => void
   onChanged: () => void
 }) {
@@ -55,6 +59,17 @@ export function ProductDialog({
     } finally {
       setPending(false)
     }
+  }
+
+  /**
+   * The AI page needs the plugin to download the photos itself, so this only
+   * carries URLs across; nothing is fetched here.
+   */
+  function openInAiImage() {
+    if (shown === null || shown.images.length === 0) return
+    sendToAiImage({ images: shown.images, title: shown.title })
+    toast.success(`已把 ${String(shown.images.length)} 张图片带到 AI 生图`)
+    onClose()
   }
 
   async function drop() {
@@ -157,6 +172,21 @@ export function ProductDialog({
               )}
 
               <div className="supply-dialog-actions">
+                {aiImageReady ? (
+                  <Button
+                    variant="secondary"
+                    disabled={shown.images.length === 0}
+                    title={
+                      shown.images.length === 0
+                        ? '这件商品没有图片，无法生图'
+                        : '把商品图片带进 AI 生图'
+                    }
+                    onClick={openInAiImage}
+                  >
+                    <Sparkles data-icon="inline-start" />
+                    AI 生图
+                  </Button>
+                ) : null}
                 {favorite === null ? (
                   <Button disabled={pending} onClick={() => void save()}>
                     {pending ? (

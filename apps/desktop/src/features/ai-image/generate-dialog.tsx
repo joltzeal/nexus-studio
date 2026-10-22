@@ -1,4 +1,11 @@
-import { useMemo, useRef, useState, type ChangeEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react'
 import { ImagePlus, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -14,7 +21,7 @@ import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toast'
-import { generate, uploadImage } from './api'
+import { generate, uploadImage, uploadRemoteImage } from './api'
 import { checkReference, prepareReference } from './prepare-reference'
 import { SIZES, message, type Provider, type ScenePreset, type StoredFile } from './types'
 
@@ -27,17 +34,26 @@ interface Reference {
   error: string | null
 }
 
+/** A picture another page already chose, e.g. a product's photos. */
+export interface InitialImage {
+  url: string
+  name: string
+}
+
 const MAX_REFERENCES = 6
 
 export function GenerateDialog({
   providers,
   presets,
+  initialImages,
   onOpenChange,
   onSubmitted,
   onConfigure,
 }: {
   providers: Provider[]
   presets: ScenePreset[]
+  /** Uploaded as soon as the dialog opens, so the user only writes the prompt. */
+  initialImages?: InitialImage[]
   onOpenChange: (open: boolean) => void
   onSubmitted: () => Promise<void>
   onConfigure: () => void
@@ -46,12 +62,20 @@ export function GenerateDialog({
   const [references, setReferences] = useState<Reference[]>([])
   const [presetId, setPresetId] = useState<string | null>(presets[0]?.id ?? null)
   const [prompt, setPrompt] = useState('')
-  const [providerId, setProviderId] = useState(usable[0]?.id ?? '')
+  const [providerChoice, setProviderChoice] = useState('')
   const [size, setSize] = useState('1024x1024')
   const [count, setCount] = useState(1)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
+
+  /**
+   * A handoff can open this dialog before the provider list has arrived, so the
+   * first usable provider is a fallback rather than an initial value.
+   */
+  const providerId = usable.some((entry) => entry.id === providerChoice)
+    ? providerChoice
+    : (usable[0]?.id ?? '')
 
   const uploading = references.some((entry) => entry.state === 'uploading')
   const mode = references.length > 0 ? 'edit' : 'generate'
@@ -59,6 +83,58 @@ export function GenerateDialog({
     () => presets.find((entry) => entry.id === presetId) ?? null,
     [presets, presetId],
   )
+
+  /**
+   * Remote pictures arrive as URLs: the preview can use them directly, the
+   * plugin has to fetch the bytes. `room` is read from the functional update so
+   * a batch never depends on a stale render.
+   */
+  const addRemote = useCallback(async (images: InitialImage[]) => {
+    const batch = images.slice(0, MAX_REFERENCES)
+    setReferences((current) => {
+      const room = MAX_REFERENCES - current.length
+      return [
+        ...current,
+        ...batch.slice(0, Math.max(0, room)).map((image, position) => ({
+          key: `remote-${image.url}-${String(position)}`,
+          name: image.name,
+          preview: image.url,
+          state: 'uploading' as const,
+          file: null,
+          error: null,
+        })),
+      ]
+    })
+    for (const [index, image] of batch.entries()) {
+      const key = `remote-${image.url}-${String(index)}`
+      try {
+        const stored = await uploadRemoteImage(image.url, image.name)
+        setReferences((current) =>
+          current.map((entry) =>
+            entry.key === key ? { ...entry, state: 'ready', file: stored } : entry,
+          ),
+        )
+      } catch (cause) {
+        setReferences((current) =>
+          current.map((entry) =>
+            entry.key === key
+              ? { ...entry, state: 'failed', error: message(cause) }
+              : entry,
+          ),
+        )
+      }
+    }
+  }, [])
+
+  // Only the first mount of this dialog instance carries a payload: reopening it
+  // by hand must not re-upload the same pictures.
+  const seeded = useRef(false)
+  useEffect(() => {
+    if (seeded.current) return
+    seeded.current = true
+    if (initialImages === undefined || initialImages.length === 0) return
+    void addRemote(initialImages)
+  }, [initialImages, addRemote])
 
   async function addFiles(files: File[]) {
     const room = MAX_REFERENCES - references.length
@@ -301,7 +377,7 @@ export function GenerateDialog({
                     value: entry.id,
                     label: `${entry.name} · ${entry.imageModel}`,
                   }))}
-                  onValueChange={setProviderId}
+                  onValueChange={setProviderChoice}
                 />
                 {usable.length === 0 ? (
                   <FieldDescription>

@@ -50,6 +50,8 @@ export interface AiImagePluginOptions {
   idFactory?: () => string
   store?: PrivateStore
   images?: ImageStore
+  /** Overrides `globalThis.fetch`; used by tests to answer a remote image. */
+  fetchImpl?: typeof fetch
 }
 
 export interface AiImagePluginInstance {
@@ -88,6 +90,7 @@ export function createAiImagePlugin(
     logger,
     now,
     ...(options.idFactory === undefined ? {} : { idFactory: options.idFactory }),
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
   })
 
   let stop: () => void = () => undefined

@@ -47,6 +47,13 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toast'
 import {
@@ -73,10 +80,12 @@ import {
   bindAccount,
   listAccounts,
   listBindings,
+  saveAccount,
   unbindWindow,
 } from '@/features/accounts/api'
 import {
   ACCOUNTS_PLUGIN_ID,
+  EMPTY_ACCOUNT,
   LOGIN_METHOD_LABELS,
   STATUS_LABELS,
   type Account,
@@ -587,7 +596,11 @@ export function SpacesPage() {
                   {accountsInstalled ? (
                     <TableCell>
                       {account === null ? (
-                        <span className="table-muted">未关联</span>
+                        <AccountQuickAdd
+                          window={window}
+                          ready={accountsRunning}
+                          onSaved={refreshBindings}
+                        />
                       ) : (
                         <span className="account-cell">
                           <strong>{account.account?.account ?? '账号已删除'}</strong>
@@ -1032,6 +1045,145 @@ function TimeCell({
       <strong>{formatAbsolute(at, now)}</strong>
       <small>{formatRelative(at, now)}</small>
     </span>
+  )
+}
+
+/**
+ * Adding an account straight from the window row. The popover asks for the two
+ * fields that actually matter and binds the new record to this window in one
+ * go, so nobody has to leave the table to get a window logged in.
+ */
+function AccountQuickAdd({
+  window,
+  ready,
+  onSaved,
+}: {
+  window: NativeProfile
+  ready: boolean
+  onSaved: () => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [account, setAccount] = useState('')
+  const [password, setPassword] = useState('')
+  const [note, setNote] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function reset() {
+    setAccount('')
+    setPassword('')
+    setNote('')
+    setError(null)
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (pending || !ready) return
+    const login = account.trim()
+    if (login === '' || password === '') {
+      setError('账号和密码都要填写。')
+      return
+    }
+    setPending(true)
+    setError(null)
+    try {
+      const saved = await saveAccount({
+        ...EMPTY_ACCOUNT,
+        account: login,
+        password,
+        note: note.trim(),
+      })
+      const result = await bindAccount(saved.item.id, window.id)
+      await onSaved()
+      if (result.bound) {
+        toast.success('账号已添加并关联')
+      } else {
+        toast.error('账号已保存，但它已关联到其他窗口，请在更多操作里确认更换')
+      }
+      reset()
+      setOpen(false)
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) reset()
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="xs"
+          disabled={!ready}
+          title={ready ? '快捷添加 Vinted 账号' : 'Vinted 账号插件还没就绪'}
+        >
+          <Plus data-icon="inline-start" />
+          添加账号
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="account-quick-add">
+        <PopoverHeader>
+          <PopoverTitle>快捷添加账号</PopoverTitle>
+        </PopoverHeader>
+        <form className="account-quick-form" onSubmit={(event) => void submit(event)}>
+          <Field>
+            <FieldLabel htmlFor={`quick-account-${window.id}`}>账号</FieldLabel>
+            <Input
+              id={`quick-account-${window.id}`}
+              autoComplete="off"
+              placeholder="登录邮箱或用户名"
+              value={account}
+              onChange={(event) => setAccount(event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`quick-password-${window.id}`}>密码</FieldLabel>
+            <Input
+              id={`quick-password-${window.id}`}
+              type="password"
+              autoComplete="off"
+              placeholder="登录密码"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`quick-note-${window.id}`}>备注</FieldLabel>
+            <Input
+              id={`quick-note-${window.id}`}
+              placeholder="可选"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
+          </Field>
+          {error === null ? null : <FieldError role="alert">{error}</FieldError>}
+          <div className="account-quick-actions">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                reset()
+                setOpen(false)
+              }}
+            >
+              取消
+            </Button>
+            <Button type="submit" size="sm" disabled={pending}>
+              {pending ? '保存中…' : '保存并关联'}
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
   )
 }
 

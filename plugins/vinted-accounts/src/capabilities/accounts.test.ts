@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { buildXlsx } from '../domain/table.js'
 import type { DispatchContext } from '../rpc/protocol.js'
@@ -25,7 +25,7 @@ interface Fixture {
   clock: { now: Date }
 }
 
-function fixture(): Fixture {
+function fixture(fetchImpl?: typeof fetch): Fixture {
   const store = createMemoryStore()
   const clock = { now: new Date('2026-10-22T10:00:00.000Z') }
   let counter = 0
@@ -37,6 +37,7 @@ function fixture(): Fixture {
       counter += 1
       return `id-${String(counter)}`
     },
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
   })
   return { pool, clock }
 }
@@ -361,5 +362,95 @@ describe('window bindings', () => {
     await expect(
       call(pool, 'vinted.accounts.bind', { accountId: 'missing', windowId: 'win-1' }),
     ).rejects.toThrow('账号不存在')
+  })
+})
+
+describe('reading verification codes', () => {
+  async function seeded(pool: AccountPool, overrides: Partial<AccountInput> = {}) {
+    const saved = await call<{ item: AccountRecord }>(
+      pool,
+      'vinted.accounts.save',
+      account(overrides),
+    )
+    return saved.item
+  }
+
+  it('reads the mailbox link and returns the code', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response('<p>您的验证码是 482913，10 分钟内有效。</p>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }),
+    )
+    const { pool } = fixture(fetchImpl as unknown as typeof fetch)
+    const saved = await seeded(pool, {
+      emailOtpUrl: 'https://mail.example.com/inbox/abc',
+    })
+    const result = await call<{ channel: string; code: string }>(
+      pool,
+      'vinted.accounts.otp',
+      { accountId: saved.id, channel: 'email' },
+    )
+    expect(result.code).toBe('482913')
+    expect(result.channel).toBe('email')
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://mail.example.com/inbox/abc',
+      expect.objectContaining({ redirect: 'follow' }),
+    )
+  })
+
+  it('reads the phone link when the sms channel is asked for', async () => {
+    const seen: string[] = []
+    const fetchImpl = vi.fn(async (url: string) => {
+      seen.push(url)
+      return new Response(JSON.stringify({ code: '112233' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const { pool } = fixture(fetchImpl as unknown as typeof fetch)
+    const saved = await seeded(pool, {
+      emailOtpUrl: 'https://mail.example.com/inbox/abc',
+      smsOtpUrl: 'https://sms.example.com/last',
+    })
+    const result = await call<{ code: string }>(pool, 'vinted.accounts.otp', {
+      accountId: saved.id,
+      channel: 'sms',
+    })
+    expect(result.code).toBe('112233')
+    expect(seen).toEqual(['https://sms.example.com/last'])
+  })
+
+  it('refuses an account that has no link for the channel', async () => {
+    const { pool } = fixture()
+    const saved = await seeded(pool)
+    await expect(
+      call(pool, 'vinted.accounts.otp', { accountId: saved.id, channel: 'email' }),
+    ).rejects.toThrow('没有填写邮箱验证码链接')
+  })
+
+  it('reports a link that does not answer with a code', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('<p>No messages</p>', { status: 200 }),
+    )
+    const { pool } = fixture(fetchImpl as unknown as typeof fetch)
+    const saved = await seeded(pool, { emailOtpUrl: 'https://mail.example.com/empty' })
+    await expect(
+      call(pool, 'vinted.accounts.otp', { accountId: saved.id, channel: 'email' }),
+    ).rejects.toThrow('没有找到验证码')
+  })
+
+  it('reports an unreachable link without echoing the url', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNREFUSED https://mail.example.com/secret-token')
+    })
+    const { pool } = fixture(fetchImpl as unknown as typeof fetch)
+    const saved = await seeded(pool, {
+      emailOtpUrl: 'https://mail.example.com/secret-token',
+    })
+    await expect(
+      call(pool, 'vinted.accounts.otp', { accountId: saved.id, channel: 'email' }),
+    ).rejects.toThrow('取码链接请求失败')
   })
 })

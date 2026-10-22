@@ -30,6 +30,7 @@ import {
   type ProductView,
 } from './product-grid'
 import { checkImageFile, prepareJpeg } from './image-prepare'
+import { AI_IMAGE_PLUGIN_ID } from '@/features/ai-image/types'
 import {
   SUPPLY_PLUGIN_ID,
   merchantLocation,
@@ -70,6 +71,8 @@ function mergeProducts(current: Product[], incoming: Product[]): Product[] {
 export interface SupplyPageProps {
   plugin: PluginView | null
   hostAvailable: boolean
+  /** True while the AI image plugin is running, which is when its button works. */
+  aiImageReady?: boolean
 }
 
 /**
@@ -77,7 +80,11 @@ export interface SupplyPageProps {
  * apart from `[]` ("loaded, nothing there") is what makes the empty states
  * honest.
  */
-export function SupplyPage({ plugin, hostAvailable }: SupplyPageProps) {
+export function SupplyPage({
+  plugin,
+  hostAvailable,
+  aiImageReady = false,
+}: SupplyPageProps) {
   const running = plugin !== null && plugin.state === 'running'
   const [section, setSection] = useState<Section>('browse')
   const [view, setView] = useState<ProductView>('waterfall')
@@ -620,6 +627,7 @@ export function SupplyPage({ plugin, hostAvailable }: SupplyPageProps) {
       <ProductDialog
         product={selected}
         favorite={favorite}
+        aiImageReady={aiImageReady}
         onClose={() => setSelected(null)}
         onChanged={() => void loadFavorites()}
       />
@@ -661,26 +669,31 @@ function SupplyState({ children }: { children: ReactNode }) {
 export function SharedSupplyRoute() {
   const hostAvailable = pluginHostAvailable()
   const [plugin, setPlugin] = useState<PluginView | null>(null)
+  // The AI image button only exists while that plugin can actually run.
+  const [aiImage, setAiImage] = useState<PluginView | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const aiImageReady = aiImage !== null && aiImage.state === 'running'
+
+  const applyCatalog = useCallback((catalog: PluginView[]) => {
+    setPlugin(catalog.find((entry) => entry.id === SUPPLY_PLUGIN_ID) ?? null)
+    setAiImage(catalog.find((entry) => entry.id === AI_IMAGE_PLUGIN_ID) ?? null)
+  }, [])
 
   const refresh = useCallback(async () => {
     if (!hostAvailable) return
     try {
-      const catalog = await listPlugins()
-      setPlugin(catalog.find((entry) => entry.id === SUPPLY_PLUGIN_ID) ?? null)
+      applyCatalog(await listPlugins())
     } catch (cause) {
       setError(message(cause))
     }
-  }, [hostAvailable])
+  }, [hostAvailable, applyCatalog])
 
   useEffect(() => {
     if (!hostAvailable) return
     let active = true
     void listPlugins().then(
       (catalog) => {
-        if (active) {
-          setPlugin(catalog.find((entry) => entry.id === SUPPLY_PLUGIN_ID) ?? null)
-        }
+        if (active) applyCatalog(catalog)
       },
       (cause: unknown) => {
         if (active) setError(message(cause))
@@ -689,10 +702,14 @@ export function SharedSupplyRoute() {
     return () => {
       active = false
     }
-  }, [hostAvailable])
+  }, [hostAvailable, applyCatalog])
 
-  // The host has no push channel: keep looking while the process is coming up.
-  const pending = plugin === null || plugin.state !== 'running'
+  // The host has no push channel: keep looking while a plugin is coming up.
+  // A missing AI plugin is not worth polling for — it is either installed or not.
+  const pending =
+    plugin === null ||
+    plugin.state !== 'running' ||
+    (aiImage !== null && aiImage.state !== 'running')
   useEffect(() => {
     if (!hostAvailable || !pending) return
     const timer = setInterval(() => {
@@ -704,7 +721,11 @@ export function SharedSupplyRoute() {
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <SupplyPage plugin={plugin} hostAvailable={hostAvailable} />
+      <SupplyPage
+        plugin={plugin}
+        hostAvailable={hostAvailable}
+        aiImageReady={aiImageReady}
+      />
     </>
   )
 }

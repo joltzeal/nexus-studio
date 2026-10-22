@@ -202,7 +202,7 @@
 .app-shell {
   display: grid;
   grid-template-columns: 196px minmax(0, 1fr);
-  grid-template-rows: 52px minmax(0, 1fr) auto;
+  grid-template-rows: 52px minmax(0, 1fr);
   /* The shell owns the viewport: pages scroll inside their own container so the
      window itself never grows a scrollbar. */
   height: 100svh;
@@ -370,15 +370,6 @@
   flex: 1;
   flex-direction: column;
   min-height: 0;
-}
-.app-footer {
-  grid-column: 2;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 20px;
-  color: var(--muted-foreground);
-  font-size: 10px;
 }
 .page-heading {
   margin: 0;
@@ -634,6 +625,45 @@
 }
 .account-cell small {
   font-size: 11px;
+}
+/* Verification codes: the digits stay put, the buttons re-fetch on demand. */
+.otp-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.otp-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 6px;
+  border-radius: 6px;
+  background: var(--muted);
+}
+.otp-code strong {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+.otp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+/* Quick add: a three-field form that fits inside a popover on a table row. */
+.account-quick-add {
+  width: 268px;
+}
+.account-quick-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.account-quick-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 /* Account picker: a scrollable list of radio-like rows inside a dialog. */
 .account-picker {
@@ -1151,9 +1181,6 @@
   .app-main {
     padding: 16px;
   }
-  .app-footer {
-    padding-inline: 16px;
-  }
   .appearance-layout {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
@@ -1165,7 +1192,7 @@
 @media (max-width: 700px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto 44px 1fr auto;
+    grid-template-rows: auto 44px 1fr;
   }
   .app-sidebar {
     position: static;
@@ -1213,11 +1240,6 @@
     grid-column: 1;
     grid-row: 3;
     padding: 16px;
-  }
-  .app-footer {
-    grid-column: 1;
-    grid-row: 4;
-    padding: 10px 16px;
   }
   .page-heading {
     font-size: 22px;

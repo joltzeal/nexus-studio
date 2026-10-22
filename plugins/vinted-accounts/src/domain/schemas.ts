@@ -28,6 +28,15 @@ export const AccountIdInputSchema = z.strictObject({
   accountId: idSchema,
 })
 
+/**
+ * Which of the account's two inbox links to read. The channel is explicit
+ * because an account may carry both, and guessing would fetch the wrong one.
+ */
+export const OtpInputSchema = z.strictObject({
+  accountId: idSchema,
+  channel: z.enum(['email', 'sms']),
+})
+
 export const BindInputSchema = z.strictObject({
   accountId: idSchema,
   windowId: idSchema,

@@ -22,9 +22,10 @@ import {
 import { PluginGate } from '@/features/plugins/plugin-gate'
 import { listPresets, listProviders, listRecords } from './api'
 import { RecordDetailDialog } from './detail-dialog'
-import { GenerateDialog } from './generate-dialog'
+import { GenerateDialog, type InitialImage } from './generate-dialog'
 import { ProvidersSheet } from './providers-sheet'
 import { RecordImage } from './record-image'
+import type { AiImageHandoff } from '@/lib/page-handoff'
 import {
   AI_IMAGE_PLUGIN_ID,
   formatTime,
@@ -49,9 +50,17 @@ const FILTERS: { value: RecordStatus | 'all'; label: string }[] = [
 export interface AiImagePageProps {
   plugin: PluginView | null
   hostAvailable: boolean
+  /** Pictures another page sent over; `null` means nothing is pending. */
+  handoff?: AiImageHandoff | null
+  onHandoffConsumed?: () => void
 }
 
-export function AiImagePage({ plugin, hostAvailable }: AiImagePageProps) {
+export function AiImagePage({
+  plugin,
+  hostAvailable,
+  handoff = null,
+  onHandoffConsumed,
+}: AiImagePageProps) {
   const running = plugin !== null && plugin.state === 'running'
   // Rows remember the query they belong to, so switching filter or page shows the
   // skeleton during the fetch without an effect that resets state by hand.
@@ -167,6 +176,21 @@ export function AiImagePage({ plugin, hostAvailable }: AiImagePageProps) {
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const showHeader = hostAvailable && plugin !== null && running
+
+  /**
+   * A handoff from another page opens the dialog by itself, but only once the
+   * plugin is running: until then there is nothing to upload the pictures to.
+   * Deriving it from props keeps the effect out of the picture entirely.
+   */
+  const pendingHandoff = handoff !== null && running
+  const initialImages = useMemo<InitialImage[]>(() => {
+    if (handoff === null) return []
+    const title = handoff.title.trim()
+    return handoff.images.map((url, index) => ({
+      url,
+      name: `${title === '' ? '商品图' : title}-${String(index + 1)}`,
+    }))
+  }, [handoff])
 
   return (
     <section
@@ -405,14 +429,20 @@ export function AiImagePage({ plugin, hostAvailable }: AiImagePageProps) {
         ) : null}
       </Card>
 
-      {generating ? (
+      {generating || pendingHandoff ? (
         <GenerateDialog
           providers={providers}
           presets={presets}
-          onOpenChange={setGenerating}
+          initialImages={initialImages}
+          onOpenChange={(open) => {
+            setGenerating(open)
+            // Closing the dialog ends the handoff, otherwise it would reopen.
+            if (!open) onHandoffConsumed?.()
+          }}
           onSubmitted={refreshRecords}
           onConfigure={() => {
             setGenerating(false)
+            onHandoffConsumed?.()
             setConfiguring(true)
           }}
         />
@@ -439,7 +469,13 @@ export function AiImagePage({ plugin, hostAvailable }: AiImagePageProps) {
   )
 }
 
-export function AiImageRoute() {
+export function AiImageRoute({
+  handoff = null,
+  onHandoffConsumed,
+}: {
+  handoff?: AiImageHandoff | null
+  onHandoffConsumed?: () => void
+} = {}) {
   const hostAvailable = pluginHostAvailable()
   const [plugin, setPlugin] = useState<PluginView | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -485,7 +521,12 @@ export function AiImageRoute() {
   return (
     <>
       {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-      <AiImagePage plugin={plugin} hostAvailable={hostAvailable} />
+      <AiImagePage
+        plugin={plugin}
+        hostAvailable={hostAvailable}
+        handoff={handoff}
+        {...(onHandoffConsumed === undefined ? {} : { onHandoffConsumed })}
+      />
     </>
   )
 }

@@ -86,6 +86,45 @@ const MIME_EXTENSIONS: Record<string, string> = {
   'image/webp': 'webp',
 }
 
+/**
+ * A remote image is identified by its bytes, not its `content-type`: CDNs that
+ * serve photos as `application/octet-stream` are common enough that trusting the
+ * header would reject perfectly good product pictures.
+ */
+export function sniffImageMime(bytes: Uint8Array): string | null {
+  if (
+    bytes.byteLength >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return 'image/jpeg'
+  }
+  if (
+    bytes.byteLength >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return 'image/png'
+  }
+  if (
+    bytes.byteLength >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return 'image/webp'
+  }
+  return null
+}
+
 export function extensionFor(mime: string): string | null {
   return MIME_EXTENSIONS[mime] ?? null
 }

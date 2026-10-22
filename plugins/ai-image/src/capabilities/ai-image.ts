@@ -4,6 +4,7 @@ import {
   PluginFailure,
   invalidRequest,
   notConfigured,
+  unavailable,
   upstreamFailure,
   UpstreamError,
 } from '../domain/errors.js'
@@ -20,6 +21,7 @@ import {
   ProviderSaveInputSchema,
   RecordIdInputSchema,
   RecordsListInputSchema,
+  RemoteUploadInputSchema,
   UploadAbortInputSchema,
   UploadBeginInputSchema,
   UploadChunkInputSchema,
@@ -28,10 +30,12 @@ import {
   parseOrThrow,
 } from '../domain/schemas.js'
 import {
+  MAX_INPUT_BYTES,
   MAX_RECORDS,
   UPLOAD_CHUNK_BYTES,
   extensionFor,
   providerView,
+  sniffImageMime,
   type GenerationRecord,
   type ProviderRecord,
   type StoredFile,
@@ -52,6 +56,7 @@ export const AI_IMAGE_METHODS = [
   'image.upload.chunk',
   'image.upload.finish',
   'image.upload.abort',
+  'image.upload.remote',
   'image.file.chunk',
   'image.records.list',
   'image.records.get',
@@ -65,6 +70,8 @@ export const AI_IMAGE_METHODS = [
 const IMAGE_TIMEOUT_MS = 180_000
 const COPY_TIMEOUT_MS = 60_000
 const TEST_TIMEOUT_MS = 20_000
+/** A product photo on a CDN either arrives quickly or the host is unreachable. */
+const REMOTE_TIMEOUT_MS = 20_000
 const MAX_PENDING_UPLOADS = 6
 
 export interface AiImageOptions {
@@ -73,6 +80,8 @@ export interface AiImageOptions {
   logger: Logger
   now?: () => Date
   idFactory?: () => string
+  /** Injected so a test can answer a remote image without a network. */
+  fetchImpl?: typeof fetch
 }
 
 interface Upload {
@@ -80,6 +89,19 @@ interface Upload {
   size: number
   received: number
   chunks: Buffer[]
+}
+
+/** Keeps the CDN's own file stem so a record's inputs read like the product. */
+function remoteName(url: string, mime: string): string {
+  const extension = extensionFor(mime) ?? 'png'
+  try {
+    const path = new URL(url).pathname
+    const last = decodeURIComponent(path.slice(path.lastIndexOf('/') + 1))
+    const stem = last.replace(/\.[^.]+$/, '').slice(0, 60)
+    return stem === '' ? `remote.${extension}` : `${stem}.${extension}`
+  } catch {
+    return `remote.${extension}`
+  }
 }
 
 /**
@@ -97,6 +119,7 @@ export class AiImage {
   private readonly logger: Logger
   private readonly now: () => Date
   private readonly idFactory: () => string
+  private readonly fetchImpl: typeof fetch | null
   private readonly uploads = new Map<string, Upload>()
   private readonly running = new Set<string>()
 
@@ -106,6 +129,7 @@ export class AiImage {
     this.logger = options.logger
     this.now = options.now ?? (() => new Date())
     this.idFactory = options.idFactory ?? randomUUID
+    this.fetchImpl = options.fetchImpl ?? null
   }
 
   status(): Record<string, unknown> {
@@ -138,6 +162,8 @@ export class AiImage {
         return await this.finishUpload(context)
       case 'image.upload.abort':
         return this.abortUpload(context)
+      case 'image.upload.remote':
+        return await this.uploadRemote(context)
       case 'image.file.chunk':
         return await this.readFileChunk(context)
       case 'image.records.list':
@@ -291,7 +317,45 @@ export class AiImage {
     return await this.images.readChunk(input.fileId, input.offset, input.length)
   }
 
-  // ---- records ----
+  /**
+   * Downloads a picture that the page cannot reach itself and stores it exactly
+   * like a chosen file, so the rest of the flow (records, retry, export) does
+   * not need to know where the bytes came from.
+   */
+  private async uploadRemote(context: DispatchContext): Promise<unknown> {
+    context.assertAlive()
+    const input = parseOrThrow(RemoteUploadInputSchema, context.payload)
+    const doFetch = this.fetchImpl ?? globalThis.fetch
+    let response: Response
+    try {
+      response = await doFetch(input.url, {
+        redirect: 'follow',
+        headers: { accept: 'image/*' },
+        signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
+      })
+    } catch (error) {
+      throw unavailable('图片下载失败，请检查链接是否可以访问', error)
+    }
+    if (!response.ok) {
+      throw unavailable(`图片链接返回 ${String(response.status)}，无法下载`)
+    }
+    const declared = Number(response.headers.get('content-length') ?? '0')
+    if (Number.isFinite(declared) && declared > MAX_INPUT_BYTES) {
+      throw invalidRequest('图片超过 8 MB，请换一张')
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.byteLength === 0) throw invalidRequest('图片内容为空')
+    if (bytes.byteLength > MAX_INPUT_BYTES) {
+      throw invalidRequest('图片超过 8 MB，请换一张')
+    }
+    const mime = sniffImageMime(bytes)
+    if (mime === null) {
+      throw invalidRequest('链接指向的不是 JPEG、PNG 或 WebP 图片')
+    }
+    const file = await this.images.write(this.idFactory(), mime, bytes)
+    const name = input.name === undefined ? '' : input.name
+    return { file: { ...file, name: name === '' ? remoteName(input.url, mime) : name } }
+  }
 
   private async listRecords(context: DispatchContext): Promise<unknown> {
     context.assertAlive()

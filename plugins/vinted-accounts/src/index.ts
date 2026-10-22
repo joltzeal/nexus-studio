@@ -51,6 +51,8 @@ export interface VintedAccountsPluginOptions {
   diagnostics?: Writable
   now?: () => Date
   idFactory?: () => string
+  /** Overrides `globalThis.fetch`; used by tests to answer an inbox link. */
+  fetchImpl?: typeof fetch
 }
 
 export interface VintedAccountsPluginInstance {
@@ -81,6 +83,7 @@ export function createVintedAccountsPlugin(
     logger,
     now,
     ...(options.idFactory === undefined ? {} : { idFactory: options.idFactory }),
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
   })
 
   let stop: () => void = () => undefined

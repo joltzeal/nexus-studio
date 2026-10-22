@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import {
   AlertCircle,
   Blocks,
@@ -32,6 +32,7 @@ import { SharedSupplyRoute } from '@/features/supply/supply-page'
 import { AiImageRoute } from '@/features/ai-image/ai-image-page'
 import { AccountsRoute } from '@/features/accounts/accounts-page'
 import { VintedMonitorRoute } from '@/features/vinted-monitor/vinted-monitor-page'
+import { onAiImageHandoff, type AiImageHandoff } from '@/lib/page-handoff'
 
 const SettingsPage = lazy(() =>
   import('@/features/settings/settings-page').then((module) => ({
@@ -63,6 +64,9 @@ const PAGE_LABELS: Record<string, string> = {
 export function AppShell() {
   const [page, setPage] = useState('spaces')
   const [pluginsOpen, setPluginsOpen] = useState(true)
+  // A page can hand pictures to the AI page; the payload is kept here so it
+  // survives the switch and is dropped once the dialog has taken it.
+  const [aiImageHandoff, setAiImageHandoff] = useState<AiImageHandoff | null>(null)
   const {
     loading,
     loadError,
@@ -83,6 +87,18 @@ export function AppShell() {
       setPluginsOpen(true)
     }
   }
+
+  useEffect(
+    () =>
+      onAiImageHandoff((payload) => {
+        setAiImageHandoff(payload)
+        setPage('ai-image')
+        setPluginsOpen(true)
+      }),
+    [],
+  )
+
+  const consumeAiImageHandoff = useCallback(() => setAiImageHandoff(null), [])
 
   return (
     <Tabs
@@ -242,7 +258,10 @@ export function AppShell() {
               <SharedSupplyRoute />
             </TabsContent>
             <TabsContent value="ai-image">
-              <AiImageRoute />
+              <AiImageRoute
+                handoff={aiImageHandoff}
+                onHandoffConsumed={consumeAiImageHandoff}
+              />
             </TabsContent>
             <TabsContent value="accounts">
               <AccountsRoute />
@@ -266,10 +285,6 @@ export function AppShell() {
           </>
         )}
       </main>
-
-      <footer className="app-footer">
-        <span>Nexus Studio</span>
-      </footer>
     </Tabs>
   )
 }

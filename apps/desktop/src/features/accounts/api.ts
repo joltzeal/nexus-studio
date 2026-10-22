@@ -53,3 +53,11 @@ export function unbindWindow(windowId: string): Promise<{ unbound: boolean }> {
 export function listBindings(): Promise<{ items: BindingView[] }> {
   return call<{ items: BindingView[] }>('vinted.accounts.bindings')
 }
+
+/** Reads the account's own inbox link; the plugin does the fetching. */
+export function readOtp(
+  accountId: string,
+  channel: 'email' | 'sms',
+): Promise<{ channel: 'email' | 'sms'; code: string; fetchedAt: string }> {
+  return call('vinted.accounts.otp', { accountId, channel })
+}

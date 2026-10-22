@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
+  Copy,
   Download,
   Eye,
   EyeOff,
   Loader2,
+  Mail,
   Pencil,
   Plus,
   RefreshCw,
   Search,
+  Smartphone,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -50,6 +53,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { toast } from '@/components/ui/toast'
+import { copyText } from '@/lib/clipboard'
 import {
   listPlugins,
   pluginHostAvailable,
@@ -60,6 +64,7 @@ import {
   downloadTemplate,
   importAccounts,
   listAccounts,
+  readOtp,
   removeAccount,
   saveAccount,
 } from './api'
@@ -97,6 +102,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const [removing, setRemoving] = useState<Account | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Codes live for a few minutes; keeping them on screen beats a toast that
+  // disappears before the user has typed the digits into Vinted.
+  const [codes, setCodes] = useState<
+    Record<string, { code: string; channel: 'email' | 'sms' }>
+  >({})
+  const [otpBusy, setOtpBusy] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const result = await listAccounts()
@@ -142,6 +153,26 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       .toLowerCase()
       .includes(query.toLowerCase()),
   )
+  // The column only exists when at least one account can actually fetch a code.
+  const hasOtpLinks = accounts.some(
+    (account) => account.emailOtpUrl !== '' || account.smsOtpUrl !== '',
+  )
+
+  async function fetchCode(account: Account, channel: 'email' | 'sms') {
+    const key = `${account.id}:${channel}`
+    setOtpBusy(key)
+    try {
+      const result = await readOtp(account.id, channel)
+      setCodes((current) => ({
+        ...current,
+        [account.id]: { code: result.code, channel },
+      }))
+    } catch (cause) {
+      toast.error(message(cause))
+    } finally {
+      setOtpBusy(null)
+    }
+  }
 
   return (
     <section className="collection-page page-reveal" aria-labelledby="accounts-heading">
@@ -212,6 +243,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   <TableHead>账号</TableHead>
                   <TableHead>登录方式</TableHead>
                   <TableHead>手机号</TableHead>
+                  {hasOtpLinks ? <TableHead>验证码</TableHead> : null}
                   <TableHead>状态</TableHead>
                   <TableHead>关联窗口</TableHead>
                   <TableHead className="text-right">操作</TableHead>
@@ -228,6 +260,16 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                     </TableCell>
                     <TableCell>{LOGIN_METHOD_LABELS[account.loginMethod]}</TableCell>
                     <TableCell>{account.phone || '—'}</TableCell>
+                    {hasOtpLinks ? (
+                      <TableCell>
+                        <OtpCell
+                          account={account}
+                          state={codes[account.id] ?? null}
+                          busy={otpBusy}
+                          onFetch={(channel) => void fetchCode(account, channel)}
+                        />
+                      </TableCell>
+                    ) : null}
                     <TableCell>
                       <Badge variant={statusVariant(account.status)}>
                         {STATUS_LABELS[account.status]}
@@ -348,6 +390,77 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
         ) : null}
       </AlertDialog>
     </section>
+  )
+}
+
+/**
+ * One cell, one or two buttons: the column only exists because an account has a
+ * mailbox or phone link, so "nothing to fetch" never reaches this component.
+ */
+function OtpCell({
+  account,
+  state,
+  busy,
+  onFetch,
+}: {
+  account: Account
+  state: { code: string; channel: 'email' | 'sms' } | null
+  busy: string | null
+  onFetch: (channel: 'email' | 'sms') => void
+}) {
+  const channels = [
+    ...(account.emailOtpUrl === ''
+      ? []
+      : [{ channel: 'email' as const, label: '邮箱验证码', Icon: Mail }]),
+    ...(account.smsOtpUrl === ''
+      ? []
+      : [{ channel: 'sms' as const, label: '手机验证码', Icon: Smartphone }]),
+  ]
+
+  async function copy() {
+    if (state === null) return
+    if (await copyText(state.code)) toast.success('验证码已复制')
+    else toast.error('复制失败，请检查剪贴板权限后重试。')
+  }
+
+  return (
+    <div className="otp-cell">
+      {state === null ? null : (
+        <span className="otp-code">
+          <strong>{state.code}</strong>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="复制验证码"
+            onClick={() => void copy()}
+          >
+            <Copy />
+          </Button>
+        </span>
+      )}
+      <div className="otp-actions">
+        {channels.map(({ channel, label, Icon }) => {
+          const pending = busy === `${account.id}:${channel}`
+          return (
+            <Button
+              key={channel}
+              variant="outline"
+              size="xs"
+              disabled={busy !== null}
+              title={`从${channel === 'email' ? '邮箱' : '手机'}验证码链接读取最新验证码`}
+              onClick={() => onFetch(channel)}
+            >
+              {pending ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <Icon data-icon="inline-start" />
+              )}
+              {label}
+            </Button>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
