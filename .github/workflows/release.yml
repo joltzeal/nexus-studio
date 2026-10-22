@@ -42,6 +42,7 @@ jobs:
           test -f apps/desktop/src-tauri/runtime/browser-runtime/dist/profile-runner.js
           test -f apps/desktop/src-tauri/runtime/plugins/proxy-pool/dist/nexus.plugin.json
           test -f apps/desktop/src-tauri/runtime/plugins/address-generator/dist/nexus.plugin.json
+          test -f apps/desktop/src-tauri/runtime/plugins/shared-supply/dist/nexus.plugin.json
           test -f "apps/desktop/src-tauri/binaries/node-${{ matrix.target }}${{ runner.os == 'Windows' && '.exe' || '' }}"
       - uses: tauri-apps/tauri-action@v0
         env:

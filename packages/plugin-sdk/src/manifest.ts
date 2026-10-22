@@ -10,6 +10,7 @@ const domainPattern =
 export const PluginCapabilitySchema = z.enum([
   'proxy.provider',
   'address.generator',
+  'supply.catalog',
   'platform.adapter',
   'verification.provider',
   'image.provider',

@@ -11,6 +11,8 @@ pub enum Capability {
     ProxyProvider,
     #[serde(rename = "address.generator")]
     AddressGenerator,
+    #[serde(rename = "supply.catalog")]
+    SupplyCatalog,
     #[serde(rename = "platform.adapter")]
     PlatformAdapter,
     #[serde(rename = "verification.provider")]
@@ -22,9 +24,10 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 6] = [
+    pub const ALL: [Capability; 7] = [
         Capability::ProxyProvider,
         Capability::AddressGenerator,
+        Capability::SupplyCatalog,
         Capability::PlatformAdapter,
         Capability::VerificationProvider,
         Capability::ImageProvider,
@@ -35,6 +38,7 @@ impl Capability {
         match self {
             Capability::ProxyProvider => "proxy.provider",
             Capability::AddressGenerator => "address.generator",
+            Capability::SupplyCatalog => "supply.catalog",
             Capability::PlatformAdapter => "platform.adapter",
             Capability::VerificationProvider => "verification.provider",
             Capability::ImageProvider => "image.provider",

@@ -84,6 +84,7 @@ try {
     ['@nexus/browser-runtime', join(runtime, 'browser-runtime')],
     ['@nexus/plugin-proxy-pool', join(runtime, 'plugins/proxy-pool')],
     ['@nexus/plugin-address-generator', join(runtime, 'plugins/address-generator')],
+    ['@nexus/plugin-shared-supply', join(runtime, 'plugins/shared-supply')],
   ]) {
     await mkdir(resolve(destination, '..'), { recursive: true })
     const result = spawnSync(

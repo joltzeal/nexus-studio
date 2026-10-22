@@ -53,6 +53,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { toast } from '@/components/ui/toast'
 import {
   checkProxy,
   deleteProxies,
@@ -179,7 +180,6 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
     done: number
     failed: number
   } | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
   const runningCheck = useRef(false)
   const alive = useRef(true)
 
@@ -255,7 +255,6 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
   function patchQuery(patch: Partial<ProxyListQuery>) {
     setApplied((current) => ({ ...current, ...patch }))
     setSelection(new Set())
-    setNotice(null)
   }
 
   function toggleRow(id: string, checked: boolean) {
@@ -292,7 +291,6 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
     if (runningCheck.current || ids.length === 0) return
     runningCheck.current = true
     setError(null)
-    setNotice(null)
     let cursor = 0
     let done = 0
     let failed = 0
@@ -563,11 +561,6 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
           {progress.done === progress.total ? `，失败 ${progress.failed} 条。` : '…'}
         </p>
       )}
-      {notice === null ? null : (
-        <p className="proxy-result" role="status">
-          {notice}
-        </p>
-      )}
 
       <ProxyFilters
         query={{ ...applied, keyword }}
@@ -785,7 +778,7 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
                                 }).then(
                                   (next) => {
                                     setConfig(next)
-                                    setNotice(`已将「${row.name}」设为默认代理。`)
+                                    toast.success(`已将「${row.name}」设为默认代理`)
                                   },
                                   (cause: unknown) => setError(message(cause)),
                                 )
@@ -911,7 +904,7 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
           onOpenChange={(next) => {
             if (!next) setUrlRequest(null)
           }}
-          onCopied={(count) => setNotice(`已复制 ${count} 条代理 URL（不含密码）。`)}
+          onCopied={(count) => toast.success(`已复制 ${count} 条代理 URL（不含密码）`)}
         />
       )}
       {subsOpen ? (
@@ -928,7 +921,7 @@ export function ProxyPoolPage({ plugin, hostAvailable, onEnable }: ProxyPoolPage
           onOpenChange={setConfigOpen}
           onSaved={(next) => {
             setConfig(next)
-            setNotice('配置已保存。')
+            toast.success('配置已保存')
           }}
         />
       ) : null}

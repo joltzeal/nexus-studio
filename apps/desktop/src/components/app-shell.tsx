@@ -10,6 +10,7 @@ import {
   Network,
   RefreshCw,
   Settings2,
+  ShoppingBag,
   Sun,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,7 @@ import { GroupsPage } from '@/features/groups/groups-page'
 import { PluginsPage } from '@/features/plugins/plugins-page'
 import { ProxyPoolRoute } from '@/features/proxy/proxy-pool-page'
 import { AddressGeneratorRoute } from '@/features/addresses/address-page'
+import { SharedSupplyRoute } from '@/features/supply/supply-page'
 
 const SettingsPage = lazy(() =>
   import('@/features/settings/settings-page').then((module) => ({
@@ -90,6 +92,10 @@ export function AppShell() {
             <MapPinned />
             地址生成器
           </TabsTrigger>
+          <TabsTrigger value="supply">
+            <ShoppingBag />
+            共享货源
+          </TabsTrigger>
           <TabsTrigger value="settings">
             <Settings2 />
             应用设置
@@ -111,6 +117,7 @@ export function AppShell() {
                 plugins: '插件中心',
                 proxy: '代理池',
                 addresses: '地址生成器',
+                supply: '共享货源',
                 settings: '应用设置',
               }[page]
             }
@@ -179,6 +186,9 @@ export function AppShell() {
             </TabsContent>
             <TabsContent value="addresses">
               <AddressGeneratorRoute />
+            </TabsContent>
+            <TabsContent value="supply">
+              <SharedSupplyRoute />
             </TabsContent>
             <TabsContent value="settings">
               <Suspense

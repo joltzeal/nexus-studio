@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /**
  * The TypeScript manifest stays the single source of truth. The host reads the
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
  * compares the digest with what the process reports at handshake time.
  */
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-const module = await import(join(root, 'dist/nexus.plugin.js'))
+const module = await import(pathToFileURL(join(root, 'dist/nexus.plugin.js')).href)
 const manifest = module.default
 if (manifest === null || typeof manifest !== 'object') {
   throw new Error('nexus.plugin.ts did not export a manifest object')

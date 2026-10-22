@@ -20,6 +20,13 @@ export interface ProxyProvider extends CapabilityDescriptor {
  */
 export type AddressGenerator = CapabilityDescriptor
 
+/**
+ * Shared supply catalogue: merchant and product browsing over a supplier's own
+ * public endpoints, plus a local favourites list. Like the address capability,
+ * the DTOs belong to the plugin's method table.
+ */
+export type SupplyCatalog = CapabilityDescriptor
+
 export type PlatformAdapter = CapabilityDescriptor
 export type VerificationProvider = CapabilityDescriptor
 export type ImageProvider = CapabilityDescriptor
@@ -28,6 +35,7 @@ export type EnvironmentConfigurator = CapabilityDescriptor
 export interface PluginCapabilityContracts {
   'proxy.provider': ProxyProvider
   'address.generator': AddressGenerator
+  'supply.catalog': SupplyCatalog
   'platform.adapter': PlatformAdapter
   'verification.provider': VerificationProvider
   'image.provider': ImageProvider

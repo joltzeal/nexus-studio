@@ -593,3 +593,69 @@ fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
     );
     host.shutdown();
 }
+
+#[test]
+fn workspace_supply_plugin_installs_enables_and_lists_favourites() {
+    let plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins");
+    if !plugins.join("shared-supply/dist/src/index.js").is_file() {
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(
+        temporary.path().join("host"),
+        vec![(plugins.clone(), CandidateSource::Workspace)],
+    )
+    .unwrap();
+
+    let installed = host.install(&plugins.join("shared-supply")).unwrap();
+    assert_eq!(installed.id, "studio.shared-supply");
+    assert!(!installed.enabled);
+
+    let enabled = host
+        .enable("studio.shared-supply", &[Capability::SupplyCatalog])
+        .unwrap();
+    assert_eq!(
+        enabled.state, "running",
+        "lastError: {:?}",
+        enabled.last_error
+    );
+
+    // Both calls below are served from the plugin itself, so no upstream request
+    // is made: the catalogue is a constant table and favourites start empty.
+    let catalog = host
+        .call(
+            "studio.shared-supply",
+            Capability::SupplyCatalog,
+            "supply.catalog",
+            serde_json::json!({}),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(catalog["categories"].as_array().unwrap().len(), 10);
+
+    let favorites = host
+        .call(
+            "studio.shared-supply",
+            Capability::SupplyCatalog,
+            "supply.favorites.list",
+            serde_json::json!({}),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(favorites["total"], 0);
+
+    // The plugin declares only `supply.catalog`, so an address call must be refused.
+    assert_eq!(
+        host.call(
+            "studio.shared-supply",
+            Capability::AddressGenerator,
+            "supply.catalog",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .unwrap_err()
+        .code(),
+        "PERMISSION_DENIED"
+    );
+    host.shutdown();
+}

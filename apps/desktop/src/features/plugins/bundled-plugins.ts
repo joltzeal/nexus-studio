@@ -1,5 +1,6 @@
 import addressManifest from '@nexus/plugin-address-generator/manifest'
 import proxyManifest from '@nexus/plugin-proxy-pool/manifest'
+import supplyManifest from '@nexus/plugin-shared-supply/manifest'
 
 /**
  * Plugins whose package is built from this repository.
@@ -23,6 +24,11 @@ export const BUNDLED_PLUGINS: readonly BundledPlugin[] = [
   {
     manifest: addressManifest,
     summary: '公开地址生成、地图选点与随机收货资料。',
+    status: '插件包已构建，宿主未接入',
+  },
+  {
+    manifest: supplyManifest,
+    summary: '分类商户与商品浏览、关键词搜索、以图搜图与本地收藏。',
     status: '插件包已构建，宿主未接入',
   },
 ]

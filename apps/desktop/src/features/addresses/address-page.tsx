@@ -14,6 +14,7 @@ import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
 import {
   enablePlugin,
@@ -164,17 +165,16 @@ export function AddressPage({ plugin, hostAvailable, onEnable }: AddressPageProp
       return
     }
     setItems((current) => [...current, profile])
-    setNotice('已添加选点地址。')
+    toast.success('已添加选点地址')
   }
 
   async function copy(text: string) {
-    const ok = await copyText(text)
-    if (ok) {
+    if (await copyText(text)) {
       setError(null)
-      setNotice('已复制。')
+      toast.success('已复制')
     } else {
-      setNotice(null)
       setError(COPY_FAILED)
+      toast.error(COPY_FAILED)
     }
   }
 
@@ -391,9 +391,10 @@ export function AddressPage({ plugin, hostAvailable, onEnable }: AddressPageProp
                 onCopied={(ok) => {
                   if (ok) {
                     setError(null)
-                    setNotice('已复制。')
+                    toast.success('已复制')
                   } else {
                     setError(COPY_FAILED)
+                    toast.error(COPY_FAILED)
                   }
                 }}
               />
@@ -502,7 +503,7 @@ export function AddressPage({ plugin, hostAvailable, onEnable }: AddressPageProp
           onOpenChange={setSettingsOpen}
           onSaved={(saved) => {
             setConfig(saved)
-            setNotice('地图 Key 已保存。')
+            toast.success('地图 Key 已保存')
             setError(null)
           }}
         />

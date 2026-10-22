@@ -2,7 +2,9 @@
 
 本文说明桌面应用里已实现的插件宿主：发现、安装、进程托管、权限检查点与窗口启动阻断。
 插件开发者要遵守的契约见[插件对接开发规范](14-plugin-integration-guide.md)，
-产品边界见[插件系统](06-plugin-system.md)，代理插件本身见[代理池插件](15-proxy-plugin.md)。
+产品边界见[插件系统](06-plugin-system.md)。仓库内三个插件的实际范围分别见
+[代理池插件](15-proxy-plugin.md)、[地址生成器插件](19-address-generator-plugin.md)与
+[共享货源插件](21-shared-supply-plugin.md)。
 
 ## 1. 代码位置与组成
 
@@ -164,17 +166,22 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 代理池页面通过同一宿主调用 `proxy.*` 方法，默认代理与密钥都在插件侧配置。
 密码在插件侧填写与保存，页面不回显，也没有宿主侧的密钥输入框。
 地址生成器页面同样只经 `plugin_call` 调用 `address.*` 方法，地图 Key 存在插件私有目录，
-页面只写入与清除，不回显明文；两个页面都不新增宿主侧的业务命令。
+页面只写入与清除，不回显明文；共享货源页面也只调用 `supply.*` 方法，
+收藏存在插件自己的 JSON 文档里，宿主不保存商品数据。
+三个页面都不新增宿主侧的业务命令。
 
 ## 11. 已执行的证据
 
 `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked`
-当前为 59 个用例中 58 个通过、1 个忽略（真实浏览器启动冒烟）。插件宿主相关用例覆盖：
+当前为 60 个用例中 59 个通过、1 个忽略（真实浏览器启动冒烟）。插件宿主相关用例覆盖：
 
 - manifest 未知字段、通配符/端口/localhost/IP 域名、不兼容核心与 API、重复能力；
 - 仓库内 `plugins/proxy-pool` 的 manifest 通过校验，且能完成真实握手与 `proxy.list`、`proxy.get` 调用；
 - 仓库内 `plugins/address-generator` 从 `dist` 安装、以 `address.generator` 启用并调用
   `address.catalog`，同一次会话里用 `proxy.provider` 调用同一方法被 `PERMISSION_DENIED` 拒绝；
+- 仓库内 `plugins/shared-supply` 从 `dist` 安装、以 `supply.catalog` 启用，
+  `supply.catalog` 返回 10 个分类、`supply.favorites.list` 总数为 0，
+  再用 `address.generator` 调用同一插件被 `PERMISSION_DENIED` 拒绝；
 - 发现阶段的缺入口跳过、安装成功、重复安装被拒、卸载清理；
 - 能力未声明、未授权、未启用、方法未上报时的拒绝；
 - 登记表往返与损坏时失败关闭；
@@ -197,9 +204,11 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 - 安装来源是本地目录，没有插件市场、下载与自动更新。
   目标形态（`.nexuspkg`、私有分发、L3 会话密钥、收费检查点）见
   [插件发布与 CI/CD](18-plugin-release-and-cicd.md)，均为方案，尚未实现。
-- 只实现了 `proxy.provider` 与 `address.generator` 的真实调用路径；
+- 只实现了 `proxy.provider`、`address.generator` 与 `supply.catalog` 的真实调用路径；
   `platform.adapter`、`verification.provider`、`image.provider` 与
   `environment.configurator` 只有声明与类型。
 - 地址生成器的公开地址来自 Overpass 镜像，覆盖与时效取决于 OpenStreetMap；
   它不连接任何地址库服务，也不做真实收件验证。
+- 共享货源插件连接第三方供应商接口，其可用性、限流与数据结构变化都不受宿主控制；
+  宿主只透传 `UNAVAILABLE` / `RATE_LIMITED` / `TIMEOUT`，不做重试或缓存兜底。
 - 未验证 Windows 下的进程回收、路径与凭据行为。

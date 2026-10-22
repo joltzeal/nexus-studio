@@ -15,5 +15,6 @@ export type {
   PluginCapabilityContracts,
   ProxyProvider,
   ProxyResolution,
+  SupplyCatalog,
   VerificationProvider,
 } from './capabilities.js'

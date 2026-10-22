@@ -1,5 +1,48 @@
 # 质量门禁与验证记录
 
+## 2026-10-22 全局 toast 与共享货源插件接入
+
+两件事在同一轮完成：
+
+- 新增全局提示组件 `apps/desktop/src/components/ui/toast.tsx`，在 `App.tsx` 里挂载一次，
+  任何模块直接调用 `toast.success/error/info`，不再往页面里追加"已复制"之类的行内文字。
+- 新增第三个完整插件 `plugins/shared-supply`（`studio.shared-supply`，能力 `supply.catalog`）
+  与桌面页面 `apps/desktop/src/features/supply`，导航增加第七个入口。
+
+共享货源插件把分类商户、商品列表、关键词搜索、以图搜图和本地收藏放在自己的进程里；
+收藏写入插件私有目录的 `shared-supply.json`（0600，上限 500 条），宿主不保存商品数据。
+页面只经 `plugin_call` 调用 `supply.*`，不新增宿主侧业务命令。上游报文用固定常量做
+AES-128-ECB 加密，该常量不是凭据，所以 manifest 的 `secrets` 为空数组。
+参考实现是 `nexus-cart` 的 `packages/platform/src/pages/shared-supply` 与对应的 FastAPI 后端，
+差异与未迁移部分（`useSceneReferences`）记在[共享货源插件](21-shared-supply-plugin.md)。
+
+本轮在本机 macOS 实际执行：
+
+| 检查          | 命令                                                       | 结果                                             |
+| ------------- | ---------------------------------------------------------- | ------------------------------------------------ |
+| ESLint        | `eslint . --max-warnings 0`                                | 通过，无输出                                     |
+| Prettier      | `prettier --check .`                                       | 首次报 17 个新文件，格式化后通过                 |
+| 桌面类型检查  | `tsc --noEmit -p apps/desktop/tsconfig.json`               | 通过                                             |
+| 插件类型检查  | `tsc -p plugins/shared-supply/tsconfig.json --noEmit`      | 通过                                             |
+| 前端测试      | `vitest run`                                               | 38 文件、379 用例通过（本轮新增 62）             |
+| Rust 测试     | `cargo test --lib --locked`                                | 59 通过、1 忽略（真实浏览器冒烟），共 60 用例    |
+| Rust 静态检查 | `cargo clippy --all-targets -- -D warnings`、`fmt --check` | 通过                                             |
+| 前端构建      | `vite build`（在 `apps/desktop` 下执行）                   | 通过，主 chunk 647.34 kB，仍有大于 500 kB 的警告 |
+
+本轮新增用例 62 个：插件 43（manifest 9、domain 9、上游协议 9、能力 11、私有存储 5）、
+共享货源页面 13（SSR 7、图片预处理 6）、toast 6。
+新增 Rust 用例 `workspace_supply_plugin_installs_enables_and_lists_favourites`：
+从 `dist` 安装、以 `supply.catalog` 启用、`supply.catalog` 返回 10 个分类、
+`supply.favorites.list` 总数为 0，再用 `address.generator` 调用同一插件被 `PERMISSION_DENIED` 拒绝。
+
+环境限制（不是代码问题）：`vite build` 必须在 `apps/desktop` 目录下执行，
+从仓库根用 `--config apps/desktop/vite.config.ts` 会报 `UNRESOLVED_ENTRY: index.html`；
+沙箱拦截批量删除，构建前需要先把 `apps/desktop/dist` 移走。
+`eslint` 在把输出接给 `tail` 时曾报 `EPIPE` 崩溃，改为重定向到文件后退出码为 0。
+
+未验证：真实上游账号下的分类、搜索与以图搜图质量与限流表现、收藏在真实安装目录里的
+跨重启持久化、Windows 行为。
+
 ## 2026-10-22 地址生成器插件接入
 
 新增第二个完整插件 `plugins/address-generator`（`studio.address-generator`，能力
@@ -9,16 +52,16 @@
 
 本轮在本机 macOS 实际执行：
 
-| 检查                               | 命令                                                                   | 结果                                                     |
-| ---------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------- |
-| ESLint                             | `eslint . --max-warnings 0`                                            | 通过，无输出                                             |
-| Prettier                           | `prettier --check .`                                                   | 通过                                                     |
-| 桌面类型检查                       | `tsc --noEmit -p apps/desktop/tsconfig.json`                           | 通过                                                     |
-| 插件类型检查                       | `tsc -p plugins/address-generator/tsconfig.json --noEmit`              | 通过                                                     |
-| 前端测试                           | `vitest run`                                                           | 29 文件、315 用例通过（插件 57、地址页面 14）            |
-| Rust 测试                          | `cargo test --lib --locked`                                            | 58 通过、1 忽略（真实浏览器冒烟），共 59 用例            |
-| Rust 静态检查                      | `cargo clippy --all-targets -- -D warnings` 与 `cargo fmt --check`     | 通过                                                     |
-| 前端构建                           | `vite build`                                                           | 通过，主 chunk 625.54 kB，仍有大于 500 kB 的警告         |
+| 检查          | 命令                                                               | 结果                                             |
+| ------------- | ------------------------------------------------------------------ | ------------------------------------------------ |
+| ESLint        | `eslint . --max-warnings 0`                                        | 通过，无输出                                     |
+| Prettier      | `prettier --check .`                                               | 通过                                             |
+| 桌面类型检查  | `tsc --noEmit -p apps/desktop/tsconfig.json`                       | 通过                                             |
+| 插件类型检查  | `tsc -p plugins/address-generator/tsconfig.json --noEmit`          | 通过                                             |
+| 前端测试      | `vitest run`                                                       | 29 文件、315 用例通过（插件 57、地址页面 14）    |
+| Rust 测试     | `cargo test --lib --locked`                                        | 58 通过、1 忽略（真实浏览器冒烟），共 59 用例    |
+| Rust 静态检查 | `cargo clippy --all-targets -- -D warnings` 与 `cargo fmt --check` | 通过                                             |
+| 前端构建      | `vite build`                                                       | 通过，主 chunk 625.54 kB，仍有大于 500 kB 的警告 |
 
 新增 Rust 用例 `workspace_address_plugin_installs_enables_and_serves_its_catalog`：
 把插件从 `dist` 安装进临时宿主、以 `address.generator` 启用、调用 `address.catalog`

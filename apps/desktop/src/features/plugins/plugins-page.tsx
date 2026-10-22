@@ -7,6 +7,7 @@ import {
   MapPinned,
   Play,
   RefreshCw,
+  ShoppingBag,
   SlidersHorizontal,
   Square,
   Store,
@@ -48,6 +49,7 @@ import { BUNDLED_PLUGINS } from './bundled-plugins'
 const capabilityIcons = {
   'proxy.provider': Cable,
   'address.generator': MapPinned,
+  'supply.catalog': ShoppingBag,
   'platform.adapter': Store,
   'verification.provider': KeyRound,
   'image.provider': Image,

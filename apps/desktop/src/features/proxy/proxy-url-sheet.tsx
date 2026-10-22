@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Loader2 } from 'lucide-react'
+import { Copy, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import {
@@ -43,7 +43,6 @@ export function ProxyUrlSheet({
   const [scheme, setScheme] = useState<string>(initialScheme ?? 'auto')
   const [urls, setUrls] = useState<string[]>([])
   const [pending, setPending] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const started = useRef(false)
   const alive = useRef(true)
@@ -63,7 +62,6 @@ export function ProxyUrlSheet({
     if (pending) return
     setPending(true)
     setError(null)
-    setCopied(false)
     try {
       const data = await exportUrls(ids, scheme === 'auto' ? null : (scheme as Scheme))
       if (!alive.current) return
@@ -72,7 +70,6 @@ export function ProxyUrlSheet({
         const ok = await copy(data.urls.join('\n'))
         if (!alive.current) return
         if (ok) {
-          setCopied(true)
           onCopied(data.count)
         } else {
           setError('自动复制失败，请手动选择文本或使用复制按钮。')
@@ -113,7 +110,6 @@ export function ProxyUrlSheet({
               onValueChange={(value) => {
                 setScheme(value)
                 setUrls([])
-                setCopied(false)
                 setError(null)
               }}
             >
@@ -137,12 +133,10 @@ export function ProxyUrlSheet({
           <Button disabled={pending} onClick={() => void generate(true)}>
             {pending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : copied ? (
-              <Check data-icon="inline-start" />
             ) : (
               <Copy data-icon="inline-start" />
             )}
-            {pending ? '生成中…' : copied ? '已复制' : '生成并复制'}
+            {pending ? '生成中…' : '生成并复制'}
           </Button>
           {error === null ? null : <FieldError role="alert">{error}</FieldError>}
           {urls.length === 0 ? null : (
@@ -155,7 +149,6 @@ export function ProxyUrlSheet({
                   onClick={() => {
                     void copy(urls.join('\n')).then((ok) => {
                       if (ok) {
-                        setCopied(true)
                         onCopied(urls.length)
                       } else {
                         setError('复制失败，请手动选择文本。')

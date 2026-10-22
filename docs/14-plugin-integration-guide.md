@@ -2,7 +2,7 @@
 
 ## 1. 文档目的
 
-本文规定 Nexus 插件的开发、接入、运行与验收边界，面向代理、地址生成、平台账号、接码、图片生成和浏览器环境配置六类能力。
+本文规定 Nexus 插件的开发、接入、运行与验收边界，面向代理、地址生成、共享货源、平台账号、接码、图片生成和浏览器环境配置七类能力。
 插件负责实现能力，主程序负责窗口、Profile、CloakBrowser 生命周期、权限决策、密钥引用和统一交互。
 
 宿主侧已实现发现、安装、登记表、受管进程、权限检查点与窗口启动阻断，
@@ -16,6 +16,10 @@
 
 仓库内 `plugins/address-generator` 是第二个完整插件，按同一协议提供 `address.*` 方法，
 见[地址生成器插件](19-address-generator-plugin.md)。
+
+仓库内 `plugins/shared-supply` 是第三个完整插件，按同一协议提供 `supply.*` 方法，
+见[共享货源插件](21-shared-supply-plugin.md)。它同时是第一个需要声明上游域名、
+但不申请任何密钥槽的插件，用来验证“无凭据能力”也能完整走通安装与调用。
 
 ## 2. 核心原则
 
@@ -33,10 +37,10 @@
 
 - `definePluginManifest()`：使用严格 schema 校验 manifest。
 - `PluginManifest`、`PluginPermissions`、`PluginCapability`：manifest 类型。
-- 六类能力接口：`ProxyProvider`、`AddressGenerator`、`PlatformAdapter`、`VerificationProvider`、`ImageProvider`、`EnvironmentConfigurator`。
+- 七类能力接口：`ProxyProvider`、`AddressGenerator`、`SupplyCatalog`、`PlatformAdapter`、`VerificationProvider`、`ImageProvider`、`EnvironmentConfigurator`。
 - `ProxyResolution`：代理解析结果，只允许返回不透明配置句柄和可选密钥引用。
 
-当前 `ProxyProvider.resolve()` 与 `AddressGenerator` 已有可运行的实现路径；其余四类仅有能力描述符，不能据此编写可运行插件。扩展这些接口时必须先更新 SDK、测试和本文，再实现宿主。
+当前 `ProxyProvider.resolve()`、`AddressGenerator` 与 `SupplyCatalog` 已有可运行的实现路径；其余四类仅有能力描述符，不能据此编写可运行插件。扩展这些接口时必须先更新 SDK、测试和本文，再实现宿主。
 
 ## 4. 插件包结构
 
@@ -129,7 +133,22 @@ interface ProxyResolution {
 - 唯一被持久化的是地图 Key，保存在插件私有目录的 `secrets.json`（明文，0600），
   因为页面必须把它交给 Google Maps SDK；它不是服务端凭据。
 
-### 6.3 平台账号 `platform.adapter`
+### 6.3 共享货源 `supply.catalog`
+
+共享货源插件把分类商户、商品列表、关键词搜索、以图搜图和本地收藏放在插件进程里，
+页面只负责展示、复制与触发动作。当前实现见[共享货源插件](21-shared-supply-plugin.md)，契约要点：
+
+- 分类必须来自插件自己的固定白名单（10 个分类 ID），页面不能把任意 ID 变成上游查询。
+- 上游失败按原因上报（`RATE_LIMITED` / `TIMEOUT` / `UNAVAILABLE`），不返回空列表冒充"该分类没有商户"。
+- 上游报文使用固定常量做 AES-128-ECB 加密，该常量写在源码里、对所有调用方一致，
+  不构成凭据，因此 manifest 的 `secrets` 为空数组；这不表示能力不需要网络授权。
+- 收藏写入插件自己的 JSON 文档（`shared-supply.json`，0600），上限 500 条；
+  重复收藏只刷新快照，保留原 `favoriteId` 与 `savedAt`，并回报 `alreadySaved`。
+- 以图搜图只接受 JPEG：页面用 canvas 统一转码，插件校验 `FF D8 FF` 魔数后转发，
+  非 JPEG 一律拒绝，不做格式猜测。
+- 收藏导出 CSV 带 BOM 与 CRLF，并对以 `= + - @` 等开头的单元格加前缀，避免公式注入。
+
+### 6.4 平台账号 `platform.adapter`
 
 用于 Vinted、Poshmark 等平台的账号元数据和受控操作。目标协议必须满足：
 
@@ -138,7 +157,7 @@ interface ProxyResolution {
 - 每项写操作单独定义输入、结果、超时和幂等性，不能提供任意脚本执行入口。
 - 平台限流、验证挑战和账号状态必须原样上报，不把失败包装成成功。
 
-### 6.4 接码 `verification.provider`
+### 6.5 接码 `verification.provider`
 
 目标协议将“申请号码”和“等待验证码”分成两个调用：
 
@@ -147,7 +166,7 @@ interface ProxyResolution {
 - 验证码属于敏感短期数据，默认只在内存中展示，不进入普通日志。
 - 插件不得自动向网页填码，除非同时获得浏览器访问授权并由用户触发对应动作。
 
-### 6.5 图片 `image.provider`
+### 6.6 图片 `image.provider`
 
 目标协议采用文件句柄或受控二进制流，不传任意本机路径：
 
@@ -156,7 +175,7 @@ interface ProxyResolution {
 - 外部服务域名必须在 manifest 中声明。
 - 生成结果不自动发布到平台，发布属于平台适配器的独立操作。
 
-### 6.6 环境配置 `environment.configurator`
+### 6.7 环境配置 `environment.configurator`
 
 该能力只能提出允许字段的配置补丁，例如语言、时区、窗口尺寸或起始地址：
 
@@ -293,13 +312,14 @@ rtk proxy pnpm run test
 
 ## 13. 实施顺序
 
-1. 完善六类能力的 TypeScript 请求/响应契约和 schema。
+1. 完善七类能力的 TypeScript 请求/响应契约和 schema。
 2. 定义并测试宿主 RPC、握手、超时、取消与错误协议。**已完成**（第 7 节）。
 3. 实现受管 Node.js 插件进程和 Rust 生命周期管理。**已完成**。
 4. 实现私有存储、密码落盘和权限检查点。**已完成**（密码为插件私有目录内的明文文件）。
 5. 先接入一个工作室自有代理插件，验证窗口启动失败阻断。**已完成**（`studio.proxy-pool`）。
 6. 按同一协议接入第二个插件，验证能力隔离与页面复用。**已完成**（`studio.address-generator`）。
-7. 再按相同边界接入平台、接码、图片和环境配置插件。**未开始**，SDK 侧只有类型。
-8. 完成签名、来源验证和操作系统隔离后，再评估第三方插件开放。**未开始**。
+7. 接入第三个插件，验证无密钥能力与插件自有持久化。**已完成**（`studio.shared-supply`）。
+8. 再按相同边界接入平台、接码、图片和环境配置插件。**未开始**，SDK 侧只有类型。
+9. 完成签名、来源验证和操作系统隔离后，再评估第三方插件开放。**未开始**。
 
-第 1 项与第 6 项的缺口、以及第 7 项需要的隔离能力，见[插件宿主](17-plugin-host.md)第 12 节。
+第 1 项与第 8 项的缺口、以及第 9 项需要的隔离能力，见[插件宿主](17-plugin-host.md)第 12 节。
