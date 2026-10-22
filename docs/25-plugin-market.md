@@ -201,8 +201,9 @@ cd market && python3 -m http.server 8787
 一次性准备：
 
 ```bash
-npx wrangler login
+npx wrangler login                          # 浏览器授权
 npx wrangler r2 bucket create nexus-studio-market
+npx wrangler r2 bucket list                 # 确认桶在远端存在
 ```
 
 日常上传用仓库脚本，它按 catalog 只传最新包，先传包再传 catalog，缓存头也写好了：
@@ -213,20 +214,42 @@ pnpm market:publish -- --dry-run         # 只打印命令，不真的上传
 pnpm market:publish -- --bucket 其他桶名
 ```
 
+> **必须带 `--remote`。** Wrangler 4 把 `r2 object put/get/delete` 默认指向本地模拟器，
+> 不带 `--remote` 时命令会「成功」，但文件只写进仓库下的 `.wrangler/state/v3/r2/`，
+> 真实桶里什么都没有。脚本已经内置 `--remote`；手敲命令时别漏。
+
 不想用脚本时，手动等价命令是（`catalog.json` 必须短缓存，插件包可以长缓存）：
 
 ```bash
 for file in $(find market -name '*.nexuspkg'); do
   npx wrangler r2 object put "nexus-studio-market/${file#market/}" \
     --file "$file" --content-type application/octet-stream \
-    --cache-control "public, max-age=31536000, immutable"
+    --cache-control "public, max-age=31536000, immutable" --remote
 done
 npx wrangler r2 object put nexus-studio-market/catalog.json \
   --file market/catalog.json --content-type application/json \
-  --cache-control "public, max-age=60"
+  --cache-control "public, max-age=60" --remote
 ```
 
 顺序很重要：先传包，最后传 catalog。中途失败时线上 catalog 仍然只指向已经存在的包。
+
+传完可以验证一次，确认东西真在远端：
+
+```bash
+npx wrangler r2 object get nexus-studio-market/catalog.json --remote --file /tmp/catalog.json
+```
+
+Wrangler 4 没有 `r2 object list`（只剩 `get` / `put` / `delete`），所以「桶里到底有什么」只能靠逐个 `get` 来确认。想连内容一起核对，就把 catalog 里每个包的 sha256 跟下载回来的文件对一遍：
+
+```bash
+node -e "for (const p of require('./market/catalog.json').plugins) console.log(p.package.url, p.package.sha256)" |
+while read -r key want; do
+  npx wrangler r2 object get "nexus-studio-market/$key" --remote --file "/tmp/$(echo "$key" | tr '/' '_')"
+  shasum -a 256 "/tmp/$(echo "$key" | tr '/' '_')" | grep -q "$want" && echo "OK   $key" || echo "DIFF $key"
+done
+```
+
+本地模拟器留下的 `.wrangler/` 可以直接删掉，它不影响任何东西，并且已经在 `.gitignore` 里。
 
 > **`npx` 报 `EBADDEVENGINES`**：`package.json` 的 `devEngines.packageManager` 声明了 pnpm，
 > 而 npm 只认识 `onFail` 的 `warn` / `error` / `ignore` 三个值。历史上这里写的是 pnpm 专用的

@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url'
  *
  * Packages go first and `catalog.json` last: an interrupted run then leaves the
  * published catalog pointing only at files that already exist.
+ *
+ * Every write passes `--remote`. Wrangler 4 defaults R2 object commands to the
+ * local simulator, which silently "succeeds" into `.wrangler/state` and leaves
+ * the real bucket empty.
  */
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const WRANGLER = 'wrangler@4'
@@ -56,6 +60,9 @@ function put({ bucket, market, file, cacheControl, contentType, dryRun }) {
     contentType,
     '--cache-control',
     cacheControl,
+    // Wrangler 4 writes R2 objects to the local simulator unless this is set.
+    // Without it an "upload" only lands in `.wrangler/state` on this machine.
+    '--remote',
   ]
   if (dryRun) {
     const quoted = args.map((argument) =>
