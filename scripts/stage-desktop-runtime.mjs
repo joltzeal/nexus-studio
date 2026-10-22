@@ -85,6 +85,7 @@ try {
     ['@nexus/plugin-proxy-pool', join(runtime, 'plugins/proxy-pool')],
     ['@nexus/plugin-address-generator', join(runtime, 'plugins/address-generator')],
     ['@nexus/plugin-shared-supply', join(runtime, 'plugins/shared-supply')],
+    ['@nexus/plugin-ai-image', join(runtime, 'plugins/ai-image')],
   ]) {
     await mkdir(resolve(destination, '..'), { recursive: true })
     const result = spawnSync(
