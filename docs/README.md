@@ -2,7 +2,7 @@
 
 Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、克制的 B 端后台风格。
 桌面端的“创建窗口”直接创建原生 Profile，支持编辑、删除、启动与停止；浏览器预览无法执行原生操作。
-主页面为“窗口管理、分组管理、插件中心、代理池、地址生成器、共享货源、AI 生图、Vinted 监控、应用设置”，设置包含“外观、工作区、关于”。
+主页面为“窗口管理、分组管理、插件中心、代理池、地址生成器、共享货源、AI 生图、Vinted 账号、Vinted 监控、应用设置”，设置包含“外观、工作区、关于”。
 分组与偏好存于 localStorage；真实 Profile 与 CloakBrowser 授权由桌面 Rust 核心管理，配置与详情不代表账号已接入。
 真实 Profile 调用 CloakBrowser；插件由独立 Node.js 子进程托管，页面状态来自实际检查。
 保留纸白与钴蓝，以紧凑侧栏、轻量顶栏、窗口 Table 与工具栏组织操作。
@@ -35,6 +35,7 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [21 · 共享货源插件](21-shared-supply-plugin.md)          | 仓库内 `studio.shared-supply` 的目录协议、收藏与限制    |
 | [22 · AI 生图插件](22-ai-image-plugin.md)                | 仓库内 `studio.ai-image` 的生图改图、明文模型配置与记录 |
 | [23 · Vinted 监控插件](23-vinted-monitor-plugin.md)      | 仓库内 `studio.vinted-monitor` 的采集、运行记录与归档   |
+| [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)   | 仓库内 `studio.vinted-accounts` 的账密、导入与窗口关联  |
 
 ## 阅读与维护
 

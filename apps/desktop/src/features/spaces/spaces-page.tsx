@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
   ArrowUpRight,
+  Check,
+  Ellipsis,
   Pencil,
   Play,
   Plus,
@@ -8,6 +10,8 @@ import {
   Search,
   Square,
   Trash2,
+  Unlink,
+  UserRound,
 } from 'lucide-react'
 import {
   AlertDialog,
@@ -30,9 +34,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { toast } from '@/components/ui/toast'
 import {
   Select,
   SelectContent,
@@ -48,7 +61,24 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { listProxyProviders, type PluginView } from '@/lib/platform/native-plugins'
+import {
+  listProxyProviders,
+  listPlugins,
+  type PluginView,
+} from '@/lib/platform/native-plugins'
+import {
+  bindAccount,
+  listAccounts,
+  listBindings,
+  unbindWindow,
+} from '@/features/accounts/api'
+import {
+  ACCOUNTS_PLUGIN_ID,
+  LOGIN_METHOD_LABELS,
+  STATUS_LABELS,
+  type Account,
+  type BindingView,
+} from '@/features/accounts/types'
 import { listGroups, type WindowGroup } from '@/lib/platform/native-groups'
 import {
   createNativeProfile,
@@ -88,6 +118,17 @@ export function SpacesPage() {
   const [operatingWindows, setOperatingWindows] = useState<Set<string>>(() => new Set())
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [accountHost, setAccountHost] = useState<PluginView | null>(null)
+  const [bindings, setBindings] = useState<BindingView[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [binding, setBinding] = useState<NativeProfile | null>(null)
+  const [conflict, setConflict] = useState<{
+    window: NativeProfile
+    accountId: string
+    duplicates: string[]
+  } | null>(null)
+  const [bindingError, setBindingError] = useState<string | null>(null)
+  const [bindingPending, setBindingPending] = useState(false)
 
   const load = useCallback(async () => {
     const records = await listNativeProfiles()
@@ -159,6 +200,125 @@ export function SpacesPage() {
       active = false
     }
   }, [native])
+
+  const accountsRunning = accountHost !== null && accountHost.state === 'running'
+
+  useEffect(() => {
+    if (!native) return
+    let active = true
+    void listPlugins().then(
+      (catalog) => {
+        if (active) {
+          setAccountHost(catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null)
+        }
+      },
+      () => {
+        // Without a catalog the account column simply stays empty.
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [native])
+
+  // The host has no push channel: look again while the plugin is coming up.
+  useEffect(() => {
+    if (!native || accountsRunning) return
+    const timer = setInterval(() => {
+      void listPlugins().then(
+        (catalog) => {
+          setAccountHost(catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null)
+        },
+        () => undefined,
+      )
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [native, accountsRunning])
+
+  const refreshBindings = useCallback(async () => {
+    if (!accountsRunning) return
+    const [bound, catalog] = await Promise.all([listBindings(), listAccounts()])
+    setBindings(bound.items)
+    setAccounts(catalog.items)
+  }, [accountsRunning])
+
+  useEffect(() => {
+    // While the plugin is down its data is not shown at all (see `bound`), so
+    // there is nothing to clear here: a stale list would only flash back.
+    if (!accountsRunning) return
+    let active = true
+    void Promise.all([listBindings(), listAccounts()]).then(
+      ([bound, catalog]) => {
+        if (!active) return
+        setBindings(bound.items)
+        setAccounts(catalog.items)
+      },
+      () => {
+        if (active) setBindings([])
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [accountsRunning])
+
+  async function bind(window: NativeProfile, accountId: string | null) {
+    setBindingPending(true)
+    setBindingError(null)
+    try {
+      if (accountId === null) {
+        await unbindWindow(window.id)
+        toast.success('已解除关联')
+      } else {
+        const result = await bindAccount(accountId, window.id)
+        if (!result.bound) {
+          // Nothing was written: the warning comes first.
+          setConflict({ window, accountId, duplicates: result.duplicates })
+          return
+        }
+        toast.success('已关联账号')
+      }
+      await refreshBindings()
+      setBinding(null)
+    } catch (cause) {
+      setBindingError(message(cause))
+    } finally {
+      setBindingPending(false)
+    }
+  }
+
+  async function confirmDuplicate() {
+    if (conflict === null) return
+    setBindingPending(true)
+    setBindingError(null)
+    try {
+      await bindAccount(conflict.accountId, conflict.window.id, true)
+      await refreshBindings()
+      toast.success('已关联账号')
+      setConflict(null)
+      setBinding(null)
+    } catch (cause) {
+      setBindingError(message(cause))
+      setConflict(null)
+    } finally {
+      setBindingPending(false)
+    }
+  }
+
+  function bindingOf(windowId: string): BindingView | null {
+    // Bindings come from the plugin: without a running process they are stale.
+    if (!accountsRunning) return null
+    return bindings.find((entry) => entry.windowId === windowId) ?? null
+  }
+
+  /** The plugin stores opaque window ids; only this page knows their names. */
+  function windowName(id: string): string {
+    return windows.find((entry) => entry.id === id)?.name ?? id
+  }
+
+  function accountLabel(id: string): string {
+    return accounts.find((entry) => entry.id === id)?.account ?? id
+  }
 
   async function operate(window: NativeProfile) {
     setOperatingWindows((current) => new Set(current).add(window.id))
@@ -277,6 +437,7 @@ export function SpacesPage() {
             <TableRow>
               <TableHead>窗口名称</TableHead>
               <TableHead>平台</TableHead>
+              <TableHead>Vinted 账号</TableHead>
               <TableHead>分组</TableHead>
               <TableHead>内核版本</TableHead>
               <TableHead>代理</TableHead>
@@ -285,65 +446,117 @@ export function SpacesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {visible.map((window) => (
-              <TableRow key={window.id}>
-                <TableCell>
-                  <strong>{window.name}</strong>
-                  <small className="block text-muted-foreground">
-                    {window.settings.note}
-                  </small>
-                </TableCell>
-                <TableCell>{window.settings.platform}</TableCell>
-                <TableCell>
-                  {groups.find((group) => group.id === window.groupId)?.name ?? '未分组'}
-                </TableCell>
-                <TableCell>{window.version}</TableCell>
-                <TableCell>{window.proxy ?? '直连'}</TableCell>
-                <TableCell>{window.running ? '运行中' : '已停止'}</TableCell>
-                <TableCell>
-                  <div className="table-actions">
-                    <Button
-                      variant={window.running ? 'outline' : 'default'}
-                      size="sm"
-                      disabled={operatingWindows.has(window.id)}
-                      onClick={() => void operate(window)}
-                    >
-                      {window.running ? (
-                        <Square data-icon="inline-start" />
-                      ) : (
-                        <Play data-icon="inline-start" />
-                      )}
-                      {window.running ? '停止' : '打开'}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`编辑 ${window.name}`}
-                      disabled={window.running || operatingWindows.has(window.id)}
-                      onClick={() => setEditing(window.id)}
-                    >
-                      <Pencil />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setViewing(window.id)}
-                    >
-                      详情 <ArrowUpRight data-icon="inline-end" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`删除 ${window.name}`}
-                      disabled={window.running || operatingWindows.has(window.id)}
-                      onClick={() => setDeleting(window.id)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+            {visible.map((window) => {
+              const bound = bindingOf(window.id)
+              return (
+                <TableRow key={window.id}>
+                  <TableCell>
+                    <strong>{window.name}</strong>
+                    <small className="block text-muted-foreground">
+                      {window.settings.note}
+                    </small>
+                  </TableCell>
+                  <TableCell>{window.settings.platform}</TableCell>
+                  <TableCell>
+                    {bound === null ? (
+                      <span className="text-muted-foreground">未关联</span>
+                    ) : (
+                      <span className="account-cell">
+                        <strong>{bound.account?.account ?? '账号已删除'}</strong>
+                        <small className="block text-muted-foreground">
+                          {bound.account ? STATUS_LABELS[bound.account.status] : ''}
+                        </small>
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {groups.find((group) => group.id === window.groupId)?.name ??
+                      '未分组'}
+                  </TableCell>
+                  <TableCell>{window.version}</TableCell>
+                  <TableCell>{window.proxy ?? '直连'}</TableCell>
+                  <TableCell>{window.running ? '运行中' : '已停止'}</TableCell>
+                  <TableCell>
+                    <div className="table-actions">
+                      <Button
+                        variant={window.running ? 'outline' : 'default'}
+                        size="sm"
+                        disabled={operatingWindows.has(window.id)}
+                        onClick={() => void operate(window)}
+                      >
+                        {window.running ? (
+                          <Square data-icon="inline-start" />
+                        ) : (
+                          <Play data-icon="inline-start" />
+                        )}
+                        {window.running ? '停止' : '打开'}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`编辑 ${window.name}`}
+                        disabled={window.running || operatingWindows.has(window.id)}
+                        onClick={() => setEditing(window.id)}
+                      >
+                        <Pencil />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setViewing(window.id)}
+                      >
+                        详情 <ArrowUpRight data-icon="inline-end" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`删除 ${window.name}`}
+                        disabled={window.running || operatingWindows.has(window.id)}
+                        onClick={() => setDeleting(window.id)}
+                      >
+                        <Trash2 />
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`更多操作 ${window.name}`}
+                          >
+                            <Ellipsis />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              setBindingError(null)
+                              setBinding(window)
+                            }}
+                          >
+                            <UserRound />
+                            {bound === null ? '关联账号' : '更换账号'}
+                          </DropdownMenuItem>
+                          {bound === null ? null : (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                disabled={bindingPending}
+                                onSelect={() => void bind(window, null)}
+                              >
+                                <Unlink />
+                                解除关联
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
         {visible.length === 0 ? (
@@ -432,6 +645,10 @@ export function SpacesPage() {
                 <dd>{selected.settings.platform}</dd>
               </div>
               <div className="about-row">
+                <dt>Vinted 账号</dt>
+                <dd>{bindingOf(selected.id)?.account?.account ?? '未关联'}</dd>
+              </div>
+              <div className="about-row">
                 <dt>分组</dt>
                 <dd>
                   {groups.find((group) => group.id === selected.groupId)?.name ??
@@ -508,7 +725,155 @@ export function SpacesPage() {
           </AlertDialogContent>
         ) : null}
       </AlertDialog>
+
+      <Dialog
+        open={binding !== null}
+        onOpenChange={(open) => {
+          if (!open) setBinding(null)
+        }}
+      >
+        {binding === null ? null : (
+          <AccountBindDialog
+            key={binding.id}
+            window={binding}
+            ready={accountsRunning}
+            accounts={accountsRunning ? accounts : []}
+            current={bindingOf(binding.id)?.accountId ?? null}
+            pending={bindingPending}
+            error={bindingError}
+            onConfirm={(accountId) => void bind(binding, accountId)}
+            onCancel={() => setBinding(null)}
+          />
+        )}
+      </Dialog>
+
+      <AlertDialog
+        open={conflict !== null}
+        onOpenChange={(open) => {
+          if (!open) setConflict(null)
+        }}
+      >
+        {conflict === null ? null : (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>同一个账号已经关联了其他窗口</AlertDialogTitle>
+              <AlertDialogDescription>
+                「{accountLabel(conflict.accountId)}」已关联到
+                {conflict.duplicates.map((id) => `「${windowName(id)}」`).join('、')}。
+                继续关联后会有 {conflict.duplicates.length + 1} 个窗口共用这个账号。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault()
+                  void confirmDuplicate()
+                }}
+              >
+                仍然关联
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
     </section>
+  )
+}
+
+function AccountBindDialog({
+  window,
+  ready,
+  accounts,
+  current,
+  pending,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  window: NativeProfile
+  ready: boolean
+  accounts: Account[]
+  current: string | null
+  pending: boolean
+  error: string | null
+  onConfirm: (accountId: string) => void
+  onCancel: () => void
+}) {
+  const [selected, setSelected] = useState<string | null>(current)
+  const [query, setQuery] = useState('')
+  const visible = accounts.filter((account) =>
+    `${account.account} ${account.note}`.toLowerCase().includes(query.toLowerCase()),
+  )
+
+  return (
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>关联 Vinted 账号</DialogTitle>
+        <DialogDescription>{window.name} · 一个窗口只能关联一个账号。</DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-3">
+        <div className="search-field">
+          <Search aria-hidden="true" />
+          <Input
+            aria-label="搜索可关联账号"
+            placeholder="搜索账号或备注"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        {!ready ? (
+          <p className="text-sm text-muted-foreground">
+            Vinted 账号插件还没就绪，稍后再试。
+          </p>
+        ) : accounts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            还没有账号。先到「Vinted 账号」页新增或导入。
+          </p>
+        ) : (
+          <div className="account-picker" role="listbox" aria-label="可关联账号">
+            {visible.map((account) => (
+              <button
+                key={account.id}
+                type="button"
+                role="option"
+                aria-selected={selected === account.id}
+                className="account-option"
+                data-selected={selected === account.id ? 'true' : undefined}
+                disabled={pending}
+                onClick={() => setSelected(account.id)}
+              >
+                <span>
+                  <strong>{account.account}</strong>
+                  <small>
+                    {LOGIN_METHOD_LABELS[account.loginMethod]} ·{' '}
+                    {STATUS_LABELS[account.status]}
+                  </small>
+                </span>
+                {selected === account.id ? <Check aria-hidden="true" /> : null}
+              </button>
+            ))}
+            {visible.length === 0 ? (
+              <p className="text-sm text-muted-foreground">没有匹配的账号。</p>
+            ) : null}
+          </div>
+        )}
+        {error ? <FieldError role="alert">{error}</FieldError> : null}
+      </div>
+      <DialogFooter>
+        <Button variant="ghost" disabled={pending} onClick={onCancel}>
+          取消
+        </Button>
+        <Button
+          disabled={pending || selected === null}
+          onClick={() => {
+            if (selected !== null) onConfirm(selected)
+          }}
+        >
+          {pending ? '正在关联…' : '关联'}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
   )
 }
 

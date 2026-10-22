@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
   Store,
   Trash2,
+  Users,
 } from 'lucide-react'
 import {
   AlertDialog,
@@ -61,6 +62,7 @@ const capabilityIcons = {
   'image.provider': Image,
   'environment.configurator': SlidersHorizontal,
   'monitor.collector': Radar,
+  'account.pool': Users,
 }
 
 function iconFor(capability: string) {

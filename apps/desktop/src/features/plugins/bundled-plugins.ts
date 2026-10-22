@@ -2,6 +2,7 @@ import addressManifest from '@nexus/plugin-address-generator/manifest'
 import aiImageManifest from '@nexus/plugin-ai-image/manifest'
 import proxyManifest from '@nexus/plugin-proxy-pool/manifest'
 import supplyManifest from '@nexus/plugin-shared-supply/manifest'
+import vintedAccountsManifest from '@nexus/plugin-vinted-accounts/manifest'
 import vintedMonitorManifest from '@nexus/plugin-vinted-monitor/manifest'
 
 /**
@@ -15,4 +16,5 @@ export const BUNDLED_PLUGINS = [
   supplyManifest,
   aiImageManifest,
   vintedMonitorManifest,
+  vintedAccountsManifest,
 ] as const

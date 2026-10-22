@@ -169,6 +169,30 @@ fn workspace_plugin_manifest_is_valid() {
 }
 
 #[test]
+fn every_capability_round_trips_through_its_wire_name() {
+    // A capability that is added to the enum but not to `as_str` (or the
+    // reverse) would silently stop matching manifests.
+    for capability in Capability::ALL {
+        assert_eq!(Capability::parse(capability.as_str()), Some(capability));
+    }
+}
+
+#[test]
+fn workspace_vinted_accounts_manifest_declares_the_account_pool() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../plugins/vinted-accounts/dist/nexus.plugin.json");
+    if !path.is_file() {
+        return;
+    }
+    let manifest = PluginManifest::parse(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(manifest.id, "studio.vinted-accounts");
+    assert!(manifest.declares(Capability::AccountPool));
+    // Credentials never leave the private store: no network, no secret slots.
+    assert!(manifest.permissions.network_domains.is_empty());
+    assert!(manifest.permissions.secrets.is_empty());
+}
+
+#[test]
 fn discovery_skips_non_packages_and_reports_missing_entry() {
     let temporary = tempfile::tempdir().unwrap();
     fs::create_dir_all(temporary.path().join("empty")).unwrap();
@@ -627,6 +651,101 @@ fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
             "studio.address-generator",
             Capability::ProxyProvider,
             "address.catalog",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .unwrap_err()
+        .code(),
+        "PERMISSION_DENIED"
+    );
+    host.shutdown();
+}
+
+#[test]
+fn workspace_account_plugin_installs_and_binds_a_window() {
+    let plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins");
+    if !plugins.join("vinted-accounts/dist/src/index.js").is_file() {
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(
+        temporary.path().join("host"),
+        vec![(plugins.clone(), CandidateSource::Workspace)],
+    )
+    .unwrap();
+
+    let installed = host.install(&plugins.join("vinted-accounts")).unwrap();
+    assert_eq!(installed.id, "studio.vinted-accounts");
+    assert_eq!(
+        installed.state, "running",
+        "lastError: {:?}",
+        installed.last_error
+    );
+
+    // Everything below is served from the plugin's own store: no network call.
+    let saved = host
+        .call(
+            "studio.vinted-accounts",
+            Capability::AccountPool,
+            "vinted.accounts.save",
+            serde_json::json!({
+                "loginMethod": "email",
+                "account": "a@b.com",
+                "password": "secret",
+                "phone": "",
+                "emailOtpUrl": "",
+                "smsOtpUrl": "",
+                "note": "",
+                "status": "active",
+                "homepageUrl": ""
+            }),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    let account_id = saved["item"]["id"].as_str().unwrap().to_string();
+
+    let bound = host
+        .call(
+            "studio.vinted-accounts",
+            Capability::AccountPool,
+            "vinted.accounts.bind",
+            serde_json::json!({ "accountId": &account_id, "windowId": "win-1" }),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(bound["bound"], true);
+
+    // The same account on a second window is a conflict until it is confirmed.
+    let conflict = host
+        .call(
+            "studio.vinted-accounts",
+            Capability::AccountPool,
+            "vinted.accounts.bind",
+            serde_json::json!({ "accountId": &account_id, "windowId": "win-2" }),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(conflict["bound"], false);
+    assert_eq!(conflict["duplicates"][0], "win-1");
+
+    let template = host
+        .call(
+            "studio.vinted-accounts",
+            Capability::AccountPool,
+            "vinted.accounts.template",
+            serde_json::json!({ "format": "csv" }),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(template["filename"], "vinted-accounts-template.csv");
+    assert!(!template["base64"].as_str().unwrap().is_empty());
+
+    // The plugin declares only `account.pool`, so a monitor call must be refused.
+    assert_eq!(
+        host.call(
+            "studio.vinted-accounts",
+            Capability::MonitorCollector,
+            "vinted.accounts.list",
             serde_json::json!({}),
             Duration::from_secs(5),
         )

@@ -14,6 +14,7 @@ import {
   ShoppingBag,
   Sparkles,
   Sun,
+  Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -28,6 +29,7 @@ import { ProxyPoolRoute } from '@/features/proxy/proxy-pool-page'
 import { AddressGeneratorRoute } from '@/features/addresses/address-page'
 import { SharedSupplyRoute } from '@/features/supply/supply-page'
 import { AiImageRoute } from '@/features/ai-image/ai-image-page'
+import { AccountsRoute } from '@/features/accounts/accounts-page'
 import { VintedMonitorRoute } from '@/features/vinted-monitor/vinted-monitor-page'
 
 const SettingsPage = lazy(() =>
@@ -104,6 +106,10 @@ export function AppShell() {
             <Sparkles />
             AI 生图
           </TabsTrigger>
+          <TabsTrigger value="accounts">
+            <Users />
+            Vinted 账号
+          </TabsTrigger>
           <TabsTrigger value="vinted">
             <Radar />
             Vinted 监控
@@ -131,6 +137,7 @@ export function AppShell() {
                 addresses: '地址生成器',
                 supply: '共享货源',
                 'ai-image': 'AI 生图',
+                accounts: 'Vinted 账号',
                 vinted: 'Vinted 监控',
                 settings: '应用设置',
               }[page]
@@ -206,6 +213,9 @@ export function AppShell() {
             </TabsContent>
             <TabsContent value="ai-image">
               <AiImageRoute />
+            </TabsContent>
+            <TabsContent value="accounts">
+              <AccountsRoute />
             </TabsContent>
             <TabsContent value="vinted">
               <VintedMonitorRoute />

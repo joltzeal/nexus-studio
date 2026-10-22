@@ -421,6 +421,53 @@ Playwright 1440×900 实测：插件中心六行表格、页面无滚动条（90
 未验证：真实应用里五个插件同时启动的耗时与内存；进程被系统杀死（而非自杀）时的重启时延；
 Windows 上 `node` 子进程的回收；插件进程反复崩溃时退避上限（30 秒）是否符合体感。
 
+## 2026-10-22 Vinted 账号池插件与窗口关联
+
+本轮新增第六个插件 `plugins/vinted-accounts`（`studio.vinted-accounts`，能力 `account.pool`），
+主导航增加「Vinted 账号」，窗口管理表格增加账号列与行内关联菜单，并让打包构建屏蔽右键菜单。
+
+- 插件自带 CSV/XLSX 读写（zip + 工作表 XML），不引第三方表格库；模板同时提供 CSV 与 XLSX。
+- 导入按行报告新增 / 更新 / 跳过与出错行号；同一 `(登录方式, 账号小写)` 视为同一条记录。
+- 绑定按 `windowId` 去重，同一账号绑到第二个窗口时先返回 `duplicates`、不写入，
+  页面弹 AlertDialog 确认后才落盘。
+- `account.pool` 已加进 plugin-sdk 的能力枚举、契约与 Rust 的 `Capability`（`ALL` 改为 9 项）。
+
+本轮在本机 macOS 实际执行：
+
+| 检查         | 命令                                         | 结果                                          |
+| ------------ | -------------------------------------------- | --------------------------------------------- |
+| ESLint       | `eslint . --max-warnings 0`                  | 通过，无输出                                  |
+| Prettier     | `prettier --check .`                         | 通过                                          |
+| 桌面类型检查 | `tsc -p apps/desktop/tsconfig.json --noEmit` | 通过                                          |
+| 测试类型检查 | `tsc -p tsconfig.tests.json --noEmit`        | 通过                                          |
+| 前端测试     | `vitest run`                                 | 51 文件、484 用例通过                         |
+| Rust 测试    | `cargo test --locked`                        | 63 通过、1 忽略（真实浏览器冒烟），共 64 用例 |
+| Rust 静态    | `cargo fmt --check` + `clippy -D warnings`   | 通过                                          |
+| 前端构建     | `tsc && vite build`                          | 通过（主 chunk 718.29 kB，既有体积告警）      |
+
+新增用例：
+
+- `plugins/vinted-accounts/src/domain/table.test.ts`：CSV 引号/BOM/分号/空行往返，
+  XLSX 自写自读往返，共享字符串与 stored 条目（用手写的 zip 夹具，不依赖生产写出器），
+  非 zip 输入报错。
+- `plugins/vinted-accounts/src/capabilities/accounts.test.ts`：必填校验、重复账号拒绝、
+  编辑保留 id 与创建时间、删除连带解绑、CSV 导入逐行报告、重复导入转更新、无表头按模板列序、
+  XLSX 导入、模板列名、一窗一账号、重复账号冲突与确认、解绑幂等。
+- `apps/desktop/src/features/accounts/accounts-page.test.ts`：无宿主 / 未安装 / 启动中 / 空账号池。
+- Rust：`every_capability_round_trips_through_its_wire_name`（能力枚举与线名一一对应）、
+  `workspace_vinted_accounts_manifest_declares_the_account_pool`（真实清单解析）、
+  `workspace_account_plugin_installs_and_binds_a_window`（安装即启动 → 保存 → 绑定 →
+  重复账号冲突 → 生成模板 → 未声明能力被拒）。
+
+Playwright 1440×900（mock IPC）实测：窗口表格出现「Vinted 账号」列并显示 `main@shop.com / 正常`，
+未关联窗口显示「未关联」；行内 `…` 菜单为「更换账号 / 解除关联」；把同一账号关联到第二个窗口时
+弹出「同一个账号已经关联了其他窗口」并写明已关联的窗口名；账号页三行数据与「1 个窗口 / 未关联」
+计数正确；导入弹窗含文件选择与两个模板按钮；页面无滚动条（900/900）。
+
+未验证：真实打包应用里的右键屏蔽（只在 `vite build` 产物上验证了代码路径）；
+真实 Excel / Numbers 导出的 xlsx（只验证了自写文件与手写 zip 夹具）；
+超过 512 KB 的导入文件；Windows 下的路径与进程行为。
+
 ## 尚未验证与后续门禁
 
 | 后续事项             | 当前状态                                       |

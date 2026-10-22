@@ -43,8 +43,12 @@ manifest 在安装时严格校验并据此授予能力，调用前逐项检查�
 搜索页或会员衣柜，留下运行记录与去重后的商品归档，见
 [Vinted 监控插件](23-vinted-monitor-plugin.md)。它同样不需要密钥槽。
 
+`plugins/vinted-accounts` 是第六个已实现的插件包：`account.pool` 能力保存账号记录、
+解析 CSV/XLSX 导入并维护账号与浏览器窗口的关联，见
+[Vinted 账号池插件](24-vinted-accounts-plugin.md)。它不发起网络请求，也不需要密钥槽。
+
 仓库内存在插件实现不等于插件系统已经通用可用：只有 `proxy.provider`、`address.generator`、
-`supply.catalog`、`image.provider` 与 `monitor.collector` 具备真实调用路径；
+`supply.catalog`、`image.provider`、`monitor.collector` 与 `account.pool` 具备真实调用路径；
 `platform.adapter`、`verification.provider` 与 `environment.configurator` 仍只有声明与类型。
 
 ## 长期首阶段信任模型

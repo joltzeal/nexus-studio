@@ -23,10 +23,12 @@ pub enum Capability {
     EnvironmentConfigurator,
     #[serde(rename = "monitor.collector")]
     MonitorCollector,
+    #[serde(rename = "account.pool")]
+    AccountPool,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 9] = [
         Capability::ProxyProvider,
         Capability::AddressGenerator,
         Capability::SupplyCatalog,
@@ -35,6 +37,7 @@ impl Capability {
         Capability::ImageProvider,
         Capability::EnvironmentConfigurator,
         Capability::MonitorCollector,
+        Capability::AccountPool,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -47,6 +50,7 @@ impl Capability {
             Capability::ImageProvider => "image.provider",
             Capability::EnvironmentConfigurator => "environment.configurator",
             Capability::MonitorCollector => "monitor.collector",
+            Capability::AccountPool => "account.pool",
         }
     }
 

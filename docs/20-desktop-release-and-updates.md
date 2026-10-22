@@ -6,7 +6,7 @@
 `scripts/stage-desktop-runtime.mjs`，最后使用 Tauri 发行配置构建。
 脚本从 Node.js 官方发行地址获取固定版本 `24.18.0`，用同一官方来源的
 `SHASUMS256.txt` 校验后，按当前 Rust target 放入 `src-tauri/binaries`。
-浏览器适配器、代理池、地址生成、共享货源、AI 生图与 Vinted 监控插件通过 pnpm deploy 复制到
+浏览器适配器、代理池、地址生成、共享货源、AI 生图、Vinted 账号与 Vinted 监控插件通过 pnpm deploy 复制到
 `src-tauri/runtime`。发行分阶段使用 hoisted 布局，使 Node 依赖以实际目录
 进入 Tauri 资源包；默认 pnpm 软链接不会被当前 Tauri 打包流程保留。
 以上两个目录是忽略的生成物，不提交到 Git。

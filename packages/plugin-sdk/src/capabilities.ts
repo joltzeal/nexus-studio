@@ -39,6 +39,13 @@ export type EnvironmentConfigurator = CapabilityDescriptor
  */
 export type MonitorCollector = CapabilityDescriptor
 
+/**
+ * Platform account pool: credential records plus the binding between an account
+ * and a browser window. Passwords never leave the plugin's private storage, and
+ * the window ids are opaque strings the host's profile service owns.
+ */
+export type AccountPool = CapabilityDescriptor
+
 export interface PluginCapabilityContracts {
   'proxy.provider': ProxyProvider
   'address.generator': AddressGenerator
@@ -48,4 +55,5 @@ export interface PluginCapabilityContracts {
   'image.provider': ImageProvider
   'environment.configurator': EnvironmentConfigurator
   'monitor.collector': MonitorCollector
+  'account.pool': AccountPool
 }

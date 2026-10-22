@@ -7,6 +7,8 @@
 记录包含名称、内核通道、精确版本、官方包装层返回的二进制路径和可选无凭据代理服务器地址。
 目录下 `user-data` 由 CloakBrowser 的持久上下文使用，包含 Cookie 等真实浏览器数据。
 页面支持编辑原生配置和删除 Profile（包括浏览器数据）；旧演示窗口数据不自动迁移。
+Profile 记录里没有账号字段：Vinted 账号由 `studio.vinted-accounts` 插件保存，
+插件只记住 Profile 的 UUID，窗口名称仍只在主程序里。
 
 ## 创建与启动
 

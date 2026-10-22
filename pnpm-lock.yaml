@@ -264,6 +264,9 @@ importers:
       '@nexus/plugin-shared-supply':
         specifier: workspace:*
         version: link:../../plugins/shared-supply
+      '@nexus/plugin-vinted-accounts':
+        specifier: workspace:*
+        version: link:../../plugins/vinted-accounts
       '@nexus/plugin-vinted-monitor':
         specifier: workspace:*
         version: link:../../plugins/vinted-monitor
@@ -378,6 +381,15 @@ importers:
         version: 4.4.3
 
   plugins/shared-supply:
+    dependencies:
+      '@nexus/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  plugins/vinted-accounts:
     dependencies:
       '@nexus/plugin-sdk':
         specifier: workspace:*
