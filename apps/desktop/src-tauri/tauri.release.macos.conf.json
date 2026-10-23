@@ -1,0 +1,13 @@
+{
+  "build": {
+    "beforeBundleCommand": "node ../../scripts/prepare-macos-node.mjs"
+  },
+  "bundle": {
+    "externalBin": [],
+    "macOS": {
+      "files": {
+        "Helpers/node": "binaries/node-helper"
+      }
+    }
+  }
+}

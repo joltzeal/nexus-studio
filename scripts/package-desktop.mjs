@@ -16,8 +16,15 @@ function run(command, args, cwd = root) {
 
 run(pnpm, ['run', 'build'])
 run(process.execPath, ['scripts/stage-desktop-runtime.mjs'])
+const tauriArgs = ['build', '--config', 'src-tauri/tauri.release.conf.json']
+if (process.platform === 'darwin') {
+  tauriArgs.push('--config', 'src-tauri/tauri.release.macos.conf.json')
+}
 run(
   resolve(root, 'apps/desktop/node_modules/.bin/tauri'),
-  ['build', '--config', 'src-tauri/tauri.release.conf.json'],
+  tauriArgs,
   resolve(root, 'apps/desktop'),
 )
+if (process.platform === 'darwin') {
+  run(pnpm, ['run', 'runtime:verify-packaged'])
+}

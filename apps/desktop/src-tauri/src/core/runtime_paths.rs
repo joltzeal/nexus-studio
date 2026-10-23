@@ -28,10 +28,17 @@ impl RuntimePaths {
     }
 
     fn bundled(resources: &Path, executable: &Path) -> Result<Self, String> {
-        let node = executable
-            .parent()
-            .ok_or("无法定位应用运行时")?
-            .join(if cfg!(windows) { "node.exe" } else { "node" });
+        let node = if cfg!(target_os = "macos") {
+            resources
+                .parent()
+                .ok_or("无法定位应用运行时")?
+                .join("Helpers/node")
+        } else {
+            executable
+                .parent()
+                .ok_or("无法定位应用运行时")?
+                .join(if cfg!(windows) { "node.exe" } else { "node" })
+        };
         let browser_script = resources.join("runtime/browser-runtime/dist/profile-runner.js");
         let network_preload = resources.join("runtime/browser-runtime/dist/network-preload.js");
         // Plugins are installed from the store, so the bundle only has to carry
@@ -55,11 +62,23 @@ mod tests {
     #[test]
     fn bundled_runtime_requires_node_and_browser_runner() {
         let root = tempfile::tempdir().unwrap();
-        let resources = root.path().join("resources");
-        let executable = root.path().join("nexus");
-        let node = root
-            .path()
-            .join(if cfg!(windows) { "node.exe" } else { "node" });
+        let contents = root.path().join("Nexus.app/Contents");
+        let resources = if cfg!(windows) {
+            root.path().join("resources")
+        } else {
+            contents.join("Resources")
+        };
+        let executable = if cfg!(windows) {
+            root.path().join("nexus.exe")
+        } else {
+            contents.join("MacOS/nexus")
+        };
+        let node = if cfg!(windows) {
+            root.path().join("node.exe")
+        } else {
+            contents.join("Helpers/node")
+        };
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
         fs::write(&node, b"node").unwrap();
         let runner = resources.join("runtime/browser-runtime/dist/profile-runner.js");
         fs::create_dir_all(runner.parent().unwrap()).unwrap();

@@ -1,6 +1,6 @@
 {
   "name": "nexus-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Nexus consumer desktop workspace foundation",
   "scripts": {
     "dev": "pnpm build:packages && pnpm --filter @nexus/desktop dev",
@@ -9,6 +9,7 @@
     "build": "pnpm build:packages && pnpm --filter @nexus/desktop build",
     "desktop:build": "pnpm build:packages && pnpm --filter @nexus/desktop tauri build",
     "runtime:stage": "node scripts/stage-desktop-runtime.mjs",
+    "runtime:verify-packaged": "node scripts/verify-packaged-runtime.mjs",
     "market:pack": "node scripts/pack-plugin.mjs",
     "market:catalog": "node scripts/build-market.mjs",
     "market:build": "node scripts/pack-plugin.mjs && node scripts/build-market.mjs",

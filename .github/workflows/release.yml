@@ -17,10 +17,13 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
+            tauriArgs: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.release.macos.conf.json
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            tauriArgs: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.release.macos.conf.json
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            tauriArgs: --config src-tauri/tauri.release.conf.json
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -54,4 +57,7 @@ jobs:
           releaseBody: 'Desktop packages and signed update artifacts. Installation requires platform signing before public distribution.'
           releaseDraft: true
           uploadUpdaterJson: true
-          args: --config src-tauri/tauri.release.conf.json
+          args: ${{ matrix.tauriArgs }}
+      - name: Verify signed macOS runtime
+        if: runner.os == 'macOS'
+        run: pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Nexus.app
