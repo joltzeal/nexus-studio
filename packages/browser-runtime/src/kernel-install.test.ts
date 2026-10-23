@@ -35,6 +35,9 @@ describe('first-install kernel failures', () => {
     expect(kernelFailure(new Error('license key is invalid or expired')).code).toBe(
       'ACTIVATION',
     )
+    expect(
+      kernelFailure(new Error('license key is invalid or expired')).message,
+    ).not.toContain('过期')
   })
 
   it('does not retry a signature, checksum or permission failure', async () => {

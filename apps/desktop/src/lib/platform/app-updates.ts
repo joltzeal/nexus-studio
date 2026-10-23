@@ -1,7 +1,6 @@
-import { invoke, isTauri } from '@tauri-apps/api/core'
+import { invoke, isTauri, Resource } from '@tauri-apps/api/core'
 import { Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
-import { listNativeProfiles } from './native-profiles'
 
 export type AvailableUpdate = Update
 
@@ -17,10 +16,12 @@ const errorMessages = {
   network: '无法连接更新源，请检查网络和应用代理；代理失败不会自动直连。',
   check_failed: '检查更新失败，请重试或从官方发布页下载安装。',
   invalid_response: '更新服务返回的数据无效，请重试或重新安装应用。',
-  profiles_failed: '无法确认窗口状态，请刷新窗口列表后重试。',
-  running_windows: '请先停止所有运行中的窗口，再安装更新。',
+  profiles_failed: '无法确认窗口状态，请退出并重新打开应用后重试。',
+  running_windows:
+    '请先停止所有运行中的窗口，并等待启动、关闭或迁移操作完成，再安装更新。',
   signature: '更新包签名验证失败，已停止安装，请重新检查更新。',
   download_failed: '更新包下载失败，请检查网络和应用代理后重新检查更新。',
+  not_downloaded: '更新包尚未准备完成，请稍后重试。',
   install_failed: '安装更新失败，请重试或从官方发布页下载安装。',
   relaunch_failed: '更新已安装，但无法自动重启，请手动退出并重新打开应用。',
 } as const
@@ -72,7 +73,10 @@ function checkError(cause: unknown): AppUpdateError {
   return new AppUpdateError('check_failed')
 }
 
-function installError(cause: unknown): AppUpdateError {
+function packageError(
+  cause: unknown,
+  fallback: 'download_failed' | 'install_failed',
+): AppUpdateError {
   // The Tauri download API rejects with strings. Never display its raw diagnostics.
   const message = (
     cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : ''
@@ -95,7 +99,7 @@ function installError(cause: unknown): AppUpdateError {
   ) {
     return new AppUpdateError('download_failed')
   }
-  return new AppUpdateError('install_failed')
+  return new AppUpdateError(fallback)
 }
 
 export function updatesAvailable(): boolean {
@@ -114,20 +118,15 @@ export async function checkAppUpdate(): Promise<AvailableUpdate | null> {
   }
 }
 
-export async function installAppUpdate(
+export async function downloadAppUpdate(
   update: AvailableUpdate,
   onProgress: (downloaded: number, total: number | null) => void,
 ): Promise<void> {
-  const windows = await listNativeProfiles().catch(() => {
-    throw new AppUpdateError('profiles_failed')
-  })
-  if (windows.some((window) => window.running)) {
-    throw new AppUpdateError('running_windows')
-  }
   let downloaded = 0
   let total: number | null = null
   try {
-    await update.downloadAndInstall((event) => {
+    // Finished precedes signature verification; only the resolved download is ready.
+    await update.download((event) => {
       if (event.event === 'Started') {
         total = event.data.contentLength ?? null
         downloaded = 0
@@ -137,8 +136,34 @@ export async function installAppUpdate(
       onProgress(downloaded, total)
     })
   } catch (cause) {
-    throw installError(cause)
+    throw packageError(cause, 'download_failed')
   }
+}
+
+export async function installAppUpdate(update: AvailableUpdate): Promise<void> {
+  const rid = await invoke<unknown>('app_update_begin_install').catch(
+    (cause: unknown) => {
+      throw new AppUpdateError(
+        isRecord(cause) && cause.code === 'running_windows'
+          ? 'running_windows'
+          : 'profiles_failed',
+      )
+    },
+  )
+  if (typeof rid !== 'number' || !Number.isSafeInteger(rid) || rid < 0) {
+    throw new AppUpdateError('profiles_failed')
+  }
+  const guard = new Resource(rid)
+  try {
+    await update.install()
+  } catch (cause) {
+    await guard.close().catch(() => {
+      throw new AppUpdateError('profiles_failed')
+    })
+    throw packageError(cause, 'install_failed')
+  }
+  // Relaunch may resolve before exit. The app owns the guard until that exit,
+  // including when the user must restart manually after a relaunch failure.
   await relaunch().catch(() => {
     throw new AppUpdateError('relaunch_failed')
   })

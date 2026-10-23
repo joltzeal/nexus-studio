@@ -106,7 +106,9 @@ export function LicenseSettingsPage() {
         <div className="license-settings-layout">
           <Card>
             <CardHeader>
-              <CardTitle>{status?.configured ? '已激活' : '未激活'}</CardTitle>
+              <CardTitle>
+                {status?.configured ? '已保存激活码' : '未填写激活码'}
+              </CardTitle>
             </CardHeader>
             <CardContent>
               {loading ? <p role="status">正在读取状态…</p> : null}
@@ -143,7 +145,7 @@ export function LicenseSettingsPage() {
               </form>
               {saved ? (
                 <p className="license-saved" role="status">
-                  激活码已保存。
+                  激活码校验通过并已保存。
                 </p>
               ) : null}
             </CardContent>
@@ -156,7 +158,7 @@ export function LicenseSettingsPage() {
                 {saving ? (
                   <LoaderCircle data-icon="inline-start" className="animate-spin" />
                 ) : null}
-                {saving ? '正在激活…' : status?.configured ? '更换激活码' : '激活'}
+                {saving ? '正在校验…' : '校验并保存'}
               </Button>
               {status?.configured ? (
                 <Button

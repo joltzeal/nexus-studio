@@ -1,7 +1,7 @@
 use super::group_store::{GroupStore, open_database};
 use super::kernel_service::KernelKind;
 use super::plugin_host::{PluginHost, manifest::Capability};
-use super::profile_service::ProfileService;
+use super::profile_service::{AppOperationGuard, ProfileService};
 use super::profile_store::ProfileRecord;
 use super::transfer_archive;
 use rusqlite::{OptionalExtension, params};
@@ -109,6 +109,7 @@ struct ReceiveJob {
     path: PathBuf,
     password: String,
     receiving: bool,
+    operation: Option<AppOperationGuard>,
 }
 
 pub struct TransferService {
@@ -172,7 +173,11 @@ fn call(
         .map_err(|error| format!("插件 {id}：{}", error.message()))
 }
 
-fn skip_browser_file(name: &str) -> bool {
+fn skip_browser_file(name: &str, is_user_data_root: bool) -> bool {
+    // Chromium's machine-local launch breadcrumbs live only at the user-data root.
+    if is_user_data_root && matches!(name, "Last Browser" | "RunningChromeVersion") {
+        return true;
+    }
     matches!(
         name,
         "Cache"
@@ -197,6 +202,16 @@ fn copy_browser_tree(
     count: &mut usize,
     bytes: &mut u64,
 ) -> Result<(), String> {
+    copy_browser_directory(source, destination, count, bytes, true)
+}
+
+fn copy_browser_directory(
+    source: &Path,
+    destination: &Path,
+    count: &mut usize,
+    bytes: &mut u64,
+    is_user_data_root: bool,
+) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|_| failure("无法创建浏览器数据目录"))?;
     if !source.exists() {
         return Ok(());
@@ -208,7 +223,7 @@ fn copy_browser_tree(
     }
     for item in fs::read_dir(source).map_err(|_| failure("无法读取浏览器数据"))? {
         let item = item.map_err(|_| failure("无法读取浏览器数据"))?;
-        if skip_browser_file(&item.file_name().to_string_lossy()) {
+        if skip_browser_file(&item.file_name().to_string_lossy(), is_user_data_root) {
             continue;
         }
         let kind = item
@@ -223,7 +238,7 @@ fn copy_browser_tree(
             return Err("浏览器数据文件过多".into());
         }
         if kind.is_dir() {
-            copy_browser_tree(&item.path(), &target, count, bytes)?;
+            copy_browser_directory(&item.path(), &target, count, bytes, false)?;
         } else {
             *bytes += item
                 .metadata()
@@ -416,6 +431,7 @@ impl TransferService {
         {
             return Err("请选择 1 至 100 个不同的窗口".into());
         }
+        let _operation = self.profiles.lock_transfer_operation()?;
         let _guard = self.profiles.lock_transfer(ids)?;
         let working = tempfile::tempdir_in(&self.root).map_err(|_| failure("无法创建快照目录"))?;
         let groups = GroupStore::new(self.profiles.store.database_path())?.list()?;
@@ -665,6 +681,7 @@ impl TransferService {
     }
 
     pub fn inspect(&self, path: &Path, password: &str) -> Result<Value, String> {
+        let _operation = self.profiles.lock_transfer_operation()?;
         let (_working, extracted) = self.extracted(path, password)?;
         let manifest = self.manifest(&extracted)?;
         let mut warnings = manifest.warnings;
@@ -687,6 +704,7 @@ impl TransferService {
         password: &str,
         mode: ImportMode,
     ) -> Result<TransferReport, String> {
+        let _activity = self.profiles.lock_transfer_operation()?;
         let _operation = self.import_operation.lock().map_err(|_| "导入状态不可用")?;
         let (_working, extracted) = self.extracted(path, password)?;
         let manifest = self.manifest(&extracted)?;
@@ -977,6 +995,7 @@ impl TransferService {
     }
 
     pub fn offer(&self, ids: &[String]) -> Result<Value, String> {
+        let operation = self.profiles.lock_transfer_operation()?;
         if !self
             .host
             .catalog()
@@ -1014,6 +1033,7 @@ impl TransferService {
                         path,
                         password: secret,
                         receiving: false,
+                        operation: Some(operation),
                     },
                 );
                 Ok(result)
@@ -1026,6 +1046,7 @@ impl TransferService {
     }
 
     pub fn receive(&self, invitation: &str, host: Option<&str>) -> Result<Value, String> {
+        let operation = self.profiles.lock_transfer_operation()?;
         // Parsing and expiry validation are also enforced independently by the transport.
         let invitation_data = decode_invitation(invitation)?;
         let password = invitation_data
@@ -1058,9 +1079,27 @@ impl TransferService {
                 path,
                 password,
                 receiving: true,
+                operation: Some(operation),
             },
         );
         Ok(result)
+    }
+
+    pub(crate) fn prepare_app_install(&self) -> Result<AppOperationGuard, &'static str> {
+        let active_jobs: Vec<String> = self
+            .jobs
+            .lock()
+            .map_err(|_| "profiles_failed")?
+            .iter()
+            .filter(|(_, job)| job.operation.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        // A closed dialog no longer polls; refresh without holding the jobs lock
+        // so terminal transfers can release their installation reservations.
+        for id in active_jobs {
+            self.sync_status(&id).map_err(|_| "profiles_failed")?;
+        }
+        self.profiles.lock_app_install()
     }
 
     pub fn sync_status(&self, id: &str) -> Result<Value, String> {
@@ -1076,6 +1115,9 @@ impl TransferService {
             Some("completed" | "failed" | "cancelled")
         ) {
             let mut jobs = self.jobs.lock().map_err(|_| "同步状态不可用")?;
+            if let Some(job) = jobs.get_mut(id) {
+                job.operation.take();
+            }
             if jobs.get(id).is_some_and(|job| !job.receiving)
                 && let Some(job) = jobs.remove(id)
             {
@@ -1104,6 +1146,7 @@ impl TransferService {
     }
 
     pub fn sync_import(&self, id: &str, mode: ImportMode) -> Result<TransferReport, String> {
+        let _operation = self.profiles.lock_transfer_operation()?;
         let status = self.sync_status(id)?;
         if status.get("state").and_then(Value::as_str) != Some("completed") {
             return Err("同步数据尚未完整接收".into());
@@ -1132,6 +1175,7 @@ impl TransferService {
     }
 
     pub fn recovery_status(&self) -> Result<Value, String> {
+        let _activity = self.profiles.lock_transfer_operation()?;
         let _operation = self
             .import_operation
             .try_lock()
@@ -1563,6 +1607,367 @@ mod tests {
         fs::create_dir_all(data.join("Default/Cache")).unwrap();
         fs::write(data.join("Default/Cache/discard"), b"cache").unwrap();
         record
+    }
+
+    #[test]
+    fn install_guard_blocks_import_before_kernel_preparation() {
+        let root = tempfile::tempdir().unwrap();
+        let source = service(&root.path().join("source"));
+        let target = service(&root.path().join("target"));
+        let record = window(&source);
+        let path = root.path().join("fixture.nexuswindow");
+        source
+            .export(std::slice::from_ref(&record.id), "fixture-password", &path)
+            .unwrap();
+        let marker = root.path().join("preparation-started");
+        let runner = &target.profiles.runtime.browser_script;
+        fs::write(
+            runner,
+            format!(
+                "require('node:fs').writeFileSync({}, 'unexpected preparation');\n{}",
+                serde_json::to_string(&marker).unwrap(),
+                fs::read_to_string(runner).unwrap(),
+            ),
+        )
+        .unwrap();
+        let guard = target.profiles.lock_app_install().unwrap();
+        assert!(
+            target
+                .import(&path, "fixture-password", ImportMode::Copy)
+                .is_err()
+        );
+        assert!(
+            !marker.exists(),
+            "import executed a bundled runtime during installation"
+        );
+        assert!(target.profiles.store.list().unwrap().is_empty());
+        assert!(target.inspect(&path, "fixture-password").is_err());
+        drop(guard);
+        assert!(target.inspect(&path, "fixture-password").is_ok());
+    }
+
+    fn install_sync_fixture(service: &TransferService) -> PathBuf {
+        let package = service.root.parent().unwrap().join("sync-fixture");
+        fs::create_dir_all(package.join("dist")).unwrap();
+        write_json(
+            &package.join("nexus.plugin.json"),
+            &json!({
+                "apiVersion": 1, "id": SYNC_PLUGIN, "version": "1.0.0",
+                "name": "Synthetic sync", "minCoreVersion": "0.1.0",
+                "capabilities": ["window.sync"],
+                "permissions": {
+                    "networkDomains": [], "wantsBrowserAccess": false,
+                    "storage": "private", "secrets": [],
+                },
+            }),
+        )
+        .unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"sync-fixture","main":"dist/index.cjs"}"#,
+        )
+        .unwrap();
+        let status = service.root.parent().unwrap().join("sync-state.json");
+        write_json(
+            &status,
+            &json!({"state":"transferring", "bytes":0, "total":26}),
+        )
+        .unwrap();
+        fs::write(package.join("dist/index.cjs"), format!(r#"
+const fs = require('node:fs');
+const send = value => process.stdout.write(JSON.stringify(value) + '\n');
+const identity = {{protocolVersion:1, pluginId:'studio.window-sync', version:'1.0.0', capabilities:['window.sync']}};
+send({{...identity, type:'hello', apiVersion:1}});
+require('node:readline').createInterface({{input:process.stdin}}).on('line', line => {{
+  const request = JSON.parse(line);
+  if (request.type === 'handshake') {{
+    send({{...identity, type:'ready', methods:['sync.offer','sync.receive','sync.status','sync.cancel'], status:{{}}}});
+    return;
+  }}
+  let result = {{}};
+  if (request.method === 'sync.receive') {{
+    fs.writeFileSync(request.payload.destination, 'synthetic received package');
+    result = {{jobId:'receive-fixture'}};
+  }} else if (request.method === 'sync.offer') result = {{offerId:'offer-fixture'}};
+  else if (request.method === 'sync.status') result = JSON.parse(fs.readFileSync({}, 'utf8'));
+  send({{protocolVersion:1, requestId:request.requestId, ok:true, result}});
+}});
+"#, serde_json::to_string(&status).unwrap())).unwrap();
+        service.host.install(&package).unwrap();
+        status
+    }
+
+    #[test]
+    fn install_guard_covers_sync_transport_until_terminal_status_or_cancel() {
+        use base64::Engine;
+        struct StopHost<'a>(&'a PluginHost);
+        impl Drop for StopHost<'_> {
+            fn drop(&mut self) {
+                self.0.shutdown();
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let _stop_host = StopHost(&service.host);
+        let status = install_sync_fixture(&service);
+        let invitation = format!(
+            "nexus-sync:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&json!({"secret":"0".repeat(64)})).unwrap())
+        );
+        for terminal in ["completed", "failed", "cancelled"] {
+            service.receive(&invitation, None).unwrap();
+            let path = service.jobs.lock().unwrap()["receive-fixture"].path.clone();
+            assert_eq!(
+                service.profiles.lock_app_install().err(),
+                Some("running_windows")
+            );
+            write_json(&status, &json!({"state": terminal})).unwrap();
+            service.sync_status("receive-fixture").unwrap();
+            let guard = service.profiles.lock_app_install().unwrap();
+            assert!(service.receive(&invitation, None).is_err());
+            // Completed packages remain available for explicit import after a failed install.
+            assert!(path.exists());
+            drop(guard);
+            service.sync_cancel("receive-fixture").unwrap();
+            assert!(!path.exists());
+        }
+        let record = window(&service);
+        service.offer(std::slice::from_ref(&record.id)).unwrap();
+        assert_eq!(
+            service.profiles.lock_app_install().err(),
+            Some("running_windows")
+        );
+        service.sync_cancel("offer-fixture").unwrap();
+        assert!(service.profiles.lock_app_install().is_ok());
+    }
+
+    #[test]
+    fn install_rechecks_finished_sync_without_requiring_an_open_dialog() {
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let status = install_sync_fixture(&service);
+        let record = window(&service);
+        service.offer(std::slice::from_ref(&record.id)).unwrap();
+        assert_eq!(service.prepare_app_install().err(), Some("running_windows"));
+
+        // The plugin finished after the user left the dialog, so no UI poll runs.
+        write_json(&status, &json!({"state":"completed"})).unwrap();
+        let admitted = service.prepare_app_install();
+        service.host.shutdown();
+        assert!(
+            admitted.is_ok(),
+            "a finished sync retained the install reservation"
+        );
+        assert!(service.jobs.lock().unwrap().is_empty());
+    }
+
+    const SITE_STORAGE_FILES: &[(&str, &[u8])] = &[
+        ("Local State", b"synthetic-local-state"),
+        ("Default/Cookies", b"synthetic-cookie-database"),
+        ("Default/Network/Cookies", b"synthetic-network-cookies"),
+        (
+            "Default/Local Storage/leveldb/000003.log",
+            b"synthetic-local-storage",
+        ),
+        (
+            "Default/IndexedDB/https_fixture.test_0.indexeddb.leveldb/000003.log",
+            b"synthetic-indexeddb",
+        ),
+        ("Default/File System/000/t/00/00000001", b"synthetic-opfs"),
+        (
+            "Default/Service Worker/CacheStorage/fixture/entry",
+            b"synthetic-cache-storage",
+        ),
+        ("Default/Last Browser", b"nested-site-file"),
+        ("Default/RunningChromeVersion", b"another-nested-site-file"),
+    ];
+
+    fn write_site_storage(root: &Path) {
+        for (relative, contents) in SITE_STORAGE_FILES {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+    }
+
+    fn assert_site_storage(root: &Path) {
+        for (relative, contents) in SITE_STORAGE_FILES {
+            assert_eq!(
+                fs::read(root.join(relative)).unwrap(),
+                *contents,
+                "{relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_copy_omits_root_runtime_breadcrumbs_but_preserves_site_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        write_site_storage(&source);
+        fs::write(source.join("Last Browser"), b"C:\\fixture\\chrome.exe").unwrap();
+        fs::write(source.join("RunningChromeVersion"), b"151.0.7922.108").unwrap();
+        let mut count = 0;
+        let mut bytes = 0;
+        copy_browser_tree(&source, &destination, &mut count, &mut bytes).unwrap();
+        assert_site_storage(&destination);
+        for name in ["Last Browser", "RunningChromeVersion"] {
+            assert!(
+                fs::symlink_metadata(destination.join(name)).is_err(),
+                "machine-local browser breadcrumb {name} must not be copied"
+            );
+        }
+        assert_eq!(
+            bytes,
+            SITE_STORAGE_FILES
+                .iter()
+                .map(|(_, contents)| contents.len() as u64)
+                .sum::<u64>()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_copy_ignores_leftover_running_chrome_version_link() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        std::os::unix::fs::symlink("151.0.7922.108", source.join("RunningChromeVersion")).unwrap();
+        let mut count = 0;
+        let mut bytes = 0;
+        copy_browser_tree(&source, &destination, &mut count, &mut bytes)
+            .expect("a stale Chromium app-shim version link must not prevent transfer");
+        assert_eq!(count, 0);
+        assert_eq!(bytes, 0);
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert!(fs::symlink_metadata(source.join("RunningChromeVersion")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_copy_skips_root_breadcrumb_links_without_copying_their_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        let outside = root.path().join("browser-fixture");
+        fs::write(&outside, b"synthetic-browser-executable").unwrap();
+        fs::create_dir_all(&source).unwrap();
+        for name in [
+            "Last Browser",
+            "RunningChromeVersion",
+            "SingletonLock",
+            "SingletonCookie",
+            "SingletonSocket",
+        ] {
+            std::os::unix::fs::symlink(&outside, source.join(name)).unwrap();
+        }
+        copy_browser_tree(&source, &destination, &mut 0, &mut 0).unwrap();
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_eq!(fs::read(outside).unwrap(), b"synthetic-browser-executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_copy_rejects_unknown_and_nested_links() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("fixture"), b"outside-selected-profile").unwrap();
+        for (index, relative) in [
+            "UnknownLink",
+            "Default/Cookies",
+            "Default/Local Storage",
+            "Default/Last Browser",
+            "Default/RunningChromeVersion",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (kind, target) in [
+                ("file", outside.join("fixture")),
+                ("directory", outside.clone()),
+                ("dangling", outside.join("missing")),
+            ] {
+                let source = root.path().join(format!("source-{index}-{kind}"));
+                let destination = root.path().join(format!("destination-{index}-{kind}"));
+                let link = source.join(relative);
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                std::os::unix::fs::symlink(target, &link).unwrap();
+                let error = copy_browser_tree(&source, &destination, &mut 0, &mut 0).unwrap_err();
+                assert!(
+                    error.contains("不可迁移的链接或特殊文件"),
+                    "{relative}: {error}"
+                );
+                assert!(fs::symlink_metadata(destination.join(relative)).is_err());
+                assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+            }
+        }
+        assert_eq!(
+            fs::read(outside.join("fixture")).unwrap(),
+            b"outside-selected-profile"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browser_copy_rejects_unexpected_sockets() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+        let destination = root.path().join("destination");
+        let error = copy_browser_tree(&source, &destination, &mut 0, &mut 0).unwrap_err();
+        assert!(error.contains("不可迁移的链接或特殊文件"));
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encrypted_transfer_omits_runtime_links_and_preserves_persistent_site_files() {
+        let root = tempfile::tempdir().unwrap();
+        let source = service(&root.path().join("source"));
+        let target = service(&root.path().join("target"));
+        let record = window(&source);
+        let user_data = source.profiles.store.user_data_dir(&record.id).unwrap();
+        write_site_storage(&user_data);
+        std::os::unix::fs::symlink(&record.binary_path, user_data.join("Last Browser")).unwrap();
+        std::os::unix::fs::symlink(
+            &record.binding.channel_version,
+            user_data.join("RunningChromeVersion"),
+        )
+        .unwrap();
+        let archive = root.path().join("runtime-artifacts.nexuswindow");
+        source
+            .export(
+                std::slice::from_ref(&record.id),
+                "transfer-password",
+                &archive,
+            )
+            .unwrap();
+        let report = target
+            .import(&archive, "transfer-password", ImportMode::Preserve)
+            .unwrap();
+        assert_eq!(report.ids.as_slice(), std::slice::from_ref(&record.id));
+        let imported = target.profiles.store.user_data_dir(&record.id).unwrap();
+        assert_site_storage(&imported);
+        for relative in ["Last Browser", "RunningChromeVersion", "Default/Cache"] {
+            assert!(fs::symlink_metadata(imported.join(relative)).is_err());
+        }
+        let state: Value = json_file(
+            &imported.parent().unwrap().join("portable-state.json"),
+            MAX_STATE,
+        )
+        .unwrap();
+        assert_eq!(
+            state["storageState"]["cookies"][0]["value"],
+            "portable-session"
+        );
+        assert!(fs::symlink_metadata(user_data.join("Last Browser")).is_ok());
+        assert!(fs::symlink_metadata(user_data.join("RunningChromeVersion")).is_ok());
+        assert_site_storage(&user_data);
     }
 
     #[test]

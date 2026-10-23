@@ -36,6 +36,25 @@
 不复制进程锁、缓存、临时文件、符号链接或可执行浏览器内核。
 未设置指纹种子的旧窗口需要明确提示其环境存在随机性；新窗口保存固定种子。
 
+浏览器目录复制仅在 `user-data` 根目录排除 `Last Browser` 与 `RunningChromeVersion`：
+前者是本机浏览器路径记录，后者是 Chromium macOS app shim 的运行版本链接。
+跳过时不读取或跟随链接，不复制目标，也不删除源文件；这两个名称出现在子目录时
+不适用新增排除规则。未知符号链接、目录链接和特殊文件仍使导出失败。
+Cookies（包括 `Default/Network/Cookies`）、localStorage、IndexedDB、OPFS 的
+`File System` 目录及 Service Worker 的 CacheStorage 保留，原有缓存排除规则不扩展。
+导入仍先完整校验归档路径和条目类型；即使归档内链接使用上述名称，也必须拒绝，
+不能因本机导出忽略运行痕迹而放宽导入。
+
+上游依据为 Chromium 的
+[app shim 生命周期实现](https://github.com/chromium/chromium/blob/145.0.7632.109/chrome/browser/apps/app_shim/app_shim_listener.mm)
+和 [Last Browser 路径记录实现](https://github.com/chromium/chromium/blob/145.0.7632.109/chrome/browser/web_applications/chrome_pwa_launcher/last_browser_file_util.cc)。
+临时配置目录实测中，CloakBrowser `151.0.7922.108.3-pro` 启动退出码为 77 后留下
+`RunningChromeVersion` 和已有排除规则覆盖的 `Singleton*` 链接；
+将同类残留链接放入 Rust 回归用例可复现「浏览器数据中包含不可迁移的链接或特殊文件」。
+干净关闭的 CloakBrowser `145.0.7632.109.2` 未留下这些链接；
+本次未实测到 `Last Browser` 符号链接，也未读取用户原始失败目录，因此不将它认定为
+用户此次失败的确切条目。上述实测只使用临时 profile、缓存与无账号环境，结束后清理。
+
 导入使用原精确内核版本对应的本机二进制；缺失时获取同版本，
 不可用则失败，不能静默改用新版本。导入副本拥有独立本机目录。
 覆盖只允许显式选择并关闭对应窗口；覆盖失败恢复原资料。
@@ -106,3 +125,24 @@
 同步首次导入保留窗口标识，以便后续双向更新；本机已有该标识时默认拒绝，
 必须明确选择覆盖并关闭对应窗口。普通文件导入的“副本”会生成新标识。
 两端都修改后，后一次覆盖以确认的完整快照为准。
+
+## 运行痕迹回归验证
+
+使用 macOS、Rust 1.93.0、Node.js 24.18.0，先添加测试再修改复制逻辑：
+旧实现有 3 个目录复制用例失败，另有 1 个加密导出用例失败，
+其中链接用例复现上述错误；未知链接和 socket 的拒绝用例保持通过。
+修复后定向 Rust 检查 `transfer_` 为 **42 项通过、0 失败**，
+包括新增的 6 个用例、加密导入导出、认证归档路径/链接拒绝和既有 localhost 双宿主同步。
+持久存储断言验证合成文件逐字节保留，不将这些字节占位数据描述为真实站点登录恢复。
+
+```bash
+rtk proxy env PATH=/Users/ameno/.nvm/versions/node/v24.18.0/bin:/Users/ameno/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin cargo +1.93.0 test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked transfer_
+rtk proxy cargo +1.93.0 fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+rtk proxy cargo +1.93.0 check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --all-targets
+rtk proxy cargo +1.93.0 clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+```
+
+上述格式、编译与 Clippy 检查通过，执行时间早于后续安装互斥锁和同步状态刷新改动。
+未执行 Windows、真实双机 LAN 或用户原始失败 profile 的验收；
+按用户要求不再本地构建，最终 Rust 编译与测试交由 CI。
+本轮汇总与尚未验证的范围见[质量与验证](09-quality-and-testing.md)。

@@ -1,12 +1,32 @@
 use super::network_proxy::{NetworkProxy, NetworkProxyStore};
+use super::profile_service::AppOperationGuard;
+use super::transfer_service::TransferService;
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Manager, ResourceId, State, Webview};
+use tauri::{AppHandle, Manager, ResourceId, State, Webview};
 use tauri_plugin_updater::{Error, UpdaterExt};
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+impl tauri::Resource for AppOperationGuard {}
+
+#[tauri::command]
+pub async fn app_update_begin_install(
+    app: AppHandle,
+    state: State<'_, Arc<TransferService>>,
+) -> Result<ResourceId, UpdateFailure> {
+    let state = Arc::clone(&state);
+    let guard = tauri::async_runtime::spawn_blocking(move || state.prepare_app_install())
+        .await
+        .map_err(|_| UpdateFailure::new("profiles_failed"))?
+        .map_err(UpdateFailure::new)?;
+    // Keep the reservation across webview teardown and until process exit.
+    // The frontend closes this resource only when installation fails.
+    Ok(app.resources_table().add(guard))
+}
 
 #[derive(Debug, Serialize)]
 pub struct UpdateFailure {

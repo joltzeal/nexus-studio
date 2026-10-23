@@ -148,7 +148,7 @@ impl Drop for StopBrowser<'_> {
 }
 
 #[test]
-fn pending_proxy_resolution_excludes_transfer_edit_and_delete_before_launch() {
+fn pending_proxy_resolution_excludes_install_transfer_edit_and_delete_before_launch() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     let barrier = ResolutionBarrier::new();
@@ -218,17 +218,19 @@ fn pending_proxy_resolution_excludes_transfer_edit_and_delete_before_launch() {
         BROWSER_RUNNER.replace("__CAPTURE__", &serde_json::to_string(&capture).unwrap()),
     )
     .unwrap();
-    let service = ProfileService::with_runtime(
-        profiles,
-        Some(host),
-        LicenseStore::new(root.join("nexus.sqlite")).unwrap(),
-        RuntimePaths {
-            node: "node".into(),
-            browser_script: runner,
-            network_preload: root.join("unused-preload.cjs"),
-        },
-    )
-    .unwrap();
+    let service = Arc::new(
+        ProfileService::with_runtime(
+            profiles,
+            Some(host),
+            LicenseStore::new(root.join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "node".into(),
+                browser_script: runner,
+                network_preload: root.join("unused-preload.cjs"),
+            },
+        )
+        .unwrap(),
+    );
     let user_data = service.store.user_data_dir(&original.id).unwrap();
     fs::create_dir_all(&user_data).unwrap();
     let marker = user_data.join("browser-state");
@@ -264,6 +266,11 @@ fn pending_proxy_resolution_excludes_transfer_edit_and_delete_before_launch() {
         let delete = service.delete(&original.id);
         let saved_while_pending = service.store.get(&original.id);
         let data_while_pending = fs::read(&marker);
+        let install_blocked = service.lock_app_install().is_err();
+        assert_eq!(
+            serde_json::to_value(service.list().unwrap()).unwrap()[0]["running"],
+            false
+        );
 
         barrier.release();
         let launched = launching.join().unwrap();
@@ -280,6 +287,10 @@ fn pending_proxy_resolution_excludes_transfer_edit_and_delete_before_launch() {
             delete.is_err(),
             "delete must be excluded during proxy resolution",
         );
+        assert!(
+            install_blocked,
+            "install must be excluded during proxy resolution"
+        );
         assert_eq!(saved_while_pending.unwrap(), original);
         assert_eq!(data_while_pending.unwrap(), b"original browser data");
         launched.expect("the original launch should succeed after releasing proxy resolution");
@@ -288,5 +299,9 @@ fn pending_proxy_resolution_excludes_transfer_edit_and_delete_before_launch() {
         assert_eq!(launching_record.proxy.as_deref(), Some(CONNECTION));
         assert_eq!(launching_record.proxy_endpoint, Some(7));
         assert_eq!(launching_record.binding, original.binding);
+        assert!(
+            service.lock_app_install().is_err(),
+            "a running browser must exclude install"
+        );
     });
 }

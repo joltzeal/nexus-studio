@@ -448,8 +448,10 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
         return failure.message;
     }
     let lower = detail.to_ascii_lowercase();
-    if lower.contains("invalid or expired") || lower.contains("license key is invalid") {
-        "激活码无效或已过期，请检查后重新填写".into()
+    if lower.contains("license key is invalid, expired, or missing") {
+        "浏览器未接受当前激活码（错误 77），请在设置中重新校验".into()
+    } else if lower.contains("license key is invalid") {
+        "激活服务未接受此激活码，请在设置中重新校验".into()
     } else if lower.contains("could not be validated")
         || lower.contains("couldn't verify")
         || lower.contains("license server unreachable")
@@ -484,6 +486,23 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_rejection_does_not_invent_an_expiry_reason() {
+        assert_eq!(
+            sanitize_kernel_error(
+                "CloakBrowser Pro: license key is invalid or expired (plan=free)."
+            ),
+            "激活服务未接受此激活码，请在设置中重新校验"
+        );
+        assert_eq!(
+            sanitize_kernel_error(
+                "CloakBrowser Pro: license key is invalid, expired, or missing. Check CLOAKBROWSER_LICENSE_KEY."
+            ),
+            "浏览器未接受当前激活码（错误 77），请在设置中重新校验"
+        );
+        assert!(!sanitize_kernel_error("TLS certificate invalid or expired").contains("激活码"));
+    }
 
     #[test]
     fn launch_timeout_and_restore_failure_do_not_suggest_redownloading_a_valid_kernel() {

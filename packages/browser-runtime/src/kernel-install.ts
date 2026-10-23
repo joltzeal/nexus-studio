@@ -159,7 +159,7 @@ export function kernelFailure(error: unknown): KernelFailure {
       messages,
     )
   ) {
-    return failure('ACTIVATION', '激活码无效、已过期或不支持此内核，请在设置中重新填写。')
+    return failure('ACTIVATION', '激活服务未接受此激活码或内核请求，请在设置中重新校验。')
   }
   if (
     /could not fetch (?:the |a )?signed SHA256SUMS|HTTP [1-5]\d{2} for SHA256SUMS/i.test(

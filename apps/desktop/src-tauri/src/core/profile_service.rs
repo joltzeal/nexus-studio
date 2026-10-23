@@ -32,9 +32,12 @@ struct SessionState {
     sessions: HashMap<String, Session>,
     transfers: HashSet<String>,
     recoveries: HashSet<String>,
+    installing: bool,
+    transfer_operations: usize,
 }
 
 const RECOVERY_PENDING: &str = "窗口资料恢复未完成，已暂停相关操作，请重启应用重试";
+const APP_INSTALLING: &str = "应用正在安装更新或等待重启，请退出并重新打开应用后再操作";
 
 pub struct ProfileService {
     pub(crate) store: ProfileStore,
@@ -143,6 +146,8 @@ impl ProfileService {
                 sessions: HashMap::new(),
                 transfers: HashSet::new(),
                 recoveries: HashSet::new(),
+                installing: false,
+                transfer_operations: 0,
             }),
             plugin_host,
         })
@@ -527,9 +532,46 @@ impl ProfileService {
         self.lock_profiles(ids)
     }
 
+    pub(crate) fn lock_app_install(self: &Arc<Self>) -> Result<AppOperationGuard, &'static str> {
+        let mut state = self.state.lock().map_err(|_| "profiles_failed")?;
+        Self::reap(&mut state);
+        if !state.recoveries.is_empty() {
+            return Err("profiles_failed");
+        }
+        if state.installing
+            || !state.scheduler.is_idle()
+            || !state.sessions.is_empty()
+            || !state.transfers.is_empty()
+            || state.transfer_operations != 0
+        {
+            return Err("running_windows");
+        }
+        state.installing = true;
+        Ok(AppOperationGuard {
+            service: Arc::clone(self),
+            operation: AppOperation::Install,
+        })
+    }
+
+    /// Covers preparation and asynchronous sync transport before profile IDs are locked.
+    pub(crate) fn lock_transfer_operation(self: &Arc<Self>) -> Result<AppOperationGuard, String> {
+        let mut state = self.state.lock().map_err(|_| "窗口状态不可用")?;
+        if state.installing {
+            return Err(APP_INSTALLING.into());
+        }
+        state.transfer_operations += 1;
+        Ok(AppOperationGuard {
+            service: Arc::clone(self),
+            operation: AppOperation::Transfer,
+        })
+    }
+
     fn lock_profiles(&self, ids: &[String]) -> Result<TransferGuard<'_>, String> {
         let mut state = self.state.lock().map_err(|_| "窗口状态不可用")?;
         Self::reap(&mut state);
+        if state.installing {
+            return Err(APP_INSTALLING.into());
+        }
         if ids.iter().any(|id| state.recoveries.contains(id)) {
             return Err(RECOVERY_PENDING.into());
         }
@@ -566,6 +608,27 @@ impl ProfileService {
                 .map_err(|_| "导入窗口的内核绑定冲突")?;
         }
         Ok(())
+    }
+}
+
+enum AppOperation {
+    Install,
+    Transfer,
+}
+
+pub(crate) struct AppOperationGuard {
+    service: Arc<ProfileService>,
+    operation: AppOperation,
+}
+
+impl Drop for AppOperationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.service.state.lock() {
+            match self.operation {
+                AppOperation::Install => state.installing = false,
+                AppOperation::Transfer => state.transfer_operations -= 1,
+            }
+        }
     }
 }
 
@@ -741,6 +804,10 @@ pub async fn profile_stop(state: State<'_, Arc<ProfileService>>, id: String) -> 
         .await
         .map_err(|_| "Profile 停止任务中断".to_string())?
 }
+
+#[cfg(test)]
+#[path = "profile_install_tests.rs"]
+mod install_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1117,7 +1184,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
             super::sanitize_license_error(
                 "CloakBrowser Pro: license key is invalid or expired: cb_secret"
             ),
-            "激活码无效或已过期，请检查后重新填写"
+            "激活服务未接受此激活码，请在设置中重新校验"
         );
         assert_eq!(
             super::sanitize_license_error("session limit reached"),

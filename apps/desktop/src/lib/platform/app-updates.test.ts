@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { invoke, isTauri } from '@tauri-apps/api/core'
+import { invoke, isTauri, Resource } from '@tauri-apps/api/core'
 import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { listNativeProfiles } from './native-profiles'
 import {
   checkAppUpdate,
+  downloadAppUpdate,
   installAppUpdate,
   updatesAvailable,
   type AvailableUpdate,
@@ -27,11 +28,14 @@ beforeEach(() => {
   vi.mocked(isTauri).mockReturnValue(true)
   vi.mocked(relaunch).mockResolvedValue(undefined)
   vi.mocked(listNativeProfiles).mockResolvedValue([])
+  vi.mocked(invoke).mockResolvedValue(73)
+  vi.spyOn(Resource.prototype, 'close').mockResolvedValue(undefined)
   vi.stubEnv('PROD', true)
 })
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
 })
 
 it('checks through the native service and keeps the Tauri update resource for signed installation', async () => {
@@ -100,28 +104,40 @@ it('does not call the updater from a web preview or a development build', async 
   expect(invoke).not.toHaveBeenCalled()
 })
 
-it('refuses to install an update while a browser window is running', async () => {
-  vi.mocked(listNativeProfiles).mockResolvedValue([{ running: true }] as Awaited<
-    ReturnType<typeof listNativeProfiles>
-  >)
-  const downloadAndInstall = vi.fn()
-  const update = { downloadAndInstall } as unknown as AvailableUpdate
+it('refuses native admission even when the displayed window list looks idle', async () => {
+  vi.mocked(invoke).mockRejectedValue({ code: 'running_windows' })
+  const install = vi.fn()
+  const update = { install } as unknown as AvailableUpdate
 
-  await expect(installAppUpdate(update, () => {})).rejects.toThrow(
-    '请先停止所有运行中的窗口',
-  )
-  expect(downloadAndInstall).not.toHaveBeenCalled()
+  await expect(installAppUpdate(update)).rejects.toThrow('请先停止所有运行中的窗口')
+  expect(install).not.toHaveBeenCalled()
   expect(relaunch).not.toHaveBeenCalled()
 })
 
 it('installs an update and relaunches when every window is stopped', async () => {
-  const downloadAndInstall = vi.fn().mockResolvedValue(undefined)
-  const update = { downloadAndInstall } as unknown as AvailableUpdate
-  const progress = vi.fn()
+  const install = vi.fn().mockResolvedValue(undefined)
+  const download = vi.fn()
+  const update = { install, download } as unknown as AvailableUpdate
 
-  await installAppUpdate(update, progress)
-  expect(downloadAndInstall).toHaveBeenCalledOnce()
+  await installAppUpdate(update)
+  expect(install).toHaveBeenCalledOnce()
+  expect(download).not.toHaveBeenCalled()
   expect(relaunch).toHaveBeenCalledOnce()
+})
+
+it('downloads in the background while windows are running without installing or restarting', async () => {
+  vi.mocked(listNativeProfiles).mockResolvedValue([{ running: true }] as Awaited<
+    ReturnType<typeof listNativeProfiles>
+  >)
+  const download = vi.fn().mockResolvedValue(undefined)
+  const install = vi.fn()
+
+  await downloadAppUpdate({ download, install } as unknown as AvailableUpdate, () => {})
+
+  expect(download).toHaveBeenCalledOnce()
+  expect(listNativeProfiles).not.toHaveBeenCalled()
+  expect(install).not.toHaveBeenCalled()
+  expect(relaunch).not.toHaveBeenCalled()
 })
 
 it('reports download progress and resets it when a download restarts', async () => {
@@ -133,12 +149,12 @@ it('reports download progress and resets it when a download restarts', async () 
     { event: 'Started', data: {} },
     { event: 'Progress', data: { chunkLength: 25 } },
   ]
-  const downloadAndInstall = vi.fn(async (onEvent: (event: DownloadEvent) => void) => {
+  const download = vi.fn(async (onEvent: (event: DownloadEvent) => void) => {
     events.forEach(onEvent)
   })
   const progress = vi.fn()
 
-  await installAppUpdate({ downloadAndInstall } as unknown as AvailableUpdate, progress)
+  await downloadAppUpdate({ download } as unknown as AvailableUpdate, progress)
 
   expect(progress.mock.calls).toEqual([
     [0, 100],
@@ -150,39 +166,141 @@ it('reports download progress and resets it when a download restarts', async () 
   ])
 })
 
-it('does not install if the running-window status cannot be read', async () => {
-  vi.mocked(listNativeProfiles).mockRejectedValue('private native diagnostic')
-  const downloadAndInstall = vi.fn()
+it('does not install if the native operation guard cannot be acquired', async () => {
+  vi.mocked(invoke).mockRejectedValue('private native diagnostic')
+  const install = vi.fn()
 
   await expect(
-    installAppUpdate({ downloadAndInstall } as unknown as AvailableUpdate, () => {}),
+    installAppUpdate({ install } as unknown as AvailableUpdate),
   ).rejects.toThrow('无法确认窗口状态')
-  expect(downloadAndInstall).not.toHaveBeenCalled()
+  expect(install).not.toHaveBeenCalled()
   expect(relaunch).not.toHaveBeenCalled()
 })
 
-it('does not relaunch after a signature verification failure', async () => {
-  const downloadAndInstall = vi
-    .fn()
-    .mockRejectedValue('The signature verification failed')
+it('waits for native admission and keeps its guard through installation and relaunch', async () => {
+  let admit!: (rid: number) => void
+  let finishInstall!: () => void
+  let finishRelaunch!: () => void
+  vi.mocked(invoke).mockImplementation(
+    () =>
+      new Promise<number>((resolve) => {
+        admit = resolve
+      }),
+  )
+  const install = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finishInstall = resolve
+      }),
+  )
+  vi.mocked(relaunch).mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finishRelaunch = resolve
+      }),
+  )
+
+  const installing = installAppUpdate({ install } as unknown as AvailableUpdate)
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('app_update_begin_install')
+  expect(install).not.toHaveBeenCalled()
+  admit(73)
+  await vi.waitFor(() => expect(install).toHaveBeenCalledOnce())
+  expect(relaunch).not.toHaveBeenCalled()
+  expect(Resource.prototype.close).not.toHaveBeenCalled()
+  finishInstall()
+  await vi.waitFor(() => expect(relaunch).toHaveBeenCalledOnce())
+  expect(Resource.prototype.close).not.toHaveBeenCalled()
+  finishRelaunch()
+  await installing
+  // Relaunch can resolve before process exit. Only that exit releases the guard.
+  expect(Resource.prototype.close).not.toHaveBeenCalled()
+  expect(listNativeProfiles).not.toHaveBeenCalled()
+})
+
+it.each(['disk write failed', 'signature verification failed'])(
+  'releases native admission before surfacing an installation failure: %s',
+  async (diagnostic) => {
+    const closed: number[] = []
+    vi.mocked(Resource.prototype.close).mockImplementation(async function (
+      this: Resource,
+    ) {
+      closed.push(this.rid)
+    })
+    const install = vi.fn().mockRejectedValue(diagnostic)
+
+    await expect(
+      installAppUpdate({ install } as unknown as AvailableUpdate),
+    ).rejects.toThrow(diagnostic.includes('signature') ? '签名验证失败' : '安装更新失败')
+
+    expect(closed).toEqual([73])
+    expect(relaunch).not.toHaveBeenCalled()
+  },
+)
+
+it('keeps admission held after successful installation if relaunch fails', async () => {
+  const install = vi.fn().mockResolvedValue(undefined)
+  vi.mocked(relaunch).mockRejectedValue('synthetic relaunch failure')
 
   await expect(
-    installAppUpdate({ downloadAndInstall } as unknown as AvailableUpdate, () => {}),
+    installAppUpdate({ install } as unknown as AvailableUpdate),
+  ).rejects.toThrow('更新已安装，但无法自动重启')
+
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('app_update_begin_install')
+  expect(Resource.prototype.close).not.toHaveBeenCalled()
+})
+
+it.each([undefined, null, -1, 1.5, '73'])(
+  'does not install with an invalid native guard resource: %j',
+  async (rid) => {
+    vi.mocked(invoke).mockResolvedValue(rid)
+    const install = vi.fn()
+    await expect(
+      installAppUpdate({ install } as unknown as AvailableUpdate),
+    ).rejects.toThrow('无法确认窗口状态')
+    expect(install).not.toHaveBeenCalled()
+    expect(relaunch).not.toHaveBeenCalled()
+  },
+)
+
+it('requires an application restart if failed-install cleanup cannot release the guard', async () => {
+  const install = vi.fn().mockRejectedValue('synthetic install failure')
+  vi.mocked(Resource.prototype.close).mockRejectedValue('private native diagnostic')
+  await expect(
+    installAppUpdate({ install } as unknown as AvailableUpdate),
+  ).rejects.toThrow('无法确认窗口状态，请退出并重新打开应用后重试')
+  expect(relaunch).not.toHaveBeenCalled()
+})
+
+it('rejects a signature failure even after receiving the download-finished event', async () => {
+  const download = vi
+    .fn()
+    .mockImplementation(async (onEvent: (event: DownloadEvent) => void) => {
+      onEvent({ event: 'Finished' })
+      throw new Error('The signature verification failed')
+    })
+
+  await expect(
+    downloadAppUpdate({ download } as unknown as AvailableUpdate, () => {}),
   ).rejects.toThrow('更新包签名验证失败')
   expect(relaunch).not.toHaveBeenCalled()
 })
 
 it('distinguishes download errors from an installed update that cannot restart', async () => {
-  const downloadAndInstall = vi
+  const download = vi
     .fn()
     .mockRejectedValueOnce('error sending request for url (https://private.invalid)')
-    .mockResolvedValueOnce(undefined)
-  const update = { downloadAndInstall } as unknown as AvailableUpdate
+  const install = vi.fn().mockResolvedValue(undefined)
+  const update = { download, install } as unknown as AvailableUpdate
 
-  await expect(installAppUpdate(update, () => {})).rejects.toThrow('更新包下载失败')
+  await expect(downloadAppUpdate(update, () => {})).rejects.toThrow('更新包下载失败')
   expect(relaunch).not.toHaveBeenCalled()
   vi.mocked(relaunch).mockRejectedValue('private restart diagnostic')
-  await expect(installAppUpdate(update, () => {})).rejects.toThrow(
-    '更新已安装，但无法自动重启',
-  )
+  await expect(installAppUpdate(update)).rejects.toThrow('更新已安装，但无法自动重启')
+})
+
+it('classifies a generic download failure without exposing its details', async () => {
+  const download = vi.fn().mockRejectedValue('request failed with status: 403')
+  await expect(
+    downloadAppUpdate({ download } as unknown as AvailableUpdate, () => {}),
+  ).rejects.toThrow('更新包下载失败')
 })

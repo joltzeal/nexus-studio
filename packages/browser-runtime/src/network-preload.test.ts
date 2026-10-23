@@ -43,6 +43,29 @@ async function fetchFromChild(proxy: string, target: string): Promise<number> {
 }
 
 describe('application SOCKS5 proxy', () => {
+  it.each([
+    ['http://activation.example.test/validate', 80],
+    ['https://activation.example.test/validate', 443],
+    ['https://activation.example.test:443/validate', 443],
+    ['https://activation.example.test:8443/validate', 8443],
+  ])('requests the correct destination port for %s', async (target, expectedPort) => {
+    let destinationPort: number | undefined
+    const proxy = await listen(
+      createServer((client) => {
+        client.once('data', () => {
+          client.write(Buffer.from([5, 0]))
+          client.once('data', (request) => {
+            destinationPort = request.readUInt16BE(request.length - 2)
+            // Refuse locally after observing the real SOCKS handshake.
+            client.end(Buffer.from([5, 2, 0, 1, 127, 0, 0, 1, 0, 0]))
+          })
+        })
+      }),
+    )
+    expect(await fetchFromChild(`socks5://127.0.0.1:${proxy}`, target)).toBe(1)
+    expect(destinationPort).toBe(expectedPort)
+  })
+
   it('routes fetch through the selected proxy and fails closed if it is unavailable', async () => {
     const origin = await listen(
       createHttpServer((_request, response) => {

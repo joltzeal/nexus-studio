@@ -20,7 +20,11 @@ if (proxy) {
           SocksClient.createConnection({
             proxy: { host: url.hostname, port, type: 5 },
             command: 'connect',
-            destination: { host: options.hostname, port: Number(options.port) },
+            destination: {
+              host: options.hostname,
+              // Undici leaves the port empty for a protocol's default port.
+              port: Number(options.port) || (options.protocol === 'https:' ? 443 : 80),
+            },
             timeout: 15_000,
           }).then(
             ({ socket }) => {

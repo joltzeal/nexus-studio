@@ -1,41 +1,75 @@
 import { toast } from '@/components/ui/toast'
-import { checkAppUpdate, updatesAvailable, type AvailableUpdate } from './app-updates'
+import { AppUpdateError, updatesAvailable } from './app-updates'
+import { appUpdateController, type AppUpdateController } from './app-update-controller'
 
 export const UPDATE_CHECK_DELAY = 10_000
 export const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000
 
-export function startAppUpdateNotifications(): () => void {
+export function startAppUpdateNotifications(
+  controller: AppUpdateController = appUpdateController,
+): () => void {
   if (!updatesAvailable()) return () => {}
   let active = true
-  let pending = false
-  const notified = new Set<string>()
+  let notice: number | null = null
+  let notifiedVersion: string | null = null
+  let previousPhase = controller.getSnapshot().phase
 
-  async function check() {
-    if (!active || pending) return
-    pending = true
-    let update: AvailableUpdate | null = null
-    try {
-      update = await checkAppUpdate()
-      if (active && update && !notified.has(update.version)) {
-        toast.info(
-          `发现新版本 ${update.version}，前往「应用设置 → 关于 Nexus」即可更新。`,
-          { duration: 12_000 },
-        )
-        notified.add(update.version)
-      }
-    } catch {
-      // Manual checks show actionable errors; background checks retry quietly.
-    } finally {
-      await update?.close().catch(() => {})
-      pending = false
+  function dismissNotice() {
+    if (notice !== null) toast.dismiss(notice)
+    notice = null
+  }
+
+  function renderNotice() {
+    if (!active) return
+    const state = controller.getSnapshot()
+    const retry = previousPhase === 'installing' && state.phase === 'ready'
+    previousPhase = state.phase
+    if (state.phase !== 'ready') {
+      dismissNotice()
+      return
+    }
+    if (state.version && (state.version !== notifiedVersion || retry)) {
+      dismissNotice()
+      const version = state.version
+      notice = toast.info(`新版 ${version} 已下载，更新后将重启应用。`, {
+        duration: 0,
+        action: {
+          label: '立即更新',
+          onClick: () => {
+            if (!active || controller.getSnapshot().version !== version) return
+            void controller.install().catch((cause: unknown) => {
+              if (active) {
+                toast.error(
+                  cause instanceof AppUpdateError
+                    ? cause.message
+                    : '安装更新失败，请重试。',
+                )
+              }
+            })
+          },
+        },
+      })
+      notifiedVersion = version
     }
   }
 
-  const initial = setTimeout(() => void check(), UPDATE_CHECK_DELAY)
-  const interval = setInterval(() => void check(), UPDATE_CHECK_INTERVAL)
+  function check() {
+    if (!active) return
+    // Manual checks expose the shared error; automatic retries stay quiet.
+    void controller.prepare().catch(() => {})
+  }
+
+  const unsubscribe = controller.subscribe(renderNotice)
+  renderNotice()
+  const initial = setTimeout(check, UPDATE_CHECK_DELAY)
+  const interval = setInterval(check, UPDATE_CHECK_INTERVAL)
   return () => {
+    if (!active) return
     active = false
     clearTimeout(initial)
     clearInterval(interval)
+    unsubscribe()
+    dismissNotice()
+    controller.dispose()
   }
 }

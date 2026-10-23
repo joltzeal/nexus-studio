@@ -1,10 +1,12 @@
+use super::kernel_service::run_preparation;
 use super::license_store::{LicenseStatus, LicenseStore};
 use super::network_proxy::NetworkProxyStore;
 use super::runtime_paths::RuntimePaths;
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ValidatedLicense {
@@ -47,7 +49,7 @@ impl LicenseService {
     pub fn set_key(&self, key: String) -> Result<LicenseStatus, String> {
         let key = key.trim();
         if key.is_empty() || key.len() > 1024 {
-            return Err("请输入有效的 CloakBrowser 密钥".into());
+            return Err("请输入激活码".into());
         }
         let license = self.validate_with_official_sdk(key)?;
         persist_validated_license(&self.store, key, &license)?;
@@ -57,38 +59,50 @@ impl LicenseService {
     fn validate_with_official_sdk(&self, key: &str) -> Result<ValidatedLicense, String> {
         let script = &self.runtime.browser_script;
         if !script.is_file() {
-            return Err("浏览器适配器未构建，请重新启动 Nexus 桌面开发命令".into());
+            return Err("安装包缺少激活校验组件，请重新安装应用".into());
         }
+        // Explicit activation must reach the service, not accept the SDK's
+        // 24-hour cache or its offline fallback to an older success.
+        std::fs::create_dir_all(&self.cache_dir).map_err(|_| "无法创建激活校验目录")?;
+        let validation_cache = tempfile::Builder::new()
+            .prefix(".activation-check-")
+            .tempdir_in(&self.cache_dir)
+            .map_err(|_| "无法创建激活校验目录")?;
         let mut command = Command::new(&self.runtime.node);
         if let Some(network) = &self.network {
             network
                 .get()?
                 .apply_to_node(&mut command, &self.runtime.network_preload)?;
         }
-        let output = command
+        command
             .arg(script)
             .arg("validate-license")
             .env("CLOAKBROWSER_LICENSE_KEY", key)
-            .env("CLOAKBROWSER_CACHE_DIR", &self.cache_dir)
+            .env("CLOAKBROWSER_CACHE_DIR", validation_cache.path())
             .env_remove("CLOAKBROWSER_VERSION")
             .env_remove("CLOAKBROWSER_BINARY_PATH")
             .env_remove("CLOAKBROWSER_DOWNLOAD_URL")
-            .env_remove("CLOAKBROWSER_RELEASE_CHANNEL")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|_| "未找到 Node.js 运行时，请重新启动 Nexus 桌面应用")?;
+            .env_remove("CLOAKBROWSER_RELEASE_CHANNEL");
+        let output =
+            run_preparation(&mut command, Duration::from_secs(20), None).map_err(|error| {
+                if error.contains("超时") {
+                    "激活校验超时，请检查应用代理或网络后重试"
+                } else {
+                    "无法运行激活校验组件，请重启或重新安装应用"
+                }
+            })?;
         if !output.status.success() {
-            return Err("无法连接 CloakBrowser 授权服务，请检查网络后重试".into());
+            return Err("无法连接激活服务，请检查应用代理或网络后重试".into());
         }
         let value = output
             .stdout
             .split(|byte| *byte == b'\n')
             .rev()
             .find(|line| !line.is_empty())
-            .ok_or("CloakBrowser 未返回授权校验结果")?;
+            .ok_or("激活服务未返回校验结果，请稍后重试")?;
         let result: Option<ValidatedLicense> =
-            serde_json::from_slice(value).map_err(|_| "无法读取 CloakBrowser 授权校验结果")?;
-        result.ok_or_else(|| "无法连接 CloakBrowser 授权服务，请检查网络后重试".into())
+            serde_json::from_slice(value).map_err(|_| "无法读取激活校验结果，请稍后重试")?;
+        result.ok_or_else(|| "无法连接激活服务，请检查应用代理或网络后重试".into())
     }
 
     pub fn remove(&self) -> Result<(), String> {
@@ -102,10 +116,10 @@ pub fn persist_validated_license(
     license: &ValidatedLicense,
 ) -> Result<(), String> {
     if !license.valid {
-        return Err("CloakBrowser 密钥无效或已过期；原有密钥未更改".into());
+        return Err("激活服务未接受此激活码；原有激活码未更改".into());
     }
     if license.plan.trim().is_empty() {
-        return Err("CloakBrowser 授权信息无效；原有密钥未更改".into());
+        return Err("激活校验结果异常；原有激活码未更改".into());
     }
     store.save_validated(key, &license.plan, license.expires.as_deref())
 }
@@ -125,7 +139,7 @@ pub async fn license_set(
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || state.set_key(key))
         .await
-        .map_err(|_| "CloakBrowser 授权校验任务中断".to_string())?
+        .map_err(|_| "激活校验任务中断，请重试".to_string())?
 }
 
 #[tauri::command]

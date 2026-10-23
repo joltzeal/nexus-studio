@@ -175,6 +175,10 @@ impl Scheduler {
             .count()
     }
 
+    pub fn is_idle(&self) -> bool {
+        self.active.is_empty()
+    }
+
     pub fn status(&self, window_id: &str) -> Option<&LaunchStatus> {
         self.active.get(window_id)
     }

@@ -692,6 +692,17 @@ mod tests {
             (1, "/absolute", tar::EntryType::Regular),
             (2, "profiles/link", tar::EntryType::Symlink),
             (3, "C:\\escaped", tar::EntryType::Regular),
+            (4, "profiles/hardlink", tar::EntryType::Link),
+            (
+                5,
+                "profiles/test/user-data/Last Browser",
+                tar::EntryType::Symlink,
+            ),
+            (
+                6,
+                "profiles/test/user-data/RunningChromeVersion",
+                tar::EntryType::Symlink,
+            ),
         ] {
             let path = root.path().join(format!("archive-{index}"));
             let writer =
@@ -702,6 +713,9 @@ mod tests {
             header.set_size(0);
             header.set_mode(0o600);
             header.set_entry_type(kind);
+            if matches!(kind, tar::EntryType::Symlink | tar::EntryType::Link) {
+                header.set_link_name("../../../escaped").unwrap();
+            }
             header.set_cksum();
             archive.append(&header, io::empty()).unwrap();
             archive

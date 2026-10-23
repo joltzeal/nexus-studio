@@ -77,6 +77,13 @@ offer 监听所有本地 IPv4 接口的随机 TCP 端口，receive 连接邀请�
   本机已有同 UUID 时，要求用户明确选择覆盖并关闭对应窗口。
   后续双向更新沿用稳定 UUID，冲突由用户确认完整快照覆盖，不由插件自动合并。
 
+若发送前出现「浏览器数据中包含不可迁移的链接或特殊文件」，错误来自主程序生成快照时
+的浏览器目录复制，此时尚未调用插件的 `sync.offer`。根目录中的本机运行痕迹
+`Last Browser`、`RunningChromeVersion` 由主程序精确排除，不跟随链接；
+其他链接与特殊文件仍拒绝迁移，Cookies、localStorage、IndexedDB、OPFS 仍保留。
+上游依据、临时浏览器复现结果与未确认的边界见[窗口加密迁移](28-window-transfer.md)。
+该修复共用于文件导出和设备同步准备阶段，不改变 TCP 协议或插件导入职责。
+
 ## RPC 方法
 
 四个方法都使用 capability `window.sync`。未声明字段会被拒绝；

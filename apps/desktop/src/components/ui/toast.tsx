@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react'
 import { cn } from 'cn'
+import { Button } from './button'
 
 /**
  * Toasts are page-level feedback for transient results such as "copied".
@@ -14,13 +15,19 @@ export interface ToastItem {
   id: number
   tone: ToastTone
   message: string
+  action?: {
+    label: string
+    onClick: () => void
+  }
 }
 
 interface ToastOptions {
+  /** Zero keeps an actionable notice visible until dismissed. */
   duration?: number
+  action?: ToastItem['action']
 }
 
-/** Visible toasts. Older entries are dropped so a burst cannot cover the page. */
+/** Evict transient entries first, keeping the viewport bounded even if all persist. */
 export const MAX_TOASTS = 3
 
 const DURATION: Record<ToastTone, number> = {
@@ -29,7 +36,7 @@ const DURATION: Record<ToastTone, number> = {
   error: 5200,
 }
 
-let items: ToastItem[] = []
+let items: (ToastItem & { persistent: boolean })[] = []
 let nextId = 1
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
 const listeners = new Set<() => void>()
@@ -62,19 +69,33 @@ export function pushToast(
   const text = message.trim()
   if (text === '') return 0
   const id = nextId++
+  const duration = options.duration ?? DURATION[tone]
   // The same message twice in a row would stack identical boxes, so the older
   // one is replaced instead of duplicated.
-  items = [...items.filter((item) => item.message !== text), { id, tone, message: text }]
+  for (const item of items) {
+    if (item.message === text) clearTimer(item.id)
+  }
+  items = [
+    ...items.filter((item) => item.message !== text),
+    {
+      id,
+      tone,
+      message: text,
+      persistent: duration === 0,
+      ...(options.action ? { action: options.action } : {}),
+    },
+  ]
   while (items.length > MAX_TOASTS) {
-    const dropped = items[0]
+    const dropped = items.find((item) => !item.persistent) ?? items[0]
     if (dropped === undefined) break
     clearTimer(dropped.id)
-    items = items.slice(1)
+    items = items.filter((item) => item.id !== dropped.id)
   }
-  timers.set(
-    id,
-    setTimeout(() => dismissToast(id), options.duration ?? DURATION[tone]),
-  )
+  if (duration > 0 && items.some((item) => item.id === id))
+    timers.set(
+      id,
+      setTimeout(() => dismissToast(id), duration),
+    )
   emit()
   return id
 }
@@ -132,7 +153,19 @@ export function Toaster() {
             aria-live={item.tone === 'error' ? 'assertive' : 'polite'}
           >
             <Icon className="toast-icon" aria-hidden="true" />
-            <p className="toast-message">{item.message}</p>
+            <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+              <p className="toast-message">{item.message}</p>
+              {item.action ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={item.action.onClick}
+                >
+                  {item.action.label}
+                </Button>
+              ) : null}
+            </div>
             <button
               type="button"
               className="toast-close"

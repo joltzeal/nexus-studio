@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { getAppInfo, type AppInfo } from '@/lib/platform/app-info'
 import {
@@ -12,76 +12,21 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
-import { Button } from '@/components/ui/button'
-import {
-  checkAppUpdate,
-  installAppUpdate,
-  updatesAvailable,
-  AppUpdateError,
-  type AvailableUpdate,
-} from '@/lib/platform/app-updates'
+import { updatesAvailable } from '@/lib/platform/app-updates'
+import { appUpdateController } from '@/lib/platform/app-update-controller'
+import { AppUpdateControls } from './app-update-controls'
 
 export function AboutPage() {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [failed, setFailed] = useState(false)
-  const [update, setUpdate] = useState<AvailableUpdate | null>(null)
-  const [updateStatus, setUpdateStatus] = useState<string | null>(null)
-  const [updateError, setUpdateError] = useState<string | null>(null)
-  const [updatePending, setUpdatePending] = useState(false)
-  const mounted = useRef(true)
-
-  async function checkUpdate() {
-    setUpdatePending(true)
-    setUpdateError(null)
-    setUpdateStatus(null)
-    setUpdate(null)
-    try {
-      const available = await checkAppUpdate()
-      if (!mounted.current) {
-        await available?.close().catch(() => {})
-        return
-      }
-      setUpdate(available)
-      setUpdateStatus(available ? `发现新版本 ${available.version}` : '当前已是最新版本')
-    } catch (cause) {
-      setUpdateError(
-        cause instanceof AppUpdateError ? cause.message : '检查更新失败，请重试。',
-      )
-    } finally {
-      setUpdatePending(false)
-    }
-  }
-
-  async function installUpdate() {
-    if (!update) return
-    setUpdatePending(true)
-    setUpdateError(null)
-    setUpdateStatus('正在下载更新…')
-    try {
-      await installAppUpdate(update, (downloaded, total) => {
-        setUpdateStatus(
-          total
-            ? `正在下载更新 ${Math.min(100, Math.round((downloaded / total) * 100))}%`
-            : '正在下载更新…',
-        )
-      })
-    } catch (cause) {
-      setUpdateStatus(null)
-      if (cause instanceof AppUpdateError && cause.code === 'relaunch_failed') {
-        setUpdate(null)
-        setUpdateStatus('更新已安装，请手动重新打开应用。')
-      }
-      setUpdateError(
-        cause instanceof AppUpdateError ? cause.message : '安装更新失败，请重试。',
-      )
-    } finally {
-      setUpdatePending(false)
-    }
-  }
+  const update = useSyncExternalStore(
+    appUpdateController.subscribe,
+    appUpdateController.getSnapshot,
+    appUpdateController.getSnapshot,
+  )
 
   useEffect(() => {
     let active = true
-    mounted.current = true
     void getAppInfo().then(
       (result) => {
         if (active) setInfo(result)
@@ -92,15 +37,8 @@ export function AboutPage() {
     )
     return () => {
       active = false
-      mounted.current = false
     }
   }, [])
-
-  useEffect(() => {
-    return () => {
-      void update?.close().catch(() => {})
-    }
-  }, [update])
 
   return (
     <section className="settings-page page-reveal" aria-labelledby="about-heading">
@@ -130,32 +68,11 @@ export function AboutPage() {
               {updatesAvailable() ? (
                 <>
                   <Separator />
-                  <div className="about-row">
-                    <dt>应用更新</dt>
-                    <dd className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        disabled={updatePending}
-                        onClick={() => void checkUpdate()}
-                      >
-                        {updatePending ? '请稍候…' : '检查更新'}
-                      </Button>
-                      {update ? (
-                        <Button
-                          disabled={updatePending}
-                          onClick={() => void installUpdate()}
-                        >
-                          安装 {update.version}
-                        </Button>
-                      ) : null}
-                    </dd>
-                  </div>
-                  {updateStatus ? <p role="status">{updateStatus}</p> : null}
-                  {updateError ? (
-                    <p role="alert" className="text-destructive">
-                      {updateError}
-                    </p>
-                  ) : null}
+                  <AppUpdateControls
+                    state={update}
+                    onCheck={() => void appUpdateController.prepare().catch(() => {})}
+                    onInstall={() => void appUpdateController.install().catch(() => {})}
+                  />
                 </>
               ) : null}
               <Separator />

@@ -27,6 +27,7 @@ pub fn run() {
             core::transfer_service::profile_sync_cancel,
             core::transfer_service::profile_sync_import,
             core::updater_service::app_update_check,
+            core::updater_service::app_update_begin_install,
             core::profile_service::kernel_status,
             core::profile_service::kernel_download,
             core::license_service::license_status,
