@@ -26,12 +26,15 @@ Node 专用的 JIT entitlement 授予 Rust 主程序。
 用户也可先在「应用设置 → 浏览器内核」下载，查看实际进度和本地版本，再创建窗口；
 两条入口复用同一缓存，见[浏览器内核](27-browser-kernels.md)。
 
-## CI 与草稿
+## CI 与自动发布
 
 `.github/workflows/ci.yml` 在 macOS/Windows 和 Linux 上运行源码检查。
 `.github/workflows/release.yml` 仅在 `v*` 标签触发，构建 macOS arm64、
 macOS x64 与 Windows x64，使用 GitHub Actions 的
-`TAURI_SIGNING_PRIVATE_KEY` 签名更新包，向私有仓库创建草稿 Release。
+`TAURI_SIGNING_PRIVATE_KEY` 签名更新包。构建阶段先创建草稿 Release，
+三个平台上传构件、更新签名与 `latest.json`，macOS 继续执行最终包内运行时检查。
+`publish` 作业依赖整个 `package` 矩阵；只有全部成功后，才自动取消草稿并设为最新版本。
+任一平台失败时保留草稿，不发布不完整版本。无需用户手动将草稿转为正式发布。
 签名密钥不进入源码。本地备份位于开发机的
 `~/Library/Application Support/Nexus Studio Release/updater.key`；丢失密钥后，
 现有安装无法无缝接受新签名。发版前同步根 `package.json`、
@@ -62,11 +65,11 @@ macOS 发行构建完成后必须运行 `pnpm runtime:verify-packaged`，使用�
 提供“检查更新”。检测到签名版本后可下载、安装并重启，运行中窗口必须先停止。
 更新不会删除本机 SQLite、插件私有数据或浏览器 user-data。
 
-私有 `joltzeal/nexus-studio` Release 对普通安装用户不可匿名访问。
-配置中的 `joltzeal/nexus-studio-updates` 是拟议的**公开、仅存发行产物**的更新源；
-目前该仓库尚未创建，`latest.json` 和安装文件也未发布。创建公开更新源、
-上传经过操作系统签名的安装包以及把草稿转为正式发布，是发行前的最后步骤。
-在此之前关于页会如实显示更新服务连接失败，不宣称自动更新已上线。
+`joltzeal/nexus-studio` 已于 2026-10-23 改为公开仓库，
+`v0.1.2` 已正式发布，Release 中包含安装文件、更新包、签名与 `latest.json`。
+当前发行配置的 updater 端点仍指向 `joltzeal/nexus-studio-updates`；
+发布当前仓库的 Release 不会修改已安装应用中的端点。
+在提供该更新源或后续发行版切换端点前，不宣称应用内自动更新已上线。
 
 ## 本机验证记录（2026-10-22）
 
@@ -105,5 +108,8 @@ macOS arm64 分阶段运行时检查通过，含 `network-preload.js` 和 SOCKS5
 
 主应用版本为 `0.1.2`；代理池插件独立升为 `1.0.1`，需要配套更新。
 插件不随桌面安装包分发，推送应用标签不会自动上传插件商店。
-`v0.1.2` 沿用现有桌面工作流生成草稿 Release；推送后不等待 CI，
-实际构件和远端构建结果需以工作流产出为准。本机发布前检查见[质量记录](09-quality-and-testing.md)。
+`v0.1.2` 最初由标签工作流生成草稿，三个平台的发布构建均成功，
+2026-10-23 已通过 GitHub CLI 转为正式发布并设为最新版本。
+后续标签由新增的 `publish` 作业在整个构建矩阵成功后自动发布；
+推送标签后无需等待 CI，但在构建完成前不会出现正式 Release。
+本机发布前检查见[质量记录](09-quality-and-testing.md)。

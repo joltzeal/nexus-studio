@@ -61,3 +61,15 @@ jobs:
       - name: Verify signed macOS runtime
         if: runner.os == 'macOS'
         run: pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Nexus.app
+
+  publish:
+    if: github.repository == 'joltzeal/nexus-studio'
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
