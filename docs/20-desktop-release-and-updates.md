@@ -59,6 +59,13 @@ macOS 发行构建完成后必须运行 `pnpm runtime:verify-packaged`，使用�
 该检查还验证整包签名、Node 的两个 JIT entitlement，以及 Rust 主程序未获得这些权限；
 只检查文件存在或只运行签名前的 staged Node 不足以证明运行时可用。
 
+启动通道异常的原生回归使用独立 Rust 测试进程，直接关闭系统 stdout 管道，
+再验证宿主终止进程并释放窗口占用。该夹具在测试阶段用现有 Rust 工具链编译，
+不会进入安装包，也不要求用户安装编译器。不能用 Node 的 `fs.closeSync(1)`
+模拟 Windows 上的管道关闭：固定版本对标准文件描述符不会实际关闭句柄。
+质量工作流和发行工作流分别运行；测试或文档修复推送主分支重新检查即可，
+不覆盖已发布标签或同版本安装包。实际失败与修复证据见[质量记录](09-quality-and-testing.md)。
+
 ## 更新通道
 
 安装包的 updater 公钥固定在 `tauri.release.conf.json`；关于页只在发行版

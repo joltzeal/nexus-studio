@@ -831,19 +831,33 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let binary_path = root.path().join("browser");
         std::fs::write(&binary_path, b"binary").unwrap();
-        let runner = root.path().join("runner.cjs");
-        std::fs::write(
-            &runner,
-            "require('node:fs').closeSync(1); setTimeout(() => process.exit(1), 7000);",
-        )
-        .unwrap();
+        let runner = root.path().join(format!(
+            "closed-startup-output{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/closed-startup-output.rs");
+        let compiled = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg("--edition=2024")
+            .arg("--crate-name=nexus_closed_startup_output")
+            .arg(fixture)
+            .arg("-o")
+            .arg(&runner)
+            .output()
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "failed to compile startup fixture: {}",
+            String::from_utf8_lossy(&compiled.stderr),
+        );
+        let marker = root.path().join("runner-started");
         let service = ProfileService::with_runtime(
             root.path().join("profiles"),
             None,
             LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
             RuntimePaths {
-                node: "node".into(),
-                browser_script: runner,
+                node: runner,
+                browser_script: marker.clone(),
                 network_preload: root.path().join("unused-preload.js"),
             },
         )
@@ -867,6 +881,11 @@ mod tests {
             "a runner that loses its startup channel must not keep the launch waiting"
         );
         assert!(!service.list().unwrap()[0].running);
+        assert_eq!(std::fs::read(&marker).unwrap(), b"configuration received");
+        let state = service.state.lock().unwrap();
+        assert!(state.scheduler.status(&created.id).is_none());
+        assert!(!state.sessions.contains_key(&created.id));
+        assert!(!state.transfers.contains(&created.id));
     }
 
     #[test]
