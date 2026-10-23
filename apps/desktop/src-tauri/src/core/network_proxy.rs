@@ -141,9 +141,10 @@ impl NetworkProxy {
         if !preload.is_file() {
             return Err("应用缺少代理运行时，请重新安装 Nexus".into());
         }
+        let preload_url = url::Url::from_file_path(preload).map_err(|_| "代理运行时路径无效")?;
         command
             .arg("--import")
-            .arg(preload)
+            .arg(preload_url.as_str())
             .env(
                 "NEXUS_NETWORK_MODE",
                 match self.mode {
@@ -294,6 +295,19 @@ mod tests {
                 .get()
                 .unwrap(),
             expected
+        );
+        let preload = dir.path().join("network-preload.js");
+        std::fs::write(&preload, b"").unwrap();
+        let mut command = Command::new("node");
+        expected.apply_to_node(&mut command, &preload).unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert_eq!(args[0], "--import");
+        assert_eq!(
+            args[1],
+            url::Url::from_file_path(&preload).unwrap().as_str()
         );
     }
 }

@@ -118,7 +118,9 @@ try {
   const browserModule = pathToFileURL(
     join(runtime, 'browser-runtime/dist/profile-runtime.js'),
   ).href
-  const networkModule = join(runtime, 'browser-runtime/dist/network-preload.js')
+  const networkModule = pathToFileURL(
+    join(runtime, 'browser-runtime/dist/network-preload.js'),
+  ).href
   const smoke = spawnSync(
     executable,
     [
