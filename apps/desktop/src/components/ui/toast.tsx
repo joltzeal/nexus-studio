@@ -16,6 +16,10 @@ export interface ToastItem {
   message: string
 }
 
+interface ToastOptions {
+  duration?: number
+}
+
 /** Visible toasts. Older entries are dropped so a burst cannot cover the page. */
 export const MAX_TOASTS = 3
 
@@ -50,7 +54,11 @@ export function dismissToast(id: number) {
   emit()
 }
 
-export function pushToast(tone: ToastTone, message: string): number {
+export function pushToast(
+  tone: ToastTone,
+  message: string,
+  options: ToastOptions = {},
+): number {
   const text = message.trim()
   if (text === '') return 0
   const id = nextId++
@@ -65,7 +73,7 @@ export function pushToast(tone: ToastTone, message: string): number {
   }
   timers.set(
     id,
-    setTimeout(() => dismissToast(id), DURATION[tone]),
+    setTimeout(() => dismissToast(id), options.duration ?? DURATION[tone]),
   )
   emit()
   return id
@@ -74,7 +82,7 @@ export function pushToast(tone: ToastTone, message: string): number {
 export const toast = {
   success: (message: string) => pushToast('success', message),
   error: (message: string) => pushToast('error', message),
-  info: (message: string) => pushToast('info', message),
+  info: (message: string, options?: ToastOptions) => pushToast('info', message, options),
   dismiss: dismissToast,
 }
 

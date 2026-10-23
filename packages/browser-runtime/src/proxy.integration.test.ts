@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer as createHttpsServer } from 'node:https'
 import { connect as connectSocket, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -12,7 +12,9 @@ import { parseBrowserVersion } from './profile-runtime.js'
 
 const binary = process.env.NEXUS_TEST_BROWSER_BINARY
 
-it.skipIf(!binary).each(['none', 'simple', 'special', 'geoip', 'geoip-manual'])(
+it
+  .skipIf(!binary)
+  .each(['none', 'simple', 'special', 'geoip', 'geoip-manual', 'geoip-fallback'])(
   'opens a real profile through SOCKS5 with complete upstream credentials (authentication=%s)',
   async (authentication) => {
     const authenticated = authentication !== 'none'
@@ -39,9 +41,28 @@ it.skipIf(!binary).each(['none', 'simple', 'special', 'geoip', 'geoip-manual'])(
         cert: await readFile(certificate),
         key: await readFile(new URL('../fixtures/proxy-test.key.pem', import.meta.url)),
       },
-      (_request, response) => {
+      (request, response) => {
         echoes++
-        response.end('81.2.69.160')
+        if (authentication === 'geoip-fallback' && request.headers.host === 'ipwho.is') {
+          response.writeHead(429).end()
+          return
+        }
+        response.end(
+          request.headers.host === 'ipwho.is'
+            ? JSON.stringify({
+                success: true,
+                ip: '81.2.69.160',
+                country_code: 'GB',
+                timezone: { id: 'Europe/London' },
+              })
+            : request.headers.host === 'api.ip.sb'
+              ? JSON.stringify({
+                  ip: '81.2.69.160',
+                  country_code: 'GB',
+                  timezone: 'Europe/London',
+                })
+              : '81.2.69.160',
+        )
       },
     )
     https.on('connection', (socket) => {
@@ -162,22 +183,26 @@ it.skipIf(!binary).each(['none', 'simple', 'special', 'geoip', 'geoip-manual'])(
       )
       const userData = join(directory, 'user-data')
       const cache = join(directory, 'cache')
-      if (authentication === 'geoip') {
-        const database = process.env.NEXUS_TEST_GEOIP_DB
-        if (!database) throw new Error('NEXUS_TEST_GEOIP_DB is required for GeoIP test')
-        await mkdir(join(cache, 'geoip'), { recursive: true })
-        await copyFile(database, join(cache, 'geoip/GeoLite2-City.mmdb'))
-      }
+      const preload = join(directory, 'no-database.mjs')
+      await writeFile(
+        preload,
+        `globalThis.fetch = () => Promise.reject(new Error('Database downloads are unavailable on this fresh install'));`,
+      )
       child = spawn(
-        process.execPath,
+        process.env.NEXUS_TEST_RUNTIME_NODE ?? process.execPath,
         [
-          fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url)),
+          '--import',
+          preload,
+          process.env.NEXUS_TEST_RUNTIME_RUNNER ??
+            fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url)),
           'launch',
           userData,
         ],
         {
           env: {
             ...process.env,
+            NODE_PATH: '',
+            NODE_OPTIONS: '',
             NODE_EXTRA_CA_CERTS: certificate,
             CLOAKBROWSER_CACHE_DIR: cache,
           },
@@ -217,6 +242,11 @@ it.skipIf(!binary).each(['none', 'simple', 'special', 'geoip', 'geoip-manual'])(
       expect(stderr).toBe('')
       if (matching) {
         expect(echoes).toBeGreaterThan(0)
+        await expect(
+          readFile(join(cache, 'geoip/GeoLite2-City.mmdb')),
+        ).rejects.toMatchObject({
+          code: 'ENOENT',
+        })
         const timezone = manual ? 'America%2FNew_York' : 'Europe%2FLondon'
         const locale = manual ? 'fr-FR' : 'en-GB'
         await expect

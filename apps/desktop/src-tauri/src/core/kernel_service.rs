@@ -465,17 +465,17 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
         "窗口的 Cookie 或站点数据恢复失败，原迁移文件已保留，请检查内核版本后重试".into()
     } else if lower.contains("profile_proxy_missing") {
         "所选代理缺少连接信息，请检查代理插件配置".into()
-    } else if lower.contains("browser_runtime_dependency_missing")
-        || lower.contains("mmdb-lib")
-        || lower.contains("socks-proxy-agent")
-    {
+    } else if lower.contains("browser_runtime_dependency_missing") {
         "代理环境组件缺失，请更新或重新安装应用".into()
     } else if lower.contains("profile_proxy_bridge_failed")
         || lower.contains("err_no_supported_proxies")
     {
         "所选代理连接失败，请检查地址、协议和账号密码后重试".into()
-    } else if lower.contains("geoip") {
-        "无法通过所选代理取得出口或地域信息，请检查代理及应用网络设置后重试".into()
+    } else if lower.contains("profile_geo_proxy_connect_failed") {
+        "在线 IP 查询无法连接所选代理，请检查代理地址、协议和账号密码".into()
+    } else if lower.contains("profile_geo_online_unavailable") {
+        "自动匹配失败：在线 IP 信息服务暂不可用，请稍后重试，或关闭自动匹配后使用手动时区和语言"
+            .into()
     } else {
         "浏览器内核准备失败，请在设置的「浏览器内核」中重新下载".into()
     }
@@ -495,8 +495,7 @@ mod tests {
         assert!(sanitize_kernel_error("PROFILE_PROXY_MISSING").contains("代理缺少连接信息"));
         for detail in [
             "PROFILE_PROXY_BRIDGE_FAILED socks5://user:synthetic-secret@host:1080",
-            "PROFILE_GEOIP_EXIT_IP_REQUIRED",
-            "GeoIP resolution failed: GeoIP database is unavailable",
+            "PROFILE_GEO_PROXY_CONNECT_FAILED",
         ] {
             let message = sanitize_kernel_error(detail);
             assert!(message.contains("代理"));
@@ -505,6 +504,12 @@ mod tests {
         }
         assert!(
             sanitize_kernel_error("BROWSER_RUNTIME_DEPENDENCY_MISSING").contains("重新安装应用")
+        );
+        assert!(
+            sanitize_kernel_error("PROFILE_GEO_PROXY_CONNECT_FAILED").contains("无法连接所选代理")
+        );
+        assert!(
+            sanitize_kernel_error("PROFILE_GEO_ONLINE_UNAVAILABLE").contains("在线 IP 信息服务")
         );
     }
 

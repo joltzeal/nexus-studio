@@ -90,8 +90,8 @@ Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败�
 | ------------------ | ----------------------------------------------------------- | -------------------------------------- |
 | 独立窗口           | `launchPersistentContext({ userDataDir, headless: false })` | 原生 Profile 独立目录，显式打开后启动  |
 | HTTP / SOCKS5 代理 | `proxy`                                                     | 手动无凭据地址；插件代理解析失败则阻断 |
-| GeoIP              | `geoip` 匹配代理出口时区、语言及 WebRTC IP                  | 有代理且未显式关闭时启用；直连不启用   |
-| 时区、语言         | `timezone`、`locale`                                        | 手工覆盖；空值使用包装层默认或 GeoIP   |
+| 出口自动匹配       | `timezone`、`locale`、`--fingerprint-webrtc-ip`             | 在线查询；有代理且未显式关闭时启用     |
+| 时区、语言         | `timezone`、`locale`                                        | 手工覆盖；空值使用在线结果或包装层默认 |
 | 尺寸               | `viewport`                                                  | 默认或两个常用尺寸                     |
 | 指纹种子           | `--fingerprint=<seed>`；持久化 profile 会保留种子           | 可在创建时填写，之后不可修改           |
 | 起始地址           | Playwright 页面导航                                         | 仅允许不含凭据的 HTTP(S) 地址          |
@@ -104,32 +104,42 @@ Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败�
 
 适配器核对 `--version` 后同时传递绑定路径与 `browserVersion`，
 避免 SDK 在只有本地路径时将代理鉴权功能按未知版本处理。
-正常代理启动保留完整连接 URL、认证信息与 GeoIP，不在失败时回退直连。
-缺少窗口 settings 时 GeoIP 默认开启；直连配置即使保存了开启偏好也不进行 GeoIP。
-所固定 CloakBrowser `0.6.3` 会在创建 Chromium 上下文前解析 GeoIP，
-首次数据库下载在 SDK 中没有网络截止时间；适配器给 SDK 启动阶段设置 60 秒上限，
-合并 fetch 的原有取消信号并在超时取消下载，迟到的上下文也会关闭。
-SDK 已启动的后台数据库更新也随上下文关闭取消，避免用户关窗后适配进程继续等待下载。
-该版本的 GeoIP 需要可解析的可选 `mmdb-lib`，SOCKS5 出口探测还需要
-`socks-proxy-agent`。旧依赖图中两者均不可用，真实 runner 因缺少
-`mmdb-lib` 在创建浏览器之前失败，不能通过关闭 GeoIP 掩盖。
-运行时现显式固定生产依赖 `mmdb-lib@3.0.2` 与 `socks-proxy-agent@10.0.0`，
-满足已安装 SDK 的可选 peer 范围，并与其开发依赖版本一致。
-staging 与安装包 smoke 均从 SDK 自身的位置解析并实际加载两者，
-缺失时报 `BROWSER_RUNTIME_DEPENDENCY_MISSING`，避免只成功 import SDK
-却遗漏动态加载的 GeoIP 功能。临时生产 deploy 已用与 staging 相同的
-`--legacy --prod --config.node-linker=hoisted` 路径验证依赖可用。
+正常代理启动保留完整连接 URL、认证信息与出口自动匹配，不在失败时回退直连。
+窗口持久字段仍叫 `geoip`，缺少 settings 时默认开启；直连不进行在线匹配。
+适配器通过窗口代理依次请求 `https://ipwho.is/?fields=ip,success,country_code,timezone.id`
+与备用 `https://api.ip.sb/geoip`，取得出口 IP、IANA 时区和国家代码；
+语言由国家代码经 Node Intl Locale 推断，手工时区和语言优先。
+接口不要求用户填写第三方密钥，不使用风险评分阻断窗口。
+每个请求最多 5 秒，主接口超时、限流或返回无效数据时尝试备用接口。
+两者都不可用时报 `PROFILE_GEO_ONLINE_UNAVAILABLE`；
+两次均为代理连接/认证失败时报 `PROFILE_GEO_PROXY_CONNECT_FAILED`。
+错误不包含代理凭据，也不会自动切换直连。
+
+请求使用显式 Undici dispatcher，HTTP(S) 和 SOCKS5 均携带窗口代理认证，
+不沿用应用代理或开发机的全局 fetch。SOCKS5 将目标域名交由代理解析。
+返回 IP 必须有效且非 loopback/未指定地址，自动时区必须可被 Intl 识别。
+手工填完时区和语言仍要求在线取得出口 IP，以匹配 WebRTC；
+停止或启动超时会取消请求并回收连接。
+所有启动入口均显式传 `geoip:false`，包括直连、关闭自动匹配和离线快照；
+在线解析完成后将时区、语言和 WebRTC IP 交给最终持久上下文，
+不调用 SDK 的 GeoIP 解析、不读取或下载 GeoLite2 数据库。
+指纹种子参数保留，现有窗口内核绑定不变。
+
+原来的 SDK 路径会在新机器上下载约 70 MB 数据库；旧测试预填了开发机数据库，
+掩盖了空缓存下因下载不可用导致的启动失败。该依赖已从启动路径移除，
+`mmdb-lib` 和 `socks-proxy-agent` 不再是应用显式生产依赖，
+并通过工作区 `ignoredOptionalDependencies` 排除 SDK 的这两个可选依赖。
+SQLite/迁移契约中的 `geoip` 字段仅保留为兼容旧数据的自动匹配开关名称，
+不再表示启用 SDK 数据库功能；页面统一称“出口 IP 自动匹配”。
+staging 与安装包 smoke 检查 SDK 的 `playwright-core`，
+以及运行时的 `undici`、`socks`，缺失时报 `BROWSER_RUNTIME_DEPENDENCY_MISSING`。
+SDK 启动阶段保留 60 秒上限及网络取消信号，迟到的上下文也会关闭。
 适配器在 SDK 启动失败时也会关闭 stdin 读取器，防止已报错的子进程继续等待输入，
 使原生窗口持续显示启动中直至外层 120 秒超时。
 
-源码确认 GeoIP 的时区与语言经 `--fingerprint-timezone`、`--lang`、
-`--fingerprint-locale` 传递，解析到出口 IP 时 SDK 自动追加
-`--fingerprint-webrtc-ip=<exitIp>`。适配器用公开 `buildLaunchOptions`
-先解析一次，保留解析所得标志后以 `geoip:false` 启动持久上下文，
-避免重复查询；预解析关闭默认参数生成，指纹种子仍由最终持久启动处理。
-手工时区/语言优先，但 SDK 同时显式给定两者时会容忍出口探测失败。
-适配器因此要求解析结果包含有效、非 loopback/未指定地址的 WebRTC IP；
-缺失或 `auto` 直接报 `PROFILE_GEOIP_EXIT_IP_REQUIRED`，不会静默继续。
+时区与语言经 SDK 的 `--fingerprint-timezone`、`--lang`、
+`--fingerprint-locale` 传递，出口 IP 由适配器追加
+`--fingerprint-webrtc-ip=<exitIp>`。
 本机固定 macOS 145 内核仅有 `--lang`/`--fingerprint-locale` 时仍返回系统语言；
 对 macOS 148 之前的绑定版本，适配器补充 Chromium 支持的
 `--accept-lang=<locale>`，已用页面 `navigator.language` 和实际请求头验证。
@@ -142,17 +152,18 @@ SDK `dist/proxy.js` 对所有 SOCKS5 配置都使用原生
 因此不能把 SDK 0.6.3 产生该参数当作此内核已支持 SOCKS5 认证的证据。
 认证 SOCKS5 现使用仅监听 `127.0.0.1` 临时端口的 SOCKS5 relay，
 每条上游连接由既有 `socks@2.8.7` 携带原始完整账号密码，
-浏览器与 GeoIP 均走该路径，不自动直连。GeoIP 使用 relay 的 `socks5h` 地址，
-让出口探测域名也由上游解析；出口 IP 来自远端 HTTPS echo，不将本地 relay 地址
+浏览器与在线查询均走该路径，不自动直连。查询通过 SOCKS5 relay，
+让服务域名也由上游解析；出口 IP 来自远端 HTTPS API，不将本地 relay 地址
 当作匹配值。relay 的客户端/上游握手有 15 秒上限，
 启动失败、启动超时与浏览器关闭均回收监听端口和连接；
 启动 relay 失败报 `PROFILE_PROXY_BRIDGE_FAILED`。
 
-真实 CLI/macOS 145 浏览器已通过五个本地 SOCKS5 fixture：
-无认证、简单认证、特殊字符密码、自动 GeoIP、手工时区/语言加 GeoIP。
-后两项用子进程独立信任的测试证书运行本地 HTTPS echo，
-确认 SDK echo 与页面请求都穿过认证上游、页面时区和语言符合设置，
-且实际 Chromium 进程携带 echo 返回的 WebRTC IP。
+真实 CLI/macOS 145 浏览器测试使用本地 SOCKS5 fixture：
+无认证、简单认证、特殊字符密码、在线自动匹配、手工时区/语言加自动匹配、
+主接口限流后备用接口成功。在线用例从空缓存启动，并强制拒绝 SDK 的数据库下载；
+本地 HTTPS API 只在子进程信任测试证书，核对 API 与页面请求都穿过认证上游、
+页面时区和语言符合设置，实际 Chromium 携带在线返回的 WebRTC IP，
+且测试结束后仍不存在数据库文件。实际执行结果见[质量记录](09-quality-and-testing.md)。
 这不是外部代理、真实 STUN/TURN 泄漏、Windows 或新版授权内核的验证；
 测试证书不安装到系统信任库。
 

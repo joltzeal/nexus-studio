@@ -58,4 +58,13 @@ describe('toast store', () => {
     vi.advanceTimersByTime(3000)
     expect(toastSnapshot()).toHaveLength(0)
   })
+
+  it('keeps an update notice visible for its requested duration', () => {
+    vi.useFakeTimers()
+    toast.info('发现新版本', { duration: 12_000 })
+    vi.advanceTimersByTime(11_999)
+    expect(toastSnapshot()).toHaveLength(1)
+    vi.advanceTimersByTime(1)
+    expect(toastSnapshot()).toHaveLength(0)
+  })
 })

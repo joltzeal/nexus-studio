@@ -185,10 +185,10 @@ export function parseWindowConfig(input: unknown): WindowConfig {
       invalid('代理地址应为协议://主机:端口，且不能包含凭据')
     }
   }
-  // Whether GeoIP is usable depends on where the proxy comes from, which this
+  // Online IP matching depends on where the proxy comes from, which this
   // parser does not know: a window can sit behind a plugin-resolved proxy and
   // still store `direct` here. The consistency check lives with the caller.
-  if (typeof config.geoip !== 'boolean') invalid('GeoIP 自动匹配需要是开关值')
+  if (typeof config.geoip !== 'boolean') invalid('IP 自动匹配需要是开关值')
   const timezone = optionalText(config.timezone, '时区', 64)
   if (timezone) {
     try {
@@ -282,8 +282,7 @@ export function parseDemoState(input: unknown): DemoState {
     const config = parseWindowConfig(legacy ? DEFAULT_WINDOW_CONFIG : space.config)
     // A stored window has no plugin-resolved proxy, so `direct` really means
     // direct here.
-    if (config.geoip && config.proxy.protocol === 'direct')
-      invalid('GeoIP 自动匹配需要代理')
+    if (config.geoip && config.proxy.protocol === 'direct') invalid('IP 自动匹配需要代理')
     return {
       id: text(space.id, '窗口标识', 120),
       name: text(withoutOldCopy(text(space.name, '窗口名称', 40)), '窗口名称', 40),

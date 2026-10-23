@@ -5,7 +5,7 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.proxy-pool',
-  version: '1.0.1',
+  version: '1.0.2',
   name: '代理池',
   minCoreVersion: '0.1.0',
   capabilities: ['proxy.provider'],

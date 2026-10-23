@@ -875,7 +875,7 @@ export function SpacesPage() {
                 </dd>
               </div>
               <div className="about-row">
-                <dt>GeoIP</dt>
+                <dt>出口 IP 自动匹配</dt>
                 <dd>
                   {selected.settings.geoip
                     ? hasProxy(selected)

@@ -5,5 +5,9 @@ packages:
 
 saveExact: true
 
+ignoredOptionalDependencies:
+  - mmdb-lib
+  - socks-proxy-agent
+
 allowBuilds:
   esbuild: true

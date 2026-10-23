@@ -4,16 +4,18 @@ import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { BrowserContext } from 'playwright-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildLaunchOptions, launchPersistentContext } from 'cloakbrowser'
+import { launchPersistentContext } from 'cloakbrowser'
+import { resolveOnlineProxyGeo } from './online-proxy-geo.js'
 import * as runtime from './profile-runtime.js'
 import type { NativeProfile } from './profile-runtime.js'
 
 vi.mock('cloakbrowser', () => ({
   launchPersistentContext: vi.fn(),
-  buildLaunchOptions: vi.fn(),
   ensureBinary: vi.fn(),
   validateLicense: vi.fn(),
 }))
+
+vi.mock('./online-proxy-geo.js', () => ({ resolveOnlineProxyGeo: vi.fn() }))
 
 vi.mock('./stored-origins.js', () => ({
   initializeStoredOrigins: vi.fn(async () => new Map()),
@@ -138,11 +140,11 @@ beforeEach(async () => {
       context.offline = options.contextOptions?.offline ?? false
       return context.asContext()
     })
-  vi.mocked(buildLaunchOptions)
-    .mockReset()
-    .mockResolvedValue({
-      args: ['--fingerprint-webrtc-ip=81.2.69.160'],
-    })
+  vi.mocked(resolveOnlineProxyGeo).mockReset().mockResolvedValue({
+    ip: '81.2.69.160',
+    timezone: 'Europe/London',
+    locale: 'en-GB',
+  })
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
     output += String(chunk)
     return true
@@ -227,9 +229,7 @@ describe('profile context lifecycle', () => {
     expect(context.closed).toBe(true)
     const options = vi.mocked(launchPersistentContext).mock.calls[0]![0]
     expect(options.proxy).toBe('http://account:p%40ss@proxy.example:8080')
-    expect(buildLaunchOptions).toHaveBeenCalledWith(
-      expect.objectContaining({ geoip: true }),
-    )
+    expect(resolveOnlineProxyGeo).toHaveBeenCalled()
     expect(options.geoip).toBe(false)
     expect(options.browserVersion).toBe('145.0.7632.109.2')
   })
@@ -262,7 +262,7 @@ describe('profile context lifecycle', () => {
     await vi.waitFor(() => expect(finished).toBe(true), { timeout: 300 })
   })
 
-  it('fails a stalled SDK/GeoIP launch within a deadline and closes a late context', async () => {
+  it('fails a stalled SDK launch within a deadline and closes a late context', async () => {
     vi.useFakeTimers()
     const launch = deferred<BrowserContext>()
     vi.mocked(launchPersistentContext).mockReturnValue(launch.promise)
@@ -276,7 +276,7 @@ describe('profile context lifecycle', () => {
     await vi.waitFor(() => expect(context.closed).toBe(true))
   })
 
-  it('aborts the SDK database fetch when launch exceeds its deadline', async () => {
+  it('aborts an SDK network request when launch exceeds its deadline', async () => {
     vi.useFakeTimers()
     let signal: AbortSignal | null | undefined
     vi.stubGlobal(
@@ -289,7 +289,7 @@ describe('profile context lifecycle', () => {
       }),
     )
     vi.mocked(launchPersistentContext).mockImplementation(async () => {
-      await fetch('https://database.example/geoip')
+      await fetch('https://service.example/request')
       return context.asContext()
     })
     running = runtime.openProfile(join(directory, 'user-data'), profile, commands())
@@ -301,7 +301,7 @@ describe('profile context lifecycle', () => {
     expect(output).toBe('')
   })
 
-  it('cancels an SDK background database refresh after the browser closes', async () => {
+  it('cancels an SDK background network request after the browser closes', async () => {
     let signal: AbortSignal | null | undefined
     vi.stubGlobal(
       'fetch',
@@ -313,7 +313,7 @@ describe('profile context lifecycle', () => {
       }),
     )
     vi.mocked(launchPersistentContext).mockImplementation(async () => {
-      void fetch('https://database.example/background-refresh').catch(() => {})
+      void fetch('https://service.example/background-refresh').catch(() => {})
       return context.asContext()
     })
     running = runtime.openProfile(join(directory, 'user-data'), profile, commands())

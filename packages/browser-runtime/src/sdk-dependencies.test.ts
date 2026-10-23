@@ -10,8 +10,8 @@ import { verifySdkDependencies } from './sdk-dependencies.js'
 
 const sdkRequire = createRequire(createRequire(import.meta.url).resolve('cloakbrowser'))
 
-it.each(['mmdb-lib', 'socks-proxy-agent'])(
-  'loads the GeoIP dependency %s from the SDK own resolution location',
+it.each(['playwright-core'])(
+  'loads the browser dependency %s from the SDK own resolution location',
   async (dependency) => {
     await expect(
       (async () => import(pathToFileURL(sdkRequire.resolve(dependency)).href))(),
@@ -23,7 +23,7 @@ it('checks the complete SDK dependency graph used by runtime staging', async () 
   await expect(verifySdkDependencies()).resolves.toBeUndefined()
 })
 
-it('rejects a deployment that can import the SDK but omits its optional GeoIP peers', async () => {
+it('rejects a deployment that can import the SDK but omits its browser dependency', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'nexus-sdk-dependencies-'))
   const sdk = join(directory, 'node_modules/cloakbrowser')
   try {

@@ -126,8 +126,8 @@ async function launchProfileContext(
   process.env.CLOAKBROWSER_BINARY_PATH = record.binary_path
   const controller = new AbortController()
   const originalFetch = globalThis.fetch
-  // SDK 0.6.3's initial GeoIP database download has no signal/deadline of its own.
-  // Each profile runner owns one launch; retain existing signals and the network dispatcher.
+  // Each runner owns one launch. Keep SDK network requests inside its lifetime
+  // while retaining existing signals and the application network dispatcher.
   const launchFetch: typeof fetch = (input, init) => {
     const inherited = init?.signal ?? (input instanceof Request ? input.signal : null)
     return originalFetch(input, {

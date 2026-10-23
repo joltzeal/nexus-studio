@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-vinted-accounts",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Nexus Vinted account pool plugin: credential records, CSV/XLSX import and window bindings",
   "type": "module",
