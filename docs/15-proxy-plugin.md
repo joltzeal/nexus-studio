@@ -70,10 +70,98 @@ manifest 声明：`apiVersion: 1`、`id: studio.proxy-pool`、`version: 1.0.1`�
 | `proxy.groups.list` / `.create`    | 代理分组                                     |
 | `proxy.config.get` / `.set`        | 默认代理、风险查询开关与 API Key 引用        |
 | `proxy.subscriptions.*`            | 订阅列表、增删改、预览、导出、令牌与追加     |
+| `transfer.export` / `.import`      | 原生宿主专用的可移植库存快照与本地副本导入   |
+| `transfer.rollback` / `.commit`    | 按持久化回执撤销本次导入或清理成功回执       |
 
 `proxy.subscriptions.export` 与 `proxy.subscriptions.download` 把渲染结果写入
 插件私有存储的 `exports/` 目录并以文件句柄返回，明文代理密码不经过 RPC 报文。
 `proxy.subscriptions.preview` 返回的 YAML 中密码固定为 `***`，只用于界面预览。
+
+### 可移植传输（原生宿主私有）
+
+四个 `transfer.*` 方法仍在 `proxy.provider` 能力内，不新增能力或版本号。
+这组 RPC 允许明文代理凭据经过插件 IPC，专供原生宿主构造加密 Profile 归档；
+宿主只传递、归档插件返回的不透明 JSON，不读取或解析插件业务文件。
+宿主必须禁止通用 WebView `plugin_call` 转发这些方法，不能把传输结果交给插件页面。
+这里实现的是插件端契约，宿主路由限制、归档加密与 Profile 文件/SQLite 事务由宿主负责。
+本地库存和 `secrets.json` 继续使用现有明文、0600 文件存储。
+
+严格入参与成功结果如下；省略 `transactionId` 时由插件生成 UUID：
+
+```ts
+// transfer.export
+type ExportInput = {
+  windowIds: string[]
+  endpointIds: number[]
+  includeDefault?: boolean // 默认 true
+}
+type ExportResult = {
+  schemaVersion: 1
+  defaultEndpointId: number | null
+  endpoints: PortableEndpoint[]
+  groups: { id: number; name: string; createdAt: string }[]
+}
+type PortableEndpoint = Omit<
+  EndpointRecord,
+  'secretRef' | 'credentialFingerprint' | 'fingerprint' | 'deleted' | 'deletedAt'
+> & { password: string | null }
+
+// transfer.import
+type ImportInput = {
+  data: unknown // 必须通过插件的 ProxyTransferDataSchema
+  windowIdMap: Record<string, string>
+  transactionId?: string // UUID，建议使用宿主归档事务的标识
+}
+type ImportResult = {
+  receipt: string // transactionId 或插件生成的 UUID
+  endpointIdMap: Record<string, number> // 源 endpointId 的十进制字符串 -> 新本地 ID
+}
+
+// transfer.rollback / transfer.commit
+type ReceiptInput = { receipt: string }
+type ReceiptResult = { success: true }
+```
+
+`EndpointRecord` 定义见插件 `src/domain/schemas.ts`；快照包含名称、协议、地址、
+用户名、真实密码（无凭据引用时为 `null`）、分组、启用与 UDP 标志，以及检测状态、
+出口 IP 历史、属地、信誉、风险、延迟、错误与创建/更新时间。
+历史检测值按快照保存，导入不发起检测、不表示代理当前可用。
+不导出库存指纹或本地密钥引用，也不导出订阅、订阅令牌、风险 API Key、全局配置或授权密钥。
+公开入口导出传输类型与 zod schema，未知字段、非法版本、重复源 ID、缺失分组引用均拒绝，
+错误不回显凭据数据。
+
+- `windowIds` 在此插件只作参数校验，代理选择以 `endpointIds` 为准；重复 ID 只导出一次。
+- `includeDefault` 省略或为 `true` 时，把实际默认代理加入显式选择集合。
+  因而混合“指定代理”与“跟随默认”的窗口可以一次导出。
+  `endpointIds: []` 此时只导出默认项；未配置默认时导出空集合。
+- `includeDefault: false` 只导出显式选择，`defaultEndpointId` 仍报告该快照中的实际默认 ID，
+  它可以不在 `endpoints` 中。宿主只要有窗口跟随默认，就必须传 `true` 或省略该字段。
+- 任一显式选择不存在或已删除时整次导出失败；需要包含的默认项不存在时同样失败。
+  密码引用不可解析也直接失败，不导出缺失认证的替代配置。停用项保留其停用状态。
+  分组只带出所选代理引用的分组。
+
+导入为每个代理与分组分配新本地 ID，为每个密码分配新密钥引用，
+保留有效业务值并重新计算本地指纹；即使已有相同代理或同名分组，也不会合并或覆盖。
+`windowIdMap` 在代理插件内不使用，但仍严格校验。
+导入不会改变本地默认代理或风险配置；宿主用 `endpointIdMap` 重写 Profile 的代理引用，
+并用导出数据的 `defaultEndpointId` 找到原来跟随默认的窗口所需的新引用。
+
+回执与库存一起持久化在 `proxy-pool.json` 的 `transferReceipts` 中，旧文档缺少该字段时视为空，
+本地存储 `schemaVersion` 仍为 1。先写入 `pending` 回执并预留新 ID、密码引用，
+再写密钥文件，最后原子写入新库存与 `applied` 回执。
+回执不存明文密码。失败时只补偿本次导入；清理也因 I/O 失败时保留恢复日志，
+后续 `transfer.export` / `transfer.import` 会先重试未完成的清理，失败则阻断新传输。
+
+宿主应始终传自己的 `transactionId`，这样进程在回包前中断也可按已知回执回滚。
+同一未清理事务、相同数据和窗口映射的重复导入返回原结果，不创建第二份；
+同一事务标识换用其他数据会被拒绝。该去重只在回执仍存在时有效，
+提交或回滚后重用该 UUID 属于新导入，宿主应为新事务分配新 UUID。
+`transfer.rollback` 物理移除该回执记录的新代理、仅由本次创建且未被其他记录引用的分组与密码；
+不会删除此前已有的库存、密钥或配置。密钥清理完成前不丢弃回执，重启后可以继续回滚。
+`transfer.commit` 只清理已完成回执，保留导入数据；`pending` 回执不能提交。
+已清理或未知的有效 UUID 回执可重复提交/回滚，返回 `{ success: true }`。
+成功导入的回执不会自动过期，宿主应在自身事务完成后提交或回滚。
+未提供私有目录的内存模式沿用原有非持久化边界，不能承诺跨进程恢复。
 
 ### 启动解析 `proxy.resolve`
 
@@ -134,7 +222,7 @@ userinfo；带路径、查询串、未知协议或端口越界会判为无效行
 ## 本地验证
 
 ```bash
-rtk proxy pnpm --filter @nexus/plugin-proxy-pool build
+rtk proxy pnpm --filter @nexus/plugin-proxy-pool run build
 rtk proxy pnpm exec vitest run plugins/proxy-pool
 rtk proxy pnpm exec eslint plugins/proxy-pool --max-warnings 0
 rtk proxy cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked core::plugin_host
@@ -148,4 +236,8 @@ rtk proxy cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --l
 单测覆盖 manifest 校验、库存去重与协议合并、写入失败不报成功、检测结果分类、
 迟到与过期结果丢弃、取消、信誉限流、订阅渲染与令牌校验、协议错误与日志脱敏，
 并覆盖缺失密码阻断与同一行快照生成引用和连接。
+插件目录中的传输测试会启动实际构建后的 Node.js 入口，经握手和逐行 RPC 验证选择范围、
+真实凭据与分组快照、本地副本、调用方事务回执、重复导入、重启后回滚/提交以及真实文件写入失败。
+另有库存/密钥分步失败与取消的补偿测试；运行前必须先构建本插件，
+不能用旧 `dist` 的通过结果代表新源码已经验证。
 这些结果不代表真实代理链路已经可用，也不代表 Windows 行为。

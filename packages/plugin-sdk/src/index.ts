@@ -8,6 +8,7 @@ export {
 export type { PluginCapability, PluginManifest, PluginPermissions } from './manifest.js'
 export type {
   AddressGenerator,
+  AccountPool,
   CapabilityDescriptor,
   EnvironmentConfigurator,
   ImageProvider,
@@ -17,4 +18,10 @@ export type {
   ProxyResolution,
   SupplyCatalog,
   VerificationProvider,
+  WindowSync,
 } from './capabilities.js'
+export type {
+  WindowTransferExport,
+  WindowTransferImport,
+  WindowTransferReceipt,
+} from './transfer.js'

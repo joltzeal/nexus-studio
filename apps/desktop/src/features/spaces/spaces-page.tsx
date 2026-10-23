@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -97,7 +98,6 @@ import {
   deleteNativeProfile,
   listNativeProfiles,
   nativeProfilesAvailable,
-  operateNativeProfile,
   updateNativeProfile,
   type NativeProfile,
   type WindowSettings,
@@ -120,7 +120,12 @@ import {
 import { getConfig, listProxies } from '@/features/proxy/api'
 import { ProxyCheckSummary } from '@/features/proxy/proxy-check-summary'
 import { checkWindowProxy, hasProxy } from './window-proxy'
-import { ProxyGateDialog, type GateStage } from './proxy-gate'
+import { ProxyGateDialog } from './proxy-gate'
+import { TransferToolbar } from './transfer-toolbar'
+import { TransferRecoveryNotice } from './transfer-recovery'
+import { useTransferRecovery } from './use-transfer-recovery'
+import { toggleSelection, withDeadline } from './transfer-state'
+import { useWindowLaunch } from './use-window-launch'
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -128,12 +133,6 @@ function message(error: unknown): string {
     : error instanceof Error
       ? error.message
       : '操作失败，请重试。'
-}
-
-/** One launch in flight, either from the row button or from the gate dialog. */
-interface GateState {
-  window: NativeProfile
-  stage: GateStage
 }
 
 export function SpacesPage() {
@@ -146,14 +145,13 @@ export function SpacesPage() {
   const [editing, setEditing] = useState<string | 'new' | null>(null)
   const [viewing, setViewing] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
-  const [operatingWindows, setOperatingWindows] = useState<Set<string>>(() => new Set())
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accountPlugin, setAccountPlugin] = useState<PluginView | null>(null)
   const [bindings, setBindings] = useState<BindingView[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [binding, setBinding] = useState<NativeProfile | null>(null)
-  const [gate, setGate] = useState<GateState | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [conflict, setConflict] = useState<{
     window: NativeProfile
@@ -162,20 +160,37 @@ export function SpacesPage() {
   } | null>(null)
   const [bindingError, setBindingError] = useState<string | null>(null)
   const [bindingPending, setBindingPending] = useState(false)
+  const recovery = useTransferRecovery(native)
+
+  const {
+    gate,
+    operatingWindows,
+    unconfirmedWindows,
+    open,
+    stop,
+    refreshGate,
+    closeGate,
+  } = useWindowLaunch(setWindows, setError)
 
   const load = useCallback(async () => {
-    const records = await listNativeProfiles()
+    const records = await withDeadline(
+      listNativeProfiles(),
+      10_000,
+      '读取窗口列表超时，请重试刷新。',
+    )
     setWindows(records)
   }, [])
 
   async function refresh() {
     if (refreshing) return
+    recovery.retry()
     setRefreshing(true)
     try {
-      const [records, currentGroups] = await Promise.all([
-        listNativeProfiles(),
-        listGroups(),
-      ])
+      const [records, currentGroups] = await withDeadline(
+        Promise.all([listNativeProfiles(), listGroups()]),
+        10_000,
+        '刷新窗口和分组超时，请重试。',
+      )
       setWindows(records)
       setGroups(currentGroups)
       setError(null)
@@ -286,6 +301,18 @@ export function SpacesPage() {
     setAccounts(catalog.items)
   }, [accountsRunning])
 
+  async function refreshAfterImport() {
+    const [records, currentGroups] = await withDeadline(
+      Promise.all([listNativeProfiles(), listGroups()]),
+      10_000,
+      '刷新窗口和分组超时',
+    )
+    setWindows(records)
+    setGroups(currentGroups)
+    setSelectedIds(new Set())
+    await withDeadline(refreshBindings(), 10_000, '刷新账号关联超时')
+  }
+
   useEffect(() => {
     // While the plugin is down its data is not shown at all (see `bound`), so
     // there is nothing to clear here: a stale list would only flash back.
@@ -364,79 +391,6 @@ export function SpacesPage() {
     return accounts.find((entry) => entry.id === id)?.account ?? id
   }
 
-  async function withOperating<T>(
-    window: NativeProfile,
-    run: () => Promise<T>,
-  ): Promise<T> {
-    setOperatingWindows((current) => new Set(current).add(window.id))
-    try {
-      return await run()
-    } finally {
-      setOperatingWindows((current) => {
-        const next = new Set(current)
-        next.delete(window.id)
-        return next
-      })
-    }
-  }
-
-  async function stop(window: NativeProfile) {
-    setError(null)
-    try {
-      await withOperating(window, async () => {
-        await operateNativeProfile(window.id, true)
-        await load()
-      })
-    } catch (cause) {
-      setError(message(cause))
-      await load().catch(() => undefined)
-    }
-  }
-
-  /** Launches and records the outcome. Throws so callers can show it inline. */
-  async function launch(window: NativeProfile) {
-    await operateNativeProfile(window.id, false)
-    await load()
-  }
-
-  async function open(window: NativeProfile) {
-    if (!hasProxy(window)) {
-      setError(null)
-      try {
-        await withOperating(window, () => launch(window))
-      } catch (cause) {
-        setError(message(cause))
-        await load().catch(() => undefined)
-      }
-      return
-    }
-    // A proxy has to answer before the browser gets a slot.
-    setError(null)
-    setGate({ window, stage: { stage: 'checking' } })
-    const outcome = await checkWindowProxy(window)
-    if (outcome.kind === 'checked' && outcome.result.ok) {
-      await proceed(window, outcome)
-      return
-    }
-    setGate({ window, stage: { stage: 'blocked', outcome } })
-  }
-
-  async function proceed(
-    window: NativeProfile,
-    outcome: Extract<GateStage, { stage: 'launching' }>['outcome'] = null,
-  ) {
-    setGate({ window, stage: { stage: 'launching', outcome } })
-    try {
-      await withOperating(window, () => launch(window))
-      // Stay open: the exit IP the window actually used is worth reading.
-      setGate({ window, stage: { stage: 'launched', outcome } })
-      toast.success(`「${window.name}」已打开`)
-    } catch (cause) {
-      setGate({ window, stage: { stage: 'failed', error: message(cause) } })
-      await load().catch(() => undefined)
-    }
-  }
-
   const visible = windows.filter(
     (window) =>
       (groupFilter === 'all' ||
@@ -448,6 +402,11 @@ export function SpacesPage() {
         .includes(query.toLowerCase()),
   )
   const selected = windows.find((window) => window.id === viewing)
+  const transferWindows = windows.filter((window) => selectedIds.has(window.id))
+  const selectableIds = visible
+    .filter((window) => !window.running && !operatingWindows.has(window.id))
+    .map((window) => window.id)
+  const selectedVisibleCount = selectableIds.filter((id) => selectedIds.has(id)).length
   const target = windows.find((window) => window.id === deleting)
   const running = windows.filter((window) => window.running).length
   const proxied = windows.filter((window) => hasProxy(window)).length
@@ -494,6 +453,12 @@ export function SpacesPage() {
         </p>
       ) : null}
       {error ? <FieldError role="alert">{error}</FieldError> : null}
+      <TransferRecoveryNotice
+        status={recovery.status}
+        error={recovery.error}
+        checking={recovery.checking}
+        onRetry={recovery.retry}
+      />
 
       {native ? (
         <div className="space-stats" aria-label="窗口概览">
@@ -518,7 +483,7 @@ export function SpacesPage() {
         </div>
       ) : null}
 
-      <div className="collection-toolbar">
+      <div className="collection-toolbar flex-wrap">
         <span className="result-count">{visible.length} 个窗口</span>
         <div className="search-field">
           <Search aria-hidden="true" />
@@ -545,6 +510,13 @@ export function SpacesPage() {
             </SelectContent>
           </Select>
         ) : null}
+        <TransferToolbar
+          native={native}
+          windows={transferWindows}
+          operating={operatingWindows}
+          onImported={refreshAfterImport}
+          onClear={() => setSelectedIds(new Set())}
+        />
       </div>
 
       <div className="space-table-panel">
@@ -555,6 +527,24 @@ export function SpacesPage() {
         <Table aria-label="窗口列表">
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label="全选当前筛选下的已关闭窗口"
+                  disabled={!native || selectableIds.length === 0}
+                  checked={
+                    selectedVisibleCount === 0
+                      ? false
+                      : selectedVisibleCount === selectableIds.length
+                        ? true
+                        : 'indeterminate'
+                  }
+                  onCheckedChange={(checked) =>
+                    setSelectedIds((current) =>
+                      toggleSelection(current, selectableIds, checked === true),
+                    )
+                  }
+                />
+              </TableHead>
               <TableHead>窗口名称</TableHead>
               <TableHead>平台</TableHead>
               {accountsInstalled ? <TableHead>Vinted 账号</TableHead> : null}
@@ -571,11 +561,25 @@ export function SpacesPage() {
             {visible.map((window) => {
               const account = bindingOf(window.id)
               const busy = operatingWindows.has(window.id)
+              const unconfirmed = unconfirmedWindows.has(window.id)
               return (
                 <TableRow
                   key={window.id}
                   data-running={window.running ? 'true' : undefined}
+                  data-state={selectedIds.has(window.id) ? 'selected' : undefined}
                 >
+                  <TableCell>
+                    <Checkbox
+                      aria-label={`选择窗口 ${window.name}`}
+                      checked={selectedIds.has(window.id)}
+                      disabled={window.running || busy}
+                      onCheckedChange={(checked) =>
+                        setSelectedIds((current) =>
+                          toggleSelection(current, [window.id], checked === true),
+                        )
+                      }
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="space-name-cell">
                       <span
@@ -636,10 +640,18 @@ export function SpacesPage() {
                   <TableCell>
                     <span
                       className="status-badge"
-                      data-state={window.running ? 'running' : 'stopped'}
+                      data-state={
+                        unconfirmed ? 'pending' : window.running ? 'running' : 'stopped'
+                      }
                     >
                       <span className="status-dot" aria-hidden="true" />
-                      {window.running ? '运行中' : '已停止'}
+                      {unconfirmed
+                        ? '状态待确认'
+                        : busy
+                          ? '操作中'
+                          : window.running
+                            ? '运行中'
+                            : '已停止'}
                     </span>
                   </TableCell>
                   <TableCell>
@@ -647,19 +659,33 @@ export function SpacesPage() {
                       <Button
                         variant={window.running ? 'outline' : 'default'}
                         size="sm"
-                        disabled={busy}
+                        disabled={busy && !unconfirmed}
                         onClick={() =>
-                          void (window.running ? stop(window) : open(window))
+                          void (unconfirmed
+                            ? refreshGate(window)
+                            : window.running
+                              ? stop(window)
+                              : open(window))
                         }
                       >
-                        {busy ? (
+                        {unconfirmed ? (
+                          <RefreshCw data-icon="inline-start" />
+                        ) : busy ? (
                           <Loader2 data-icon="inline-start" className="animate-spin" />
                         ) : window.running ? (
                           <Square data-icon="inline-start" />
                         ) : (
                           <Play data-icon="inline-start" />
                         )}
-                        {window.running ? '停止' : '打开'}
+                        {unconfirmed
+                          ? '确认状态'
+                          : busy
+                            ? window.running
+                              ? '正在停止…'
+                              : '正在打开…'
+                            : window.running
+                              ? '停止'
+                              : '打开'}
                       </Button>
                       <Button
                         variant="ghost"
@@ -850,7 +876,13 @@ export function SpacesPage() {
               </div>
               <div className="about-row">
                 <dt>GeoIP</dt>
-                <dd>{selected.settings.geoip ? '启用' : '关闭'}</dd>
+                <dd>
+                  {selected.settings.geoip
+                    ? hasProxy(selected)
+                      ? '启用'
+                      : '已开启偏好（直连时不生效）'
+                    : '关闭'}
+                </dd>
               </div>
               <div className="about-row">
                 <dt>时区 / 语言</dt>
@@ -933,21 +965,16 @@ export function SpacesPage() {
       <Dialog
         open={gate !== null}
         onOpenChange={(open) => {
-          // Only the footer buttons decide; a stray click must not orphan a launch.
-          if (!open && gate?.stage.stage === 'blocked') setGate(null)
+          if (!open) closeGate()
         }}
       >
         {gate === null ? null : (
           <ProxyGateDialog
             name={gate.window.name}
             stage={gate.stage}
-            onCancel={() => setGate(null)}
-            onProceed={() =>
-              void proceed(
-                gate.window,
-                gate.stage.stage === 'launching' ? gate.stage.outcome : null,
-              )
-            }
+            onCancel={closeGate}
+            onProceed={() => void open(gate.window)}
+            onRefresh={() => void refreshGate(gate.window)}
           />
         )}
       </Dialog>
@@ -1505,7 +1532,8 @@ function WindowEditor({
         timezone: checked.timezone,
         locale: checked.locale,
         viewport: checked.viewport,
-        fingerprintSeed: checked.fingerprintSeed,
+        fingerprintSeed:
+          checked.fingerprintSeed ?? (window === null ? randomFingerprintSeed() : null),
         startUrl: checked.startUrl,
       }
       if (proxySource === 'plugin' && proxyPlugin === null) {
@@ -1526,15 +1554,6 @@ function WindowEditor({
           setError('请填写代理地址，或把代理来源改为直连。')
           return
         }
-      }
-      // A plugin-resolved proxy leaves `checked.proxy` on `direct`, so only the
-      // absence of any source at all makes GeoIP meaningless.
-      const hasProxy =
-        proxySource === 'plugin' ||
-        (proxySource === 'manual' && checked.proxy.protocol !== 'direct')
-      if (checked.geoip && !hasProxy) {
-        setError('GeoIP 自动匹配需要代理，请先选择代理来源或关闭 GeoIP。')
-        return
       }
       setPending(true)
       setError(null)
@@ -1667,7 +1686,7 @@ function WindowEditor({
                   if (value === 'direct') {
                     setProxyPlugin(null)
                     setEndpointId(null)
-                    patch({ proxy: { protocol: 'direct', server: '' }, geoip: false })
+                    patch({ proxy: { protocol: 'direct', server: '' } })
                   } else if (value === 'manual') {
                     setProxyPlugin(null)
                     setEndpointId(null)
@@ -1888,11 +1907,16 @@ function WindowEditor({
             </FieldLabel>
             <Switch
               id="window-geoip"
-              disabled={pending || proxySource === 'direct'}
+              disabled={pending}
               checked={config.geoip}
               onCheckedChange={(checked) => patch({ geoip: checked })}
             />
           </Field>
+          {proxySource === 'direct' ? (
+            <p className="text-xs text-muted-foreground">
+              直连时保留自动匹配偏好但不生效；配置代理后才按代理出口匹配。
+            </p>
+          ) : null}
           <div className="window-form-grid">
             <Field>
               <FieldLabel htmlFor="window-timezone">时区覆盖</FieldLabel>

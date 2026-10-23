@@ -3,12 +3,17 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
 import { unavailable } from '../domain/errors.js'
+import {
+  AccountTransferReceiptSchema,
+  type AccountTransferReceipt,
+} from '../domain/transfer.js'
 import type { AccountRecord, BindingRecord } from '../domain/types.js'
 
 export interface StoreDocument {
   schemaVersion: 1
   accounts: AccountRecord[]
   bindings: BindingRecord[]
+  transferReceipts: AccountTransferReceipt[]
 }
 
 export interface AccountStore {
@@ -49,10 +54,11 @@ const documentSchema = z.looseObject({
   schemaVersion: z.literal(1),
   accounts: z.array(accountSchema),
   bindings: z.array(bindingSchema),
+  transferReceipts: z.array(AccountTransferReceiptSchema).default([]),
 })
 
 export function emptyDocument(): StoreDocument {
-  return { schemaVersion: 1, accounts: [], bindings: [] }
+  return { schemaVersion: 1, accounts: [], bindings: [], transferReceipts: [] }
 }
 
 function parseDocument(text: string): StoreDocument {

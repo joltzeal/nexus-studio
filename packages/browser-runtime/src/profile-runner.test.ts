@@ -1,0 +1,197 @@
+import { spawn } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+let directory: string
+let preload: string
+let binary: string
+
+beforeEach(async () => {
+  directory = await mkdtemp(join(tmpdir(), 'nexus-profile-runner-'))
+  binary = join(directory, 'test-browser')
+  await writeFile(
+    binary,
+    `#!${process.execPath}\nconsole.log('CloakBrowser 145.0.7632.109.2')\n`,
+    {
+      mode: 0o700,
+    },
+  )
+  const sdk = join(directory, 'sdk.mjs')
+  await writeFile(
+    sdk,
+    `
+    import {EventEmitter} from 'node:events';
+    export const ensureBinary=()=>{};
+    export const validateLicense=()=>{};
+    export const buildLaunchOptions=async()=>({});
+    export async function launchPersistentContext(options) {
+      if (process.env.NEXUS_TEST_SDK_FAILURE)
+        throw new Error('mmdb-lib is required for geoip');
+      const context=new EventEmitter();
+      let closeTimer;
+      let rejectNavigation;
+      const page={
+        async goto(url) {
+          if (url.startsWith('chrome://')) return;
+          return new Promise((_,reject)=>{rejectNavigation=reject});
+        },
+        async evaluate(){return []},
+        async route(){},
+        async close(){}
+      };
+      context.pages=()=>[page];
+      context.newPage=async()=>page;
+      context.route=async()=>{};
+      context.setOffline=async()=>{};
+      context.storageState=async()=>({
+        cookies:[{
+          name:'large-synthetic-session', value:'x'.repeat(2*1024*1024),
+          domain:'example.test',path:'/',expires:-1,httpOnly:true,secure:true,sameSite:'Lax'
+        }],origins:[]
+      });
+      let closed=false;
+      context.close=async()=>{
+        if(closed)return;
+        closed=true;
+        clearTimeout(closeTimer);
+        rejectNavigation?.(new Error('Target closed'));
+        context.emit('close');
+      };
+      if (!options.headless) closeTimer=setTimeout(()=>context.close(),50);
+      return context;
+    }
+  `,
+  )
+  preload = join(directory, 'preload.mjs')
+  await writeFile(
+    preload,
+    `
+    import {registerHooks} from 'node:module';
+    registerHooks({
+      resolve(specifier,context,nextResolve) {
+        if(specifier==='cloakbrowser')return{
+          url:${JSON.stringify(pathToFileURL(sdk).href)},shortCircuit:true
+        };
+        return nextResolve(specifier,context);
+      }
+    });
+  `,
+  )
+})
+
+afterEach(async () => {
+  await rm(directory, { recursive: true, force: true })
+})
+
+async function run(
+  action: string,
+  startUrl: string,
+  closeStdin: boolean,
+  sdkFailure = false,
+  target = join(directory, 'user-data'),
+) {
+  const runner = fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url))
+  const child = spawn(process.execPath, ['--import', preload, runner, action, target], {
+    env: {
+      ...process.env,
+      ...(sdkFailure ? { NEXUS_TEST_SDK_FAILURE: '1' } : {}),
+    },
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (data: Buffer) => {
+    stdout += data.toString()
+  })
+  child.stderr.on('data', (data: Buffer) => {
+    stderr += data.toString()
+  })
+  child.stdin.on('error', () => {})
+  child.stdin.write(
+    `${JSON.stringify({
+      schema_version: 1,
+      id: 'profile',
+      binary_path: binary,
+      binding: { profile_id: 'profile', channel_version: '145.0.7632.109.2' },
+      proxy: null,
+      settings: {
+        geoip: true,
+        timezone: '',
+        locale: '',
+        viewport: 'default',
+        fingerprintSeed: null,
+        startUrl,
+      },
+    })}\n`,
+  )
+  if (closeStdin) child.stdin.end()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    child.kill()
+  }, 2_000)
+  try {
+    const exit = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', resolve)
+    })
+    return { exit, stdout, stderr, timedOut }
+  } finally {
+    clearTimeout(timer)
+    child.stdin.destroy()
+  }
+}
+
+describe('profile runner subprocess', () => {
+  it('probes the actual binary display version without launching a context or waiting for stdin', async () => {
+    await writeFile(
+      binary,
+      `#!${process.execPath}\nconsole.log('Chromium 145.0.7632.109')\n`,
+    )
+    const result = await run('version', '', false, true, binary)
+    expect(result).toMatchObject({ exit: 0, timedOut: false, stderr: '' })
+    expect(JSON.parse(result.stdout)).toEqual({
+      version: '145.0.7632.109',
+      binary_path: binary,
+    })
+  })
+
+  it('rejects a missing binary instead of returning an unverified version', async () => {
+    const result = await run('version', '', false, false, join(directory, 'missing'))
+    expect(result).toMatchObject({ exit: 1, timedOut: false, stdout: '' })
+  })
+
+  it('exits with the SDK error instead of hanging on open stdin after GeoIP startup failure', async () => {
+    const result = await run('launch', '', false, true)
+    expect(result.timedOut).toBe(false)
+    expect(result.exit).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('mmdb-lib is required for geoip\n')
+  })
+
+  it('exits after the browser closes even while stdin and start-page navigation are pending', async () => {
+    const result = await run('launch', 'https://pending.example?secret=do-not-log', false)
+    expect(result.timedOut).toBe(false)
+    expect(result.exit).toBe(0)
+    expect(result.stdout).toBe('NEXUS_READY\n')
+    expect(result.stderr).not.toContain('do-not-log')
+  })
+
+  it.each([true, false])(
+    'returns exactly one complete snapshot JSON larger than 1 MiB and closes input (EOF=%s)',
+    async (closeStdin) => {
+      const result = await run('snapshot', 'https://never.example', closeStdin)
+      expect(result).toMatchObject({ exit: 0, timedOut: false, stderr: '' })
+      expect(result.stdout.endsWith('\n')).toBe(true)
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      const state = JSON.parse(result.stdout) as {
+        schemaVersion: number
+        storageState: { cookies: { value: string }[] }
+      }
+      expect(state.schemaVersion).toBe(1)
+      expect(state.storageState.cookies[0]!.value.length).toBe(2 * 1024 * 1024)
+    },
+  )
+})

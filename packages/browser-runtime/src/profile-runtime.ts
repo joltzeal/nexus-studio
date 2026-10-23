@@ -1,7 +1,18 @@
 import { ensureBinary, launchPersistentContext, validateLicense } from 'cloakbrowser'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import type { BrowserContext } from 'playwright-core'
 import { retryKernelPreparation, type KernelProgress } from './kernel-install.js'
+import {
+  parsePortableState,
+  restorePortableState,
+  type PortableState,
+} from './portable-state.js'
+import { withinProfileDeadline } from './profile-deadline.js'
+import { initializeStoredOrigins } from './stored-origins.js'
+import { prepareBrowserProxy } from './browser-proxy.js'
+
+export { verifySdkDependencies } from './sdk-dependencies.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -44,7 +55,7 @@ export function browserOptionsForWindow(
     userDataDir,
     headless: false,
     ...(record.proxy ? { proxy: record.proxy } : {}),
-    ...(settings?.geoip ? { geoip: true } : {}),
+    ...(record.proxy && (settings?.geoip ?? true) ? { geoip: true } : {}),
     ...(settings?.timezone ? { timezone: settings.timezone } : {}),
     ...(settings?.locale ? { locale: settings.locale } : {}),
     ...(viewport ? { viewport } : {}),
@@ -64,7 +75,7 @@ export function assertBinaryVersion(expected: string, actual: string): void {
   if (expected !== actual) throw new Error('PROFILE_ENGINE_MISMATCH')
 }
 
-async function binaryVersion(binaryPath: string): Promise<string> {
+export async function binaryVersion(binaryPath: string): Promise<string> {
   const { stdout } = await execFileAsync(binaryPath, ['--version'], {
     timeout: 10_000,
     windowsHide: true,
@@ -94,13 +105,14 @@ export async function validateBrowserLicense(licenseKey: string): Promise<{
   return validateLicense(licenseKey)
 }
 
-export async function openProfile(
+async function launchProfileContext(
   userDataDir: string,
   record: NativeProfile,
-  commands: AsyncIterable<string>,
-): Promise<void> {
+  snapshot = false,
+): Promise<BrowserContext> {
   if (
     record.schema_version !== 1 ||
+    !record.binding ||
     record.id !== record.binding.profile_id ||
     typeof record.binary_path !== 'string' ||
     typeof record.binding.channel_version !== 'string'
@@ -112,22 +124,138 @@ export async function openProfile(
     await binaryVersion(record.binary_path),
   )
   process.env.CLOAKBROWSER_BINARY_PATH = record.binary_path
-  const context = await launchPersistentContext(
-    browserOptionsForWindow(userDataDir, record),
-  )
-  try {
-    const page = context.pages()[0] ?? (await context.newPage())
-    if (record.settings?.startUrl) await page.goto(record.settings.startUrl)
-  } catch (error) {
-    await context.close()
-    throw error
+  const controller = new AbortController()
+  const originalFetch = globalThis.fetch
+  // SDK 0.6.3's initial GeoIP database download has no signal/deadline of its own.
+  // Each profile runner owns one launch; retain existing signals and the network dispatcher.
+  const launchFetch: typeof fetch = (input, init) => {
+    const inherited = init?.signal ?? (input instanceof Request ? input.signal : null)
+    return originalFetch(input, {
+      ...init,
+      signal: inherited
+        ? AbortSignal.any([inherited, controller.signal])
+        : controller.signal,
+    })
   }
-  process.stdout.write('NEXUS_READY\n')
+  globalThis.fetch = launchFetch
+  let expired = false
+  let acquired = false
   try {
-    for await (const command of commands) {
-      if (command === 'stop') break
+    const options = {
+      ...browserOptionsForWindow(
+        userDataDir,
+        snapshot ? { ...record, proxy: null, proxy_plugin: null } : record,
+      ),
+      browserVersion: record.binding.channel_version,
+      launchOptions: { timeout: 60_000 },
+      contextOptions: {
+        offline: true,
+        ...(snapshot ? { serviceWorkers: 'block' as const } : {}),
+      },
+      ...(snapshot
+        ? {
+            headless: true,
+            geoip: false,
+          }
+        : {}),
     }
+    const launch = (async () =>
+      launchPersistentContext(
+        await prepareBrowserProxy(options, controller.signal),
+      ))().then(async (context) => {
+      if (expired) {
+        await context.close()
+        throw new Error('PROFILE_LAUNCH_TIMEOUT')
+      }
+      acquired = true
+      context.once('close', () => controller.abort())
+      return context
+    })
+    return await withinProfileDeadline(launch, 60_000, 'PROFILE_LAUNCH_TIMEOUT', () => {
+      expired = true
+      controller.abort()
+    })
   } finally {
+    if (!acquired) controller.abort()
+    if (globalThis.fetch === launchFetch) globalThis.fetch = originalFetch
+  }
+}
+
+export async function snapshotProfile(
+  userDataDir: string,
+  record: NativeProfile,
+): Promise<PortableState> {
+  const context = await launchProfileContext(userDataDir, record, true)
+  try {
+    await context.route('**/*', (route) => route.abort())
+    await context.setOffline(true)
+    const storageState = await withinProfileDeadline(
+      (async () => {
+        await restorePortableState(context, userDataDir, false)
+        const indexedDB = await initializeStoredOrigins(context)
+        const state = await context.storageState({ indexedDB: true, opfs: true })
+        const capturedOrigins = new Set(state.origins.map((origin) => origin.origin))
+        if (
+          [...indexedDB].some(
+            ([origin, databases]) => databases.length > 0 && !capturedOrigins.has(origin),
+          )
+        ) {
+          throw new Error('PORTABLE_STATE_ORIGIN_NOT_CAPTURED')
+        }
+        return {
+          ...state,
+          origins: state.origins.map((origin) => ({
+            ...origin,
+            indexedDB: indexedDB.get(origin.origin) ?? [],
+          })),
+        }
+      })(),
+      30_000,
+      'PORTABLE_STATE_CAPTURE_TIMEOUT',
+    )
+    return parsePortableState({ schemaVersion: 1, storageState })
+  } finally {
+    await context.close()
+  }
+}
+
+export async function openProfile(
+  userDataDir: string,
+  record: NativeProfile,
+  commands: AsyncIterable<string>,
+): Promise<void> {
+  const context = await launchProfileContext(userDataDir, record)
+  let onClose!: () => void
+  const closed = new Promise<void>((resolve) => {
+    onClose = resolve
+    context.once('close', onClose)
+  })
+  try {
+    await restorePortableState(context, userDataDir)
+    await context.setOffline(false)
+    process.stdout.write('NEXUS_READY\n')
+    if (record.settings?.startUrl) {
+      // Navigation is independent of browser readiness and of the stop command loop.
+      void (async () => {
+        const page = context.pages()[0] ?? (await context.newPage())
+        await page.goto(record.settings!.startUrl, {
+          timeout: 30_000,
+          waitUntil: 'domcontentloaded',
+        })
+      })().catch(() => {
+        process.stderr.write('PROFILE_START_URL_FAILED\n')
+      })
+    }
+    await Promise.race([
+      closed,
+      (async () => {
+        for await (const command of commands) {
+          if (command === 'stop') break
+        }
+      })(),
+    ])
+  } finally {
+    context.off('close', onClose)
     await context.close()
   }
 }

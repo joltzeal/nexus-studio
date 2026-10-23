@@ -62,7 +62,7 @@ impl Default for WindowSettings {
         Self {
             platform: "其他".into(),
             note: String::new(),
-            geoip: false,
+            geoip: true,
             timezone: String::new(),
             locale: String::new(),
             viewport: "default".into(),
@@ -337,7 +337,11 @@ impl ProfileStore {
         Ok(record)
     }
 
-    fn validate_record(&self, id: &str, record: &ProfileRecord) -> Result<(), StoreError> {
+    pub(crate) fn validate_record(
+        &self,
+        id: &str,
+        record: &ProfileRecord,
+    ) -> Result<(), StoreError> {
         if record.schema_version != 1
             || record.id != id
             || record.binding.profile_id != id
@@ -396,11 +400,15 @@ impl ProfileStore {
             .map_err(|_| StoreError::CorruptProfile)
     }
 
-    fn database_path(&self) -> PathBuf {
+    pub(crate) fn database_path(&self) -> PathBuf {
         self.root
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("nexus.sqlite")
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     fn migrate_legacy(&self) -> Result<(), StoreError> {
@@ -464,7 +472,7 @@ impl ProfileStore {
     }
 }
 
-fn validate_settings(settings: &WindowSettings, has_proxy: bool) -> Result<(), StoreError> {
+fn validate_settings(settings: &WindowSettings, _has_proxy: bool) -> Result<(), StoreError> {
     if !matches!(settings.platform.as_str(), "Vinted" | "Poshmark" | "其他")
         || settings.note.chars().count() > 120
         || settings.timezone.len() > 64
@@ -477,7 +485,6 @@ fn validate_settings(settings: &WindowSettings, has_proxy: bool) -> Result<(), S
         || settings
             .fingerprint_seed
             .is_some_and(|seed| seed > 2_147_483_647)
-        || settings.geoip && !has_proxy
         || settings.start_url.len() > 2048
     {
         return Err(StoreError::InvalidSettings);
@@ -561,7 +568,7 @@ fn validate_proxy(server: &str) -> Result<(), StoreError> {
         || !explicit_port
         || !parsed.username().is_empty()
         || parsed.password().is_some()
-        || parsed.path() != "/"
+        || !matches!(parsed.path(), "" | "/")
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {

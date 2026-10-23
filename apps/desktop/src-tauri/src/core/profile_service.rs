@@ -13,7 +13,7 @@ use super::scheduler::{
     EngineCapacity, EngineChannel, LaunchRequest, LaunchSnapshot, Phase, ProxyBinding, Scheduler,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -30,14 +30,18 @@ struct Session {
 struct SessionState {
     scheduler: Scheduler,
     sessions: HashMap<String, Session>,
+    transfers: HashSet<String>,
+    recoveries: HashSet<String>,
 }
 
+const RECOVERY_PENDING: &str = "窗口资料恢复未完成，已暂停相关操作，请重启应用重试";
+
 pub struct ProfileService {
-    store: ProfileStore,
-    license_store: LicenseStore,
-    runtime: RuntimePaths,
-    kernels: KernelService,
-    network: Option<NetworkProxyStore>,
+    pub(crate) store: ProfileStore,
+    pub(crate) license_store: LicenseStore,
+    pub(crate) runtime: RuntimePaths,
+    pub(crate) kernels: KernelService,
+    pub(crate) network: Option<NetworkProxyStore>,
     state: Mutex<SessionState>,
     /// When present, a window that requires a plugin proxy is resolved through
     /// it before a scheduler slot is reserved.
@@ -76,10 +80,10 @@ fn error_message(error: StoreError) -> String {
         StoreError::InvalidProxyPlugin => "代理来源只能二选一：手动填写或代理插件".into(),
         StoreError::InvalidSettings => "浏览器配置无效，请检查表单内容".into(),
         StoreError::ImmutableFingerprint => "已创建窗口的指纹种子不能修改".into(),
-        StoreError::InvalidBinary => "无法确认 CloakBrowser 二进制版本".into(),
-        StoreError::InvalidProfileId => "Profile 标识无效".into(),
-        StoreError::CorruptProfile => "Profile 绑定记录缺失或损坏，已拒绝启动".into(),
-        StoreError::Io => "无法读写本机 Profile 目录".into(),
+        StoreError::InvalidBinary => "无法确认浏览器内核版本".into(),
+        StoreError::InvalidProfileId => "窗口标识无效".into(),
+        StoreError::CorruptProfile => "窗口绑定记录缺失或损坏，已拒绝启动".into(),
+        StoreError::Io => "无法读写本机窗口数据目录".into(),
     }
 }
 
@@ -137,6 +141,8 @@ impl ProfileService {
             state: Mutex::new(SessionState {
                 scheduler,
                 sessions: HashMap::new(),
+                transfers: HashSet::new(),
+                recoveries: HashSet::new(),
             }),
             plugin_host,
         })
@@ -207,10 +213,17 @@ impl ProfileService {
         &self,
         name: &str,
         proxy: ProxySource,
-        settings: WindowSettings,
+        mut settings: WindowSettings,
         binary: PreparedBinary,
         group_id: Option<&str>,
     ) -> Result<ProfileSummary, String> {
+        if settings.fingerprint_seed.is_none() {
+            let random = uuid::Uuid::new_v4();
+            let bytes = random.as_bytes();
+            settings.fingerprint_seed = Some(
+                (u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & 0x7fff_ffff).max(1),
+            );
+        }
         let record = self
             .store
             .create_with_group(name, proxy, settings, binary, group_id)
@@ -246,6 +259,12 @@ impl ProfileService {
     ) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "窗口状态不可用")?;
         Self::reap(&mut state);
+        if state.recoveries.contains(id) {
+            return Err(RECOVERY_PENDING.into());
+        }
+        if state.transfers.contains(id) {
+            return Err("窗口正在迁移，请等待操作完成".into());
+        }
         if state.scheduler.status(id).is_some() {
             return Err("请先停止窗口，再修改浏览器配置".into());
         }
@@ -258,6 +277,12 @@ impl ProfileService {
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "窗口状态不可用")?;
         Self::reap(&mut state);
+        if state.recoveries.contains(id) {
+            return Err(RECOVERY_PENDING.into());
+        }
+        if state.transfers.contains(id) {
+            return Err("窗口正在迁移，请等待操作完成".into());
+        }
         if state.scheduler.status(id).is_some() {
             return Err("请先停止窗口，再删除浏览器数据".into());
         }
@@ -270,6 +295,9 @@ impl ProfileService {
     }
 
     pub fn launch(&self, id: &str) -> Result<(), String> {
+        // Hold the profile before loading configuration or waiting on a plugin,
+        // so an import cannot replace its data under this launch snapshot.
+        let _guard = self.lock_profiles(&[id.to_owned()])?;
         let record = self.store.get(id).map_err(error_message)?;
         // Resolution happens before a slot is reserved: a plugin that cannot
         // produce a proxy must block the launch, never fall back to direct.
@@ -420,15 +448,15 @@ impl ProfileService {
         });
         match receiver.recv_timeout(Duration::from_secs(120)) {
             Ok(Ok(())) => Ok(child),
-            event => {
-                if matches!(event, Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
-                    let _ = child.kill();
-                }
+            _ => {
+                // Losing the startup channel also ends the launch. A live
+                // runner must not keep this wait blocked after stdout closes.
+                let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let detail = stderr_reader.join().unwrap_or_default();
                 if detail.is_empty() {
-                    Err("CloakBrowser 启动失败或超时；Profile 绑定保持不变".into())
+                    Err("窗口启动失败或超时，请检查所选代理与内核；原窗口数据已保留".into())
                 } else {
                     Err(sanitize_license_error(&detail))
                 }
@@ -494,6 +522,66 @@ impl ProfileService {
         for id in exited {
             if let Some(session) = state.sessions.remove(&id) {
                 let _ = state.scheduler.process_exited(&session.snapshot);
+            }
+        }
+    }
+
+    pub(crate) fn lock_transfer(&self, ids: &[String]) -> Result<TransferGuard<'_>, String> {
+        self.lock_profiles(ids)
+    }
+
+    fn lock_profiles(&self, ids: &[String]) -> Result<TransferGuard<'_>, String> {
+        let mut state = self.state.lock().map_err(|_| "窗口状态不可用")?;
+        Self::reap(&mut state);
+        if ids.iter().any(|id| state.recoveries.contains(id)) {
+            return Err(RECOVERY_PENDING.into());
+        }
+        if ids
+            .iter()
+            .any(|id| state.transfers.contains(id) || state.scheduler.status(id).is_some())
+        {
+            return Err("请先关闭所选窗口，且等待已有迁移操作完成".into());
+        }
+        state.transfers.extend(ids.iter().cloned());
+        Ok(TransferGuard {
+            service: self,
+            ids: ids.to_vec(),
+        })
+    }
+
+    pub(crate) fn block_recovery(&self, ids: &[String]) -> Result<(), String> {
+        self.state
+            .lock()
+            .map_err(|_| "窗口状态不可用")?
+            .recoveries
+            .extend(ids.iter().cloned());
+        Ok(())
+    }
+
+    pub(crate) fn restore_imported(&self, records: &[ProfileRecord]) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|_| "窗口状态不可用")?;
+        for record in records {
+            let _ = state.scheduler.remove_profile(&record.id);
+            let _ = state.scheduler.register_channel(channel(record));
+            state
+                .scheduler
+                .restore_profile(record.binding.clone())
+                .map_err(|_| "导入窗口的内核绑定冲突")?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct TransferGuard<'a> {
+    service: &'a ProfileService,
+    ids: Vec<String>,
+}
+
+impl Drop for TransferGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.service.state.lock() {
+            for id in &self.ids {
+                state.transfers.remove(id);
             }
         }
     }
@@ -658,7 +746,9 @@ pub async fn profile_stop(state: State<'_, Arc<ProfileService>>, id: String) -> 
 #[cfg(test)]
 mod tests {
     use super::ProfileService;
+    use crate::core::license_store::LicenseStore;
     use crate::core::profile_store::{PreparedBinary, ProxySource, WindowSettings};
+    use crate::core::runtime_paths::RuntimePaths;
     use std::process::Command;
     use std::time::{Duration, Instant};
 
@@ -697,6 +787,13 @@ mod tests {
         assert_eq!(created.name, "New window");
         assert_eq!(created.version, "145.0.7632.109");
         assert!(!created.running);
+        assert!(created.settings.geoip);
+        assert!(
+            created
+                .settings
+                .fingerprint_seed
+                .is_some_and(|seed| seed > 0)
+        );
         assert_eq!(service.list().unwrap()[0].id, created.id);
     }
 
@@ -727,6 +824,49 @@ mod tests {
         assert_eq!(launching.binding, saved.binding);
         assert!(service.store.get(&created.id).unwrap().proxy.is_none());
         assert!(!serde_json::to_string(&saved).unwrap().contains("p%40ss"));
+    }
+
+    #[test]
+    fn closed_startup_output_terminates_the_runner_and_releases_the_window() {
+        let root = tempfile::tempdir().unwrap();
+        let binary_path = root.path().join("browser");
+        std::fs::write(&binary_path, b"binary").unwrap();
+        let runner = root.path().join("runner.cjs");
+        std::fs::write(
+            &runner,
+            "require('node:fs').closeSync(1); setTimeout(() => process.exit(1), 7000);",
+        )
+        .unwrap();
+        let service = ProfileService::with_runtime(
+            root.path().join("profiles"),
+            None,
+            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "node".into(),
+                browser_script: runner,
+                network_preload: root.path().join("unused-preload.js"),
+            },
+        )
+        .unwrap();
+        let created = service
+            .create_prepared(
+                "Proxy startup",
+                ProxySource::server("http://127.0.0.1:8080".into()),
+                WindowSettings::default(),
+                PreparedBinary {
+                    version: "145.0.7632.109".into(),
+                    binary_path,
+                },
+                None,
+            )
+            .unwrap();
+        let started = Instant::now();
+        assert!(service.launch(&created.id).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a runner that loses its startup channel must not keep the launch waiting"
+        );
+        assert!(!service.list().unwrap()[0].running);
     }
 
     #[test]

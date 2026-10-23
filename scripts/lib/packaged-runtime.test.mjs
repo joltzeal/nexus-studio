@@ -36,6 +36,34 @@ describe('packaged runtime paths', () => {
   })
 })
 
+describe('packaged runtime dependencies', () => {
+  it.each([true, false])(
+    'executes the dependency guard before accepting the packaged runtime (peers present=%s)',
+    (available) => {
+      const temporary = mkdtempSync(join(tmpdir(), 'nexus-runtime-dependencies-'))
+      const paths = {
+        node: process.execPath,
+        networkPreload: join(temporary, 'network-preload.mjs'),
+        browserModule: join(temporary, 'profile-runtime.mjs'),
+      }
+      writeFileSync(paths.networkPreload, '')
+      writeFileSync(
+        paths.browserModule,
+        `export async function verifySdkDependencies() {
+          ${available ? '' : 'throw new Error("BROWSER_RUNTIME_DEPENDENCY_MISSING")'}
+        }`,
+      )
+      try {
+        const verify = () => verifyPackagedRuntime(paths, { platform: 'win32' })
+        if (available) expect(verify).not.toThrow()
+        else expect(verify).toThrow('BROWSER_RUNTIME_DEPENDENCY_MISSING')
+      } finally {
+        rmSync(temporary, { recursive: true, force: true })
+      }
+    },
+  )
+})
+
 describe('packaged macOS signatures', () => {
   it('rejects a bundle when the application process receives Node JIT entitlements', () => {
     const temporary = mkdtempSync(join(tmpdir(), 'nexus-runtime-test-'))

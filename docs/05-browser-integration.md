@@ -7,19 +7,90 @@ Rust 保存绑定和调度，Node.js 适配器
 调用官方 JS 包装层。窗口的代理来源可以是手动地址或代理插件；
 代理插件由插件宿主解析，失败时阻断启动，见[插件宿主](17-plugin-host.md)。
 原有 localStorage 演示窗口不会自动迁移或出现在原生列表。
-`packages/browser-runtime` 保留 Node.js 协议基础，目前仅健康与能力描述，不启动窗口。
+`packages/browser-runtime` 包含独立健康协议与真实 Profile 适配器；
+`profile-runner` 处理内核准备、清单、授权校验、启动、便携状态校验与导出。
+`profile-runner version <binaryPath>` 离线执行指定内核的 `--version`，
+以 `{ "version": "...", "binary_path": "..." }` 返回实际显示版本和输入路径。
+二进制探测有 10 秒截止，原生调用另设 20 秒上限，不启动 Profile 或访问激活服务。
+迁移用它核对本机缓存内核与窗口绑定，完整内核包修订号另由清单核对。
 Manager 只作产品与隔离行为参考，不作为本应用的运行依赖。
+
+## 窗口加密转移的便携状态契约
+
+`profile-runner snapshot <userDataDir>` 从 stdin 首行读取与 `launch` 相同的
+NativeProfile JSON，核对绑定内核后用该内核启动 headless 持久上下文，
+调用 `context.storageState({ indexedDB: true, opfs: true })`，
+关闭浏览器后仅向 stdout 输出一行：
+
+```json
+{ "schemaVersion": 1, "storageState": { "cookies": [], "origins": [] } }
+```
+
+主程序负责原始 `user-data` 目录复制与加密归档。导入主程序将上面的完整对象写入
+`<userDataDir>/../portable-state.json`；Node 适配器在下一次正常 `launch` 时读取并恢复，
+成功后删除便携状态文件，失败则保留文件并阻断启动。该文件是含会话数据的明文，
+仅用于受管 Profile 的导入，不应进入日志、源码或非加密导出文件。
+Cookie 由浏览器上下文 API 解密导出并在目标机器重新写入；
+不能仅凭复制原始 Cookie 数据库和 `Local State` 承诺跨机器会话可用。
+刚导入、尚未正常打开的窗口若再次导出，snapshot 会先离线恢复待导入状态再采集，
+并保留该便携文件，直到正常启动成功恢复后再消费，避免将空目录重新导出为空会话。
+
+导入在内核准备、插件检查与文件/SQLite 修改之前，先调用
+`profile-runner validate-state <absolute-path> [absolute-path...]`。
+命令接受 1–100 个绝对路径，按顺序读取并用恢复路径相同的完整 parser 校验，
+每个文件最多 128 MiB；读取期间增长的文件也受相同上限约束。
+所有文件有效后仅输出 `{"valid":true}` 一行并以 0 退出。
+失败时 stdout 为空、退出码非 0，stderr 仅含
+`PORTABLE_STATE_INVALID_ARGUMENTS`、`PORTABLE_STATE_READ_FAILED`、
+`PORTABLE_STATE_TOO_LARGE` 或 `PORTABLE_STATE_INVALID`。
+该操作不读取 stdin、不加载浏览器 SDK、不启动浏览器或访问授权/网络；
+主程序另给校验子进程设置 30 秒上限，避免无效状态在下次启动时才被发现。
+
+Snapshot 从创建上下文时即离线，跳过代理插件解析、GeoIP 与起始地址，
+并阻断页面外部请求。Playwright 新建持久上下文不会自动追踪磁盘中已有的 origin；
+适配器通过 Chromium 本地 `chrome://settings/content/all` 的站点数据列表发现
+已有存储，再以拦截生成的空白文档登记 origin。该 Chromium 内部接口不兼容、
+发现不支持的分区存储或 origin 时直接导出失败，不返回缺失存储的成功结果。
+
+恢复使用所固定 Playwright `1.64.0` 的公开
+[`context.setStorageState` API](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-storage-state)。
+其内部以拦截的空白页面初始化 origin，且绕过 Service Worker，
+不向原站点发送初始化请求。保留 IndexedDB 的结构化编码、索引、版本与 OPFS 文件；
+未知格式、浏览器拒绝或超时会阻断启动并保留文件，成功完成后才删除。
+公开 API 会替换 Cookie 与所涉及 origin 的存储，所以导出同时包含 OPFS。
+便携状态不覆盖 sessionStorage、系统密码库、硬件通行密钥或浏览器扩展的私有状态，
+也不承诺完整保留 Service Worker 与缓存状态；
+不能将原始目录复制描述为这些数据已完成跨机器解密。适配器不新增应用凭据的
+Keychain/系统凭据库接入，Chromium 本身的存储行为仍由内核负责。
+
+固定 Playwright 构建的 IndexedDB collector 会遗漏 falsy 值，
+且直接 JSON 化非有限数字会改变数据。适配器仍调用公开 `storageState`，
+同时通过离线 origin 的 IndexedDB API 读取记录，以 Playwright 支持的
+encoded-value 格式补全索引、键和值。覆盖 `0`、`false`、`null`、空键、
+非有限数字、Date、BigInt、ArrayBuffer/TypedArray、Map、Set 与循环引用；
+Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败，不退化成空对象。
+
+真实 macOS 临时 Profile 测试使用本机缓存构建 `145.0.7632.109.2`
+（其 `--version` 实际返回 `145.0.7632.109`），
+验证关闭源 Profile 后经 CLI 导出，再分别恢复到空目录与复制的原始 `user-data`，
+核对 Cookie、localStorage、IndexedDB 版本/索引/结构化值与 OPFS 字节，
+并验证旧目标 Cookie 被清除、状态文件成功后删除，初始化不访问测试 HTTP 服务。
+另一个真实 CLI 测试在复制含旧 Cookie 的 Profile 后，于运行时取得上下文之前主动发起
+页面请求，验证初始离线设置阻止该请求；恢复后的起始页面只发送导入 Cookie。
+这证明本机 API 的解密读写与恢复行为，不代表已完成跨机器 OSCrypt 故障、
+跨 macOS/Windows、真实站点登录、外部代理或授权内核的集成验证。
 
 ## 配置来源与映射
 
-配置选项参考 CloakBrowser 官方 [README 的 Launch、Persistent Context、Fingerprint Management 部分](https://github.com/CloakHQ/CloakBrowser/blob/main/README.md)。
+配置选项参考 CloakBrowser 官方
+[JS README 的 Launch、Persistent Context、Fingerprint Management 部分](https://github.com/CloakHQ/CloakBrowser/blob/main/js/README.md)。
 实际接入时必须按选用的 SDK 与二进制版本复核选项。
 
 | 窗口字段           | 官方能力                                                    | 当前处理                               |
 | ------------------ | ----------------------------------------------------------- | -------------------------------------- |
 | 独立窗口           | `launchPersistentContext({ userDataDir, headless: false })` | 原生 Profile 独立目录，显式打开后启动  |
 | HTTP / SOCKS5 代理 | `proxy`                                                     | 手动无凭据地址；插件代理解析失败则阻断 |
-| GeoIP              | `geoip` 匹配代理出口时区、语言及 WebRTC IP                  | 有代理时可选；真实出口尚未验证         |
+| GeoIP              | `geoip` 匹配代理出口时区、语言及 WebRTC IP                  | 有代理且未显式关闭时启用；直连不启用   |
 | 时区、语言         | `timezone`、`locale`                                        | 手工覆盖；空值使用包装层默认或 GeoIP   |
 | 尺寸               | `viewport`                                                  | 默认或两个常用尺寸                     |
 | 指纹种子           | `--fingerprint=<seed>`；持久化 profile 会保留种子           | 可在创建时填写，之后不可修改           |
@@ -28,6 +99,74 @@ Manager 只作产品与隔离行为参考，不作为本应用的运行依赖。
 底层还支持 GPU、硬件、屏幕、品牌、存储配额、WebRTC 等单项指纹标志。
 官方建议保留种子产生的一致参数组合；因此本页不开放任意参数注入。
 自定义参数进入插件能力与版本兼容性评估后再设计，避免混合不一致指纹。
+
+## 代理启动与就绪时序
+
+适配器核对 `--version` 后同时传递绑定路径与 `browserVersion`，
+避免 SDK 在只有本地路径时将代理鉴权功能按未知版本处理。
+正常代理启动保留完整连接 URL、认证信息与 GeoIP，不在失败时回退直连。
+缺少窗口 settings 时 GeoIP 默认开启；直连配置即使保存了开启偏好也不进行 GeoIP。
+所固定 CloakBrowser `0.6.3` 会在创建 Chromium 上下文前解析 GeoIP，
+首次数据库下载在 SDK 中没有网络截止时间；适配器给 SDK 启动阶段设置 60 秒上限，
+合并 fetch 的原有取消信号并在超时取消下载，迟到的上下文也会关闭。
+SDK 已启动的后台数据库更新也随上下文关闭取消，避免用户关窗后适配进程继续等待下载。
+该版本的 GeoIP 需要可解析的可选 `mmdb-lib`，SOCKS5 出口探测还需要
+`socks-proxy-agent`。旧依赖图中两者均不可用，真实 runner 因缺少
+`mmdb-lib` 在创建浏览器之前失败，不能通过关闭 GeoIP 掩盖。
+运行时现显式固定生产依赖 `mmdb-lib@3.0.2` 与 `socks-proxy-agent@10.0.0`，
+满足已安装 SDK 的可选 peer 范围，并与其开发依赖版本一致。
+staging 与安装包 smoke 均从 SDK 自身的位置解析并实际加载两者，
+缺失时报 `BROWSER_RUNTIME_DEPENDENCY_MISSING`，避免只成功 import SDK
+却遗漏动态加载的 GeoIP 功能。临时生产 deploy 已用与 staging 相同的
+`--legacy --prod --config.node-linker=hoisted` 路径验证依赖可用。
+适配器在 SDK 启动失败时也会关闭 stdin 读取器，防止已报错的子进程继续等待输入，
+使原生窗口持续显示启动中直至外层 120 秒超时。
+
+源码确认 GeoIP 的时区与语言经 `--fingerprint-timezone`、`--lang`、
+`--fingerprint-locale` 传递，解析到出口 IP 时 SDK 自动追加
+`--fingerprint-webrtc-ip=<exitIp>`。适配器用公开 `buildLaunchOptions`
+先解析一次，保留解析所得标志后以 `geoip:false` 启动持久上下文，
+避免重复查询；预解析关闭默认参数生成，指纹种子仍由最终持久启动处理。
+手工时区/语言优先，但 SDK 同时显式给定两者时会容忍出口探测失败。
+适配器因此要求解析结果包含有效、非 loopback/未指定地址的 WebRTC IP；
+缺失或 `auto` 直接报 `PROFILE_GEOIP_EXIT_IP_REQUIRED`，不会静默继续。
+本机固定 macOS 145 内核仅有 `--lang`/`--fingerprint-locale` 时仍返回系统语言；
+对 macOS 148 之前的绑定版本，适配器补充 Chromium 支持的
+`--accept-lang=<locale>`，已用页面 `navigator.language` 和实际请求头验证。
+
+SDK `dist/proxy.js` 对所有 SOCKS5 配置都使用原生
+`--proxy-server=socks5://...`，没有按内核版本判断是否支持内联认证。
+本机固定 145 macOS 内核配合临时本地 SOCKS5 服务，已验证无认证时页面请求确实
+经过代理；简单账号密码与含 `:`、`@`、`=` 的编码密码均在页面导航时返回
+`ERR_NO_SUPPORTED_PROXIES`，代理端未收到认证或目标 HTTP 请求。
+因此不能把 SDK 0.6.3 产生该参数当作此内核已支持 SOCKS5 认证的证据。
+认证 SOCKS5 现使用仅监听 `127.0.0.1` 临时端口的 SOCKS5 relay，
+每条上游连接由既有 `socks@2.8.7` 携带原始完整账号密码，
+浏览器与 GeoIP 均走该路径，不自动直连。GeoIP 使用 relay 的 `socks5h` 地址，
+让出口探测域名也由上游解析；出口 IP 来自远端 HTTPS echo，不将本地 relay 地址
+当作匹配值。relay 的客户端/上游握手有 15 秒上限，
+启动失败、启动超时与浏览器关闭均回收监听端口和连接；
+启动 relay 失败报 `PROFILE_PROXY_BRIDGE_FAILED`。
+
+真实 CLI/macOS 145 浏览器已通过五个本地 SOCKS5 fixture：
+无认证、简单认证、特殊字符密码、自动 GeoIP、手工时区/语言加 GeoIP。
+后两项用子进程独立信任的测试证书运行本地 HTTPS echo，
+确认 SDK echo 与页面请求都穿过认证上游、页面时区和语言符合设置，
+且实际 Chromium 进程携带 echo 返回的 WebRTC IP。
+这不是外部代理、真实 STUN/TURN 泄漏、Windows 或新版授权内核的验证；
+测试证书不安装到系统信任库。
+
+`NEXUS_READY` 表示真实持久浏览器上下文已创建，且待导入便携状态已成功恢复。
+正常启动也从创建上下文时设置 `offline:true`，恢复成功后才 `setOffline(false)`，
+再发就绪信号和导航，避免复制的旧 Profile 在便携 Cookie 替换前发送站点请求；
+失败时保持离线并关闭上下文。该浏览器离线设置不阻断 Node 层的代理/GeoIP 解析。
+远程 `startUrl` 导航独立执行，使用 `domcontentloaded` 与显式 30 秒截止时间，
+不会阻塞就绪通知或停止命令。导航失败只产生不含 URL/凭据的
+`PROFILE_START_URL_FAILED` 诊断，保留可用浏览器供用户操作。
+浏览器自行关闭时适配器退出命令等待，stdin 读取器也会关闭。
+原生侧在启动超时或就绪前 stdout 提前 EOF 时先终止仍存活的 runner 再等待退出；
+SOCKS5 地址校验接受普通 `socks5://host:port` 的空 path（含 IPv4/IPv6），
+仍拒绝真实 URL 路径，避免合法代理在原生校验处被误拒绝。
 
 ## 后续生命周期与安全边界
 

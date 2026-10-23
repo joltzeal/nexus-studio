@@ -44,6 +44,16 @@ export const DEFAULT_WINDOW_CONFIG: WindowConfig = {
   startUrl: '',
 }
 
+/** Native creations keep the preference even while direct; legacy demo defaults stay stable. */
+export function createWindowConfig(fingerprintSeed: number): WindowConfig {
+  return {
+    ...DEFAULT_WINDOW_CONFIG,
+    proxy: { protocol: 'direct', server: '' },
+    geoip: true,
+    fingerprintSeed,
+  }
+}
+
 export const PLUGIN_CATALOG = [
   {
     id: 'demo.platform-tools',

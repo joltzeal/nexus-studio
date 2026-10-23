@@ -56,6 +56,7 @@ import {
 } from '../services/subscription.js'
 import type { PrivateStore, StoreDocument } from '../store/private-store.js'
 import type { SecretVault } from '../store/secret-vault.js'
+import { ProxyTransfer, TRANSFER_METHODS } from '../services/transfer.js'
 
 export const PROXY_METHODS = [
   'proxy.list',
@@ -85,6 +86,7 @@ export const PROXY_METHODS = [
   'proxy.subscriptions.link',
   'proxy.subscriptions.resetToken',
   'proxy.subscriptions.append',
+  ...TRANSFER_METHODS,
 ] as const
 
 export interface ProxyPoolDependencies {
@@ -115,6 +117,7 @@ export class ProxyPool implements ProxyProvider {
   private readonly logger: Logger
   private readonly checkDeps: Omit<CheckDependencies, 'vault'>
   private readonly now: () => Date
+  private readonly transfer: ProxyTransfer
 
   constructor(dependencies: ProxyPoolDependencies) {
     this.store = dependencies.store
@@ -122,6 +125,7 @@ export class ProxyPool implements ProxyProvider {
     this.logger = dependencies.logger
     this.checkDeps = dependencies.check
     this.now = dependencies.now ?? (() => new Date())
+    this.transfer = new ProxyTransfer(this.store, this.vault)
   }
 
   private timestamp(): string {
@@ -177,6 +181,11 @@ export class ProxyPool implements ProxyProvider {
   async call(context: DispatchContext): Promise<unknown> {
     const { method, payload } = context
     switch (method) {
+      case 'transfer.export':
+      case 'transfer.import':
+      case 'transfer.rollback':
+      case 'transfer.commit':
+        return this.transfer.call(context)
       case 'proxy.list':
         return this.list(payload)
       case 'proxy.get':

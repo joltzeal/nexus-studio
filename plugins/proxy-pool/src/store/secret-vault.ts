@@ -14,14 +14,15 @@ export interface VaultPutResult {
 
 /**
  * Credentials live in the plugin's own private directory, in plaintext, next to
- * the inventory document. The host never receives a password, so this is not a
- * secret store: it is a local file that anyone with the user's file access can
- * read. `proxy-pool.json` and `secrets.json` share the same 0600 permissions.
+ * the inventory document. Host-private launch and portable-transfer RPCs may
+ * materialize passwords; this is not an encrypted secret store.
+ * `proxy-pool.json` and `secrets.json` share the same 0600 permissions.
  */
 export interface SecretVault {
   readonly kind: 'file' | 'memory'
   readonly durable: boolean
-  put(slot: string, plaintext: string): Promise<VaultPutResult>
+  /** A journal may reserve a fresh ref before persisting any credential. */
+  put(slot: string, plaintext: string, reservedRef?: string): Promise<VaultPutResult>
   /** Throws NOT_CONFIGURED when the reference cannot be resolved. */
   resolve(ref: string): Promise<string>
   drop(ref: string): Promise<void>
@@ -61,13 +62,19 @@ class FileVault implements SecretVault {
     private readonly redactor: Redactor,
   ) {}
 
-  async put(slot: string, plaintext: string): Promise<VaultPutResult> {
-    const values = await this.load()
-    const ref = `file:${slot}:${randomUUID()}`
-    values[ref] = plaintext
+  async put(
+    slot: string,
+    plaintext: string,
+    reservedRef?: string,
+  ): Promise<VaultPutResult> {
+    const ref = reservedRef ?? `file:${slot}:${randomUUID()}`
+    validateReservedRef(ref, 'file', slot)
     this.redactor.add(plaintext)
-    await this.persist(values)
-    return { ref, fingerprint: fingerprintOf(plaintext) }
+    return this.mutate((values) => {
+      if (Object.hasOwn(values, ref)) throw unavailable('凭据引用已存在，未覆盖现有值')
+      values[ref] = plaintext
+      return { result: { ref, fingerprint: fingerprintOf(plaintext) }, changed: true }
+    })
   }
 
   async resolve(ref: string): Promise<string> {
@@ -81,10 +88,13 @@ class FileVault implements SecretVault {
   }
 
   async drop(ref: string): Promise<void> {
-    const values = await this.load()
-    if (!(ref in values)) return
-    delete values[ref]
-    await this.persist(values)
+    // Resolve after earlier mutations, then retry failed writes from the last
+    // persisted snapshot rather than a cache already changed by that failure.
+    await this.mutate((values) => {
+      if (!Object.hasOwn(values, ref)) return { result: undefined, changed: false }
+      delete values[ref]
+      return { result: undefined, changed: true }
+    })
   }
 
   private async load(): Promise<VaultDocument> {
@@ -101,13 +111,25 @@ class FileVault implements SecretVault {
     return this.values
   }
 
-  private async persist(values: VaultDocument): Promise<void> {
+  private async mutate<T>(
+    apply: (values: VaultDocument) => { result: T; changed: boolean },
+  ): Promise<T> {
     const temporary = `${this.file}.tmp`
-    const run = async (): Promise<void> => {
-      await mkdir(dirname(this.file), { recursive: true })
-      await writeFile(temporary, `${JSON.stringify(values, null, 2)}\n`, { mode: 0o600 })
-      await rename(temporary, this.file)
+    const run = async (): Promise<T> => {
+      const values = { ...(await this.load()) }
+      const { result, changed } = apply(values)
+      if (!changed) return result
+      try {
+        await mkdir(dirname(this.file), { recursive: true })
+        await writeFile(temporary, `${JSON.stringify(values, null, 2)}\n`, {
+          mode: 0o600,
+        })
+        await rename(temporary, this.file)
+      } catch (error) {
+        throw unavailable('插件凭据写入失败，本次修改未保存', error)
+      }
       this.values = values
+      return result
     }
     const next = this.queue.then(run, run)
     this.queue = next.catch(() => undefined)
@@ -126,8 +148,10 @@ export function createMemoryVault(redactor: Redactor): SecretVault {
   return {
     kind: 'memory',
     durable: false,
-    async put(slot, plaintext) {
-      const ref = `mem:${slot}:${++sequence}`
+    async put(slot, plaintext, reservedRef) {
+      const ref = reservedRef ?? `mem:${slot}:${++sequence}`
+      validateReservedRef(ref, 'mem', slot)
+      if (values.has(ref)) throw unavailable('凭据引用已存在，未覆盖现有值')
       values.set(ref, plaintext)
       redactor.add(plaintext)
       return { ref, fingerprint: fingerprintOf(plaintext) }
@@ -162,4 +186,10 @@ function isMissingFile(error: unknown): boolean {
 /** Kept for the duplicate-detection contract used by the inventory. */
 export function credentialFingerprint(plaintext: string): string {
   return fingerprintOf(plaintext)
+}
+
+function validateReservedRef(ref: string, kind: string, slot: string): void {
+  if (!ref.startsWith(`${kind}:${slot}:`) || ref.length > 256) {
+    throw unavailable('凭据引用无效')
+  }
 }

@@ -8,6 +8,7 @@ import {
   Loader2,
   MapPinned,
   Radar,
+  Radio,
   RefreshCw,
   ShoppingBag,
   SlidersHorizontal,
@@ -70,10 +71,15 @@ const capabilityIcons = {
   'environment.configurator': SlidersHorizontal,
   'monitor.collector': Radar,
   'account.pool': Users,
+  'window.sync': Radio,
 }
 
 function iconFor(capability: string) {
   return capabilityIcons[capability as keyof typeof capabilityIcons] ?? Cable
+}
+
+function capabilityLabel(capability: string) {
+  return capability === 'window.sync' ? '设备同步 (window.sync)' : capability
 }
 
 type RowState = 'available' | 'starting' | 'running' | 'retrying' | 'bundled'
@@ -313,7 +319,7 @@ export function PluginsPage() {
                     </TableCell>
                     <TableCell>
                       <code className="capability-name">
-                        {row.capabilities.join(' · ') || '—'}
+                        {row.capabilities.map(capabilityLabel).join(' · ') || '—'}
                       </code>
                     </TableCell>
                     <TableCell>
@@ -455,7 +461,10 @@ export function PluginsPage() {
                     <TableRow key={entry.id}>
                       <TableCell>
                         <div className="plugin-cell">
-                          <span className="plugin-icon">
+                          <span
+                            className="plugin-icon"
+                            title={entry.capabilities.map(capabilityLabel).join(' · ')}
+                          >
                             <Icon />
                           </span>
                           <div className="plugin-cell-text">
@@ -525,7 +534,7 @@ export function PluginsPage() {
             <div className="about-row">
               <dt>能力</dt>
               <dd>
-                <code>{inspected?.capabilities.join(' · ')}</code>
+                <code>{inspected?.capabilities.map(capabilityLabel).join(' · ')}</code>
               </dd>
             </div>
             <div className="about-row">

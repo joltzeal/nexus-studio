@@ -41,6 +41,19 @@ export type {
   LoginMethod,
   TemplateFile,
 } from './domain/types.js'
+export {
+  AccountTransferDataSchema,
+  TransferExportInputSchema,
+  TransferImportInputSchema,
+  TransferReceiptInputSchema,
+} from './domain/transfer.js'
+export type {
+  AccountTransferData,
+  AccountTransferExportInput,
+  AccountTransferImportInput,
+  AccountTransferImportResult,
+  AccountTransferReceiptInput,
+} from './domain/transfer.js'
 export type { PluginManifest }
 
 export interface VintedAccountsPluginOptions {

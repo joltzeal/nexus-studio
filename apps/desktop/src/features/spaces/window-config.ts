@@ -1,5 +1,6 @@
-import { DEFAULT_WINDOW_CONFIG, type WindowConfig } from '@/demo/model'
+import { createWindowConfig, type WindowConfig } from '@/demo/model'
 import type { NativeProfile } from '@/lib/platform/native-profiles'
+import { randomFingerprintSeed } from '@/lib/random-name'
 
 /**
  * Projects a stored profile onto the seven fields `parseWindowConfig` accepts.
@@ -11,8 +12,7 @@ import type { NativeProfile } from '@/lib/platform/native-profiles'
  */
 export function configOf(profile: NativeProfile | null): WindowConfig {
   if (profile === null) {
-    // A fresh object: the editor mutates its own copy, never the module default.
-    return { ...DEFAULT_WINDOW_CONFIG, proxy: { protocol: 'direct', server: '' } }
+    return createWindowConfig(randomFingerprintSeed())
   }
   const { geoip, timezone, locale, viewport, fingerprintSeed, startUrl } =
     profile.settings

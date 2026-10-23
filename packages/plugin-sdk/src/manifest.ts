@@ -17,6 +17,7 @@ export const PluginCapabilitySchema = z.enum([
   'environment.configurator',
   'monitor.collector',
   'account.pool',
+  'window.sync',
 ])
 
 export const NetworkDomainSchema = z.string().max(253).regex(domainPattern)

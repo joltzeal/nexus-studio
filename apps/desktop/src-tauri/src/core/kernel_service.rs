@@ -4,6 +4,7 @@ use super::profile_store::PreparedBinary;
 use super::runtime_paths::RuntimePaths;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ const PREPARATION_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 const PROGRESS_PREFIX: &str = "NEXUS_KERNEL_PROGRESS ";
 const ERROR_PREFIX: &str = "NEXUS_KERNEL_ERROR ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KernelKind {
     Base,
@@ -111,9 +112,9 @@ impl KernelJob {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledKernel {
-    version: String,
-    kind: KernelKind,
-    binary_path: String,
+    pub(crate) version: String,
+    pub(crate) kind: KernelKind,
+    pub(crate) binary_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +144,51 @@ pub struct KernelService {
 }
 
 impl KernelService {
+    pub(crate) fn installed(&self) -> Result<Vec<InstalledKernel>, String> {
+        Ok(self.status(true)?.inventory.installed)
+    }
+
+    fn probe_binary(&self, binary_path: &str) -> Result<PreparedBinary, String> {
+        let mut command = self.command("version")?;
+        command.arg(binary_path);
+        let output = run_preparation(&mut command, Duration::from_secs(20), None)?;
+        if !output.status.success() {
+            return Err("无法验证本机内核版本，导入已停止".into());
+        }
+        let binary: PreparedBinary = serde_json::from_slice(last_output_line(&output)?)
+            .map_err(|_| "无法识别本机内核版本")?;
+        if binary.binary_path != Path::new(binary_path) {
+            return Err("本机内核路径校验失败，导入已停止".into());
+        }
+        Ok(binary)
+    }
+
+    pub(crate) fn exact_binary(
+        &self,
+        version: &str,
+        kind: KernelKind,
+    ) -> Result<PreparedBinary, String> {
+        if let Some(binary) = self
+            .installed()?
+            .iter()
+            .find(|entry| entry.version == version && entry.kind == kind)
+        {
+            return self.probe_binary(&binary.binary_path);
+        }
+        let binary = self.prepare(kind, Some(version))?;
+        // Chrome's --version can omit the SDK package revision.
+        if !self.installed()?.iter().any(|entry| {
+            entry.version == version
+                && entry.kind == kind
+                && Path::new(&entry.binary_path) == binary.binary_path
+        }) {
+            return Err(
+                "无法取得窗口原有的精确内核版本，导入已停止；请检查激活码和版本可用性".into(),
+            );
+        }
+        Ok(binary)
+    }
+
     pub fn new(license_store: LicenseStore, runtime: RuntimePaths) -> Self {
         Self {
             license_store,
@@ -174,6 +220,7 @@ impl KernelService {
         }
         let mut command = Command::new(&self.runtime.node);
         if action != "inventory"
+            && action != "version"
             && let Some(network) = &self.network
         {
             network
@@ -412,6 +459,23 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
         "同时打开的窗口已达上限，请先关闭其他窗口".into()
     } else if lower.contains("profile_engine_mismatch") {
         "窗口绑定的内核版本不匹配，请恢复原有内核文件".into()
+    } else if lower.contains("profile_launch_timeout") {
+        "窗口启动超时，请检查所选代理及其网络连接后重试".into()
+    } else if lower.contains("portable_state") || lower.contains("profile_restore") {
+        "窗口的 Cookie 或站点数据恢复失败，原迁移文件已保留，请检查内核版本后重试".into()
+    } else if lower.contains("profile_proxy_missing") {
+        "所选代理缺少连接信息，请检查代理插件配置".into()
+    } else if lower.contains("browser_runtime_dependency_missing")
+        || lower.contains("mmdb-lib")
+        || lower.contains("socks-proxy-agent")
+    {
+        "代理环境组件缺失，请更新或重新安装应用".into()
+    } else if lower.contains("profile_proxy_bridge_failed")
+        || lower.contains("err_no_supported_proxies")
+    {
+        "所选代理连接失败，请检查地址、协议和账号密码后重试".into()
+    } else if lower.contains("geoip") {
+        "无法通过所选代理取得出口或地域信息，请检查代理及应用网络设置后重试".into()
     } else {
         "浏览器内核准备失败，请在设置的「浏览器内核」中重新下载".into()
     }
@@ -420,6 +484,29 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_timeout_and_restore_failure_do_not_suggest_redownloading_a_valid_kernel() {
+        assert_eq!(
+            sanitize_kernel_error("PROFILE_LAUNCH_TIMEOUT"),
+            "窗口启动超时，请检查所选代理及其网络连接后重试"
+        );
+        assert!(sanitize_kernel_error("PORTABLE_STATE_INVALID").contains("站点数据恢复失败"));
+        assert!(sanitize_kernel_error("PROFILE_PROXY_MISSING").contains("代理缺少连接信息"));
+        for detail in [
+            "PROFILE_PROXY_BRIDGE_FAILED socks5://user:synthetic-secret@host:1080",
+            "PROFILE_GEOIP_EXIT_IP_REQUIRED",
+            "GeoIP resolution failed: GeoIP database is unavailable",
+        ] {
+            let message = sanitize_kernel_error(detail);
+            assert!(message.contains("代理"));
+            assert!(!message.contains("重新下载"));
+            assert!(!message.contains("synthetic-secret"));
+        }
+        assert!(
+            sanitize_kernel_error("BROWSER_RUNTIME_DEPENDENCY_MISSING").contains("重新安装应用")
+        );
+    }
 
     #[test]
     fn progress_only_changes_an_active_job_and_rejects_invalid_percent() {

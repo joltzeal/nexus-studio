@@ -134,6 +134,27 @@ fn proxy_validation_requires_explicit_port_and_refuses_credentials() {
             .create("proxy", Some("http://host".into()), prepared.clone())
             .is_err()
     );
+    for proxy in [
+        "socks5://127.0.0.1:1080",
+        "socks5://proxy.example:1080/",
+        "socks5://[::1]:1080",
+    ] {
+        assert!(
+            store
+                .create("SOCKS window", Some(proxy.into()), prepared.clone())
+                .is_ok(),
+            "a host and explicit SOCKS port are sufficient: {proxy}"
+        );
+    }
+    assert!(
+        store
+            .create(
+                "proxy",
+                Some("socks5://proxy.example:1080/path".into()),
+                prepared.clone()
+            )
+            .is_err()
+    );
     assert!(
         store
             .create("proxy", Some("http://user:pass@host:8080".into()), prepared)

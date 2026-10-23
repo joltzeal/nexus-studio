@@ -41,10 +41,11 @@ export type MonitorCollector = CapabilityDescriptor
 
 /**
  * Platform account pool: credential records plus the binding between an account
- * and a browser window. Passwords never leave the plugin's private storage, and
- * the window ids are opaque strings the host's profile service owns.
+ * and a browser window. Host-private transfer methods can include credentials
+ * inside an encrypted window archive; business DTOs remain owned by the plugin.
  */
 export type AccountPool = CapabilityDescriptor
+export type WindowSync = CapabilityDescriptor
 
 export interface PluginCapabilityContracts {
   'proxy.provider': ProxyProvider
@@ -56,4 +57,5 @@ export interface PluginCapabilityContracts {
   'environment.configurator': EnvironmentConfigurator
   'monitor.collector': MonitorCollector
   'account.pool': AccountPool
+  'window.sync': WindowSync
 }

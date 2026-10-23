@@ -44,6 +44,9 @@ describe('window editor config', () => {
     const config = configOf(null)
     expect(Object.keys(config)).toEqual(CONFIG_KEYS)
     expect(parseWindowConfig(config)).toEqual(config)
+    expect(config.geoip).toBe(true)
+    expect(config.fingerprintSeed).toBeGreaterThan(0)
+    expect(config.fingerprintSeed).toBeLessThanOrEqual(2147483647)
   })
 
   it('does not carry platform and note from a stored profile', () => {
@@ -55,6 +58,7 @@ describe('window editor config', () => {
     expect(config.timezone).toBe('Asia/Shanghai')
     expect(config.viewport).toBe('1440x900')
     expect(config.fingerprintSeed).toBe(42)
+    expect(config.geoip).toBe(false)
   })
 
   it('reads a literal proxy back into its protocol', () => {

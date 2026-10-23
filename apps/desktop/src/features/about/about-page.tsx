@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { getAppInfo, type AppInfo } from '@/lib/platform/app-info'
 import {
@@ -17,6 +17,7 @@ import {
   checkAppUpdate,
   installAppUpdate,
   updatesAvailable,
+  AppUpdateError,
   type AvailableUpdate,
 } from '@/lib/platform/app-updates'
 
@@ -27,16 +28,25 @@ export function AboutPage() {
   const [updateStatus, setUpdateStatus] = useState<string | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updatePending, setUpdatePending] = useState(false)
+  const mounted = useRef(true)
 
   async function checkUpdate() {
     setUpdatePending(true)
     setUpdateError(null)
+    setUpdateStatus(null)
+    setUpdate(null)
     try {
       const available = await checkAppUpdate()
+      if (!mounted.current) {
+        await available?.close().catch(() => {})
+        return
+      }
       setUpdate(available)
       setUpdateStatus(available ? `发现新版本 ${available.version}` : '当前已是最新版本')
-    } catch {
-      setUpdateError('暂时无法连接更新服务，请稍后重试。')
+    } catch (cause) {
+      setUpdateError(
+        cause instanceof AppUpdateError ? cause.message : '检查更新失败，请重试。',
+      )
     } finally {
       setUpdatePending(false)
     }
@@ -56,7 +66,14 @@ export function AboutPage() {
         )
       })
     } catch (cause) {
-      setUpdateError(cause instanceof Error ? cause.message : '安装更新失败，请重试。')
+      setUpdateStatus(null)
+      if (cause instanceof AppUpdateError && cause.code === 'relaunch_failed') {
+        setUpdate(null)
+        setUpdateStatus('更新已安装，请手动重新打开应用。')
+      }
+      setUpdateError(
+        cause instanceof AppUpdateError ? cause.message : '安装更新失败，请重试。',
+      )
     } finally {
       setUpdatePending(false)
     }
@@ -64,6 +81,7 @@ export function AboutPage() {
 
   useEffect(() => {
     let active = true
+    mounted.current = true
     void getAppInfo().then(
       (result) => {
         if (active) setInfo(result)
@@ -74,8 +92,15 @@ export function AboutPage() {
     )
     return () => {
       active = false
+      mounted.current = false
     }
   }, [])
+
+  useEffect(() => {
+    return () => {
+      void update?.close().catch(() => {})
+    }
+  }, [update])
 
   return (
     <section className="settings-page page-reveal" aria-labelledby="about-heading">

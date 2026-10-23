@@ -30,6 +30,19 @@ export { PROXY_METHODS, ProxyPool } from './capabilities/proxy-provider.js'
 export { createPluginServer } from './rpc/server.js'
 export { createFileStore, createMemoryStore } from './store/private-store.js'
 export { createFileVault, createMemoryVault } from './store/secret-vault.js'
+export {
+  ProxyTransferDataSchema,
+  TransferExportInputSchema,
+  TransferImportInputSchema,
+  TransferReceiptInputSchema,
+} from './domain/transfer.js'
+export type {
+  ProxyTransferData,
+  ProxyTransferExportInput,
+  ProxyTransferImportInput,
+  ProxyTransferImportResult,
+  ProxyTransferReceiptInput,
+} from './domain/transfer.js'
 export type { PluginManifest }
 
 export interface ProxyPluginOptions {
@@ -71,7 +84,7 @@ export function createProxyPlugin(options: ProxyPluginOptions = {}): ProxyPlugin
   const directory = options.storageDirectory ?? null
   const store = directory === null ? createMemoryStore() : createFileStore(directory)
   // Passwords sit next to the inventory in the plugin's own directory, in
-  // plaintext. The host never receives them and there is no system keychain.
+  // plaintext. Host-private launch/transfer RPCs can materialize them.
   const vault =
     directory === null
       ? createMemoryVault(redactor)

@@ -5,6 +5,19 @@ import { describe, expect, it } from 'vitest'
 const root = resolve(import.meta.dirname, '../..')
 
 describe('desktop release configuration', () => {
+  it('uses the public repository that actually publishes the updater manifest', () => {
+    const releaseConfig = JSON.parse(
+      readFileSync(
+        resolve(root, 'apps/desktop/src-tauri/tauri.release.conf.json'),
+        'utf8',
+      ),
+    )
+
+    expect(releaseConfig.plugins.updater.endpoints).toEqual([
+      'https://github.com/joltzeal/nexus-studio/releases/latest/download/latest.json',
+    ])
+  })
+
   it('does not grant Node JIT entitlements to the macOS application process', () => {
     const releaseConfig = JSON.parse(
       readFileSync(

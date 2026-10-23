@@ -1,5 +1,6 @@
 import { checkProxy, getConfig, probeProxy } from '@/features/proxy/api'
 import { message, type CheckResult } from '@/features/proxy/types'
+import { withDeadline } from './transfer-state'
 
 /** The three ways a window can reach the network. */
 export interface WindowProxyRef {
@@ -23,6 +24,18 @@ export function hasProxy(ref: WindowProxyRef): boolean {
  * the plugin's default endpoint; a typed address is probed without saving it.
  */
 export async function checkWindowProxy(ref: WindowProxyRef): Promise<ProxyCheckOutcome> {
+  try {
+    return await withDeadline(
+      measureWindowProxy(ref),
+      45_000,
+      '代理检测超时（45 秒），结果尚未确认。请检查代理池插件和网络后重试，窗口尚未启动。',
+    )
+  } catch (error) {
+    return { kind: 'unsupported', reason: message(error) }
+  }
+}
+
+async function measureWindowProxy(ref: WindowProxyRef): Promise<ProxyCheckOutcome> {
   try {
     if (ref.proxyEndpoint !== null) {
       return {

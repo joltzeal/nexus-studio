@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/features/proxy/api', () => ({
   checkProxy: vi.fn(),
@@ -25,6 +25,8 @@ function result(ok: boolean) {
 }
 
 describe('window proxy gate', () => {
+  afterEach(() => vi.useRealTimers())
+
   beforeEach(() => {
     vi.mocked(checkProxy).mockReset()
     vi.mocked(probeProxy).mockReset()
@@ -107,5 +109,21 @@ describe('window proxy gate', () => {
     expect(
       hasProxy({ proxy: null, proxyPlugin: 'studio.proxy-pool', proxyEndpoint: null }),
     ).toBe(true)
+  })
+
+  it('bounds the whole preflight check without reporting an unknown proxy as usable', async () => {
+    vi.useFakeTimers()
+    vi.mocked(probeProxy).mockReturnValue(new Promise(() => undefined))
+    const checking = checkWindowProxy({
+      proxy: 'http://proxy.example:8080',
+      proxyPlugin: null,
+      proxyEndpoint: null,
+    })
+    await vi.advanceTimersByTimeAsync(45_000)
+    await expect(checking).resolves.toMatchObject({
+      kind: 'unsupported',
+      reason: expect.stringContaining('超时'),
+    })
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

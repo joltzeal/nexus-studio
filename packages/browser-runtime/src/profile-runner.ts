@@ -1,5 +1,5 @@
-import { openProfile, prepareBinary, validateBrowserLicense } from './profile-runtime.js'
 import type { NativeProfile } from './profile-runtime.js'
+import { validatePortableStateFiles } from './portable-state.js'
 import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -16,6 +16,7 @@ const reportProgress = (progress: KernelProgress): void => {
 }
 
 async function prepare(): Promise<void> {
+  const { prepareBinary } = await import('./profile-runtime.js')
   // The SDK reports observed bytes and stages on stderr, rather than a progress API.
   const log = console.error
   console.error = (...args: unknown[]) => {
@@ -39,8 +40,19 @@ async function prepare(): Promise<void> {
 
 async function main(): Promise<void> {
   const [action, userDataDir] = process.argv.slice(2)
-  if (action === 'prepare') {
+  if (action === 'validate-state') {
+    await validatePortableStateFiles(process.argv.slice(3))
+    process.stdout.write('{"valid":true}\n')
+  } else if (action === 'prepare') {
     await prepare()
+  } else if (action === 'version' && userDataDir) {
+    const { binaryVersion } = await import('./profile-runtime.js')
+    process.stdout.write(
+      `${JSON.stringify({
+        version: await binaryVersion(userDataDir),
+        binary_path: userDataDir,
+      })}\n`,
+    )
   } else if (action === 'inventory') {
     process.stdout.write(
       `${JSON.stringify(
@@ -52,15 +64,27 @@ async function main(): Promise<void> {
       )}\n`,
     )
   } else if (action === 'validate-license') {
+    const { validateBrowserLicense } = await import('./profile-runtime.js')
     const key = process.env.CLOAKBROWSER_LICENSE_KEY
     if (!key) throw new Error('License key is required')
     process.stdout.write(`${JSON.stringify(await validateBrowserLicense(key))}\n`)
-  } else if (action === 'launch' && userDataDir) {
+  } else if ((action === 'launch' || action === 'snapshot') && userDataDir) {
     const input = createInterface({ input: process.stdin })
-    const commands = input[Symbol.asyncIterator]()
-    const first = await commands.next()
-    if (first.done) throw new Error('Profile configuration missing')
-    await openProfile(userDataDir, JSON.parse(first.value) as NativeProfile, commands)
+    try {
+      const commands = input[Symbol.asyncIterator]()
+      const first = await commands.next()
+      if (first.done) throw new Error('Profile configuration missing')
+      const record = JSON.parse(first.value) as NativeProfile
+      const { snapshotProfile, openProfile } = await import('./profile-runtime.js')
+      if (action === 'snapshot') {
+        const state = await snapshotProfile(userDataDir, record)
+        process.stdout.write(`${JSON.stringify(state)}\n`)
+      } else {
+        await openProfile(userDataDir, record, commands)
+      }
+    } finally {
+      input.close()
+    }
   } else {
     throw new Error('Unknown profile action')
   }

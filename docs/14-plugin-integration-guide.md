@@ -404,3 +404,27 @@ rtk proxy pnpm run test
 9. 完成签名、来源验证和操作系统隔离后，再评估第三方插件开放。**未开始**。
 
 第 1 项与第 8 项的缺口、以及第 9 项需要的隔离能力，见[插件宿主](17-plugin-host.md)第 12 节。
+
+## 14. 窗口迁移与同步
+
+`proxy.provider`、`account.pool` 可以提供宿主内部的 `transfer.export`、
+`transfer.import`、`transfer.rollback` 与 `transfer.commit`。
+这些方法只由原生窗口迁移服务调用，WebView 的 `plugin_call` 拒绝所有 `transfer.*`。
+代理、账号的业务格式仍由插件负责，宿主仅保存和传递不透明附件。
+
+- 导出输入为 `{ windowIds, endpointIds }`；代理额外支持 `includeDefault`，
+  只有所选窗口跟随默认代理时才设为真。
+- 导入输入为 `{ data, windowIdMap, transactionId }`。`transactionId` 为 UUID，
+  同一请求重试应幂等，收据必须落盘。
+- 导入结果为 `{ receipt }`；代理还必须返回 `{ endpointIdMap }`，
+  对原端点数字标识映射到新端点，不能自动选择本机默认代理。
+- 回滚和提交输入均为 `{ receipt }`，重复调用应成功。
+  回滚只能撤销该收据创建的资料，覆盖关联时要恢复原有绑定。
+- 导出允许把所选窗口关联的密码交给原生服务，由服务写入加密容器；
+  不导出无关账号、应用激活码、代理检测 API Key 等全局秘密。
+
+新能力 `window.sync` 承担已加密快照的设备直连传输。
+主应用通过专用原生命令调用它，不向通用 `plugin_call` 开放；
+同步插件不直接读取浏览器目录，也不解释账号与代理字段。
+完整格式与恢复约束见[窗口加密迁移](28-window-transfer.md)，
+具体插件协议见[窗口同步插件](29-window-sync-plugin.md)。

@@ -114,7 +114,7 @@ export function verifyPackagedRuntime(
       preloadUrl,
       '--input-type=module',
       '-e',
-      `await import(${JSON.stringify(browserUrl)}); console.log(${JSON.stringify(VERIFY_MARKER)})`,
+      `const runtime = await import(${JSON.stringify(browserUrl)}); await runtime.verifySdkDependencies(); console.log(${JSON.stringify(VERIFY_MARKER)})`,
     ],
     { encoding: 'utf8' },
   )

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const PLUGIN_API_VERSION: u32 = 1;
-pub const CORE_VERSION: &str = "0.1.0";
+pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,10 +25,12 @@ pub enum Capability {
     MonitorCollector,
     #[serde(rename = "account.pool")]
     AccountPool,
+    #[serde(rename = "window.sync")]
+    WindowSync,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 9] = [
+    pub const ALL: [Capability; 10] = [
         Capability::ProxyProvider,
         Capability::AddressGenerator,
         Capability::SupplyCatalog,
@@ -38,6 +40,7 @@ impl Capability {
         Capability::EnvironmentConfigurator,
         Capability::MonitorCollector,
         Capability::AccountPool,
+        Capability::WindowSync,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -51,6 +54,7 @@ impl Capability {
             Capability::EnvironmentConfigurator => "environment.configurator",
             Capability::MonitorCollector => "monitor.collector",
             Capability::AccountPool => "account.pool",
+            Capability::WindowSync => "window.sync",
         }
     }
 
@@ -308,4 +312,22 @@ pub fn valid_domain(domain: &str) -> bool {
     }
     let tld = labels[labels.len() - 1];
     tld.len() >= 2 && tld.bytes().all(|byte| byte.is_ascii_alphabetic())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn a_plugin_requiring_the_running_application_version_is_compatible() {
+        let manifest = serde_json::json!({
+            "apiVersion":1,"id":"studio.window-sync","version":"1.0.0",
+            "name":"Window sync","minCoreVersion":env!("CARGO_PKG_VERSION"),
+            "capabilities":["window.sync"],"permissions":{
+                "networkDomains":[],"wantsBrowserAccess":false,"storage":"private","secrets":[]
+            }
+        });
+        let parsed = PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(parsed.declares(Capability::WindowSync));
+    }
 }

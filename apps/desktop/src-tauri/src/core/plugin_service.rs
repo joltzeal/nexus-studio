@@ -114,6 +114,9 @@ pub async fn plugin_call(
     if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
         return Err("代理连接解析仅供原生窗口启动调用".into());
     }
+    if input.method.starts_with("transfer.") || capability == Capability::WindowSync {
+        return Err("窗口迁移与同步只能通过窗口管理调用".into());
+    }
     let deadline = Duration::from_millis(input.deadline_ms.unwrap_or(30_000).clamp(1_000, 120_000));
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
@@ -162,6 +165,9 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     // The store is polled in the background so a new plugin version shows up
     // without the user opening the plugin page.
     host.watch_market();
+    // Native recovery precedes profile loading. Plugin receipts are retried
+    // through the transfer status command after the UI can open.
+    super::transfer_service::recover_pending(&app_data).map_err(std::io::Error::other)?;
     let license_store =
         LicenseStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
     let groups = GroupStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
@@ -180,7 +186,15 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     )
     .map_err(std::io::Error::other)?
     .with_network(network);
-    app.manage(Arc::new(profiles));
+    let profiles = Arc::new(profiles);
+    let transfer = super::transfer_service::TransferService::new(
+        Arc::clone(&profiles),
+        Arc::clone(&host),
+        app_data.join("transfers"),
+    )
+    .map_err(std::io::Error::other)?;
+    app.manage(profiles);
+    app.manage(Arc::new(transfer));
     app.manage(Arc::new(license_service));
     Ok(())
 }

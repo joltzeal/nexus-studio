@@ -3,6 +3,10 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
 import { unavailable } from '../domain/errors.js'
+import {
+  ProxyTransferReceiptSchema,
+  type ProxyTransferReceipt,
+} from '../domain/transfer.js'
 import type {
   EndpointRecord,
   GroupRecord,
@@ -25,6 +29,7 @@ export interface StoreDocument {
   endpoints: EndpointRecord[]
   subscriptions: SubscriptionRecord[]
   config: StoreConfig
+  transferReceipts: ProxyTransferReceipt[]
 }
 
 export interface PrivateStore {
@@ -97,6 +102,7 @@ const documentSchema = z.looseObject({
       cacheSeconds: z.number().int(),
     }),
   }),
+  transferReceipts: z.array(ProxyTransferReceiptSchema).default([]),
 })
 
 export function emptyDocument(): StoreDocument {
@@ -110,6 +116,7 @@ export function emptyDocument(): StoreDocument {
       defaultEndpointId: null,
       risk: { enabled: true, apiKeyRef: null, cacheSeconds: 3600 },
     },
+    transferReceipts: [],
   }
 }
 

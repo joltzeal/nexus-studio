@@ -128,7 +128,7 @@ try {
       networkModule,
       '--input-type=module',
       '-e',
-      `await import(${JSON.stringify(browserModule)})`,
+      `const runtime = await import(${JSON.stringify(browserModule)}); await runtime.verifySdkDependencies()`,
     ],
     { cwd: root, stdio: 'inherit' },
   )

@@ -27,6 +27,12 @@ import type {
 import type { DispatchContext } from '../rpc/protocol.js'
 import type { Logger } from '../rpc/redact.js'
 import type { AccountStore } from '../store/account-store.js'
+import {
+  TRANSFER_METHODS,
+  exportAccounts,
+  finishAccountsTransfer,
+  importAccounts,
+} from './transfer.js'
 
 export const ACCOUNT_METHODS = [
   'vinted.accounts.list',
@@ -38,6 +44,7 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.bind',
   'vinted.accounts.unbind',
   'vinted.accounts.bindings',
+  ...TRANSFER_METHODS,
 ] as const
 
 /** One JSON document holds everything, so growth must stay bounded. */
@@ -116,6 +123,14 @@ export class AccountPool {
 
   async call(context: DispatchContext): Promise<unknown> {
     switch (context.method) {
+      case 'transfer.export':
+        return exportAccounts(this.store, context)
+      case 'transfer.import':
+        return importAccounts(this.store, context, MAX_ACCOUNTS)
+      case 'transfer.rollback':
+        return finishAccountsTransfer(this.store, context, true)
+      case 'transfer.commit':
+        return finishAccountsTransfer(this.store, context, false)
       case 'vinted.accounts.list':
         return await this.listAccounts(context)
       case 'vinted.accounts.save':

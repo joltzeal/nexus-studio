@@ -2,7 +2,9 @@ pub mod core;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_process::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init());
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
@@ -14,6 +16,17 @@ pub fn run() {
             core::profile_service::profile_delete,
             core::profile_service::profile_launch,
             core::profile_service::profile_stop,
+            core::transfer_service::profile_transfer_pick,
+            core::transfer_service::profile_transfer_recovery_status,
+            core::transfer_service::profile_transfer_export,
+            core::transfer_service::profile_transfer_inspect,
+            core::transfer_service::profile_transfer_import,
+            core::transfer_service::profile_sync_offer,
+            core::transfer_service::profile_sync_receive,
+            core::transfer_service::profile_sync_status,
+            core::transfer_service::profile_sync_cancel,
+            core::transfer_service::profile_sync_import,
+            core::updater_service::app_update_check,
             core::profile_service::kernel_status,
             core::profile_service::kernel_download,
             core::license_service::license_status,

@@ -5,7 +5,7 @@
 
 ## 当前事实
 
-插件包位于 `plugins/vinted-accounts`，实现 `account.pool` 能力的 8 个方法、
+插件包位于 `plugins/vinted-accounts`，实现 `account.pool` 能力的方法、
 私有 JSON 存储与逐行 JSON RPC 服务端。页面位于
 `apps/desktop/src/features/accounts`，在主导航里叫「Vinted 账号」。
 账号与浏览器窗口的关联也在这里维护，窗口页只负责发起关联。
@@ -49,9 +49,78 @@ plugins/vinted-accounts/
 | `vinted.accounts.bind`     | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突     |
 | `vinted.accounts.unbind`   | `{ windowId }`                                | 解除该窗口的关联                 |
 | `vinted.accounts.bindings` | —                                             | 绑定列表，附带账号摘要           |
+| `transfer.export`          | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照   |
+| `transfer.import`          | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执 |
+| `transfer.rollback`        | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定   |
+| `transfer.commit`          | `{ receipt }`                                 | 清理成功回执，保留账号与绑定     |
 
 上限：账号 2000 条，导入报告最多回传 50 条错误。单次导入内容不超过 512 KB
 （宿主单行消息上限 1 MiB，base64 会放大 1.33 倍）。
+
+## 可移植传输（原生宿主私有）
+
+`transfer.*` 沿用 `account.pool` 能力，不新增能力或版本号。
+插件自行解析业务数据，宿主只归档与回传不透明 JSON，不读取 `vinted-accounts.json`。
+新增传输中的明文密码与接码链接只允许交给原生归档宿主；
+宿主必须禁止通用 WebView `plugin_call` 转发这些方法，传输结果不得进入页面状态或日志。
+插件端不实现归档加密、Profile 文件/SQLite 事务或宿主的路由拦截；
+账号本地存储继续是现有明文、0600 文件。
+
+四个方法使用严格对象，成功结果如下：
+
+```ts
+// transfer.export
+type ExportInput = { windowIds: string[]; endpointIds: number[] }
+type ExportResult = {
+  schemaVersion: 1
+  accounts: AccountRecord[]
+  bindings: { windowId: string; accountId: string; boundAt: string }[]
+}
+
+// transfer.import
+type ImportInput = {
+  data: unknown // 必须通过插件的 AccountTransferDataSchema
+  windowIdMap: Record<string, string>
+  transactionId?: string // UUID；省略时由插件生成
+}
+type ImportResult = { receipt: string } // 等于 transactionId 或插件生成的 UUID
+
+// transfer.rollback / transfer.commit
+type ReceiptInput = { receipt: string }
+type ReceiptResult = { success: true }
+```
+
+`AccountRecord` 包含 `id`、九个业务字段与 `createdAt` / `updatedAt`，字段定义见
+插件 `src/domain/types.ts`。快照保留真实密码的首尾空格、两种接码链接、状态、备注、
+主页地址与时间，不包含全局 API Key、授权密钥或其他插件数据。
+公开入口导出传输类型与 zod schema；未知字段、非法版本、重复账号/窗口 ID、
+悬空账号引用、没有绑定的额外账号以及无效映射均拒绝，错误不回显凭据。
+
+- 导出只包含 `windowIds` 中存在的绑定及其关联账号，同一账号在多个选中窗口间共享时只导出一次。
+  不带出该账号在未选中窗口的绑定，也不导出未关联或仅关联到未选中窗口的账号。
+  空窗口集合得到空快照，未关联窗口不构成导出错误。
+- `endpointIds` 只校验类型，不用于账号选择。导出与导入不执行账号登录或接码请求。
+- 导入给每个账号分配新 ID，保留有效业务值与原时间，并按 `windowIdMap` 重映射每条窗口绑定。
+  每条源绑定必须有显式映射，多个源绑定不能指向同一目标；不会回退到源窗口标识。
+- 已存在相同登录方式/账号时仍创建独立副本，不走表格导入的 upsert，不修改现有账号凭据。
+  传输副本允许同一登录标识的多条记录；普通保存和表格导入沿用各自已有的重复处理规则。
+  本地账号总量仍受 2000 条上限约束。
+- 新窗口目标已有绑定时拒绝覆盖；仅 `源 windowId === 目标 windowId` 的同 ID 替换允许覆盖，
+  并把原绑定保存在本次回执里。不可变内核/seed 的替换资格由宿主验证，插件不读取 Profile。
+
+账号、副本绑定、被替换的原绑定和回执同处 `vinted-accounts.json`，
+一次原子写入后才返回成功；校验失败或文件写入失败不会留下半批账号或绑定。
+`transferReceipts` 是向后兼容的可选持久字段，旧文档缺少时视为空，本地 `schemaVersion` 保持 1。
+回执只记录本次新增账号 ID、导入绑定、需恢复的原绑定与输入摘要，不复制已有账号的凭据。
+
+建议宿主传自己的 `transactionId`，进程在回包前中断时仍可按该 UUID 回滚。
+相同未清理事务、相同数据和映射的重复导入返回原回执，不再创建副本；
+同一事务标识用于不同数据会被拒绝。提交/回滚清理回执后不再去重，新的宿主事务应使用新 UUID。
+回滚只删除本次创建的账号及其绑定，并恢复同 ID 替换前的原绑定；
+如果窗口后来已改绑到现有账号，则保留后来的绑定，不覆盖用户改动。
+提交只删回执，不删账号/绑定；已清理或未知的有效 UUID 回执可重复提交或回滚，
+返回 `{ success: true }`。回执不会自动过期，宿主应在归档事务完成后收尾。
+未提供私有目录的内存模式不承诺重启后恢复。
 
 ## 表格导入
 
@@ -104,4 +173,19 @@ bindings: [{ windowId, accountId, boundAt }]
 - 没有批量改状态、批量删除与去重合并。
 - 没有 `.xls`（旧二进制格式）支持，读取时直接提示另存为 `.xlsx` 或 `.csv`。
 - 表格只读第一张工作表，多工作表的文件其余部分被忽略。
-- 导出只提供空模板，不提供“把现有账号导成表格”。
+- 表格导出只提供空模板，不提供“把现有账号导成表格”；选中窗口的宿主私有归档使用上述传输协议。
+
+## 本地验证
+
+```bash
+rtk proxy pnpm --filter @nexus/plugin-vinted-accounts run build
+rtk proxy pnpm exec vitest run plugins/vinted-accounts
+rtk proxy pnpm exec eslint plugins/vinted-accounts --max-warnings 0
+```
+
+使用仓库固定 Node.js 24.18.0，并在复用已安装依赖时设置
+`pnpm_config_verify_deps_before_run=false`。
+传输测试启动实际构建的 Node.js 入口，经握手和逐行 RPC 验证选中范围、完整凭据、
+共享账号的窗口重映射、调用方事务 UUID、重启后的回滚/提交、同 ID 替换恢复、
+真实文件写入失败与重试。另有取消、幂等重试与账号上限的原子性测试。
+必须先构建再运行真实进程测试；这些验证不代表账号登录、Windows 或完整宿主归档集成已通过。

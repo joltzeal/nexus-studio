@@ -267,7 +267,7 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
   目标形态（`.nexuspkg`、私有分发、L3 会话密钥、收费检查点）见
   [插件发布与 CI/CD](18-plugin-release-and-cicd.md)，均为方案，尚未实现。
 - 只实现了 `proxy.provider`、`address.generator`、`supply.catalog`、`image.provider`、
-  `monitor.collector` 与 `account.pool` 的真实调用路径；`platform.adapter`、`verification.provider` 与
+  `monitor.collector`、`account.pool` 与 `window.sync` 的真实调用路径；`platform.adapter`、`verification.provider` 与
   `environment.configurator` 只有声明与类型。
 - 地址生成器的公开地址来自 Overpass 镜像，覆盖与时效取决于 OpenStreetMap；
   它不连接任何地址库服务，也不做真实收件验证。
@@ -278,3 +278,12 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 - Vinted 账号池把账号密码明文写在插件私有目录（0600），宿主既不加密也不代管；
   窗口与账号的关联也由插件保存，卸载插件会一并删除。
 - 未验证 Windows 下的进程回收、路径与凭据行为。
+
+## 13. 窗口迁移边界
+
+窗口迁移服务通过插件的 `transfer.export/import/rollback/commit` 交换不透明附件，
+不读取账号池或代理池的私有业务文件。WebView 通用 `plugin_call` 拒绝 `transfer.*`
+及 `window.sync` 能力；配对秘密、临时文件路径和导入收据由专用原生命令管理。
+同步插件只接收已经加密的快照，不直接接触浏览器 Cookie。
+完整格式与失败恢复见[窗口加密迁移](28-window-transfer.md)，
+传输协议见[窗口同步插件](29-window-sync-plugin.md)。

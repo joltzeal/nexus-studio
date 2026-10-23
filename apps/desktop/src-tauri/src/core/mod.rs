@@ -10,6 +10,9 @@ pub mod profile_service;
 pub mod profile_store;
 pub mod runtime_paths;
 pub mod scheduler;
+pub mod transfer_archive;
+pub mod transfer_service;
+pub mod updater_service;
 
 use plugins::{Capability, PluginError, PluginRegistry, ProxyProviderPort};
 use scheduler::{LaunchRequest, LaunchSnapshot, ProxyBinding, Scheduler, SchedulerError};
@@ -105,6 +108,10 @@ mod license_service_tests;
 #[cfg(test)]
 mod license_store_tests;
 #[cfg(test)]
+mod profile_launch_tests;
+#[cfg(test)]
 mod profile_store_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transfer_archive_tests;

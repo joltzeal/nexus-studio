@@ -21,6 +21,50 @@ describe('window browser options', () => {
     ).toBe(proxy)
   })
 
+  it('enables GeoIP for proxied profiles without saved settings', () => {
+    expect(
+      browserOptionsForWindow('/data/profile', {
+        proxy: 'http://account:password@proxy.example:8080',
+      }).geoip,
+    ).toBe(true)
+  })
+
+  it('ignores the auto GeoIP preference on a direct connection', () => {
+    expect(
+      browserOptionsForWindow('/data/profile', {
+        proxy: null,
+        settings: {
+          platform: '',
+          note: '',
+          geoip: true,
+          timezone: '',
+          locale: '',
+          viewport: 'default',
+          fingerprintSeed: null,
+          startUrl: '',
+        },
+      }).geoip,
+    ).not.toBe(true)
+  })
+
+  it('honors an explicitly disabled GeoIP preference with a proxy', () => {
+    expect(
+      browserOptionsForWindow('/data/profile', {
+        proxy: 'socks5://proxy.example:1080',
+        settings: {
+          platform: '',
+          note: '',
+          geoip: false,
+          timezone: '',
+          locale: '',
+          viewport: 'default',
+          fingerprintSeed: null,
+          startUrl: '',
+        },
+      }).geoip,
+    ).not.toBe(true)
+  })
+
   it('maps saved settings into the persistent browser launch', () => {
     expect(
       browserOptionsForWindow('/data/profile', {

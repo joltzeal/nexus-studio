@@ -950,6 +950,23 @@ impl PluginHost {
         Ok(process)
     }
 
+    pub(crate) fn require_methods(
+        &self,
+        id: &str,
+        capability: Capability,
+        methods: &[&str],
+    ) -> Result<(), HostError> {
+        let plugin = self.find(id)?;
+        let process = self.ensure_started(id)?;
+        let ready = process
+            .ready()
+            .ok_or(HostError::Process(ProcessError::NotReady))?;
+        for method in methods {
+            permissions::check_call(&plugin, &ready, capability, method)?;
+        }
+        Ok(())
+    }
+
     pub fn call(
         &self,
         id: &str,
