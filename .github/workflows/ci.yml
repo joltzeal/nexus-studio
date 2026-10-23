@@ -46,6 +46,9 @@ jobs:
         run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify Windows packaged runtime
+        if: runner.os == 'Windows'
+        run: pnpm runtime:stage
       - run: pnpm rust:check
       - run: pnpm rust:test
       - run: pnpm rust:lint

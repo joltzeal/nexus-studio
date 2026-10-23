@@ -87,19 +87,32 @@ try {
     ['@nexus/browser-runtime', join(runtime, 'browser-runtime')],
   ]) {
     await mkdir(resolve(destination, '..'), { recursive: true })
-    const result = spawnSync(
-      process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
-      [
-        '--filter',
-        name,
-        'deploy',
-        '--legacy',
-        '--prod',
-        '--config.node-linker=hoisted',
-        destination,
-      ],
-      { cwd: root, env: deployEnv, stdio: 'inherit' },
-    )
+    const args = [
+      '--filter',
+      name,
+      'deploy',
+      '--legacy',
+      '--prod',
+      '--config.node-linker=hoisted',
+      destination,
+    ]
+    // On Windows a .cmd shim cannot be spawned directly without a shell.
+    // A pnpm script provides its JS CLI, which Node can spawn on every platform.
+    const pnpmCli = process.env.npm_execpath
+    const result = pnpmCli
+      ? spawnSync(process.execPath, [pnpmCli, ...args], {
+          cwd: root,
+          env: deployEnv,
+          stdio: 'inherit',
+        })
+      : spawnSync(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', args, {
+          cwd: root,
+          env: deployEnv,
+          stdio: 'inherit',
+          shell: process.platform === 'win32',
+        })
+    if (result.error)
+      throw new Error(`Failed to start pnpm deploy: ${result.error.message}`)
     if (result.status !== 0) throw new Error(`Failed to stage ${name}`)
   }
   const browserModule = pathToFileURL(
