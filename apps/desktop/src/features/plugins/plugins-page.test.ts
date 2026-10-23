@@ -14,6 +14,11 @@ describe('plugin center without a host', () => {
     expect(html).toContain('proxy.provider')
     expect(html).toContain('v1.0.0')
     expect(html).toContain('仅桌面应用')
+    // SIM8 is the bundled plugin that owns the verification capability; the
+    // demo row used to be the only place it appeared.
+    expect(html).toContain('SIM8 接码')
+    expect(html).toContain('studio.sim8')
+    expect(html).toContain('verification.provider')
   })
 
   it('never claims a plugin is installed or running', () => {
@@ -28,8 +33,7 @@ describe('plugin center without a host', () => {
     expect(html).not.toContain('待接入')
     expect(html).not.toContain('查看清单')
     expect(html).not.toContain('platform.adapter')
-    expect(html).not.toContain('verification.provider')
-    expect(html).not.toContain('demo.image-helper')
+    expect(html).not.toContain('demo.')
   })
 
   it('keeps the page free of explanation copy', () => {

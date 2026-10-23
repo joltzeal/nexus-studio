@@ -4,6 +4,86 @@ use super::profile_store::{
 use std::fs;
 
 #[test]
+fn windows_are_newest_first_with_persistent_insertion_order_for_ties() {
+    let root = tempfile::tempdir().unwrap();
+    let binary_path = root.path().join("chrome");
+    fs::write(&binary_path, b"binary").unwrap();
+    let store = ProfileStore::new(root.path().join("profiles"));
+    let binary = PreparedBinary {
+        version: "145.0.7632.109.2".into(),
+        binary_path,
+    };
+    let db = super::group_store::open_database(&root.path().join("nexus.sqlite")).unwrap();
+    let mut records = Vec::new();
+    for (name, at) in [("old", 10), ("first", 30), ("middle", 20), ("latest", 30)] {
+        let mut record = store.create(name, None, binary.clone()).unwrap();
+        record.created_at = at;
+        db.execute(
+            "UPDATE profile_records SET record_json = ?2 WHERE id = ?1",
+            rusqlite::params![record.id, serde_json::to_string(&record).unwrap()],
+        )
+        .unwrap();
+        records.push(record);
+    }
+    store.mark_opened(&records[0].id).unwrap();
+    store
+        .update_note(&records[0].id, "edited old window")
+        .unwrap();
+    let reopened = ProfileStore::new(root.path().join("profiles"));
+    assert_eq!(
+        reopened
+            .list()
+            .unwrap()
+            .iter()
+            .map(|record| record.name.as_str())
+            .collect::<Vec<_>>(),
+        ["latest", "first", "middle", "old"]
+    );
+}
+
+#[test]
+fn note_updates_preserve_all_other_fields_and_persist_after_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let binary_path = root.path().join("chrome");
+    fs::write(&binary_path, b"binary").unwrap();
+    let store = ProfileStore::new(root.path().join("profiles"));
+    let created = store
+        .create_with_group(
+            "Shop",
+            ProxySource::plugin("studio.proxy-pool".into(), Some(7)),
+            WindowSettings {
+                fingerprint_seed: Some(17),
+                timezone: "Europe/Paris".into(),
+                ..WindowSettings::default()
+            },
+            PreparedBinary {
+                version: "145.0.7632.109.2".into(),
+                binary_path,
+            },
+            None,
+        )
+        .unwrap();
+    store.mark_opened(&created.id).unwrap();
+    let mut expected = store.get(&created.id).unwrap();
+    assert_eq!(
+        store.update_note(&created.id, "  updated  ").unwrap(),
+        "updated"
+    );
+    expected.settings.note = "updated".into();
+    let reopened = ProfileStore::new(root.path().join("profiles"));
+    assert_eq!(reopened.get(&created.id).unwrap(), expected);
+    assert!(store.update_note(&created.id, &"a".repeat(121)).is_err());
+    assert_eq!(store.get(&created.id).unwrap(), expected);
+    assert_eq!(store.update_note(&created.id, "   ").unwrap(), "");
+    assert_eq!(store.get(&created.id).unwrap().settings.note, "");
+    assert!(
+        store
+            .update_note(&uuid::Uuid::new_v4().to_string(), "missing")
+            .is_err()
+    );
+}
+
+#[test]
 fn profile_binding_survives_a_new_store_instance() {
     let root = tempfile::tempdir().unwrap();
     let binary = root.path().join("chrome");

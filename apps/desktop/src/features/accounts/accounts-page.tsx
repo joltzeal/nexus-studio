@@ -60,6 +60,7 @@ import {
   type PluginView,
 } from '@/lib/platform/native-plugins'
 import { PluginGate } from '@/features/plugins/plugin-gate'
+import { NumberPoolPicker } from '@/features/sim8/number-picker'
 import {
   downloadTemplate,
   importAccounts,
@@ -777,13 +778,20 @@ function AccountEditor({
           <div className="window-form-grid">
             <Field>
               <FieldLabel htmlFor="account-phone">手机号</FieldLabel>
-              <Input
-                id="account-phone"
-                maxLength={40}
-                disabled={pending}
-                value={input.phone}
-                onChange={(event) => patch({ phone: event.target.value })}
-              />
+              <div className="sim8-phone-field">
+                <Input
+                  id="account-phone"
+                  maxLength={40}
+                  disabled={pending}
+                  value={input.phone}
+                  onChange={(event) => patch({ phone: event.target.value })}
+                />
+                <NumberPoolPicker
+                  disabled={pending}
+                  ariaLabel="从号码池选择手机号和接码链接"
+                  onPick={(number) => patch({ phone: number.tel, smsOtpUrl: number.api })}
+                />
+              </div>
             </Field>
             <Field>
               <FieldLabel htmlFor="account-homepage">主页链接</FieldLabel>

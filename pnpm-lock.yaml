@@ -264,6 +264,9 @@ importers:
       '@nexus/plugin-shared-supply':
         specifier: workspace:*
         version: link:../../plugins/shared-supply
+      '@nexus/plugin-sim8':
+        specifier: workspace:*
+        version: link:../../plugins/sim8
       '@nexus/plugin-vinted-accounts':
         specifier: workspace:*
         version: link:../../plugins/vinted-accounts
@@ -387,6 +390,15 @@ importers:
         version: 4.4.3
 
   plugins/shared-supply:
+    dependencies:
+      '@nexus/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  plugins/sim8:
     dependencies:
       '@nexus/plugin-sdk':
         specifier: workspace:*

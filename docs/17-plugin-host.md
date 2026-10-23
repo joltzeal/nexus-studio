@@ -216,6 +216,12 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 页面侧：插件中心是一张紧凑表格，列出插件、能力、版本、状态与操作；
 操作只有“安装”、清单详情（`i` 图标）与卸载，没有启用、停用或重启。
+侧栏与插件页面共用 `AppShell` 读取的宿主目录，只为已启用且非 `available` 的记录生成入口。
+前端原生适配层在安装、商店安装/更新与卸载成功后发布目录变更通知，失败不发布成功通知；
+目录监听器串行读取，忽略变更前仍在途的旧响应，并每 5 秒补查后台状态。
+重读失败保留菜单并允许重试，当前插件被移除时回到插件中心；卸载再安装不会自动抢回页面。
+专用 React 页面按插件 ID 登记，没有适配器的插件显示通用详情，规则见
+[插件对接规范](14-plugin-integration-guide.md)第 10.1 节。
 代理池页面通过同一宿主调用 `proxy.*` 方法，默认代理与密钥都在插件侧配置。
 密码在插件侧填写与保存，页面不回显，也没有宿主侧的密钥输入框。
 地址生成器页面同样只经 `plugin_call` 调用 `address.*` 方法，地图 Key 存在插件私有目录，
@@ -267,8 +273,8 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
   目标形态（`.nexuspkg`、私有分发、L3 会话密钥、收费检查点）见
   [插件发布与 CI/CD](18-plugin-release-and-cicd.md)，均为方案，尚未实现。
 - 只实现了 `proxy.provider`、`address.generator`、`supply.catalog`、`image.provider`、
-  `monitor.collector`、`account.pool` 与 `window.sync` 的真实调用路径；`platform.adapter`、`verification.provider` 与
-  `environment.configurator` 只有声明与类型。
+  `monitor.collector`、`account.pool`、`verification.provider` 与 `window.sync` 的真实调用路径；
+  `platform.adapter` 与 `environment.configurator` 只有声明与类型。
 - 地址生成器的公开地址来自 Overpass 镜像，覆盖与时效取决于 OpenStreetMap；
   它不连接任何地址库服务，也不做真实收件验证。
 - 共享货源插件连接第三方供应商接口，其可用性、限流与数据结构变化都不受宿主控制；

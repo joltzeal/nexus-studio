@@ -103,6 +103,7 @@ pub struct ProfileRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     InvalidName,
+    InvalidNote,
     InvalidProxy,
     InvalidProxyPlugin,
     InvalidSettings,
@@ -281,6 +282,28 @@ impl ProfileStore {
         Ok(record)
     }
 
+    pub fn update_note(&self, id: &str, note: &str) -> Result<String, StoreError> {
+        let note = note.trim();
+        if note.chars().count() > 120 {
+            return Err(StoreError::InvalidNote);
+        }
+        self.get(id)?;
+        // Patch the latest JSON in SQLite, never replace it with a UI snapshot.
+        let changed = open_database(&self.database_path())
+            .map_err(|_| StoreError::Io)?
+            .execute(
+                "UPDATE profile_records
+                 SET record_json = json_set(record_json, '$.settings.note', ?2)
+                 WHERE id = ?1",
+                params![id, note],
+            )
+            .map_err(|_| StoreError::Io)?;
+        if changed == 0 {
+            return Err(StoreError::CorruptProfile);
+        }
+        Ok(note.to_owned())
+    }
+
     pub fn delete(&self, id: &str) -> Result<(), StoreError> {
         self.get(id)?;
         // Move data out of the active path first so a failed SQL write can be rolled back.
@@ -370,7 +393,7 @@ impl ProfileStore {
         let mut records = Vec::new();
         let db = open_database(&self.database_path()).map_err(|_| StoreError::Io)?;
         let mut query = db
-            .prepare("SELECT id, record_json FROM profile_records ORDER BY id")
+            .prepare("SELECT id, record_json FROM profile_records ORDER BY rowid DESC")
             .map_err(|_| StoreError::Io)?;
         let rows = query
             .query_map([], |row| {
@@ -384,6 +407,8 @@ impl ProfileStore {
             reject_symlink(&self.root.join(&id))?;
             records.push(record);
         }
+        // Stable sorting preserves insertion order for same-second timestamps.
+        records.sort_by_key(|record| std::cmp::Reverse(record.created_at));
         Ok(records)
     }
 

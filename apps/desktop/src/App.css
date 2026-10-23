@@ -605,6 +605,55 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.window-note-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 250px;
+  min-height: 22px;
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.window-note-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.window-note-trigger svg {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+}
+.window-note-trigger:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.window-note-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.window-note-form {
+  width: 250px;
+  margin-top: 2px;
+}
+.window-note-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.window-note-controls input {
+  height: 26px;
+  min-width: 0;
+  font-size: 12px;
+}
+.window-note-form [role='alert'] {
+  margin-top: 4px;
+  white-space: normal;
+}
 .table-group {
   color: var(--muted-foreground);
   font-size: 11px;
@@ -625,6 +674,16 @@
 }
 .account-cell small {
   font-size: 11px;
+}
+/* A linked account and its record-link shortcut share one cell. */
+.account-cell-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.account-sms-quick {
+  width: 320px;
 }
 /* Verification codes: the digits stay put, the buttons re-fetch on demand. */
 .otp-cell {
@@ -815,6 +874,71 @@
   flex: 0 0 auto;
   width: 16px;
   height: 16px;
+}
+/* A select whose menu can be typed into: the closed trigger keeps the chosen
+   label, the open menu is a filter box over a scrolling list. */
+.search-select-trigger {
+  justify-content: space-between;
+  width: 100%;
+  font-weight: 400;
+}
+.search-select-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-select-trigger > svg {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+.search-select-content {
+  width: var(--radix-popover-trigger-width);
+  min-width: 240px;
+  padding: 8px;
+}
+.search-select-list {
+  display: grid;
+  max-height: 240px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+.search-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.search-select-option > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-select-option > svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+.search-select-option:hover,
+.search-select-option[data-active='true'] {
+  background: var(--muted);
+}
+.search-select-option[aria-selected='true'] {
+  color: var(--primary);
+  font-weight: 500;
+}
+.search-select-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
 }
 .import-report {
   padding: 10px 12px;
@@ -4150,6 +4274,333 @@ a.address-source:hover {
 .seed-field > input {
   flex: 1;
   min-width: 0;
+}
+
+/* ---- SIM8 接码 ---- */
+
+/* The page stacks a tab bar, forms and tables in one column; every section
+   below leans on this gap so switching tabs does not shift the layout. */
+.sim8-tabs {
+  gap: 14px;
+  min-width: 0;
+}
+.sim8-tabs > [data-slot='tabs-list'] {
+  height: auto;
+  border-bottom: 1px solid var(--border);
+}
+.sim8-tabs [data-slot='tabs-trigger'] {
+  min-height: 32px;
+  padding-inline: 12px;
+}
+.sim8-tabs > [data-slot='tabs-content'] {
+  min-width: 0;
+}
+.sim8-buy,
+.sim8-orders,
+.sim8-filter,
+.sim8-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+/* One card per form: the border is what separates "what you fill in" from
+   "what came back", so the result cards below do not need a heading rule. */
+.sim8-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+/* Inside a dialog the surface is already the card. */
+.sim8-link-dialog .sim8-form {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.sim8-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.sim8-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sim8-row > *:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.sim8-row > button {
+  flex: none;
+}
+/* The submit row is the last thing in every form, so the divider doubles as
+   the end of the input block. */
+.sim8-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+/* A lookup form above a table, rather than a form that returns a result. */
+.sim8-search {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+.sim8-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.sim8-toolbar .result-count {
+  margin-right: auto;
+}
+.sim8-search-input {
+  width: 260px;
+  max-width: 100%;
+}
+.sim8-search-input > input {
+  background: var(--card);
+}
+/* The number and its expiry badge share a baseline; a wrapped badge reads as
+   a second number. */
+.sim8-tel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.sim8-tel strong {
+  font-weight: 600;
+}
+.sim8-mono {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  word-break: break-all;
+}
+/* A code is the one cell worth reading at a glance, so it gets a chip. */
+.sim8-code {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+.sim8-muted {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.sim8-hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.7;
+}
+/* Label/value pairs: a receipt, not a paragraph. */
+.sim8-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+.sim8-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sim8-facts dt {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.sim8-facts dd {
+  margin: 0;
+  font-size: 13px;
+  word-break: break-all;
+}
+.sim8-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+.sim8-result-list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.sim8-result-list > li:hover {
+  background: var(--muted);
+}
+.sim8-result-list strong {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sim8-result-list small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.sim8-result-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+/* Prefixes are a picker, not a table: one click fills the input above. */
+.sim8-prefix-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sim8-prefix {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sim8-prefix:hover {
+  background: var(--muted);
+}
+.sim8-prefix > span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.sim8-numbers {
+  min-height: 132px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.sim8-pager {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+/* The first run has one job, so the settings form is the whole page. */
+.sim8-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 560px;
+}
+.sim8-link-dialog {
+  max-width: 460px;
+}
+/* The record link is long and read-only: it wraps instead of stretching the
+   dialog past the window. */
+.sim8-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+}
+.sim8-readonly > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.sim8-readonly code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  word-break: break-all;
+}
+/* Borrowing a purchased number: the field keeps the picker on its right edge,
+   so the row height does not change when the button is there. */
+.sim8-phone-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sim8-phone-field > [data-slot='input'] {
+  flex: 1;
+  min-width: 0;
+}
+.sim8-picker {
+  width: 300px;
+}
+.sim8-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sim8-pick .sim8-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px;
+}
+.sim8-pick-list {
+  display: grid;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.sim8-pick-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sim8-pick-row:last-child {
+  border-bottom: 0;
+}
+.sim8-pick-row:hover:not(:disabled) {
+  background: var(--muted);
+}
+.sim8-pick-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.sim8-pick-row small {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 700px) {

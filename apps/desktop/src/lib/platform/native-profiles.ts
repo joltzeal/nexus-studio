@@ -33,8 +33,15 @@ export function nativeProfilesAvailable(): boolean {
   return isTauri()
 }
 
-export function listNativeProfiles(): Promise<NativeProfile[]> {
-  return invoke<NativeProfile[]>('profile_list')
+export function orderProfilesNewestFirst(
+  profiles: readonly NativeProfile[],
+): NativeProfile[] {
+  // Equal seconds retain the host's persistent insertion order.
+  return [...profiles].sort((left, right) => right.createdAt - left.createdAt)
+}
+
+export async function listNativeProfiles(): Promise<NativeProfile[]> {
+  return orderProfilesNewestFirst(await invoke<NativeProfile[]>('profile_list'))
 }
 
 export function createNativeProfile(
@@ -80,6 +87,19 @@ export function updateNativeProfile(
 
 export function deleteNativeProfile(id: string): Promise<void> {
   return invoke('profile_delete', { id })
+}
+
+export async function updateNativeProfileNote(
+  id: string,
+  input: string,
+): Promise<string> {
+  const note = input.trim()
+  if (Array.from(note).length > 120) throw new Error('备注最多 120 个字符。')
+  const saved = await invoke<unknown>('profile_update_note', { id, note })
+  if (typeof saved !== 'string' || saved !== note) {
+    throw new Error('备注保存结果未确认，请刷新窗口列表后重试。')
+  }
+  return saved
 }
 
 export function operateNativeProfile(id: string, running: boolean): Promise<void> {

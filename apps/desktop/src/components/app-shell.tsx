@@ -1,10 +1,11 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useReducer, useState } from 'react'
 import {
   AlertCircle,
   Blocks,
   ChevronDown,
   ChevronRight,
   Folders,
+  KeyRound,
   LayoutGrid,
   MapPinned,
   Moon,
@@ -26,14 +27,16 @@ import { usePreferences } from '@/hooks/use-preferences'
 import { SpacesPage } from '@/features/spaces/spaces-page'
 import { GroupsPage } from '@/features/groups/groups-page'
 import { PluginsPage } from '@/features/plugins/plugins-page'
-import { ProxyPoolRoute } from '@/features/proxy/proxy-pool-page'
-import { AddressGeneratorRoute } from '@/features/addresses/address-page'
-import { SharedSupplyRoute } from '@/features/supply/supply-page'
-import { AiImageRoute } from '@/features/ai-image/ai-image-page'
-import { AccountsRoute } from '@/features/accounts/accounts-page'
-import { VintedMonitorRoute } from '@/features/vinted-monitor/vinted-monitor-page'
+import { PluginPage } from '@/features/plugins/plugin-page'
+import {
+  initialPluginNavigation,
+  pluginNavigationReducer,
+  pluginPageValue,
+} from '@/features/plugins/plugin-navigation'
+import { watchPluginCatalog } from '@/features/plugins/watch-plugin-catalog'
 import { onAiImageHandoff, type AiImageHandoff } from '@/lib/page-handoff'
 import { APP_VERSION } from '@/lib/platform/app-info'
+import { notifyPluginCatalogChanged } from '@/lib/platform/plugin-catalog-events'
 
 const SettingsPage = lazy(() =>
   import('@/features/settings/settings-page').then((module) => ({
@@ -41,29 +44,28 @@ const SettingsPage = lazy(() =>
   })),
 )
 
-/**
- * Plugin pages are not top-level destinations: they sit under 插件中心 the same
- * way an installed extension sits inside its manager.
- */
-const PLUGIN_PAGES = [
-  { value: 'proxy', label: '代理池', icon: Network },
-  { value: 'addresses', label: '地址生成器', icon: MapPinned },
-  { value: 'supply', label: '共享货源', icon: ShoppingBag },
-  { value: 'ai-image', label: 'AI 生图', icon: Sparkles },
-  { value: 'accounts', label: 'Vinted 账号', icon: Users },
-  { value: 'vinted', label: 'Vinted 监控', icon: Radar },
-] as const
+const capabilityIcons = new Map([
+  ['proxy.provider', Network],
+  ['address.generator', MapPinned],
+  ['supply.catalog', ShoppingBag],
+  ['image.provider', Sparkles],
+  ['account.pool', Users],
+  ['verification.provider', KeyRound],
+  ['monitor.collector', Radar],
+])
 
 const PAGE_LABELS: Record<string, string> = {
   spaces: '窗口管理',
   groups: '分组管理',
   plugins: '插件中心',
   settings: '应用设置',
-  ...Object.fromEntries(PLUGIN_PAGES.map((page) => [page.value, page.label])),
 }
 
 export function AppShell() {
-  const [page, setPage] = useState('spaces')
+  const [{ page, plugins, catalogError }, navigate] = useReducer(
+    pluginNavigationReducer,
+    initialPluginNavigation,
+  )
   const [pluginsOpen, setPluginsOpen] = useState(true)
   // A page can hand pictures to the AI page; the payload is kept here so it
   // survives the switch and is dropped once the dialog has taken it.
@@ -80,11 +82,26 @@ export function AppShell() {
   } = usePreferences()
   const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark'
   const themeAction = nextTheme === 'dark' ? '切换为深色' : '切换为浅色'
-  const pluginPage = PLUGIN_PAGES.find((entry) => entry.value === page) ?? null
+  const pluginPage = plugins.find((entry) => pluginPageValue(entry.id) === page) ?? null
+  const aiImageReady = plugins.some(
+    (plugin) => plugin.id === 'studio.ai-image' && plugin.state === 'running',
+  )
+
+  useEffect(() => {
+    const stop = watchPluginCatalog(
+      (catalog) => navigate({ type: 'catalog', plugins: catalog }),
+      () => navigate({ type: 'error' }),
+    )
+    window.addEventListener('focus', notifyPluginCatalogChanged)
+    return () => {
+      stop()
+      window.removeEventListener('focus', notifyPluginCatalogChanged)
+    }
+  }, [])
 
   function openPage(value: string) {
-    setPage(value)
-    if (value === 'plugins' || PLUGIN_PAGES.some((entry) => entry.value === value)) {
+    navigate({ type: 'navigate', page: value })
+    if (value === 'plugins' || value.startsWith('plugin:')) {
       setPluginsOpen(true)
     }
   }
@@ -93,7 +110,7 @@ export function AppShell() {
     () =>
       onAiImageHandoff((payload) => {
         setAiImageHandoff(payload)
-        setPage('ai-image')
+        navigate({ type: 'navigate', page: pluginPageValue('studio.ai-image') })
         setPluginsOpen(true)
       }),
     [],
@@ -153,17 +170,18 @@ export function AppShell() {
             </span>
           </TabsTrigger>
           {pluginsOpen
-            ? PLUGIN_PAGES.map((entry) => {
-                const Icon = entry.icon
+            ? plugins.map((entry) => {
+                const Icon = capabilityIcons.get(entry.capabilities[0] ?? '') ?? Blocks
                 return (
                   <TabsTrigger
-                    key={entry.value}
-                    value={entry.value}
+                    key={entry.id}
+                    value={pluginPageValue(entry.id)}
                     data-depth="sub"
                     className="nav-sub-trigger"
+                    title={entry.name}
                   >
                     <Icon />
-                    {entry.label}
+                    <span className="truncate">{entry.name}</span>
                   </TabsTrigger>
                 )
               })
@@ -173,6 +191,17 @@ export function AppShell() {
             应用设置
           </TabsTrigger>
         </TabsList>
+        {catalogError ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start"
+            onClick={notifyPluginCatalogChanged}
+          >
+            <RefreshCw data-icon="inline-start" />
+            重新读取插件列表
+          </Button>
+        ) : null}
         <div className="sidebar-version">
           Nexus Studio <span>v{APP_VERSION}</span>
         </div>
@@ -187,7 +216,7 @@ export function AppShell() {
             <>
               <span>插件中心</span>
               <ChevronRight />
-              <strong>{pluginPage.label}</strong>
+              <strong>{pluginPage.name}</strong>
             </>
           )}
         </div>
@@ -249,27 +278,19 @@ export function AppShell() {
             <TabsContent value="plugins">
               <PluginsPage />
             </TabsContent>
-            <TabsContent value="proxy">
-              <ProxyPoolRoute />
-            </TabsContent>
-            <TabsContent value="addresses">
-              <AddressGeneratorRoute />
-            </TabsContent>
-            <TabsContent value="supply">
-              <SharedSupplyRoute />
-            </TabsContent>
-            <TabsContent value="ai-image">
-              <AiImageRoute
-                handoff={aiImageHandoff}
-                onHandoffConsumed={consumeAiImageHandoff}
-              />
-            </TabsContent>
-            <TabsContent value="accounts">
-              <AccountsRoute />
-            </TabsContent>
-            <TabsContent value="vinted">
-              <VintedMonitorRoute />
-            </TabsContent>
+            {plugins.map((plugin) => (
+              <TabsContent key={plugin.id} value={pluginPageValue(plugin.id)}>
+                <PluginPage
+                  plugin={plugin}
+                  hostAvailable
+                  aiImageReady={aiImageReady}
+                  handoff={aiImageHandoff}
+                  onHandoffConsumed={consumeAiImageHandoff}
+                  onManage={() => openPage('plugins')}
+                  onWindows={() => openPage('spaces')}
+                />
+              </TabsContent>
+            ))}
             <TabsContent value="settings">
               <Suspense
                 fallback={

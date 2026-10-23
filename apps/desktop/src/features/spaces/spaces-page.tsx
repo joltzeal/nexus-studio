@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Smartphone,
   Square,
   Trash2,
   Unlink,
@@ -92,12 +93,15 @@ import {
   type Account,
   type BindingView,
 } from '@/features/accounts/types'
+import { attachNumber, updateContact } from '@/features/sim8/accounts-bridge'
+import { NumberPoolList } from '@/features/sim8/number-picker'
 import { listGroups, type WindowGroup } from '@/lib/platform/native-groups'
 import {
   createNativeProfile,
   deleteNativeProfile,
   listNativeProfiles,
   nativeProfilesAvailable,
+  orderProfilesNewestFirst,
   updateNativeProfile,
   type NativeProfile,
   type WindowSettings,
@@ -128,6 +132,7 @@ import { TransferRecoveryNotice } from './transfer-recovery'
 import { useTransferRecovery } from './use-transfer-recovery'
 import { toggleSelection, withDeadline } from './transfer-state'
 import { useWindowLaunch } from './use-window-launch'
+import { WindowNote } from './window-note'
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -393,7 +398,7 @@ export function SpacesPage() {
     return accounts.find((entry) => entry.id === id)?.account ?? id
   }
 
-  const visible = windows.filter(
+  const visible = orderProfilesNewestFirst(windows).filter(
     (window) =>
       (groupFilter === 'all' ||
         (groupFilter === 'ungrouped'
@@ -562,6 +567,10 @@ export function SpacesPage() {
           <TableBody>
             {visible.map((window) => {
               const account = bindingOf(window.id)
+              const linked =
+                account === null
+                  ? null
+                  : (accounts.find((item) => item.id === account.accountId) ?? null)
               const busy = operatingWindows.has(window.id)
               const unconfirmed = unconfirmedWindows.has(window.id)
               return (
@@ -593,7 +602,20 @@ export function SpacesPage() {
                       </span>
                       <div>
                         <strong>{window.name}</strong>
-                        <small>{window.settings.note || '无备注'}</small>
+                        <WindowNote
+                          id={window.id}
+                          name={window.name}
+                          note={window.settings.note}
+                          onSaved={(note) =>
+                            setWindows((current) =>
+                              current.map((item) =>
+                                item.id === window.id
+                                  ? { ...item, settings: { ...item.settings, note } }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
                       </div>
                     </div>
                   </TableCell>
@@ -610,11 +632,22 @@ export function SpacesPage() {
                           onSaved={refreshBindings}
                         />
                       ) : (
-                        <span className="account-cell">
-                          <strong>{account.account?.account ?? '账号已删除'}</strong>
-                          <small>
-                            {account.account ? STATUS_LABELS[account.account.status] : ''}
-                          </small>
+                        <span className="account-cell-row">
+                          <span className="account-cell">
+                            <strong>{account.account?.account ?? '账号已删除'}</strong>
+                            <small>
+                              {account.account
+                                ? STATUS_LABELS[account.account.status]
+                                : ''}
+                            </small>
+                          </span>
+                          {linked === null ? null : (
+                            <AccountSmsQuickAdd
+                              account={linked}
+                              ready={accountsRunning}
+                              onSaved={refreshBindings}
+                            />
+                          )}
                         </span>
                       )}
                     </TableCell>
@@ -809,7 +842,7 @@ export function SpacesPage() {
                   kernel,
                   groupId,
                 )
-                setWindows((current) => [...current, created])
+                setWindows((current) => [created, ...current])
               } else {
                 await updateNativeProfile(
                   editing,
@@ -1282,6 +1315,120 @@ function AccountQuickAdd({
             </Button>
             <Button type="submit" size="sm" disabled={pending}>
               {pending ? '保存中…' : '保存并关联'}
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * A record link straight from the window row. Picking a purchased number writes
+ * both the number and its link; pasting just a link keeps the number the
+ * account already had. Reading a code stays on the account page.
+ */
+function AccountSmsQuickAdd({
+  account,
+  ready,
+  onSaved,
+}: {
+  account: Account
+  ready: boolean
+  onSaved: () => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [url, setUrl] = useState(account.smsOtpUrl)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function apply(write: () => Promise<void>, done: string) {
+    if (pending) return
+    setPending(true)
+    setError(null)
+    try {
+      await write()
+      await onSaved()
+      toast.success(done)
+      setOpen(false)
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  function saveLink(event: FormEvent) {
+    event.preventDefault()
+    const next = url.trim()
+    if (next === '') {
+      setError('先填接码链接。')
+      return
+    }
+    void apply(() => updateContact(account.id, { smsOtpUrl: next }), '接码链接已保存')
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (next) {
+          setUrl(account.smsOtpUrl)
+          setError(null)
+        }
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`为 ${account.account} 添加接码链接`}
+          title={account.smsOtpUrl === '' ? '添加接码链接' : '更换接码链接'}
+          disabled={!ready}
+        >
+          <Smartphone />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="account-sms-quick">
+        <PopoverHeader>
+          <PopoverTitle>接码链接</PopoverTitle>
+        </PopoverHeader>
+        <p className="account-quick-note">
+          {account.phone === '' ? '这个账号还没有手机号。' : `手机号 ${account.phone}`}
+          {account.smsOtpUrl === '' ? ' · 还没有接码链接' : ' · 已有接码链接'}
+        </p>
+        <NumberPoolList
+          disabled={pending}
+          onPick={(number) =>
+            void apply(
+              () => attachNumber(account.id, number.tel, number.api),
+              '号码和接码链接已保存',
+            )
+          }
+        />
+        <p className="account-quick-divider">或只填接码链接</p>
+        <form className="account-quick-form" onSubmit={saveLink}>
+          <Input
+            aria-label="接码链接"
+            placeholder="https://…"
+            disabled={pending}
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+          />
+          {error === null ? null : <FieldError role="alert">{error}</FieldError>}
+          <div className="account-quick-actions">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => setOpen(false)}
+            >
+              取消
+            </Button>
+            <Button type="submit" size="sm" disabled={pending}>
+              {pending ? '保存中…' : '保存链接'}
             </Button>
           </div>
         </form>

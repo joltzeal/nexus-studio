@@ -79,6 +79,7 @@ fn channel(record: &ProfileRecord) -> EngineChannel {
 fn error_message(error: StoreError) -> String {
     match error {
         StoreError::InvalidName => "名称需要包含 1 至 40 个字符".into(),
+        StoreError::InvalidNote => "备注最多 120 个字符".into(),
         StoreError::InvalidProxy => "代理地址需要是无凭据的 HTTP 或 SOCKS5 主机及端口".into(),
         StoreError::InvalidProxyPlugin => "代理来源只能二选一：手动填写或代理插件".into(),
         StoreError::InvalidSettings => "浏览器配置无效，请检查表单内容".into(),
@@ -274,6 +275,21 @@ impl ProfileService {
             .update_with_group(id, &name, proxy, settings, group_id.as_deref())
             .map_err(error_message)?;
         Ok(())
+    }
+
+    pub fn update_note(&self, id: &str, note: &str) -> Result<String, String> {
+        let state = self.state.lock().map_err(|_| "窗口状态不可用")?;
+        if state.installing {
+            return Err(APP_INSTALLING.into());
+        }
+        if state.recoveries.contains(id) {
+            return Err(RECOVERY_PENDING.into());
+        }
+        if state.transfers.contains(id) {
+            return Err("窗口正在迁移，请等待操作完成".into());
+        }
+        // Notes are metadata and may be edited while the browser is running.
+        self.store.update_note(id, note).map_err(error_message)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
@@ -773,6 +789,18 @@ pub async fn profile_update(
     })
     .await
     .map_err(|_| "窗口修改任务中断".to_string())?
+}
+
+#[tauri::command]
+pub async fn profile_update_note(
+    state: State<'_, Arc<ProfileService>>,
+    id: String,
+    note: String,
+) -> Result<String, String> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.update_note(&id, &note))
+        .await
+        .map_err(|_| "备注保存任务中断".to_string())?
 }
 
 #[tauri::command]

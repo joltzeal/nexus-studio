@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
+import { notifyPluginCatalogChanged } from './plugin-catalog-events'
 
 export interface PluginPermissions {
   networkDomains: string[]
@@ -52,12 +53,15 @@ export function listProxyProviders(): Promise<PluginView[]> {
   return invoke<PluginView[]>('plugin_proxy_providers')
 }
 
-export function installPlugin(source: string): Promise<PluginView> {
-  return invoke<PluginView>('plugin_install', { source })
+export async function installPlugin(source: string): Promise<PluginView> {
+  const plugin = await invoke<PluginView>('plugin_install', { source })
+  notifyPluginCatalogChanged()
+  return plugin
 }
 
-export function uninstallPlugin(id: string): Promise<void> {
-  return invoke('plugin_uninstall', { id })
+export async function uninstallPlugin(id: string): Promise<void> {
+  await invoke('plugin_uninstall', { id })
+  notifyPluginCatalogChanged()
 }
 
 export function callPlugin<T>(
@@ -111,6 +115,8 @@ export function refreshMarket(): Promise<MarketStatus> {
   return invoke<MarketStatus>('plugin_market_refresh')
 }
 
-export function installFromMarket(id: string): Promise<PluginView> {
-  return invoke<PluginView>('plugin_market_install', { id })
+export async function installFromMarket(id: string): Promise<PluginView> {
+  const plugin = await invoke<PluginView>('plugin_market_install', { id })
+  notifyPluginCatalogChanged()
+  return plugin
 }

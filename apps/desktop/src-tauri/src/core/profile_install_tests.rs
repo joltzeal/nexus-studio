@@ -23,6 +23,83 @@ fn fixture() -> (tempfile::TempDir, Arc<ProfileService>, ProfileRecord) {
 }
 
 #[test]
+fn note_edits_do_not_interrupt_active_window_sessions() {
+    for phase in [Phase::Launching, Phase::Running, Phase::Stopping] {
+        let (_root, service, record) = fixture();
+        {
+            let mut state = service.state.lock().unwrap();
+            let snapshot = state
+                .scheduler
+                .reserve(LaunchRequest {
+                    window_id: record.id.clone(),
+                    profile_id: record.id.clone(),
+                    channel_id: record.binding.channel_id.clone(),
+                    proxy: ProxyBinding::Direct,
+                })
+                .unwrap();
+            if phase != Phase::Launching {
+                state.scheduler.mark_running(&snapshot).unwrap();
+            }
+            if phase == Phase::Stopping {
+                state.scheduler.begin_stop(&snapshot).unwrap();
+            }
+        }
+        assert_eq!(
+            service.update_note(&record.id, "new note").unwrap(),
+            "new note"
+        );
+        assert_eq!(
+            service
+                .state
+                .lock()
+                .unwrap()
+                .scheduler
+                .status(&record.id)
+                .unwrap()
+                .phase,
+            phase
+        );
+        let mut expected = record;
+        expected.settings.note = "new note".into();
+        assert_eq!(service.store.get(&expected.id).unwrap(), expected);
+    }
+}
+
+#[test]
+fn note_edits_respect_transfer_recovery_and_install_guards() {
+    let (_root, service, record) = fixture();
+    let transfer = service
+        .lock_transfer(std::slice::from_ref(&record.id))
+        .unwrap();
+    assert!(
+        service
+            .update_note(&record.id, "not during transfer")
+            .is_err()
+    );
+    assert_eq!(service.store.get(&record.id).unwrap(), record);
+    drop(transfer);
+    let install = service.lock_app_install().unwrap();
+    assert_eq!(
+        service
+            .update_note(&record.id, "not during install")
+            .unwrap_err(),
+        APP_INSTALLING
+    );
+    assert_eq!(service.store.get(&record.id).unwrap(), record);
+    drop(install);
+    assert!(service.update_note(&record.id, "after guards").is_ok());
+    service
+        .block_recovery(std::slice::from_ref(&record.id))
+        .unwrap();
+    assert_eq!(
+        service
+            .update_note(&record.id, "not during recovery")
+            .unwrap_err(),
+        RECOVERY_PENDING
+    );
+}
+
+#[test]
 fn install_guard_rejects_every_scheduler_phase_even_without_a_session_child() {
     for phase in [Phase::Launching, Phase::Running, Phase::Stopping] {
         let (_root, service, record) = fixture();

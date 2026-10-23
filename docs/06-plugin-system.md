@@ -5,7 +5,7 @@
 
 ## 当前插件页面
 
-插件中心是九个主页面之一，内容是一张紧凑表格：插件（图标、名称、标识）、能力、版本、状态与操作。
+插件中心是四个固定主页面之一，内容是一张紧凑表格：插件（图标、名称、标识）、能力、版本、状态与操作。
 操作只有“安装”、清单详情（`i` 图标）与卸载，没有启用、停用或重启。
 安装是唯一的决策点——装上即启用，并一次性获得 manifest 声明的全部能力；
 应用启动时宿主会把已安装插件全部拉起，进程退出后由监督线程按退避自动重启，
@@ -13,6 +13,22 @@
 表格不使用彩色装饰或插画，也不放说明性文案。
 非桌面环境下同一张表格展示随仓库提供的 manifest 声明，状态标注“仅桌面应用”。
 完整页面交互见[演示页面](11-demo-pages.md)，宿主行为见[插件宿主](17-plugin-host.md)。
+
+### 二级导航与插件页面
+
+侧栏读取 `plugin_catalog`，仅显示 `enabled: true` 且状态不是 `available` 的记录，
+以插件 ID 作为路由标识、宿主返回的名称作为标签，并按 ID 稳定排序。
+启动中或重试中的插件保留入口，页面展示实际状态；未安装的商店条目不进入侧栏。
+安装、更新或卸载成功后立即重读目录，窗口重新获得焦点时刷新，
+并每 5 秒检查一次后台状态；读取期间不叠加请求，安装前发出的旧响应不能覆盖新目录。
+读取失败保留上一次菜单并显示“重新读取插件列表”。当前插件被卸载时回到插件中心。
+纯浏览器预览没有宿主，因此不展示虚构的已启用插件入口。
+
+`features/plugins/plugin-page.tsx` 只登记随主程序发布的专用 React 页面，
+当前包含代理池、地址生成器、共享货源、AI 生图、Vinted 账号、SIM8 接码与 Vinted 监控。
+其他已启用插件也会出现在侧栏，点击显示名称、版本、状态、能力与方法数量；
+具有 `window.sync` 能力时提供“前往窗口管理”入口。
+动态发现目录不等于动态加载插件前端代码：增加新的专用页面仍需更新主程序。
 
 ## 当前工程基础
 
@@ -47,9 +63,14 @@ manifest 在安装时严格校验并据此授予能力，调用前逐项检查�
 解析 CSV/XLSX 导入并维护账号与浏览器窗口的关联，见
 [Vinted 账号池插件](24-vinted-accounts-plugin.md)。它不发起网络请求，也不需要密钥槽。
 
+`plugins/sim8` 实现 `verification.provider` 能力：按 SIM8 接口买号、取码、同步订单与
+筛选检测，并把号码与接码链接写进 Vinted 账号池，见 [SIM8 接码插件](30-sim8-plugin.md)。
+它是第一个真正用到这个能力的插件，API Token 存在自己的密钥槽里。
+
 仓库内存在插件实现不等于插件系统已经通用可用：只有 `proxy.provider`、`address.generator`、
-`supply.catalog`、`image.provider`、`monitor.collector` 与 `account.pool` 具备真实调用路径；
-`platform.adapter`、`verification.provider` 与 `environment.configurator` 仍只有声明与类型。
+`supply.catalog`、`image.provider`、`monitor.collector`、`account.pool` 与
+`verification.provider` 具备真实调用路径；
+`platform.adapter` 与 `environment.configurator` 仍只有声明与类型。
 
 ## 长期首阶段信任模型
 

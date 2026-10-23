@@ -1,7 +1,7 @@
 {
   "name": "@nexus/desktop",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "@nexus/plugin-ai-image": "workspace:*",
     "@nexus/plugin-proxy-pool": "workspace:*",
     "@nexus/plugin-shared-supply": "workspace:*",
+    "@nexus/plugin-sim8": "workspace:*",
     "@nexus/plugin-vinted-accounts": "workspace:*",
     "@nexus/plugin-vinted-monitor": "workspace:*",
     "@tauri-apps/api": "2.12.4",

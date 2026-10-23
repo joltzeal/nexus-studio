@@ -13,6 +13,7 @@ pub fn run() {
             core::profile_service::profile_list,
             core::profile_service::profile_create,
             core::profile_service::profile_update,
+            core::profile_service::profile_update_note,
             core::profile_service::profile_delete,
             core::profile_service::profile_launch,
             core::profile_service::profile_stop,
