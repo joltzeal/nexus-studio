@@ -4,7 +4,8 @@
 
 Rust 核心管理 profile 到内核版本的持久绑定、窗口调度和插件能力声明。
 `profile_service` 通过 Node 适配器调用 CloakBrowser JS wrapper，并注册 Tauri 命令。
-窗口管理直接使用真实 Profile，历史 localStorage 演示窗口不自动迁移；SQLite 仅用于授权密钥，
+窗口管理直接使用真实 Profile，历史 localStorage 演示窗口不自动迁移；SQLite 保存窗口配置、
+内核绑定与激活码，
 插件宿主由 Rust 托管独立 Node 进程。
 
 ## 版本取舍
@@ -17,18 +18,19 @@ Pro 计划提供更多会话席位。具体访问条件应以当前许可和账�
 
 允许设备保留两个**官方来源**的不同版本二进制，但每个窗口绑定明确的引擎通道和单独 profile。
 这只是并列安装和显式选择，不是让两个版本共享一个 profile 或合并免费会话配额。
-默认建议敏感平台使用当前受支持的最新版；旧版只用于主动选择的兼容测试或特定工作流程。
+创建表单默认基础内核，用户可明确选择最新内核；保存激活码不改变默认选项或已有窗口。
 容量不足返回明确错误，不能自动降级旧版、跨通道借席位或尝试规避许可证限制。
 已被新内核打开的 profile 不能直接交给旧内核启动；需要独立目录和经过验证的迁移流程。
-Nexus 不再自行将并发限制为一个会话。当前包装层没有公开、可信的席位数 API；
-因此独立 Profile 可并行启动尝试，CloakBrowser 启动结果负责最终许可裁决。
+Nexus 不自行将并发限制为一个会话，尚未接入官方实时席位查询；
+独立 Profile 可并行启动尝试，CloakBrowser 启动结果负责最终许可裁决。
 超出授权时将返回启动错误，不自动切换内核或绕过许可。纯调度器仍支持有限容量及未知容量
 拒绝预留的通用模型，但生产 Profile 通道使用 ProviderEnforced 模式。
 
 官方包装层提供按版本缓存、`CLOAKBROWSER_BINARY_PATH` 本地二进制入口和
-`ensureBinary(licenseKey, browserVersion)` 精确版本选择。窗口创建流程将 SQLite 中的密钥
-及可选版本传给 `ensureBinary`，再用二进制自身 `--version` 确定绑定。已配置的非 free
-计划可填写新窗口版本；免费计划使用最新版本且不能 pin。
+`ensureBinary(licenseKey, browserVersion)` 精确版本选择。窗口创建传入明确的
+`kernelKind` 与可选完整版本：基础通道不传密钥，新版通道读取 SQLite 激活码。
+再用二进制自身 `--version` 确定绑定。基础版本输入对未激活和免费计划均可用；
+新版通道只有已配置的非 free 计划可固定版本，免费计划使用该通道最新版本。
 Manager 的 `browser_manager.py` 作为生命周期参考：区分 launching/running/stopping、
 按 profile 防重入和识别席位拒绝；本项目不依赖 Manager 的 Python 服务。
 
@@ -59,8 +61,9 @@ Manager 的 `browser_manager.py` 作为生命周期参考：区分 launching/run
 ## 当前可试用的桌面流程
 
 窗口管理页的“创建窗口”直接创建 Profile。创建时由官方包装层准备二进制，
-把实际路径和内核版本写入 `app_data_dir/profiles/<id>/profile.json`。浏览器目录为同级
-`user-data`。启动时再次执行二进制的 `--version`，必须与记录一致；
+把实际路径和内核版本写入 `nexus.sqlite`；旧版 `profile.json` 在读取时迁移。
+浏览器目录为 `app_data_dir/profiles/<id>/user-data`。
+启动时再次执行二进制的 `--version`，必须与记录一致；
 然后调用 `launchPersistentContext`，使用该 profile 的目录和可选无凭据代理地址。
 停止时等待对应适配进程退出。不同 Profile 的启动与停止不会持有全局状态锁等待浏览器，
 可同时运行；相同 Profile 在启动、运行或停止期间仍由调度器独占。

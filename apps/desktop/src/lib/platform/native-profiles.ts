@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
+import type { KernelSelection } from './native-kernels'
 
 export interface NativeProfile {
   id: string
@@ -42,7 +43,7 @@ export function createNativeProfile(
   proxyPlugin: string | null,
   proxyEndpoint: number | null,
   settings: WindowSettings,
-  browserVersion?: string,
+  kernel: KernelSelection = { kind: 'base' },
   groupId?: string | null,
 ): Promise<NativeProfile> {
   return invoke<NativeProfile>('profile_create', {
@@ -51,7 +52,8 @@ export function createNativeProfile(
     proxyPlugin,
     proxyEndpoint,
     settings,
-    browserVersion: browserVersion ?? null,
+    kernelKind: kernel.kind,
+    browserVersion: kernel.version ?? null,
     groupId: groupId ?? null,
   })
 }

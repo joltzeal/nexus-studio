@@ -102,11 +102,13 @@ import {
   type NativeProfile,
   type WindowSettings,
 } from '@/lib/platform/native-profiles'
+import { getLicenseStatus, type LicenseStatus } from '@/lib/platform/native-license'
 import {
-  canPinBrowserVersion,
-  getLicenseStatus,
-  type LicenseStatus,
-} from '@/lib/platform/native-license'
+  getKernelStatus,
+  type InstalledKernel,
+  type KernelSelection,
+} from '@/lib/platform/native-kernels'
+import { WindowKernelPicker } from './window-kernel-picker'
 import { parseWindowConfig, type WindowConfig } from '@/demo/model'
 import { configOf } from '@/features/spaces/window-config'
 import { formatAbsolute, formatRelative, majorVersion } from '@/lib/format-time'
@@ -794,7 +796,7 @@ export function SpacesPage() {
               proxyPlugin,
               proxyEndpoint,
               settings,
-              browserVersion,
+              kernel,
               groupId,
             ) => {
               if (editing === 'new') {
@@ -804,7 +806,7 @@ export function SpacesPage() {
                   proxyPlugin,
                   proxyEndpoint,
                   settings,
-                  browserVersion,
+                  kernel,
                   groupId,
                 )
                 setWindows((current) => [...current, created])
@@ -822,9 +824,7 @@ export function SpacesPage() {
               }
               setEditing(null)
             }}
-            canPinBrowserVersion={canPinBrowserVersion(
-              licenseStatus ?? { configured: false, plan: null, expires: null },
-            )}
+            licenseStatus={licenseStatus}
             onCancel={() => setEditing(null)}
           />
         ) : null}
@@ -1390,27 +1390,30 @@ function WindowEditor({
   window,
   groups,
   takenNames,
-  canPinBrowserVersion: canPinVersion,
+  licenseStatus,
   onSave,
   onCancel,
 }: {
   window: NativeProfile | null
   groups: WindowGroup[]
   takenNames: string[]
-  canPinBrowserVersion: boolean
+  licenseStatus: LicenseStatus | null
   onSave: (
     name: string,
     proxy: string | null,
     proxyPlugin: string | null,
     proxyEndpoint: number | null,
     settings: WindowSettings,
-    browserVersion?: string,
+    kernel: KernelSelection,
     groupId?: string | null,
   ) => Promise<void>
   onCancel: () => void
 }) {
   const [name, setName] = useState(window?.name ?? '')
-  const [browserVersion, setBrowserVersion] = useState('')
+  const [kernel, setKernel] = useState<KernelSelection>({ kind: 'base' })
+  const [installedKernels, setInstalledKernels] = useState<InstalledKernel[]>([])
+  const [kernelsLoading, setKernelsLoading] = useState(window === null)
+  const [kernelsError, setKernelsError] = useState<string | null>(null)
   const [platform, setPlatform] = useState<WindowSettings['platform']>(
     window?.settings.platform ?? 'Vinted',
   )
@@ -1436,6 +1439,26 @@ function WindowEditor({
   const [checkNote, setCheckNote] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (window !== null || !nativeProfilesAvailable()) return
+    let active = true
+    void getKernelStatus(true).then(
+      (status) => {
+        if (!active) return
+        setInstalledKernels(status.installed)
+        setKernelsLoading(false)
+      },
+      () => {
+        if (!active) return
+        setKernelsError('本地版本暂时无法读取')
+        setKernelsLoading(false)
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [window])
 
   useEffect(() => {
     if (!nativeProfilesAvailable()) return
@@ -1519,7 +1542,8 @@ function WindowEditor({
       setError('窗口名称最多 40 个字符，备注最多 120 个字符。')
       return
     }
-    if (browserVersion.trim() && !/^\d+(?:\.\d+){3,4}$/.test(browserVersion.trim())) {
+    const browserVersion = kernel.version?.trim() ?? ''
+    if (browserVersion && !/^\d+(?:\.\d+){3,4}$/.test(browserVersion)) {
       setError('内核版本需要是完整的数字版本号，例如 155.0.1.2。')
       return
     }
@@ -1566,7 +1590,7 @@ function WindowEditor({
         proxySource === 'plugin' ? proxyPlugin : null,
         proxySource === 'plugin' ? endpointId : null,
         settings,
-        browserVersion.trim() || undefined,
+        { kind: kernel.kind, ...(browserVersion ? { version: browserVersion } : {}) },
         groupId === 'ungrouped' ? null : groupId,
       )
     } catch (cause) {
@@ -1604,22 +1628,19 @@ function WindowEditor({
               onChange={(event) => setName(event.target.value)}
             />
           </Field>
-          {!window && canPinVersion ? (
-            <Field>
-              <FieldLabel htmlFor="window-browser-version">Chromium 版本</FieldLabel>
-              <Input
-                id="window-browser-version"
-                inputMode="numeric"
-                autoComplete="off"
-                disabled={pending}
-                placeholder="留空使用可用的最新内核"
-                value={browserVersion}
-                onChange={(event) => setBrowserVersion(event.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                支持完整版本号，例如 155.0.1.2；创建后版本固定。
-              </p>
-            </Field>
+          {!window ? (
+            <WindowKernelPicker
+              value={kernel}
+              onChange={(selection) => {
+                setKernel(selection)
+                setError(null)
+              }}
+              license={licenseStatus}
+              installed={installedKernels}
+              loading={kernelsLoading}
+              error={kernelsError}
+              disabled={pending}
+            />
           ) : null}
           <div className="window-form-grid">
             <Field>

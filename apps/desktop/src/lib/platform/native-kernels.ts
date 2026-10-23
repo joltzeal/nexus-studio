@@ -1,6 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 
 export type KernelKind = 'base' | 'latest'
+export interface KernelSelection {
+  kind: KernelKind
+  version?: string
+}
+
 export type KernelPhase =
   | 'idle'
   | 'preparing'
