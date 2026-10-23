@@ -1,10 +1,16 @@
 /**
- * Verification codes arrive in wildly different shapes: a JSON endpoint, a
- * plain-text mailbox, or a full HTML email with the digits buried in markup.
- * They do agree on one thing — the code is a short run of digits near the word
- * "code" — so that is what this looks for, with a plain six-digit fallback.
+ * A verification code is four or six digits and nothing else. A mailbox answer
+ * also carries years, prices, order numbers and tracking ids, so the digits are
+ * only trusted when the body agrees on a single value: two different runs mean
+ * the code cannot be identified, which is better reported as "not here yet"
+ * than guessed at.
  */
-const CODE_NEAR_KEYWORD = /(?:code|otp|验证码|verification)\D{0,32}(\d{4,8})/i
+const DIGITS = '(?<!\\d)(\\d{6}|\\d{4})(?!\\d)'
+const KEYWORD_CODE = new RegExp(
+  `(?:code|otp|验证码|verification)\\D{0,32}${DIGITS}`,
+  'gi',
+)
+const ANY_CODE = new RegExp(DIGITS, 'g')
 
 function decodeEntities(text: string): string {
   return text
@@ -44,9 +50,32 @@ function collectStrings(value: unknown, out: string[], key = ''): void {
   }
 }
 
+/** `2026` is a copyright year far more often than it is a code. */
+function isYear(digits: string): boolean {
+  if (digits.length !== 4) return false
+  const year = Number(digits)
+  return year >= 1900 && year <= 2100
+}
+
+function matches(pattern: RegExp, text: string): string[] {
+  const found: string[] = []
+  for (const match of text.matchAll(pattern)) {
+    const value = match[1]
+    if (value !== undefined && !isYear(value)) found.push(value)
+  }
+  return found
+}
+
+/** Exactly one distinct value, or nothing: two candidates are not a code. */
+function only(values: readonly string[]): string | null {
+  const distinct = new Set(values)
+  if (distinct.size !== 1) return null
+  return [...distinct][0] ?? null
+}
+
 /**
  * `null` means "no code here" rather than "empty": the caller reports that as a
- * failure instead of handing the page a blank code.
+ * missing code instead of handing the page a blank one.
  */
 export function extractOtp(body: string, contentType = ''): string | null {
   const trimmed = body.trim()
@@ -63,14 +92,12 @@ export function extractOtp(body: string, contentType = ''): string | null {
       // Labelled as JSON but is not: the text path handles it just as well.
     }
   }
-  if (candidates.length === 0) candidates.push(plainText(trimmed))
+  candidates.push(plainText(trimmed))
 
-  for (const text of candidates) {
-    const match = CODE_NEAR_KEYWORD.exec(text)
-    if (match?.[1] !== undefined) return match[1]
-  }
+  // A keyword next to the digits is the strongest signal, and it survives a body
+  // that also mentions prices or dates.
+  const anchored = only(candidates.flatMap((text) => matches(KEYWORD_CODE, text)))
+  if (anchored !== null) return anchored
 
-  // Vinted sends six digits; four-digit runs are far more likely to be a year.
-  const sixes = candidates.join(' ').match(/\b\d{6}\b/g)
-  return sixes?.[0] ?? null
+  return only(candidates.flatMap((text) => matches(ANY_CODE, text)))
 }

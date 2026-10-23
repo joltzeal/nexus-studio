@@ -68,6 +68,19 @@ describe('monitor url normalization', () => {
     ).toThrow(/不支持的筛选参数：foo/)
   })
 
+  it('drops the bookkeeping parameters Vinted adds to its own urls', () => {
+    // Copying a search out of the address bar brings `search_id`, `time` and
+    // the filter-panel state along. They narrow nothing, so they are dropped
+    // rather than rejected — rejecting them made a copied url unusable.
+    const target = normalizeMonitorUrl(
+      'https://www.vinted.fr/catalog?search_text=nike&search_id=abc123&time=1700000000&is_search=true&page=2&disabled_filters=1',
+    )
+    expect(target.url).toBe(
+      'https://vinted.fr/catalog?search_text=nike&order=newest_first',
+    )
+    expect(target.filters).toEqual([['search_text', 'nike']])
+  })
+
   it('requires a selector on a catalogue url', () => {
     expect(() =>
       normalizeMonitorUrl('https://vinted.fr/catalog?order=newest_first'),

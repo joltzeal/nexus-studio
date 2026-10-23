@@ -1,4 +1,5 @@
 use super::license_store::{LicenseStatus, LicenseStore};
+use super::network_proxy::NetworkProxyStore;
 use super::runtime_paths::RuntimePaths;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ pub struct LicenseService {
     store: LicenseStore,
     cache_dir: PathBuf,
     runtime: RuntimePaths,
+    network: Option<NetworkProxyStore>,
 }
 
 impl LicenseService {
@@ -29,7 +31,13 @@ impl LicenseService {
             store,
             cache_dir,
             runtime,
+            network: None,
         }
+    }
+
+    pub fn with_network(mut self, network: NetworkProxyStore) -> Self {
+        self.network = Some(network);
+        self
     }
 
     pub fn status(&self) -> Result<LicenseStatus, String> {
@@ -51,7 +59,13 @@ impl LicenseService {
         if !script.is_file() {
             return Err("浏览器适配器未构建，请重新启动 Nexus 桌面开发命令".into());
         }
-        let output = Command::new(&self.runtime.node)
+        let mut command = Command::new(&self.runtime.node);
+        if let Some(network) = &self.network {
+            network
+                .get()?
+                .apply_to_node(&mut command, &self.runtime.network_preload)?;
+        }
+        let output = command
             .arg(script)
             .arg("validate-license")
             .env("CLOAKBROWSER_LICENSE_KEY", key)

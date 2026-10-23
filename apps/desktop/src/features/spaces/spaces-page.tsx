@@ -107,7 +107,8 @@ import {
   getLicenseStatus,
   type LicenseStatus,
 } from '@/lib/platform/native-license'
-import { DEFAULT_WINDOW_CONFIG, parseWindowConfig, type WindowConfig } from '@/demo/model'
+import { parseWindowConfig, type WindowConfig } from '@/demo/model'
+import { configOf } from '@/features/spaces/window-config'
 import { formatAbsolute, formatRelative, majorVersion } from '@/lib/format-time'
 import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
 import {
@@ -599,6 +600,7 @@ export function SpacesPage() {
                         <AccountQuickAdd
                           window={window}
                           ready={accountsRunning}
+                          accounts={accounts}
                           onSaved={refreshBindings}
                         />
                       ) : (
@@ -1049,31 +1051,61 @@ function TimeCell({
 }
 
 /**
- * Adding an account straight from the window row. The popover asks for the two
- * fields that actually matter and binds the new record to this window in one
- * go, so nobody has to leave the table to get a window logged in.
+ * Binding an account straight from the window row. The pool comes first —
+ * most windows reuse a record that already exists — and the create form stays
+ * below it for the first account of a new shop.
  */
 function AccountQuickAdd({
   window,
   ready,
+  accounts,
   onSaved,
 }: {
   window: NativeProfile
   ready: boolean
+  accounts: Account[]
   onSaved: () => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [note, setNote] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const visible = accounts
+    .filter((item) =>
+      `${item.account} ${item.note} ${item.phone}`
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
+    )
+    .slice(0, 40)
+
   function reset() {
+    setQuery('')
     setAccount('')
     setPassword('')
     setNote('')
     setError(null)
+  }
+
+  async function link(target: Account) {
+    if (pending || !ready) return
+    setPending(true)
+    setError(null)
+    try {
+      const result = await bindAccount(target.id, window.id)
+      await onSaved()
+      if (result.bound) toast.success(`已关联 ${target.account}`)
+      else toast.error('该账号已关联到其他窗口，请在更多操作里确认更换')
+      reset()
+      setOpen(false)
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setPending(false)
+    }
   }
 
   async function submit(event: FormEvent) {
@@ -1122,7 +1154,7 @@ function AccountQuickAdd({
           variant="outline"
           size="xs"
           disabled={!ready}
-          title={ready ? '快捷添加 Vinted 账号' : 'Vinted 账号插件还没就绪'}
+          title={ready ? '快捷关联或添加 Vinted 账号' : 'Vinted 账号插件还没就绪'}
         >
           <Plus data-icon="inline-start" />
           添加账号
@@ -1130,8 +1162,52 @@ function AccountQuickAdd({
       </PopoverTrigger>
       <PopoverContent align="start" className="account-quick-add">
         <PopoverHeader>
-          <PopoverTitle>快捷添加账号</PopoverTitle>
+          <PopoverTitle>关联 Vinted 账号</PopoverTitle>
         </PopoverHeader>
+        {accounts.length === 0 ? (
+          <p className="account-quick-note">账号池还是空的，在下面新建一个。</p>
+        ) : (
+          <div className="account-quick-pool">
+            <div className="search-field">
+              <Search aria-hidden="true" />
+              <Input
+                aria-label="搜索账号池"
+                placeholder="搜索账号池，点一行直接关联"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </div>
+            <div className="account-picker" role="listbox" aria-label="账号池">
+              {visible.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  className="account-option"
+                  disabled={pending}
+                  onClick={() => void link(item)}
+                >
+                  <span>
+                    <strong>{item.account}</strong>
+                    <small>
+                      {LOGIN_METHOD_LABELS[item.loginMethod]} ·{' '}
+                      {STATUS_LABELS[item.status]}
+                      {item.phone === '' ? '' : ` · ${item.phone}`}
+                    </small>
+                  </span>
+                  <UserRound aria-hidden="true" />
+                </button>
+              ))}
+              {visible.length === 0 ? (
+                <p className="account-quick-note">没有匹配的账号。</p>
+              ) : null}
+            </div>
+          </div>
+        )}
+        <p className="account-quick-divider">
+          {accounts.length === 0 ? '新建账号' : '或新建一个账号'}
+        </p>
         <form className="account-quick-form" onSubmit={(event) => void submit(event)}>
           <Field>
             <FieldLabel htmlFor={`quick-account-${window.id}`}>账号</FieldLabel>
@@ -1313,16 +1389,7 @@ function WindowEditor({
   )
   const [note, setNote] = useState(window?.settings.note ?? '')
   const [groupId, setGroupId] = useState(window?.groupId ?? 'ungrouped')
-  const [config, setConfig] = useState<WindowConfig>(() => ({
-    ...DEFAULT_WINDOW_CONFIG,
-    ...window?.settings,
-    proxy: window?.proxy
-      ? {
-          protocol: window.proxy.startsWith('socks5://') ? 'socks5' : 'http',
-          server: window.proxy,
-        }
-      : { protocol: 'direct', server: '' },
-  }))
+  const [config, setConfig] = useState<WindowConfig>(() => configOf(window))
   const [proxySource, setProxySource] = useState<'direct' | 'manual' | 'plugin'>(
     window?.proxyPlugin ? 'plugin' : window?.proxy ? 'manual' : 'direct',
   )
@@ -1441,6 +1508,15 @@ function WindowEditor({
           setError('请填写代理地址，或把代理来源改为直连。')
           return
         }
+      }
+      // A plugin-resolved proxy leaves `checked.proxy` on `direct`, so only the
+      // absence of any source at all makes GeoIP meaningless.
+      const hasProxy =
+        proxySource === 'plugin' ||
+        (proxySource === 'manual' && checked.proxy.protocol !== 'direct')
+      if (checked.geoip && !hasProxy) {
+        setError('GeoIP 自动匹配需要代理，请先选择代理来源或关闭 GeoIP。')
+        return
       }
       setPending(true)
       setError(null)

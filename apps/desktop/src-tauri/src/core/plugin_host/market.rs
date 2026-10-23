@@ -1,4 +1,5 @@
 use super::manifest::PluginManifest;
+use crate::core::network_proxy::NetworkProxy;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -22,6 +23,7 @@ pub enum MarketError {
     NotConfigured,
     UnsupportedUrl,
     Offline,
+    Proxy(String),
     Status(u16),
     TooLarge,
     Malformed,
@@ -34,7 +36,10 @@ impl MarketError {
             MarketError::NotConfigured => "NOT_CONFIGURED",
             MarketError::UnsupportedUrl | MarketError::Malformed => "INVALID_REQUEST",
             MarketError::Status(404) => "NOT_CONFIGURED",
-            MarketError::Offline | MarketError::Status(_) | MarketError::TooLarge => "UNAVAILABLE",
+            MarketError::Offline
+            | MarketError::Proxy(_)
+            | MarketError::Status(_)
+            | MarketError::TooLarge => "UNAVAILABLE",
             MarketError::Io => "UNAVAILABLE",
         }
     }
@@ -44,6 +49,7 @@ impl MarketError {
             MarketError::NotConfigured => "还没有配置插件商店地址".into(),
             MarketError::UnsupportedUrl => "商店地址只支持 http、https 或 file".into(),
             MarketError::Offline => "连不上插件商店，请检查网络或地址".into(),
+            MarketError::Proxy(reason) => format!("应用代理不可用：{reason}"),
             MarketError::Status(status) => format!("插件商店返回了 HTTP {status}"),
             MarketError::TooLarge => "商店返回的内容超过大小上限".into(),
             MarketError::Malformed => "商店返回的清单格式不正确".into(),
@@ -250,6 +256,14 @@ pub fn resolve_package_url(base: &str, reference: &str) -> String {
 /// Reads a URL into memory with a hard size ceiling. `file://` is supported so a
 /// local folder can be used as a store while developing.
 pub fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, MarketError> {
+    fetch_with_proxy(url, limit, &NetworkProxy::default())
+}
+
+pub fn fetch_with_proxy(
+    url: &str,
+    limit: u64,
+    proxy: &NetworkProxy,
+) -> Result<Vec<u8>, MarketError> {
     let parsed = url::Url::parse(url).map_err(|_| MarketError::UnsupportedUrl)?;
     match parsed.scheme() {
         "file" => {
@@ -268,8 +282,9 @@ pub fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, MarketError> {
             // dropping such a client can panic.
             let (sender, receiver) = std::sync::mpsc::channel();
             let target = url.to_string();
+            let proxy = proxy.clone();
             std::thread::spawn(move || {
-                let _ = sender.send(fetch_http(&target, limit));
+                let _ = sender.send(fetch_http(&target, limit, &proxy));
             });
             receiver.recv().unwrap_or(Err(MarketError::Offline))
         }
@@ -277,12 +292,16 @@ pub fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, MarketError> {
     }
 }
 
-fn fetch_http(url: &str, limit: u64) -> Result<Vec<u8>, MarketError> {
-    let client = reqwest::blocking::Client::builder()
+fn fetch_http(url: &str, limit: u64, proxy: &NetworkProxy) -> Result<Vec<u8>, MarketError> {
+    let endpoint = proxy.resolve().map_err(MarketError::Proxy)?;
+    let mut builder = reqwest::blocking::Client::builder()
+        .no_proxy()
         .timeout(FETCH_TIMEOUT)
-        .user_agent(concat!("NexusStudio/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|_| MarketError::Offline)?;
+        .user_agent(concat!("NexusStudio/", env!("CARGO_PKG_VERSION")));
+    if let Some(endpoint) = endpoint {
+        builder = builder.proxy(reqwest::Proxy::all(endpoint).map_err(|_| MarketError::Offline)?);
+    }
+    let client = builder.build().map_err(|_| MarketError::Offline)?;
     let response = client.get(url).send().map_err(|_| MarketError::Offline)?;
     if !response.status().is_success() {
         return Err(MarketError::Status(response.status().as_u16()));

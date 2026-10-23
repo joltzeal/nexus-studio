@@ -32,7 +32,10 @@ export interface PluginView {
   storageDurable: boolean
   /** Declared slot names only; the plugin owns the values. */
   secretSlots: string[]
-  /** Only present for a discovered package that is not installed yet. */
+  /**
+   * The directory this plugin can be installed from: a package that is not
+   * installed yet, or the development copy an installed one is refreshed from.
+   */
   sourceDirectory: string | null
 }
 

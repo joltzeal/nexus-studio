@@ -71,6 +71,23 @@ const FILTER_KEYS = new Set([
 /** A catalog URL must narrow the result somehow, or it is just the homepage. */
 const SELECTOR_KEYS = ['search_text', 'catalog[]', 'brand_ids[]']
 
+/**
+ * Parameters Vinted adds on its own: pagination, the search session id, the
+ * timestamp of the query and the state of the filter panel. They carry no
+ * filter meaning, so dropping them changes nothing about what gets collected —
+ * unlike an unknown filter, which would silently widen the result set.
+ */
+const IGNORED_KEYS = new Set([
+  'order',
+  'page',
+  'per_page',
+  'search_id',
+  'time',
+  'is_search',
+  'search_mode',
+  'disabled_filters',
+])
+
 const MEMBER_PATH = /^\/member\/(\d+)(?:-[^/]*)?\/?$/
 const CATALOG_PATH = /^\/(?:[a-z-]+\/)?catalog\/?$/
 
@@ -138,7 +155,7 @@ export function normalizeMonitorUrl(input: string): MonitorTarget {
 
   const filters: [string, string][] = []
   for (const [key, value] of parsed.searchParams) {
-    if (key === 'order') continue
+    if (IGNORED_KEYS.has(key)) continue
     if (!FILTER_KEYS.has(key)) {
       throw invalidRequest(`监控 URL 包含不支持的筛选参数：${key}`)
     }

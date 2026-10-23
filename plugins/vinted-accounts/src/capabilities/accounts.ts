@@ -49,6 +49,12 @@ const CSV_MIME = 'text/csv;charset=utf-8'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 /** A mailbox page is small; anything larger is a misconfigured link. */
 const MAX_OTP_BODY = 512 * 1024
+/**
+ * The raw body travels back to the page for the "查看原文" panel. A single RPC
+ * message is capped at 1 MiB, and JSON escaping can double the size, so this
+ * stays well below the parsing limit.
+ */
+const MAX_OTP_PREVIEW = 64 * 1024
 const OTP_TIMEOUT_MS = 20_000
 
 export interface AccountPoolOptions {
@@ -339,11 +345,24 @@ export class AccountPool {
     }
     const body = (await response.text()).slice(0, MAX_OTP_BODY)
     context.assertAlive()
-    const code = extractOtp(body, response.headers.get('content-type') ?? '')
-    if (code === null) throw invalidRequest('在取码链接的响应里没有找到验证码')
+    const contentType = response.headers.get('content-type') ?? ''
+    const code = extractOtp(body, contentType)
     // The code itself is deliberately left out of the log line.
-    this.logger.info('已读取验证码', { accountId: account.id, channel: input.channel })
-    return { channel: input.channel, code, fetchedAt: this.now().toISOString() }
+    this.logger.info('已读取验证码', {
+      accountId: account.id,
+      channel: input.channel,
+      found: code !== null,
+    })
+    // A missing code is an answer, not a failure: the page shows "还没有验证码"
+    // and offers the raw body, which is what makes the next attempt debuggable.
+    return {
+      channel: input.channel,
+      code,
+      body: body.slice(0, MAX_OTP_PREVIEW),
+      truncated: body.length > MAX_OTP_PREVIEW,
+      contentType,
+      fetchedAt: this.now().toISOString(),
+    }
   }
 
   private async bind(context: DispatchContext): Promise<unknown> {

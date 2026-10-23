@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
@@ -54,7 +54,6 @@ class FileVault implements SecretVault {
   readonly kind = 'file' as const
   readonly durable = true
   private values: VaultDocument | null = null
-  private sequence = 0
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(
@@ -64,7 +63,7 @@ class FileVault implements SecretVault {
 
   async put(slot: string, plaintext: string): Promise<VaultPutResult> {
     const values = await this.load()
-    const ref = `file:${slot}:${Date.now().toString(36)}:${++this.sequence}`
+    const ref = `file:${slot}:${randomUUID()}`
     values[ref] = plaintext
     this.redactor.add(plaintext)
     await this.persist(values)

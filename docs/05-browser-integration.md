@@ -47,3 +47,13 @@ CloakBrowser 二进制版本、并发配额及再分发许可由所选版本和�
 在正式打包前核对官方 [binary license](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md)；
 macOS、Windows 分别进行启动、隔离、持久化、代理阻断及崩溃恢复验证。
 本地表单、协议健康检查、前端构建均不能代替这些运行验证。
+
+# 145 内核启动警告
+
+当前 CloakBrowser SDK `0.6.3` 的默认启动参数包含 `--no-sandbox`；
+Playwright 在未显式启用 Chromium 沙箱时也会添加这一参数。
+145 内核显示“不受支持的命令行标记”是 Chromium 的启动提醒，
+不等同于 Profile 隔离失败，但浏览器进程的沙箱保护确实被关闭。
+不能只隐藏提醒后宣称没有安全影响；若要改变启动行为，须先在
+145 内核与新版内核、macOS 和 Windows 的临时 Profile 上验证 SDK
+是否允许覆盖默认参数及兼容性。

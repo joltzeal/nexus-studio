@@ -362,6 +362,27 @@ export function PluginsPage() {
                             更新
                           </Button>
                         ) : null}
+                        {row.plugin !== null &&
+                        row.sourceDirectory !== null &&
+                        published?.state !== 'update' ? (
+                          // A package rebuilt from a directory keeps its
+                          // version, so without this the app would keep running
+                          // the copy it installed the first time.
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy !== null}
+                            title={`重新安装自 ${row.sourceDirectory}`}
+                            onClick={() => {
+                              void run(`reinstall-${row.id}`, async () => {
+                                await installPlugin(row.sourceDirectory ?? '')
+                              })
+                            }}
+                          >
+                            <RefreshCw data-icon="inline-start" />
+                            重新安装
+                          </Button>
+                        ) : null}
                         {row.plugin === null ? null : (
                           <Button
                             size="sm"

@@ -47,11 +47,22 @@ pub fn version_directory(root: &Path, plugin_id: &str, version: &str) -> PathBuf
 /// staging directory and renamed into place, so a failed install never leaves a
 /// half-populated version behind.
 pub fn install(candidate: &Candidate, root: &Path) -> Result<PathBuf, InstallError> {
+    place(candidate, root, false)
+}
+
+/// Same copy, allowed to land on a version directory that already exists. A
+/// package installed from a directory is rebuilt in place while keeping its
+/// version, so refreshing it is a reinstall rather than a version bump.
+pub fn reinstall(candidate: &Candidate, root: &Path) -> Result<PathBuf, InstallError> {
+    place(candidate, root, true)
+}
+
+fn place(candidate: &Candidate, root: &Path, replace: bool) -> Result<PathBuf, InstallError> {
     if !candidate.directory.is_dir() {
         return Err(InstallError::SourceMissing);
     }
     let target = version_directory(root, &candidate.manifest.id, &candidate.manifest.version);
-    if target.exists() {
+    if target.exists() && !replace {
         return Err(InstallError::AlreadyInstalled);
     }
     let staging_root = root.join(".staging");
@@ -85,6 +96,14 @@ pub fn install(candidate: &Candidate, root: &Path) -> Result<PathBuf, InstallErr
 
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|_| InstallError::Io)?;
+    }
+    // A rename cannot land on a non-empty directory, so the old copy goes only
+    // after the new one is complete and verified.
+    if replace && target.exists() {
+        fs::remove_dir_all(&target).map_err(|_| {
+            let _ = fs::remove_dir_all(&staging);
+            InstallError::Io
+        })?;
     }
     if fs::rename(&staging, &target).is_err() {
         let _ = fs::remove_dir_all(&staging);

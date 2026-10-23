@@ -265,6 +265,34 @@ fn install_copies_package_and_refuses_a_second_install() {
 }
 
 #[test]
+fn reinstall_replaces_the_version_directory_in_place() {
+    // A package rebuilt from a directory keeps its version, so refreshing it
+    // cannot go through `install`: that path refuses a directory that exists.
+    let temporary = tempfile::tempdir().unwrap();
+    let source = write_package(&temporary.path().join("source"), MANIFEST, false);
+    let root = temporary.path().join("host");
+    let candidate = inspect(&source, CandidateSource::Development)
+        .unwrap()
+        .unwrap();
+    let installed = install::install(&candidate, &root).unwrap();
+    fs::write(installed.join("dist/index.js"), "// old build").unwrap();
+
+    let replaced = install::reinstall(&candidate, &root).unwrap();
+    assert_eq!(replaced, installed);
+    assert_ne!(
+        fs::read_to_string(replaced.join("dist/index.js")).unwrap(),
+        "// old build"
+    );
+    // The staging directory is cleaned up either way.
+    assert!(
+        fs::read_dir(root.join(".staging"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn install_keeps_a_manifest_that_lives_in_dist() {
     // Built packages ship `dist/nexus.plugin.json`, not a root manifest. The
     // install re-reads the copied manifest, so it has to use the same relative
@@ -364,6 +392,20 @@ fn host_with_fixture(temporary: &tempfile::TempDir, configured: bool) -> PluginH
     .unwrap()
 }
 
+/// Node starts in milliseconds on an idle machine and in seconds while the rest
+/// of the suite is running, so a state that needs a finished handshake is
+/// polled instead of asserted on the first read.
+fn wait_for_running(host: &PluginHost, id: &str) -> super::PluginView {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let view = host.view_of(id).unwrap();
+        if view.state == "running" || std::time::Instant::now() > deadline {
+            return view;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn installing_a_plugin_grants_and_starts_it() {
     let _slot = NodeSlot::acquire();
@@ -380,6 +422,7 @@ fn installing_a_plugin_grants_and_starts_it() {
     // starts the process.
     assert!(view.enabled);
     assert_eq!(view.granted, vec!["proxy.provider".to_string()]);
+    let view = wait_for_running(&host, "test.fixture-plugin");
     assert_eq!(view.state, "running", "lastError: {:?}", view.last_error);
     assert!(view.methods.contains(&"test.echo".to_string()));
 
@@ -418,6 +461,40 @@ fn installing_a_plugin_grants_and_starts_it() {
         )
         .unwrap_err();
     assert_eq!(unknown.code(), "PERMISSION_DENIED");
+
+    host.shutdown();
+}
+
+#[test]
+fn an_installed_plugin_reports_its_source_and_can_be_reinstalled() {
+    // Rebuilding a plugin at the same version is invisible unless the page can
+    // point back at the package it came from, so the catalog carries that path
+    // on the installed row and installing again refreshes the copy.
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_fixture(&temporary, false);
+    let source = temporary.path().join("source");
+    host.install(&source).unwrap();
+
+    let catalog = host.catalog().unwrap();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(
+        catalog[0].source_directory.as_deref(),
+        Some(source.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        wait_for_running(&host, "test.fixture-plugin").state,
+        "running"
+    );
+
+    // A rebuild keeps the version, so this only succeeds because the install
+    // replaces the version directory instead of refusing it.
+    let refreshed = host.install(&source).unwrap();
+    assert_eq!(refreshed.version, catalog[0].version);
+    assert_eq!(
+        wait_for_running(&host, "test.fixture-plugin").state,
+        "running"
+    );
 
     host.shutdown();
 }
@@ -574,10 +651,11 @@ fn workspace_plugin_installs_from_its_built_dist_and_runs() {
 
     let installed = host.install(&plugins.join("proxy-pool")).unwrap();
     assert_eq!(installed.id, "studio.proxy-pool");
+    let running = wait_for_running(&host, "studio.proxy-pool");
     assert_eq!(
-        installed.state, "running",
+        running.state, "running",
         "lastError: {:?}",
-        installed.last_error
+        running.last_error
     );
 
     let listed = host

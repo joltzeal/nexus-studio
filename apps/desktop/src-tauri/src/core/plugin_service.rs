@@ -1,6 +1,7 @@
 use super::group_store::GroupStore;
 use super::license_service::LicenseService;
 use super::license_store::LicenseStore;
+use super::network_proxy::NetworkProxyStore;
 use super::plugin_host::discovery::development_roots;
 use super::plugin_host::manifest::Capability;
 use super::plugin_host::{HostError, MarketStatusView, PluginHost, PluginView};
@@ -133,6 +134,8 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     let app_data = app.path().app_data_dir()?;
     let runtime = RuntimePaths::for_app(app).map_err(std::io::Error::other)?;
     let root = app_data.join("plugins");
+    let network =
+        NetworkProxyStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
     let host = Arc::new(
         PluginHost::open_with_node(
             root,
@@ -145,8 +148,10 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
             },
             runtime.node.clone(),
         )
-        .map_err(|error| std::io::Error::other(error.message()))?,
+        .map_err(|error| std::io::Error::other(error.message()))?
+        .with_network(network.clone(), runtime.network_preload.clone()),
     );
+    app.manage(network.clone());
     app.manage(Arc::clone(&host));
     // Plugins installed in an earlier session start on their own; the
     // supervisor owns restarts, so the app never asks the user to fix a process.
@@ -162,14 +167,16 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         license_store.clone(),
         license_store.browser_cache_dir(),
         runtime.clone(),
-    );
+    )
+    .with_network(network.clone());
     let profiles = super::profile_service::ProfileService::with_runtime(
         app_data.join("profiles"),
         Some(Arc::clone(&host)),
         license_store,
         runtime,
     )
-    .map_err(std::io::Error::other)?;
+    .map_err(std::io::Error::other)?
+    .with_network(network);
     app.manage(Arc::new(profiles));
     app.manage(Arc::new(license_service));
     Ok(())

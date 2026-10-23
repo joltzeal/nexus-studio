@@ -105,9 +105,16 @@ try {
   const browserModule = pathToFileURL(
     join(runtime, 'browser-runtime/dist/profile-runtime.js'),
   ).href
+  const networkModule = join(runtime, 'browser-runtime/dist/network-preload.js')
   const smoke = spawnSync(
     executable,
-    ['--input-type=module', '-e', `await import(${JSON.stringify(browserModule)})`],
+    [
+      '--import',
+      networkModule,
+      '--input-type=module',
+      '-e',
+      `await import(${JSON.stringify(browserModule)})`,
+    ],
     { cwd: root, stdio: 'inherit' },
   )
   if (smoke.status !== 0) {

@@ -23,12 +23,30 @@ describe('verification code extraction', () => {
     expect(extractOtp('Your Vinted code: 902114', 'text/plain')).toBe('902114')
   })
 
-  it('falls back to the first six-digit run when no keyword is present', () => {
+  it('reads a four-digit SMS code', () => {
+    expect(extractOtp('Vinted 验证码 8042，请勿泄露。', 'text/plain')).toBe('8042')
+  })
+
+  it('falls back to the only digits when no keyword is present', () => {
     expect(extractOtp('482913', 'text/plain')).toBe('482913')
+    expect(extractOtp('1234', 'text/plain')).toBe('1234')
+  })
+
+  it('prefers the digits next to a keyword over other numbers in the body', () => {
+    const html = '<p>Order 5521 total 1200</p><p>Your code is 731204</p>'
+    expect(extractOtp(html, 'text/html')).toBe('731204')
+  })
+
+  it('refuses to guess when the body carries two different codes', () => {
+    expect(extractOtp('<p>code 654321</p><p>code 123456</p>', 'text/html')).toBeNull()
   })
 
   it('ignores a year when the body has no code at all', () => {
     expect(extractOtp('<p>Copyright 2026 Vinted</p>', 'text/html')).toBeNull()
+  })
+
+  it('refuses to guess between several unrelated numbers', () => {
+    expect(extractOtp('Order 5521 shipped 1200 units', 'text/plain')).toBeNull()
   })
 
   it('returns null for an empty body', () => {

@@ -90,8 +90,8 @@ export function ProxyGateDialog({
 
         {stage.stage === 'blocked' && stage.outcome.kind === 'unsupported' ? (
           <p className="proxy-gate-warning">
-            没有代理池插件时无法预先检测。你可以继续打开，或先到「插件中心 →
-            代理池」启用插件。
+            检测没有完成，所以这个代理是否可用还没有确认。原因见上；你也可以先到「插件中心
+            → 代理池」检查插件，或仍然打开窗口。
           </p>
         ) : null}
 

@@ -387,13 +387,15 @@ describe('reading verification codes', () => {
     const saved = await seeded(pool, {
       emailOtpUrl: 'https://mail.example.com/inbox/abc',
     })
-    const result = await call<{ channel: string; code: string }>(
+    const result = await call<{ channel: string; code: string; body: string }>(
       pool,
       'vinted.accounts.otp',
       { accountId: saved.id, channel: 'email' },
     )
     expect(result.code).toBe('482913')
     expect(result.channel).toBe('email')
+    // The raw body comes back so the page can show it on demand.
+    expect(result.body).toContain('您的验证码是 482913')
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://mail.example.com/inbox/abc',
       expect.objectContaining({ redirect: 'follow' }),
@@ -436,9 +438,16 @@ describe('reading verification codes', () => {
     )
     const { pool } = fixture(fetchImpl as unknown as typeof fetch)
     const saved = await seeded(pool, { emailOtpUrl: 'https://mail.example.com/empty' })
-    await expect(
-      call(pool, 'vinted.accounts.otp', { accountId: saved.id, channel: 'email' }),
-    ).rejects.toThrow('没有找到验证码')
+    const result = await call<{ code: string | null; body: string; truncated: boolean }>(
+      pool,
+      'vinted.accounts.otp',
+      { accountId: saved.id, channel: 'email' },
+    )
+    // An inbox with nothing in it is an answer, not an error: the page shows
+    // "还没有验证码" and offers the body.
+    expect(result.code).toBeNull()
+    expect(result.body).toContain('No messages')
+    expect(result.truncated).toBe(false)
   })
 
   it('reports an unreachable link without echoing the url', async () => {

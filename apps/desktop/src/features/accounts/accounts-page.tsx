@@ -83,6 +83,7 @@ import {
   type AccountList,
   type ImportReport,
   type LoginMethod,
+  type OtpResult,
 } from './types'
 
 /** Mirrors the host's 1 MiB message cap; a spreadsheet beyond this needs a split. */
@@ -102,12 +103,14 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const [removing, setRemoving] = useState<Account | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Codes live for a few minutes; keeping them on screen beats a toast that
-  // disappears before the user has typed the digits into Vinted.
-  const [codes, setCodes] = useState<
-    Record<string, { code: string; channel: 'email' | 'sms' }>
-  >({})
+  // Codes live for a few minutes; keeping the last read on screen beats a toast
+  // that disappears before the user has typed the digits into Vinted.
+  const [codes, setCodes] = useState<Record<string, OtpResult>>({})
   const [otpBusy, setOtpBusy] = useState<string | null>(null)
+  const [otpView, setOtpView] = useState<{
+    account: Account
+    result: OtpResult
+  } | null>(null)
 
   const load = useCallback(async () => {
     const result = await listAccounts()
@@ -163,10 +166,10 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     setOtpBusy(key)
     try {
       const result = await readOtp(account.id, channel)
-      setCodes((current) => ({
-        ...current,
-        [account.id]: { code: result.code, channel },
-      }))
+      setCodes((current) => ({ ...current, [account.id]: result }))
+      // The dialog is the answer to the click, whether or not a code was found:
+      // it shows the digits or the reason there are none, plus the raw body.
+      setOtpView({ account, result })
     } catch (cause) {
       toast.error(message(cause))
     } finally {
@@ -253,13 +256,33 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                 {visible.map((account) => (
                   <TableRow key={account.id}>
                     <TableCell>
-                      <strong>{account.account}</strong>
+                      <span className="account-identity">
+                        <strong>{account.account}</strong>
+                        <CopyButton
+                          value={account.account}
+                          label={`复制 ${account.account}`}
+                          done="账号已复制"
+                        />
+                      </span>
                       <small className="block text-muted-foreground">
                         {account.note || account.homepageUrl || '—'}
                       </small>
                     </TableCell>
                     <TableCell>{LOGIN_METHOD_LABELS[account.loginMethod]}</TableCell>
-                    <TableCell>{account.phone || '—'}</TableCell>
+                    <TableCell>
+                      {account.phone === '' ? (
+                        '—'
+                      ) : (
+                        <span className="account-identity">
+                          <span>{account.phone}</span>
+                          <CopyButton
+                            value={account.phone}
+                            label={`复制 ${account.account} 的手机号`}
+                            done="手机号已复制"
+                          />
+                        </span>
+                      )}
+                    </TableCell>
                     {hasOtpLinks ? (
                       <TableCell>
                         <OtpCell
@@ -278,6 +301,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                     <TableCell>{windowCountText(bindings, account.id)}</TableCell>
                     <TableCell>
                       <div className="table-actions">
+                        <CopyButton
+                          value={account.password}
+                          label={`复制 ${account.account} 的密码`}
+                          done="密码已复制"
+                          size="icon"
+                        />
                         <Button
                           variant="ghost"
                           size="icon"
@@ -389,7 +418,130 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           </AlertDialogContent>
         ) : null}
       </AlertDialog>
+
+      <Dialog
+        open={otpView !== null}
+        onOpenChange={(open) => {
+          if (!open) setOtpView(null)
+        }}
+      >
+        {otpView === null ? null : (
+          <OtpDialog
+            account={otpView.account}
+            result={otpView.result}
+            onClose={() => setOtpView(null)}
+          />
+        )}
+      </Dialog>
     </section>
+  )
+}
+
+/**
+ * One value, one click. `copyText` returns false when the clipboard is denied,
+ * which is worth saying out loud rather than failing silently.
+ */
+function CopyButton({
+  value,
+  label,
+  done,
+  size = 'icon-xs',
+}: {
+  value: string
+  label: string
+  done: string
+  /** Match the neighbours: table actions use the larger icon button. */
+  size?: 'icon-xs' | 'icon'
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size={size}
+      aria-label={label}
+      title={label}
+      disabled={value === ''}
+      onClick={() => {
+        void copyText(value).then((copied) => {
+          if (copied) toast.success(done)
+          else toast.error('复制失败，请检查剪贴板权限后重试。')
+        })
+      }}
+    >
+      <Copy />
+    </Button>
+  )
+}
+
+function readableTime(iso: string): string {
+  const at = Date.parse(iso)
+  if (Number.isNaN(at)) return iso
+  return new Date(at).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+/**
+ * The click answer. A code is shown large enough to read across the room; a
+ * body without one says so instead of pretending the fetch failed, and the raw
+ * response is one button away because that is what makes a bad link debuggable.
+ */
+function OtpDialog({
+  account,
+  result,
+  onClose,
+}: {
+  account: Account
+  result: OtpResult
+  onClose: () => void
+}) {
+  const [raw, setRaw] = useState(false)
+  const channel = result.channel === 'email' ? '邮箱验证码' : '手机验证码'
+
+  async function copy() {
+    if (result.code === null) return
+    if (await copyText(result.code)) toast.success('验证码已复制')
+    else toast.error('复制失败，请检查剪贴板权限后重试。')
+  }
+
+  return (
+    <DialogContent className="otp-dialog">
+      <DialogHeader>
+        <DialogTitle>{channel}</DialogTitle>
+        <DialogDescription>
+          {account.account} · {readableTime(result.fetchedAt)}
+        </DialogDescription>
+      </DialogHeader>
+      {raw ? (
+        <div className="otp-raw-wrap">
+          <pre className="otp-raw">
+            {result.body.trim() === '' ? '（响应体为空）' : result.body}
+          </pre>
+          {result.truncated ? (
+            <p className="otp-hint">响应体较长，这里只显示前 64 KB。</p>
+          ) : null}
+        </div>
+      ) : result.code === null ? (
+        <div className="otp-verdict" data-tone="empty">
+          <strong>还没有验证码</strong>
+          <p>
+            响应里没有唯一的 4 位或 6
+            位数字。可能邮件或短信还没到，稍等几秒再读一次；也可以查看原文，确认这个链接到底返回了什么。
+          </p>
+        </div>
+      ) : (
+        <div className="otp-verdict" data-tone="found">
+          <span className="otp-digits">{result.code}</span>
+          <Button onClick={() => void copy()}>
+            <Copy data-icon="inline-start" />
+            复制验证码
+          </Button>
+        </div>
+      )}
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => setRaw((current) => !current)}>
+          {raw ? '收起原文' : '查看原文'}
+        </Button>
+        <Button onClick={onClose}>关闭</Button>
+      </DialogFooter>
+    </DialogContent>
   )
 }
 
@@ -404,7 +556,7 @@ function OtpCell({
   onFetch,
 }: {
   account: Account
-  state: { code: string; channel: 'email' | 'sms' } | null
+  state: OtpResult | null
   busy: string | null
   onFetch: (channel: 'email' | 'sms') => void
 }) {
@@ -418,14 +570,18 @@ function OtpCell({
   ]
 
   async function copy() {
-    if (state === null) return
+    if (state === null || state.code === null) return
     if (await copyText(state.code)) toast.success('验证码已复制')
     else toast.error('复制失败，请检查剪贴板权限后重试。')
   }
 
   return (
     <div className="otp-cell">
-      {state === null ? null : (
+      {state === null ? null : state.code === null ? (
+        <span className="otp-code" data-empty="true">
+          暂无验证码
+        </span>
+      ) : (
         <span className="otp-code">
           <strong>{state.code}</strong>
           <Button

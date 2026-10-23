@@ -1,6 +1,7 @@
 pub mod group_store;
 pub mod license_service;
 pub mod license_store;
+pub mod network_proxy;
 pub mod plugin_host;
 pub mod plugin_service;
 pub mod plugins;

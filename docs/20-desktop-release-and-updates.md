@@ -9,6 +9,8 @@
 浏览器适配器通过 pnpm deploy 复制到 `src-tauri/runtime`。发行分阶段使用 hoisted 布局，
 使 Node 依赖以实际目录进入 Tauri 资源包；默认 pnpm 软链接不会被当前 Tauri 打包流程保留。
 以上两个目录是忽略的生成物，不提交到 Git。
+发行资源还包括 `network-preload.js` 与其 HTTP/SOCKS5 传输依赖；
+分阶段检查须同时加载浏览器适配器与代理预加载模块。
 
 插件不再随安装包分发：发布构建的插件列表只有「已安装」与「商店清单」两个来源，
 安装包内只带 Node 与浏览器适配器，插件以加密的 `.nexuspkg` 从商店按需安装。
@@ -58,3 +60,12 @@ macOS x64 与 Windows x64，使用 GitHub Actions 的
 `codesign --verify --deep`。Rust `cargo check --locked` 与库测试通过
 （58 通过、1 个真实浏览器冒烟用例忽略）；前端测试 323 个通过。
 此记录不涵盖 Windows 安装、干净机器首次内核下载或公开更新服务。
+
+## 0.1.0 本机检查（2026-10-23）
+
+macOS arm64 分阶段运行时检查通过，含 `network-preload.js` 和 SOCKS5 依赖；
+本机 Tauri 发行构建生成 `.app`、`.dmg`、更新压缩包和 `.sig`，
+`codesign --verify --deep --strict` 通过。此构件采用 ad-hoc 签名，
+未进行 Apple 公证；Windows 打包、跨机器安装与公开更新服务仍需分别检查。
+代理请求的测试覆盖 Node `fetch` 经 SOCKS5 转发与代理不可达时报错，
+不证明任意插件原始网络连接都经过应用代理。

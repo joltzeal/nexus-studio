@@ -6,6 +6,7 @@ import {
   type AccountList,
   type BindingView,
   type ImportReport,
+  type OtpResult,
   type TemplateFile,
 } from './types'
 
@@ -55,9 +56,6 @@ export function listBindings(): Promise<{ items: BindingView[] }> {
 }
 
 /** Reads the account's own inbox link; the plugin does the fetching. */
-export function readOtp(
-  accountId: string,
-  channel: 'email' | 'sms',
-): Promise<{ channel: 'email' | 'sms'; code: string; fetchedAt: string }> {
-  return call('vinted.accounts.otp', { accountId, channel })
+export function readOtp(accountId: string, channel: 'email' | 'sms'): Promise<OtpResult> {
+  return call<OtpResult>('vinted.accounts.otp', { accountId, channel })
 }

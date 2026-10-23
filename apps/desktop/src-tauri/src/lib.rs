@@ -17,6 +17,8 @@ pub fn run() {
             core::license_service::license_status,
             core::license_service::license_set,
             core::license_service::license_remove,
+            core::network_proxy::network_proxy_get,
+            core::network_proxy::network_proxy_set,
             core::group_store::group_list,
             core::group_store::group_create,
             core::group_store::group_update,

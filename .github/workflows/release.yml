@@ -40,6 +40,7 @@ jobs:
         shell: bash
         run: |
           test -f apps/desktop/src-tauri/runtime/browser-runtime/dist/profile-runner.js
+          test -f apps/desktop/src-tauri/runtime/browser-runtime/dist/network-preload.js
           test -f "apps/desktop/src-tauri/binaries/node-${{ matrix.target }}${{ runner.os == 'Windows' && '.exe' || '' }}"
       - uses: tauri-apps/tauri-action@v0
         env:

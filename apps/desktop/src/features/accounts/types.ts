@@ -75,6 +75,22 @@ export interface TemplateFile {
   base64: string
 }
 
+/**
+ * One read of an account's inbox link. `code` is null when the body does not
+ * carry exactly one four- or six-digit run, which is a normal answer — an empty
+ * inbox, or a mailbox page that has not received the mail yet.
+ */
+export interface OtpResult {
+  channel: 'email' | 'sms'
+  code: string | null
+  /** The response body, capped by the plugin; shown behind 查看原文. */
+  body: string
+  /** True when the plugin cut the body before sending it back. */
+  truncated: boolean
+  contentType: string
+  fetchedAt: string
+}
+
 export const LOGIN_METHODS: readonly LoginMethod[] = [
   'email',
   'google',

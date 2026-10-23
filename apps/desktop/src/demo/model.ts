@@ -102,9 +102,17 @@ function record(
   if (typeof input !== 'object' || input === null || Array.isArray(input))
     invalid(`${label}需要是对象`)
   const keys = Object.keys(input)
-  if (keys.length !== fields.length || keys.some((key) => !fields.includes(key))) {
-    invalid(`${label}包含未知字段或缺少必要字段`)
-  }
+  const missing = fields.filter((field) => !keys.includes(field))
+  const unknown = keys.filter((key) => !fields.includes(key))
+  // Naming the offending fields matters: a bare "unknown or missing field" gives
+  // the reader nothing to act on, and this check is what rejects a record whose
+  // writer and reader disagree about the shape.
+  if (missing.length > 0 && unknown.length > 0)
+    invalid(
+      `${label}包含未知字段（${unknown.join('、')}）且缺少必要字段（${missing.join('、')}）`,
+    )
+  if (missing.length > 0) invalid(`${label}缺少必要字段：${missing.join('、')}`)
+  if (unknown.length > 0) invalid(`${label}包含未知字段：${unknown.join('、')}`)
   return input as Record<string, unknown>
 }
 
@@ -167,8 +175,10 @@ export function parseWindowConfig(input: unknown): WindowConfig {
       invalid('代理地址应为协议://主机:端口，且不能包含凭据')
     }
   }
-  if (typeof config.geoip !== 'boolean' || (config.geoip && protocol === 'direct'))
-    invalid('GeoIP 自动匹配需要代理')
+  // Whether GeoIP is usable depends on where the proxy comes from, which this
+  // parser does not know: a window can sit behind a plugin-resolved proxy and
+  // still store `direct` here. The consistency check lives with the caller.
+  if (typeof config.geoip !== 'boolean') invalid('GeoIP 自动匹配需要是开关值')
   const timezone = optionalText(config.timezone, '时区', 64)
   if (timezone) {
     try {
@@ -259,6 +269,11 @@ export function parseDemoState(input: unknown): DemoState {
     const groupId =
       space.groupId === null ? null : text(space.groupId, '窗口所属分组', 120)
     if (groupId !== null && !groupIds.has(groupId)) invalid('窗口引用了不存在的分组')
+    const config = parseWindowConfig(legacy ? DEFAULT_WINDOW_CONFIG : space.config)
+    // A stored window has no plugin-resolved proxy, so `direct` really means
+    // direct here.
+    if (config.geoip && config.proxy.protocol === 'direct')
+      invalid('GeoIP 自动匹配需要代理')
     return {
       id: text(space.id, '窗口标识', 120),
       name: text(withoutOldCopy(text(space.name, '窗口名称', 40)), '窗口名称', 40),
@@ -268,7 +283,7 @@ export function parseDemoState(input: unknown): DemoState {
         ? ''
         : withoutOldCopy(optionalText(space.note, '备注', 120)),
       tone: tone(space.tone),
-      config: parseWindowConfig(legacy ? DEFAULT_WINDOW_CONFIG : space.config),
+      config,
     }
   })
   uniqueIds(spaces, '窗口')

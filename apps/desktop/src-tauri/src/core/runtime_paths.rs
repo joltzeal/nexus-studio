@@ -5,6 +5,7 @@ use tauri::Manager;
 pub struct RuntimePaths {
     pub node: PathBuf,
     pub browser_script: PathBuf,
+    pub network_preload: PathBuf,
 }
 
 impl RuntimePaths {
@@ -13,6 +14,7 @@ impl RuntimePaths {
         Self {
             node: PathBuf::from("node"),
             browser_script: root.join("packages/browser-runtime/dist/profile-runner.js"),
+            network_preload: root.join("packages/browser-runtime/dist/network-preload.js"),
         }
     }
 
@@ -31,14 +33,16 @@ impl RuntimePaths {
             .ok_or("无法定位应用运行时")?
             .join(if cfg!(windows) { "node.exe" } else { "node" });
         let browser_script = resources.join("runtime/browser-runtime/dist/profile-runner.js");
+        let network_preload = resources.join("runtime/browser-runtime/dist/network-preload.js");
         // Plugins are installed from the store, so the bundle only has to carry
         // the Node binary and the browser adapter.
-        if !node.is_file() || !browser_script.is_file() {
+        if !node.is_file() || !browser_script.is_file() || !network_preload.is_file() {
             return Err("安装包缺少浏览器运行时，请重新安装 Nexus".into());
         }
         Ok(Self {
             node,
             browser_script,
+            network_preload,
         })
     }
 }
@@ -60,6 +64,11 @@ mod tests {
         let runner = resources.join("runtime/browser-runtime/dist/profile-runner.js");
         fs::create_dir_all(runner.parent().unwrap()).unwrap();
         fs::write(&runner, b"runner").unwrap();
+        fs::write(
+            resources.join("runtime/browser-runtime/dist/network-preload.js"),
+            b"preload",
+        )
+        .unwrap();
         // Without the bundled Node binary the app must refuse to start rather
         // than fall back to whatever `node` happens to be on the PATH.
         fs::remove_file(&node).unwrap();

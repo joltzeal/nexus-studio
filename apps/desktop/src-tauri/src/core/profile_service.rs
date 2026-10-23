@@ -1,4 +1,5 @@
 use super::license_store::LicenseStore;
+use super::network_proxy::NetworkProxyStore;
 use super::plugin_host::PluginHost;
 use super::profile_store::{
     PreparedBinary, ProfileRecord, ProfileStore, ProxySource, StoreError, WindowSettings,
@@ -31,6 +32,7 @@ pub struct ProfileService {
     store: ProfileStore,
     license_store: LicenseStore,
     runtime: RuntimePaths,
+    network: Option<NetworkProxyStore>,
     state: Mutex<SessionState>,
     /// When present, a window that requires a plugin proxy is resolved through
     /// it before a scheduler slot is reserved.
@@ -169,12 +171,18 @@ impl ProfileService {
             store,
             license_store,
             runtime,
+            network: None,
             state: Mutex::new(SessionState {
                 scheduler,
                 sessions: HashMap::new(),
             }),
             plugin_host,
         })
+    }
+
+    pub fn with_network(mut self, network: NetworkProxyStore) -> Self {
+        self.network = Some(network);
+        self
     }
 
     pub fn list(&self) -> Result<Vec<ProfileSummary>, String> {
@@ -226,6 +234,11 @@ impl ProfileService {
             return Err("内核版本需要是完整的数字版本号".into());
         }
         let mut command = Command::new(&self.runtime.node);
+        if let Some(network) = &self.network {
+            network
+                .get()?
+                .apply_to_node(&mut command, &self.runtime.network_preload)?;
+        }
         command
             .arg(script)
             .arg("prepare")
@@ -398,6 +411,11 @@ impl ProfileService {
         let user_data = self.store.user_data_dir(id).map_err(error_message)?;
         let license_key = self.license_store.license_key()?;
         let mut command = Command::new(&self.runtime.node);
+        if let Some(network) = &self.network {
+            network
+                .get()?
+                .apply_to_node(&mut command, &self.runtime.network_preload)?;
+        }
         command
             .arg(&self.runtime.browser_script)
             .arg("launch")

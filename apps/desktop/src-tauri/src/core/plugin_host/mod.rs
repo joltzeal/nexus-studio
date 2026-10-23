@@ -138,7 +138,9 @@ pub struct PluginView {
     pub storage_durable: bool,
     /// Declared slot names. The plugin owns the values; the host never reads them.
     pub secret_slots: Vec<String>,
-    /// Set only for a discovered package that is not installed yet.
+    /// The directory this plugin can be installed from: a package that is not
+    /// installed yet, or the development copy an installed one is refreshed
+    /// from. `None` when nothing on disk can supply it.
     pub source_directory: Option<String>,
 }
 
@@ -186,6 +188,7 @@ pub struct PluginHost {
     market_store: MarketStore,
     market: Mutex<Catalog>,
     market_watch: Mutex<Option<Supervisor>>,
+    network: Option<(crate::core::network_proxy::NetworkProxyStore, PathBuf)>,
 }
 
 /// Start/retry bookkeeping for one plugin.
@@ -232,6 +235,7 @@ impl PluginHost {
             market_store,
             market: Mutex::new(Catalog::default()),
             market_watch: Mutex::new(None),
+            network: None,
             lists_candidates: cfg!(debug_assertions),
             root,
             node,
@@ -247,6 +251,28 @@ impl PluginHost {
         // adopted on open instead of being left inert.
         let _ = host.adopt_installed();
         Ok(host)
+    }
+
+    pub fn with_network(
+        mut self,
+        store: crate::core::network_proxy::NetworkProxyStore,
+        preload: PathBuf,
+    ) -> Self {
+        self.network = Some((store, preload));
+        self
+    }
+
+    pub fn restart_for_network_change(&self) {
+        let ids: Vec<String> = self
+            .processes
+            .lock()
+            .map(|processes| processes.keys().cloned().collect())
+            .unwrap_or_default();
+        for id in ids {
+            self.stop(&id);
+            self.forget_attempt(&id);
+        }
+        self.supervise_once();
     }
 
     /// Every installed plugin is enabled and holds the full grant its manifest
@@ -304,43 +330,53 @@ impl PluginHost {
 
     pub fn catalog(&self) -> Result<Vec<PluginView>, HostError> {
         let document = self.snapshot()?;
+        // A package sitting in a development root is also the source an
+        // installed copy can be refreshed from, so its path is reported on the
+        // installed row: without it a stale build has no way back.
+        let candidates = if self.lists_candidates {
+            self.discover().candidates
+        } else {
+            Vec::new()
+        };
         let mut views: Vec<PluginView> = Vec::new();
         for plugin in &document.plugins {
-            views.push(self.view(plugin));
+            let mut view = self.view(plugin);
+            view.source_directory = candidates
+                .iter()
+                .find(|candidate| candidate.manifest.id == plugin.id)
+                .map(|candidate| candidate.directory.to_string_lossy().into_owned());
+            views.push(view);
         }
         // A shipped build starts with an empty plugin list: what is installed
         // plus what the store offers. Listing packages that merely sit next to
         // the binary made the app look like it came with plugins.
-        if self.lists_candidates {
-            let report = self.discover();
-            for candidate in report.candidates {
-                if document
-                    .plugins
-                    .iter()
-                    .any(|plugin| plugin.id == candidate.manifest.id)
-                {
-                    continue;
-                }
-                views.push(PluginView {
-                    id: candidate.manifest.id.clone(),
-                    name: candidate.manifest.name.clone(),
-                    version: candidate.manifest.version.clone(),
-                    api_version: candidate.manifest.api_version,
-                    min_core_version: candidate.manifest.min_core_version.clone(),
-                    capabilities: capability_names(&candidate.manifest),
-                    granted: Vec::new(),
-                    permissions: candidate.manifest.permissions.clone(),
-                    source: source_name(candidate.source).to_string(),
-                    state: "available".into(),
-                    enabled: false,
-                    methods: Vec::new(),
-                    status: Value::Null,
-                    last_error: None,
-                    storage_durable: false,
-                    secret_slots: Vec::new(),
-                    source_directory: Some(candidate.directory.to_string_lossy().into_owned()),
-                });
+        for candidate in candidates {
+            if document
+                .plugins
+                .iter()
+                .any(|plugin| plugin.id == candidate.manifest.id)
+            {
+                continue;
             }
+            views.push(PluginView {
+                id: candidate.manifest.id.clone(),
+                name: candidate.manifest.name.clone(),
+                version: candidate.manifest.version.clone(),
+                api_version: candidate.manifest.api_version,
+                min_core_version: candidate.manifest.min_core_version.clone(),
+                capabilities: capability_names(&candidate.manifest),
+                granted: Vec::new(),
+                permissions: candidate.manifest.permissions.clone(),
+                source: source_name(candidate.source).to_string(),
+                state: "available".into(),
+                enabled: false,
+                methods: Vec::new(),
+                status: Value::Null,
+                last_error: None,
+                storage_durable: false,
+                secret_slots: Vec::new(),
+                source_directory: Some(candidate.directory.to_string_lossy().into_owned()),
+            });
         }
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
@@ -424,15 +460,30 @@ impl PluginHost {
             .ok()
             .flatten()
             .ok_or(HostError::NotFound)?;
-        if self
+        let existing = self
             .snapshot()?
             .plugins
-            .iter()
-            .any(|plugin| plugin.id == candidate.manifest.id)
-        {
-            return Err(HostError::Install(InstallError::AlreadyInstalled));
+            .into_iter()
+            .find(|plugin| plugin.id == candidate.manifest.id);
+        if let Some(plugin) = &existing {
+            // Reinstalling the same version is how a package built from a
+            // directory picks up new code; a lower version is still refused.
+            if matches!(
+                market::compare_versions(&candidate.manifest.version, &plugin.version),
+                Some(std::cmp::Ordering::Less)
+            ) {
+                return Err(HostError::Install(InstallError::Downgrade));
+            }
+            // The running process holds the old entry file open on Windows, so
+            // it has to stop before the version directory is replaced.
+            self.stop(&plugin.id);
+            self.forget_attempt(&plugin.id);
         }
-        let directory = install::install(&candidate, &self.root)?;
+        let directory = if existing.is_some() {
+            install::reinstall(&candidate, &self.root)?
+        } else {
+            install::install(&candidate, &self.root)?
+        };
         let record = InstalledPlugin {
             id: candidate.manifest.id.clone(),
             version: candidate.manifest.version.clone(),
@@ -448,10 +499,16 @@ impl PluginHost {
             installed_at: timestamp(),
         };
         let mut document = self.snapshot()?;
+        document.plugins.retain(|plugin| plugin.id != record.id);
         document.plugins.push(record.clone());
         self.persist(&document)?;
         if let Ok(mut current) = self.registry.lock() {
             *current = document;
+        }
+        if let Some(previous) = existing
+            && previous.version != record.version
+        {
+            let _ = install::uninstall(&self.root, &previous.id, &previous.version);
         }
         // Start right away so the page that installs a plugin can use it. A
         // start failure is not fatal: the supervisor retries with backoff.
@@ -618,7 +675,14 @@ impl PluginHost {
             return Err(HostError::Market(MarketError::NotConfigured));
         };
         let catalog_url = market::normalize_store_url(&store_url)?;
-        let fetched = market::fetch(&catalog_url, market::MAX_CATALOG_BYTES)
+        let proxy = self
+            .network
+            .as_ref()
+            .map(|(store, _)| store.get())
+            .transpose()
+            .map_err(|error| HostError::Market(MarketError::Proxy(error)))?
+            .unwrap_or_default();
+        let fetched = market::fetch_with_proxy(&catalog_url, market::MAX_CATALOG_BYTES, &proxy)
             .and_then(|bytes| Catalog::parse(&bytes));
         match fetched {
             Ok(catalog) => {
@@ -660,7 +724,14 @@ impl PluginHost {
         let catalog_url = market::normalize_store_url(&store_url)?;
         let base = market::store_base(&catalog_url);
         let url = market::resolve_package_url(&base, &entry.package.url);
-        let bytes = market::fetch(&url, market::MAX_PACKAGE_BYTES)?;
+        let proxy = self
+            .network
+            .as_ref()
+            .map(|(store, _)| store.get())
+            .transpose()
+            .map_err(|error| HostError::Market(MarketError::Proxy(error)))?
+            .unwrap_or_default();
+        let bytes = market::fetch_with_proxy(&url, market::MAX_PACKAGE_BYTES, &proxy)?;
         if registry::digest(&bytes) != entry.package.sha256 {
             return Err(HostError::Install(InstallError::ChecksumMismatch));
         }
@@ -837,7 +908,13 @@ impl PluginHost {
         } else {
             None
         };
-        let (process, ready) = PluginProcess::spawn(
+        let proxy = self
+            .network
+            .as_ref()
+            .map(|(store, _)| store.get())
+            .transpose()
+            .map_err(|error| HostError::Process(ProcessError::Failed(error)))?;
+        let (process, ready) = PluginProcess::spawn_with_network(
             &plugin.entry_path(),
             storage.as_deref(),
             plugin.manifest.clone(),
@@ -845,6 +922,9 @@ impl PluginHost {
             // Packages carry an encrypted entry; the loader needs this to run.
             // A plain directory install simply ignores it.
             &package::key_for(&plugin.id, &plugin.version),
+            proxy
+                .as_ref()
+                .zip(self.network.as_ref().map(|(_, path)| path.as_path())),
         )?;
         let _ = ready;
         if let Ok(mut processes) = self.processes.lock() {

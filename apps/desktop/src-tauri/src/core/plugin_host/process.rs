@@ -1,4 +1,5 @@
 use super::manifest::{Capability, PluginManifest};
+use crate::core::network_proxy::NetworkProxy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -196,7 +197,23 @@ impl PluginProcess {
         node: &Path,
         key: &str,
     ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
+        Self::spawn_with_network(entry, storage_directory, manifest, node, key, None)
+    }
+
+    pub fn spawn_with_network(
+        entry: &Path,
+        storage_directory: Option<&Path>,
+        manifest: PluginManifest,
+        node: &Path,
+        key: &str,
+        network: Option<(&NetworkProxy, &Path)>,
+    ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
         let mut command = Command::new(node);
+        if let Some((proxy, preload)) = network {
+            proxy
+                .apply_to_node(&mut command, preload)
+                .map_err(ProcessError::Failed)?;
+        }
         command
             .arg(entry)
             .env("NEXUS_PLUGIN_ID", &manifest.id)

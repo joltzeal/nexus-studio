@@ -90,8 +90,13 @@ export const SIZES: { value: string; label: string }[] = [
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
+/** Tauri rejects with the command's `Err(String)`, which is not an `Error`. */
 export function message(error: unknown): string {
-  return error instanceof Error ? error.message : '请求失败，请稍后重试'
+  return typeof error === 'string'
+    ? error
+    : error instanceof Error
+      ? error.message
+      : '请求失败，请稍后重试'
 }
 
 export function statusText(record: GenerationRecord): string {
