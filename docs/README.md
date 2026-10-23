@@ -39,6 +39,7 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)   | 仓库内 `studio.vinted-accounts` 的账密、导入与窗口关联  |
 | [25 · 插件商店与在线更新](25-plugin-market.md)           | 商店地址、`catalog.json`、`.nexuspkg` 加密包与定时更新  |
 | [26 · 应用代理](26-application-network-proxy.md)         | 设置项、后台请求、系统代理与插件网络边界                |
+| [27 · 浏览器内核](27-browser-kernels.md)                 | 本地清单、提前下载、真实进度、错误分类与窗口缓存复用    |
 
 ## 阅读与维护
 

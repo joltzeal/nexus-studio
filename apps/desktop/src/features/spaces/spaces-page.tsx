@@ -117,7 +117,7 @@ import {
   type CheckResult,
   type ProxyRow,
 } from '@/features/proxy/types'
-import { listProxies } from '@/features/proxy/api'
+import { getConfig, listProxies } from '@/features/proxy/api'
 import { ProxyCheckSummary } from '@/features/proxy/proxy-check-summary'
 import { checkWindowProxy, hasProxy } from './window-proxy'
 import { ProxyGateDialog, type GateStage } from './proxy-gate'
@@ -1401,6 +1401,8 @@ function WindowEditor({
   )
   const [providers, setProviders] = useState<PluginView[]>([])
   const [proxies, setProxies] = useState<ProxyRow[] | null>(null)
+  const [defaultProxyId, setDefaultProxyId] = useState<string | null>(null)
+  const [proxyLoadError, setProxyLoadError] = useState<string | null>(null)
   const [proxyQuery, setProxyQuery] = useState('')
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
@@ -1430,12 +1432,19 @@ function WindowEditor({
   useEffect(() => {
     if (proxySource !== 'plugin' || providers.length === 0) return
     let active = true
-    void listProxies({ ...EMPTY_QUERY, limit: 500 }).then(
-      (result) => {
-        if (active) setProxies(result.items)
+    void Promise.all([listProxies({ ...EMPTY_QUERY, limit: 500 }), getConfig()]).then(
+      ([result, poolConfig]) => {
+        if (active) {
+          setProxies(result.items)
+          setDefaultProxyId(poolConfig.defaultEndpointId)
+          setProxyLoadError(null)
+        }
       },
-      () => {
-        if (active) setProxies([])
+      (cause: unknown) => {
+        if (active) {
+          setProxies([])
+          setProxyLoadError(message(cause))
+        }
       },
     )
     return () => {
@@ -1503,6 +1512,15 @@ function WindowEditor({
         setError('请选择一个已启用的代理插件。')
         return
       }
+      if (proxySource === 'plugin' && endpointId === null) {
+        setPending(true)
+        setError(null)
+        const poolConfig = await getConfig()
+        if (poolConfig.defaultEndpointId === null) {
+          setError('请从代理池选择一条代理；当前未设置默认代理。')
+          return
+        }
+      }
       if (proxySource === 'manual' && checked.proxy.protocol !== 'direct') {
         if (checked.proxy.server.trim() === '') {
           setError('请填写代理地址，或把代理来源改为直连。')
@@ -1546,7 +1564,7 @@ function WindowEditor({
         <DialogDescription>
           {window
             ? `内核 ${majorVersion(window.version)} 已固定；配置在下次打开时生效。`
-            : '创建独立浏览器环境。创建后才会下载或准备所需内核。'}
+            : '创建独立浏览器环境。可先在设置的「浏览器内核」中下载所需内核。'}
         </DialogDescription>
       </DialogHeader>
       <form
@@ -1762,20 +1780,31 @@ function WindowEditor({
                 <button
                   type="button"
                   role="option"
-                  aria-selected={endpointId === null}
+                  aria-selected={endpointId === null && defaultProxyId !== null}
                   className="account-option"
-                  data-selected={endpointId === null ? 'true' : undefined}
-                  disabled={pending}
+                  data-selected={
+                    endpointId === null && defaultProxyId !== null ? 'true' : undefined
+                  }
+                  disabled={pending || proxies === null || defaultProxyId === null}
                   onClick={() => {
                     setEndpointId(null)
                     setCheckResult(null)
+                    setError(null)
                   }}
                 >
                   <span>
                     <strong>使用插件默认代理</strong>
-                    <small>跟随「代理池」页设置的默认项</small>
+                    <small>
+                      {proxies === null
+                        ? '正在读取默认项…'
+                        : defaultProxyId === null
+                          ? '尚未设置，请选择下方的具体代理'
+                          : `跟随默认代理 #${defaultProxyId}`}
+                    </small>
                   </span>
-                  {endpointId === null ? <Check aria-hidden="true" /> : null}
+                  {endpointId === null && defaultProxyId !== null ? (
+                    <Check aria-hidden="true" />
+                  ) : null}
                 </button>
                 {visibleProxies.map((row) => (
                   <button
@@ -1785,10 +1814,11 @@ function WindowEditor({
                     aria-selected={endpointId === Number(row.id)}
                     className="account-option"
                     data-selected={endpointId === Number(row.id) ? 'true' : undefined}
-                    disabled={pending}
+                    disabled={pending || !row.enabled}
                     onClick={() => {
                       setEndpointId(Number(row.id))
                       setCheckResult(null)
+                      setError(null)
                     }}
                   >
                     <span>
@@ -1798,6 +1828,7 @@ function WindowEditor({
                       <small>
                         {row.schemes.map((scheme) => scheme.toUpperCase()).join(' / ')} ·{' '}
                         {row.host}:{row.port}
+                        {!row.enabled ? ' · 已停用' : ''}
                         {row.checkStatus === 'ok' ? ' · 上次检测通过' : ''}
                       </small>
                     </span>
@@ -1805,7 +1836,13 @@ function WindowEditor({
                   </button>
                 ))}
                 {proxies !== null && visibleProxies.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">代理池还没有代理。</p>
+                  <p className="text-sm text-muted-foreground">
+                    {proxyLoadError
+                      ? `代理池读取失败：${proxyLoadError}`
+                      : proxyQuery.trim()
+                        ? '没有匹配的代理。'
+                        : '代理池还没有代理。'}
+                  </p>
                 ) : null}
               </div>
             </div>

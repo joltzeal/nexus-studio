@@ -26,7 +26,8 @@
 - 一个插件只通过声明的能力与主程序通信，不读取 Rust 内部对象、SQLite、CloakBrowser 进程句柄或其他插件目录。
 - 窗口和 Profile 由主程序唯一管理。插件不能创建第二套 Profile，也不能绕过调度器直接启动浏览器。
 - 浏览器启动参数先由插件提出受限补丁，再由主程序校验并生成不可变启动快照。
-- 代理、账号、验证码和图片服务的密钥只以 `secretRef` 引用传递；manifest、日志、窗口记录和 RPC 报文不得包含明文密钥。
+- manifest、日志和窗口记录不得包含密钥值；常规状态与调度快照使用不透明引用。
+  凭据配置与启动所需的临时 IPC 按具体能力约定处理，不能把明文写入日志或调度快照。
 - 所有外部能力失败都必须显式返回错误；代理为必需项时禁止回退直连。
 - manifest 权限是申请清单，不是安全沙箱。首阶段仅加载工作室信任且版本固定的 TypeScript 插件。
 - 插件不能改变已创建窗口的内核绑定和指纹身份；需要新身份时应创建新窗口。
@@ -119,8 +120,37 @@ interface ProxyResolution {
 - `configHandle` 是不透明标识，不得把账号、密码或完整代理 URL 编码其中。
 - `secretRef` 是插件内部的不透明引用，宿主只透传，不解析也不保存其值。
 - 插件不能自行启动浏览器验证代理后再让主程序直连。
-- 目标宿主在启动前解析引用、验证协议和必要字段，并将代理写入不可变启动快照。
+- 宿主在启动前解析引用、验证协议和必要字段。调度快照只保存引用，
+  完整连接地址通过本次启动的临时配置交给浏览器适配器，不写回窗口记录。
 - 解析、鉴权或连通性检查失败时阻断窗口启动，不自动切换直连。
+
+窗口启动使用原生专用的 `proxy.resolve` RPC，当前输入与结果如下：
+
+```ts
+type ResolveInput = { endpointId: number | null }
+type ResolveResult =
+  | { configured: false; configHandle: null; secretRef: null }
+  | {
+      configured: true
+      configHandle: string
+      secretRef?: string
+      connectionUrl: string
+    }
+```
+
+`endpointId` 是窗口选择的具体库存项，指定后不要求存在默认代理，也不能在指定项失效时
+改用默认项。`null` 才跟随插件默认配置。宿主不传 `windowId` 等额外字段，
+避免与插件的严格参数校验冲突。
+
+`connectionUrl` 必须与返回引用来自同一次库存快照，包含完整协议、主机、显式端口和
+必要的百分号编码认证信息，仅支持 `http`、`https`、`socks5`、`socks5h`。
+缺少凭据时返回失败，不能省略认证继续启动。此字段只临时经过插件 IPC、原生宿主内存
+和浏览器适配器 stdin；不进入 UI、持久化窗口或普通诊断日志。
+WebView 的通用 `plugin_call` 不开放此原生启动方法。
+
+公开 SDK 的 `ProxyProvider.resolve()` 继续只返回 `ProxyResolution`；
+旧插件若缺少启动连接字段，新版宿主明确提示更新并阻断启动。
+仓库代理池从 1.0.1 开始实现这一启动结果，详见[代理池插件](15-proxy-plugin.md)。
 
 ### 6.2 地址生成 `address.generator`
 

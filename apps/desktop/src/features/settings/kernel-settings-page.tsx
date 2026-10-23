@@ -1,0 +1,418 @@
+import { useEffect, useRef, useState } from 'react'
+import { Download, RefreshCw } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { Separator } from '@/components/ui/separator'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import {
+  downloadKernel,
+  getKernelStatus,
+  KernelOperationError,
+  nativeKernelsAvailable,
+  type KernelFailure,
+  type KernelKind,
+  type KernelPhase,
+  type KernelStatus,
+} from '@/lib/platform/native-kernels'
+
+const kindLabels: Record<KernelKind, string> = {
+  base: '基础内核',
+  latest: '新版内核',
+}
+const phaseLabels: Record<KernelPhase, string> = {
+  idle: '暂无下载任务',
+  preparing: '正在准备',
+  downloading: '正在下载',
+  verifying: '正在校验',
+  extracting: '正在解压',
+  retrying: '正在重试',
+  ready: '内核已就绪',
+  failed: '下载失败',
+}
+
+function isActive(phase: KernelPhase | undefined): boolean {
+  return (
+    phase === 'preparing' ||
+    phase === 'downloading' ||
+    phase === 'verifying' ||
+    phase === 'extracting' ||
+    phase === 'retrying'
+  )
+}
+
+function failure(cause: unknown): KernelFailure {
+  return cause instanceof KernelOperationError
+    ? cause
+    : { code: 'unknown', message: '内核操作失败，请重试。', retryable: true }
+}
+
+function useKernelSettings(native: boolean) {
+  const [status, setStatus] = useState<KernelStatus | null>(null)
+  const [loading, setLoading] = useState(native)
+  const [refreshing, setRefreshing] = useState(false)
+  const [pendingKind, setPendingKind] = useState<KernelKind | null>(null)
+  const [statusError, setStatusError] = useState<KernelFailure | null>(null)
+  const [downloadError, setDownloadError] = useState<{
+    kind: KernelKind
+    error: KernelFailure
+  } | null>(null)
+  const [completed, setCompleted] = useState<string | null>(null)
+  const actions = useRef<{
+    refresh: () => void
+    download: (kind: KernelKind) => void
+  } | null>(null)
+
+  useEffect(() => {
+    if (!native) return
+    let mounted = true
+    let reading = false
+    let queued = false
+    let queuedRefresh = false
+    let pending: KernelKind | null = null
+    let latest: KernelStatus | null = null
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    function read(refresh = false) {
+      if (!mounted) return
+      clearTimeout(timer)
+      timer = undefined
+      if (refresh) setRefreshing(true)
+      if (reading) {
+        queued = true
+        queuedRefresh ||= refresh
+        return
+      }
+      reading = true
+      void getKernelStatus(refresh)
+        .then(
+          (result) => {
+            if (!mounted) return
+            latest = result
+            setStatus(result)
+            setStatusError(null)
+          },
+          (cause: unknown) => {
+            if (mounted) setStatusError(failure(cause))
+          },
+        )
+        .finally(() => {
+          if (!mounted) return
+          reading = false
+          setLoading(false)
+          if (queued) {
+            const refreshNext = queuedRefresh
+            queued = false
+            queuedRefresh = false
+            read(refreshNext)
+          } else {
+            setRefreshing(false)
+            // The command can still be pending while the first status is idle.
+            if (pending !== null || isActive(latest?.download.phase)) {
+              timer = setTimeout(() => read(), 900)
+            }
+          }
+        })
+    }
+
+    async function download(kind: KernelKind) {
+      if (
+        !mounted ||
+        pending !== null ||
+        !latest ||
+        isActive(latest.download.phase) ||
+        (kind === 'latest' && !latest.activationConfigured)
+      ) {
+        return
+      }
+      pending = kind
+      setPendingKind(kind)
+      setDownloadError(null)
+      setCompleted(null)
+      const command = downloadKernel(kind)
+      read()
+      try {
+        const version = await command
+        if (mounted) setCompleted(`${kindLabels[kind]} ${version} 已下载。`)
+      } catch (cause) {
+        if (mounted) setDownloadError({ kind, error: failure(cause) })
+      } finally {
+        if (mounted) {
+          pending = null
+          setPendingKind(null)
+          read(true)
+        }
+      }
+    }
+
+    actions.current = {
+      refresh: () => read(true),
+      download: (kind) => void download(kind),
+    }
+    read()
+    return () => {
+      mounted = false
+      clearTimeout(timer)
+      actions.current = null
+    }
+  }, [native])
+
+  return {
+    status,
+    loading,
+    refreshing,
+    pendingKind,
+    statusError,
+    downloadError,
+    completed,
+    refresh: () => actions.current?.refresh(),
+    download: (kind: KernelKind) => actions.current?.download(kind),
+  }
+}
+
+export function KernelSettingsPage() {
+  const native = nativeKernelsAvailable()
+  const view = useKernelSettings(native)
+  const { status, pendingKind } = view
+  const download = status?.download
+  const busy =
+    view.loading || view.refreshing || pendingKind !== null || isActive(download?.phase)
+  const failed =
+    view.downloadError ??
+    (!pendingKind && download?.phase === 'failed'
+      ? {
+          kind: download.kind,
+          error: download.error ?? {
+            code: 'download_failed',
+            message: '内核下载失败，请重试。',
+            retryable: true,
+          },
+        }
+      : null)
+  const showProgress =
+    download &&
+    !view.downloadError &&
+    (!pendingKind || (download.kind === pendingKind && isActive(download.phase)))
+  const progress = showProgress
+    ? [
+        download.percent !== null ? `${download.percent}%` : null,
+        download.downloadedMb !== null && download.totalMb !== null
+          ? `${download.downloadedMb} / ${download.totalMb} MB`
+          : download.downloadedMb !== null
+            ? `已下载 ${download.downloadedMb} MB`
+            : download.totalMb !== null
+              ? `总计 ${download.totalMb} MB`
+              : null,
+        download.attempt !== null ? `第 ${download.attempt} 次尝试` : null,
+        download.version ? `版本 ${download.version}` : null,
+      ]
+        .filter((part) => part !== null)
+        .join(' · ')
+    : ''
+  const phase = view.downloadError
+    ? `${kindLabels[view.downloadError.kind]}：下载失败`
+    : pendingKind
+      ? `${kindLabels[pendingKind]}：${
+          showProgress ? phaseLabels[download.phase] : '正在等待下载结果…'
+        }`
+      : download
+        ? `${download.kind ? `${kindLabels[download.kind]}：` : ''}${phaseLabels[download.phase]}`
+        : null
+
+  return (
+    <section
+      className="settings-page page-reveal min-w-0"
+      aria-labelledby="kernel-heading"
+    >
+      <h1 className="page-heading" id="kernel-heading">
+        浏览器内核
+      </h1>
+      <p className="page-description">下载内核保存在本机，已有窗口的内核保持不变。</p>
+      {!native ? (
+        <Alert>
+          <AlertTitle>桌面应用专属</AlertTitle>
+          <AlertDescription>请在桌面应用中管理和下载浏览器内核。</AlertDescription>
+        </Alert>
+      ) : (
+        <>
+          {view.statusError ? (
+            <Alert variant="destructive">
+              <AlertTitle>无法读取内核状态</AlertTitle>
+              <AlertDescription className="flex flex-col items-start gap-2">
+                <span>{view.statusError.message}</span>
+                <Button
+                  variant="outline"
+                  disabled={view.loading || view.refreshing}
+                  onClick={view.refresh}
+                >
+                  重试读取
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          <Card>
+            <CardHeader>
+              <CardTitle>下载内核</CardTitle>
+              <CardDescription>切换页面后，下载仍会在桌面应用后台继续。</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="m-0 font-medium">基础内核</p>
+                  <p className="m-0 text-xs text-muted-foreground">无需激活码。</p>
+                </div>
+                <Button
+                  variant="outline"
+                  disabled={busy || !status}
+                  onClick={() => view.download('base')}
+                >
+                  <Download data-icon="inline-start" />
+                  下载基础内核
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="m-0 font-medium">新版内核</p>
+                  <p
+                    id="latest-kernel-description"
+                    className="m-0 text-xs text-muted-foreground"
+                  >
+                    {status
+                      ? status.activationConfigured
+                        ? '使用已保存的激活码下载。'
+                        : '请先在「激活码」页保存激活码。'
+                      : '读取激活码状态后可下载。'}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  disabled={busy || !status?.activationConfigured}
+                  aria-describedby="latest-kernel-description"
+                  onClick={() => view.download('latest')}
+                >
+                  <Download data-icon="inline-start" />
+                  下载新版内核
+                </Button>
+              </div>
+              <div role="status" aria-live="polite" aria-atomic="true">
+                <p className="m-0">
+                  {(isActive(download?.phase) ? null : view.completed) ??
+                    (view.loading ? '正在读取内核状态…' : phase)}
+                </p>
+                {progress ? (
+                  <p className="m-0 text-xs text-muted-foreground">{progress}</p>
+                ) : null}
+              </div>
+              {failed ? (
+                <Alert variant="destructive">
+                  <AlertTitle>下载失败</AlertTitle>
+                  <AlertDescription className="flex flex-col items-start gap-2">
+                    <span>{failed.error.message}</span>
+                    {failed.kind && failed.error.retryable ? (
+                      <Button
+                        variant="outline"
+                        disabled={
+                          busy ||
+                          !status ||
+                          (failed.kind === 'latest' && !status.activationConfigured)
+                        }
+                        onClick={() => {
+                          if (failed.kind) view.download(failed.kind)
+                        }}
+                      >
+                        重试下载
+                      </Button>
+                    ) : null}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+            </CardContent>
+          </Card>
+          <Card className="min-w-0">
+            <CardHeader>
+              <CardTitle>已安装内核</CardTitle>
+              <CardDescription>
+                {status ? `平台：${status.platform}` : '读取本机内核列表。'}
+              </CardDescription>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  disabled={view.loading || view.refreshing}
+                  onClick={view.refresh}
+                >
+                  <RefreshCw data-icon="inline-start" />
+                  {view.refreshing ? '正在刷新…' : '刷新'}
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="flex min-w-0 flex-col gap-4">
+              {!status ? (
+                <p className="m-0 text-sm text-muted-foreground">
+                  {view.loading ? '正在读取…' : '暂时无法读取已安装内核。'}
+                </p>
+              ) : (
+                <>
+                  {status.installed.length ? (
+                    <Table aria-label="已安装的浏览器内核">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>版本</TableHead>
+                          <TableHead>类型</TableHead>
+                          <TableHead>路径</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {status.installed.map((kernel) => (
+                          <TableRow key={`${kernel.kind}:${kernel.binaryPath}`}>
+                            <TableCell>{kernel.version}</TableCell>
+                            <TableCell>{kindLabels[kernel.kind]}</TableCell>
+                            <TableCell>
+                              <span className="block max-w-80 font-mono text-xs whitespace-normal break-all">
+                                {kernel.binaryPath}
+                              </span>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <Empty className="p-4">
+                      <EmptyHeader>
+                        <EmptyTitle>尚未安装内核</EmptyTitle>
+                        <EmptyDescription>
+                          可先下载无需激活码的基础内核。
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  )}
+                  <dl className="m-0 flex flex-col gap-1">
+                    <dt className="text-xs text-muted-foreground">缓存目录</dt>
+                    <dd className="m-0 min-w-0 font-mono text-xs break-all">
+                      {status.cacheDir}
+                    </dd>
+                  </dl>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </section>
+  )
+}

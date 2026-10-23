@@ -14,6 +14,8 @@ pub fn run() {
             core::profile_service::profile_delete,
             core::profile_service::profile_launch,
             core::profile_service::profile_stop,
+            core::profile_service::kernel_status,
+            core::profile_service::kernel_download,
             core::license_service::license_status,
             core::license_service::license_set,
             core::license_service::license_remove,

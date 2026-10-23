@@ -1,4 +1,5 @@
 pub mod group_store;
+pub mod kernel_service;
 pub mod license_service;
 pub mod license_store;
 pub mod network_proxy;

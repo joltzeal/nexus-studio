@@ -3,15 +3,21 @@ import { AppearancePage } from '@/features/appearance/appearance-page'
 import { WorkspacePage } from '@/features/workspace/workspace-page'
 import { AboutPage } from '@/features/about/about-page'
 import { LicenseSettingsPage } from '@/features/settings/license-settings-page'
+import { KernelSettingsPage } from '@/features/settings/kernel-settings-page'
 import { NetworkProxyPage } from '@/features/settings/network-proxy-page'
 
 export function SettingsPage() {
   return (
-    <Tabs defaultValue="appearance" className="settings-tabs">
-      <TabsList variant="line" aria-label="设置分类">
+    <Tabs defaultValue="appearance" className="settings-tabs min-w-0">
+      <TabsList
+        variant="line"
+        aria-label="设置分类"
+        className="max-w-full justify-start overflow-x-auto pb-2 data-horizontal:h-auto"
+      >
         <TabsTrigger value="appearance">外观</TabsTrigger>
         <TabsTrigger value="workspace">工作区</TabsTrigger>
         <TabsTrigger value="license">激活码</TabsTrigger>
+        <TabsTrigger value="kernels">浏览器内核</TabsTrigger>
         <TabsTrigger value="proxy">应用代理</TabsTrigger>
         <TabsTrigger value="about">关于 Nexus</TabsTrigger>
       </TabsList>
@@ -23,6 +29,9 @@ export function SettingsPage() {
       </TabsContent>
       <TabsContent value="license">
         <LicenseSettingsPage />
+      </TabsContent>
+      <TabsContent value="kernels" className="min-w-0">
+        <KernelSettingsPage />
       </TabsContent>
       <TabsContent value="proxy">
         <NetworkProxyPage />

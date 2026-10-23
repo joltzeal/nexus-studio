@@ -30,7 +30,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'nexus.plugin.json'), 'utf8'))
 const configPath = path.join(__dirname, 'fixture.json')
-const configured = fs.existsSync(configPath) && JSON.parse(fs.readFileSync(configPath, 'utf8')).configured === true
+const fixture = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : {}
+const configured = fixture.configured === true
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
 const pending = new Map()
 let sequence = 0
@@ -51,7 +52,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       pluginId: manifest.id,
       version: manifest.version,
       capabilities: manifest.capabilities,
-      methods: ['proxy.resolve', 'proxy.groups.list', 'test.echo', 'test.crash'],
+      methods: ['proxy.resolve', 'proxy.groups.list', 'test.echo', 'test.crash', 'test.resolveCount'],
       status: { fixture: true },
     })
     return
@@ -64,13 +65,18 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     send({ protocolVersion: 1, requestId: message.requestId, ok: true, result: message.payload })
     return
   }
+  if (message.method === 'test.resolveCount') {
+    send({ protocolVersion: 1, requestId: message.requestId, ok: true, result: sequence })
+    return
+  }
   if (message.method === 'proxy.resolve') {
+    sequence += 1
     send({
       protocolVersion: 1,
       requestId: message.requestId,
       ok: true,
       result: configured
-        ? { configured: true, configHandle: 'fixture:endpoint:1', secretRef: null }
+        ? (fixture.response ?? { configured: true, configHandle: 'fixture:endpoint:1', secretRef: null })
         : { configured: false, configHandle: null, secretRef: null },
     })
     return
@@ -615,6 +621,159 @@ fn host_resolves_a_configured_proxy_handle() {
 }
 
 #[test]
+fn host_distinguishes_an_invalid_pin_from_a_missing_default() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_fixture(&temporary, false);
+    host.install(&temporary.path().join("source")).unwrap();
+    for endpoint in [None, Some(99)] {
+        let error = host
+            .resolve_proxy("test.fixture-plugin", "window-1", endpoint)
+            .unwrap_err();
+        assert_eq!(error.code(), "NOT_CONFIGURED");
+        assert!(error.message().contains(if endpoint.is_some() {
+            "指定"
+        } else {
+            "默认"
+        }));
+        assert!(!error.message().contains("代理插件"));
+    }
+    host.shutdown();
+}
+
+fn host_with_proxy_response(
+    temporary: &tempfile::TempDir,
+    response: serde_json::Value,
+) -> PluginHost {
+    let host = host_with_fixture(temporary, true);
+    fs::write(
+        temporary.path().join("source/dist/fixture.json"),
+        serde_json::json!({ "configured": true, "response": response }).to_string(),
+    )
+    .unwrap();
+    host.install(&temporary.path().join("source")).unwrap();
+    host
+}
+
+#[test]
+fn host_resolves_browser_proxy_with_one_rpc_and_redacts_debug_output() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_proxy_response(
+        &temporary,
+        serde_json::json!({
+            "configured": true,
+            "configHandle": "fixture:endpoint:1",
+            "secretRef": "fixture:secret:1",
+            "connectionUrl": "socks5h://user:p%40ss@proxy.example:1080",
+        }),
+    );
+    let resolved = host
+        .resolve_browser_proxy("test.fixture-plugin", "window-1", Some(1))
+        .unwrap();
+    assert_eq!(resolved.reference.config_handle, "fixture:endpoint:1");
+    assert_eq!(
+        resolved.reference.secret_ref.as_deref(),
+        Some("fixture:secret:1")
+    );
+    assert_eq!(
+        resolved.connection_url,
+        "socks5h://user:p%40ss@proxy.example:1080"
+    );
+    let debug = format!("{resolved:?}");
+    assert!(!debug.contains("p%40ss"));
+    assert!(!debug.contains("proxy.example"));
+    assert_eq!(
+        host.call(
+            "test.fixture-plugin",
+            Capability::ProxyProvider,
+            "test.resolveCount",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .unwrap(),
+        1
+    );
+    host.shutdown();
+}
+
+#[test]
+fn host_requires_a_plugin_update_when_connection_url_is_missing() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_fixture(&temporary, true);
+    host.install(&temporary.path().join("source")).unwrap();
+    let error = host
+        .resolve_browser_proxy("test.fixture-plugin", "window-1", None)
+        .unwrap_err();
+    assert_eq!(error.code(), "NOT_CONFIGURED");
+    assert!(error.message().contains("更新"));
+    assert!(!error.message().contains("connectionUrl"));
+    assert!(error.message().contains("窗口启动被阻断"));
+    host.shutdown();
+}
+
+#[test]
+fn browser_proxy_connection_url_accepts_supported_schemes_and_explicit_default_ports() {
+    for connection in [
+        "http://proxy.example:8080",
+        "http://proxy.example:80",
+        "https://proxy.example:443",
+        "socks5://127.0.0.1:1080",
+        "socks5h://u%40ser:p%3Ass@[2001:db8::1]:1080",
+    ] {
+        assert_eq!(
+            super::parse_proxy_connection_url(&serde_json::json!({
+                "connectionUrl": connection
+            }))
+            .unwrap(),
+            connection
+        );
+    }
+}
+
+#[test]
+fn browser_proxy_connection_url_rejects_invalid_values_without_echoing_credentials() {
+    for connection in [
+        "",
+        "ftp://user:secret@proxy.example:1080",
+        "socks4://user:secret@proxy.example:1080",
+        "http://user:secret@proxy.example",
+        "http://user:secret@proxy.example:0",
+        "http://user:secret@proxy.example:65536",
+        "http://user:secret@:8080",
+        "http://user:secret@proxy.example:8080/",
+        "http://user:secret@proxy.example:8080/path",
+        "http://user:secret@proxy.example:8080/..",
+        "http://user:secret@proxy.example:8080?",
+        "http://user:secret@proxy.example:8080?query",
+        "http://user:secret@proxy.example:8080#",
+        "http://user:secret@proxy.example:8080#fragment",
+        "http://user:secret@proxy.example:8080\\path",
+        " http://user:secret@proxy.example:8080",
+        "http://user:secret@proxy.example:8080\n",
+        "http://user:sec ret@proxy.example:8080",
+        "http:proxy.example:8080",
+    ] {
+        let error = super::parse_proxy_connection_url(&serde_json::json!({
+            "connectionUrl": connection
+        }))
+        .unwrap_err();
+        assert!(!error.message().contains("secret"));
+        assert!(!format!("{error:?}").contains("proxy.example"));
+        assert!(error.message().contains("窗口启动被阻断"));
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({ "connectionUrl": null }),
+        serde_json::json!({ "connectionUrl": 42 }),
+    ] {
+        let error = super::parse_proxy_connection_url(&value).unwrap_err();
+        assert!(error.message().contains("更新"));
+    }
+}
+
+#[test]
 fn uninstall_stops_the_process_and_forgets_the_plugin() {
     let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();
@@ -668,6 +827,222 @@ fn workspace_plugin_installs_from_its_built_dist_and_runs() {
         )
         .unwrap();
     assert_eq!(listed["total"], 0);
+    host.shutdown();
+}
+
+fn host_with_workspace_proxy(temporary: &tempfile::TempDir) -> PluginHost {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins/proxy-pool");
+    assert!(
+        source.join("dist/src/index.js").is_file(),
+        "build @nexus/plugin-proxy-pool before running the host regression tests"
+    );
+    let host = PluginHost::open(
+        temporary.path().join("host"),
+        vec![(source.clone(), CandidateSource::Workspace)],
+    )
+    .unwrap();
+    host.install(&source).unwrap();
+    assert_eq!(
+        wait_for_running(&host, "studio.proxy-pool").state,
+        "running"
+    );
+    host
+}
+
+fn proxy_pool_call(
+    host: &PluginHost,
+    method: &str,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    host.call(
+        "studio.proxy-pool",
+        Capability::ProxyProvider,
+        method,
+        payload,
+        Duration::from_secs(10),
+    )
+    .unwrap()
+}
+
+#[test]
+fn workspace_proxy_plugin_resolves_an_explicit_endpoint_without_a_default() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_workspace_proxy(&temporary);
+    let saved = proxy_pool_call(
+        &host,
+        "proxy.create",
+        serde_json::json!({
+            "name": "pinned",
+            "schemes": ["socks5h"],
+            "host": "pinned.example",
+            "port": 1080,
+        }),
+    );
+    let endpoint_id = saved["id"].as_str().unwrap().parse::<i64>().unwrap();
+    assert!(
+        proxy_pool_call(&host, "proxy.config.get", serde_json::json!({}))["defaultEndpointId"]
+            .is_null()
+    );
+    let resolved = host
+        .resolve_browser_proxy("studio.proxy-pool", "window-pinned", Some(endpoint_id))
+        .unwrap();
+    assert_eq!(resolved.connection_url, "socks5h://pinned.example:1080");
+    assert_eq!(
+        resolved.reference.config_handle,
+        format!("nxproxy:v1:endpoint:{endpoint_id}")
+    );
+    assert!(resolved.reference.secret_ref.is_none());
+    let reference = host
+        .resolve_proxy("studio.proxy-pool", "window-pinned", Some(endpoint_id))
+        .unwrap();
+    assert_eq!(resolved.reference, reference);
+    host.shutdown();
+}
+
+#[test]
+fn workspace_proxy_plugin_materializes_auth_and_blocks_disabled_or_deleted_pins() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_workspace_proxy(&temporary);
+    let mut input = serde_json::json!({
+        "name": "authenticated pin",
+        "schemes": ["http", "socks5h"],
+        "host": "pinned.example",
+        "port": 1080,
+        "username": "u:ser@/ ?#%",
+        "password": "p@ss:/%?# !'()*",
+    });
+    let saved = proxy_pool_call(&host, "proxy.create", input.clone());
+    let endpoint_id = saved["id"].as_str().unwrap().parse::<i64>().unwrap();
+    assert!(
+        proxy_pool_call(&host, "proxy.config.get", serde_json::json!({}))["defaultEndpointId"]
+            .is_null()
+    );
+    let resolved = host
+        .resolve_browser_proxy("studio.proxy-pool", "window-auth", Some(endpoint_id))
+        .unwrap();
+    assert_eq!(
+        resolved.connection_url,
+        "socks5h://u%3Aser%40%2F%20%3F%23%25:p%40ss%3A%2F%25%3F%23%20%21%27%28%29%2A@pinned.example:1080"
+    );
+    let reference = host
+        .resolve_proxy("studio.proxy-pool", "window-auth", Some(endpoint_id))
+        .unwrap();
+    assert_eq!(
+        reference.config_handle,
+        format!("nxproxy:v1:endpoint:{endpoint_id}")
+    );
+    assert!(
+        reference
+            .secret_ref
+            .as_deref()
+            .unwrap()
+            .starts_with("file:proxy-password:")
+    );
+    assert_eq!(resolved.reference, reference);
+
+    // Even a valid default cannot replace an explicitly pinned row.
+    let fallback = proxy_pool_call(
+        &host,
+        "proxy.create",
+        serde_json::json!({
+            "name": "default",
+            "schemes": ["http"],
+            "host": "default.example",
+            "port": 8080,
+        }),
+    );
+    proxy_pool_call(
+        &host,
+        "proxy.config.set",
+        serde_json::json!({
+            "defaultEndpointId": fallback["id"].as_str().unwrap().parse::<i64>().unwrap(),
+        }),
+    );
+    input["id"] = serde_json::json!(endpoint_id);
+    input["enabled"] = serde_json::json!(false);
+    proxy_pool_call(&host, "proxy.update", input);
+    let disabled = host
+        .resolve_browser_proxy("studio.proxy-pool", "window-auth", Some(endpoint_id))
+        .unwrap_err();
+    assert_eq!(disabled.code(), "NOT_CONFIGURED");
+    assert!(disabled.message().contains("停用"));
+
+    proxy_pool_call(
+        &host,
+        "proxy.delete",
+        serde_json::json!({ "ids": [endpoint_id] }),
+    );
+    let deleted = host
+        .resolve_browser_proxy("studio.proxy-pool", "window-auth", Some(endpoint_id))
+        .unwrap_err();
+    assert_eq!(deleted.code(), "NOT_CONFIGURED");
+    assert!(deleted.message().contains("删除"));
+    for error in [disabled, deleted] {
+        assert!(!error.message().contains("pinned.example"));
+        assert!(!error.message().contains("p@ss"));
+        assert!(!error.message().contains("p%40ss"));
+    }
+    host.shutdown();
+}
+
+#[test]
+fn workspace_proxy_plugin_blocks_a_pin_whose_password_is_missing() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = host_with_workspace_proxy(&temporary);
+    let saved = proxy_pool_call(
+        &host,
+        "proxy.create",
+        serde_json::json!({
+            "name": "missing credential",
+            "schemes": ["http"],
+            "host": "auth.example",
+            "port": 8080,
+            "username": "user",
+            "password": "required-password",
+        }),
+    );
+    let endpoint_id = saved["id"].as_str().unwrap().parse::<i64>().unwrap();
+    let resolved = host
+        .resolve_browser_proxy("studio.proxy-pool", "window-auth", Some(endpoint_id))
+        .unwrap();
+    let plugin = host.find("studio.proxy-pool").unwrap();
+    host.stop(&plugin.id);
+
+    // Only the plugin's own vault API knows how to remove a credential.
+    // Restarting its process discards the old in-memory credential cache.
+    let removed = std::process::Command::new(&host.node)
+        .args([
+            "--input-type=module",
+            "--eval",
+            "const { createProxyPlugin } = await import(process.argv[1]); \
+             const plugin = createProxyPlugin({ storageDirectory: process.argv[2] }); \
+             await plugin.vault.drop(process.argv[3]);",
+        ])
+        .arg(
+            url::Url::from_file_path(plugin.entry_path())
+                .unwrap()
+                .as_str(),
+        )
+        .arg(plugin.storage_directory(host.root()))
+        .arg(resolved.reference.secret_ref.as_deref().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "plugin vault operation failed: {}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+
+    let missing = host
+        .resolve_browser_proxy("studio.proxy-pool", "window-auth", Some(endpoint_id))
+        .unwrap_err();
+    assert_eq!(missing.code(), "NOT_CONFIGURED");
+    assert!(missing.message().contains("凭据引用不可用"));
+    assert!(!missing.message().contains("required-password"));
+    assert!(!missing.message().contains("auth.example"));
     host.shutdown();
 }
 

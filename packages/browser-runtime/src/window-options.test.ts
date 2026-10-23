@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { browserOptionsForWindow } from './profile-runtime.js'
 
 describe('window browser options', () => {
+  it('blocks a plugin window if its resolved connection never reaches the adapter', () => {
+    expect(() =>
+      browserOptionsForWindow('/data/profile', {
+        proxy: null,
+        proxy_plugin: 'studio.proxy-pool',
+      }),
+    ).toThrow('PROFILE_PROXY_MISSING')
+  })
+
+  it('passes the selected connection and authentication to the browser', () => {
+    const proxy = 'socks5://account:p%40ss@selected.example:1080'
+    expect(
+      browserOptionsForWindow('/data/profile', {
+        proxy,
+        proxy_plugin: 'studio.proxy-pool',
+      }).proxy,
+    ).toBe(proxy)
+  })
+
   it('maps saved settings into the persistent browser launch', () => {
     expect(
       browserOptionsForWindow('/data/profile', {

@@ -10,7 +10,9 @@
 
 宿主侧已实现发现、安装、进程托管、权限检查点与窗口启动阻断，
 因此本插件可以在插件中心安装后直接作为窗口的代理来源，见[插件宿主](17-plugin-host.md)。
-仍需区分：安装成功不等于代理可用；没有选择默认代理时窗口启动被阻断，不会回退直连。
+仍需区分：安装成功不等于代理可用；窗口指定 `endpointId` 时不需要默认代理，
+未指定时才使用默认项。指定项不存在、已删除或停用、默认项缺失、所需密码不可用时阻断启动，
+不会改用其他代理或回退直连。
 `sdk` 类型检查、单测通过只证明本包内部契约，不证明宿主隔离或真实浏览器代理可用。
 
 ## 包结构
@@ -32,7 +34,7 @@ plugins/proxy-pool/
 `dist/nexus.plugin.json` 由 `scripts/emit-manifest.mjs` 在构建时从
 `nexus.plugin.ts` 生成，manifest 仍然只有一处来源；宿主按此文件读取并校验。
 
-manifest 声明：`apiVersion: 1`、`id: studio.proxy-pool`、`version: 1.0.0`、
+manifest 声明：`apiVersion: 1`、`id: studio.proxy-pool`、`version: 1.0.1`、
 能力 `proxy.provider`、域名 `api64.ipify.org` 与 `proxycheck.io`、
 `wantsBrowserAccess: false`、`storage: private`、
 密钥槽 `proxy-password`、`proxycheck-api-key`、`subscription-token`。
@@ -64,7 +66,7 @@ manifest 声明：`apiVersion: 1`、`id: studio.proxy-pool`、`version: 1.0.0`�
 | `proxy.strategy.decodo`            | 按端口范围生成代理                           |
 | `proxy.check`                      | 出口 IP、属地与风险检测                      |
 | `proxy.exportUrls`                 | 导出连接地址（不含密码）                     |
-| `proxy.resolve` / `proxy.describe` | 供宿主解析默认代理并生成启动快照             |
+| `proxy.resolve` / `proxy.describe` | 供宿主解析指定项或默认项与启动连接配置       |
 | `proxy.groups.list` / `.create`    | 代理分组                                     |
 | `proxy.config.get` / `.set`        | 默认代理、风险查询开关与 API Key 引用        |
 | `proxy.subscriptions.*`            | 订阅列表、增删改、预览、导出、令牌与追加     |
@@ -72,6 +74,27 @@ manifest 声明：`apiVersion: 1`、`id: studio.proxy-pool`、`version: 1.0.0`�
 `proxy.subscriptions.export` 与 `proxy.subscriptions.download` 把渲染结果写入
 插件私有存储的 `exports/` 目录并以文件句柄返回，明文代理密码不经过 RPC 报文。
 `proxy.subscriptions.preview` 返回的 YAML 中密码固定为 `***`，只用于界面预览。
+
+### 启动解析 `proxy.resolve`
+
+RPC 输入使用严格对象 `{ endpointId: number | null }`，省略字段或传 `null` 才跟随默认项；
+不接受 `windowId`。宿主保留 `window_id` 方法参数以兼容调用方，但不把它发给插件，
+这项输入修复不要求升级已安装插件。
+
+成功响应包含 `configured: true`、不透明 `configHandle`、可选 `secretRef` 和
+`connectionUrl`。插件只读取一次库存快照，从同一行生成引用，并通过自己的密钥库解析密码，
+使用 `buildConnectionUrl` 构造含协议、主机、显式端口及认证信息的完整 URI。
+用户名与密码按 RFC 3986 百分号编码；支持 `http`、`https`、`socks5`、`socks5h`，
+多协议行沿用检测的协议优先级。密码引用缺失时返回 `NOT_CONFIGURED`，不得省略认证继续启动。
+没有指定项且没有默认项时仍返回
+`{ configured: false, configHandle: null, secretRef: null }`。
+
+公开 SDK 的 `ProxyPool.resolve(): Promise<ProxyResolution | null>` 保持只返回引用。
+`connectionUrl` 是启动专用的 RPC 扩展，不进入调度器 `ProxyReference`、窗口持久记录、
+UI、错误消息或诊断日志。它只在内存中通过插件 IPC 交给宿主，再经标准输入交给浏览器适配器；
+宿主不读取 `proxy-pool.json` 或 `secrets.json` 的业务结构。
+已安装旧插件若未返回 `connectionUrl`，`resolve_browser_proxy` 明确要求更新或重新安装并阻断启动；
+仅解析引用的 `resolve_proxy` 保持兼容。
 
 `proxy.import` 每行一条标准链接 `scheme://user:pass@host:port`，不含认证信息时省略
 userinfo；带路径、查询串、未知协议或端口越界会判为无效行。
@@ -83,7 +106,8 @@ userinfo；带路径、查询串、未知协议或端口越界会判为无效行
 - 私有存储目录由宿主通过 `NEXUS_PLUGIN_STORAGE_DIR` 注入；未提供时使用内存存储，
   插件会在 `plugin.status` 与启动日志中声明“不可持久化”。插件不要求用户配置 `.env`。
 - 代理密码、proxycheck API Key、订阅令牌由插件自己明文写入私有目录的 `secrets.json`
-  （权限 0600），库存与订阅记录只保存引用。宿主不接收、不托管、不加密这些值。
+  （权限 0600），库存与订阅记录只保存引用。密钥文件由插件自己管理，宿主不读取或加密该文件；
+  启动所需的代理密码通过上述 `connectionUrl` 临时传递，不能据此宣称凭据不经过宿主。
   没有宿主私有目录时退回进程内内存密钥库，重启即失效，不落盘。
 - 订阅令牌在记录中只保留 SHA-256 摘要；公开下载地址的令牌值由宿主从密钥库解析后拼装。
 
@@ -113,10 +137,15 @@ userinfo；带路径、查询串、未知协议或端口越界会判为无效行
 rtk proxy pnpm --filter @nexus/plugin-proxy-pool build
 rtk proxy pnpm exec vitest run plugins/proxy-pool
 rtk proxy pnpm exec eslint plugins/proxy-pool --max-warnings 0
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
+rtk proxy cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked core::plugin_host
 ```
 
-最后一条会启动真实 `node` 进程，对本插件完成握手并调用 `proxy.list` 与 `proxy.get`。
+使用仓库固定的 Node.js 24.18.0；pnpm 11 默认自动检查依赖并可能尝试重装，
+复用现有依赖验证时可加 `pnpm_config_verify_deps_before_run=false`，不改变锁文件或安装配置。
+必须先构建本插件再运行宿主回归。最后一条使用临时目录安装实际构建包并启动真实 `node`，
+除握手、`proxy.list` 与 `proxy.get` 外，还覆盖无默认项时指定代理的引用与精确连接地址、
+认证百分号编码、密码引用缺失、指定项停用或删除后失败关闭；不修改应用用户数据。
 单测覆盖 manifest 校验、库存去重与协议合并、写入失败不报成功、检测结果分类、
-迟到与过期结果丢弃、取消、信誉限流、订阅渲染与令牌校验、协议错误与日志脱敏。
+迟到与过期结果丢弃、取消、信誉限流、订阅渲染与令牌校验、协议错误与日志脱敏，
+并覆盖缺失密码阻断与同一行快照生成引用和连接。
 这些结果不代表真实代理链路已经可用，也不代表 Windows 行为。

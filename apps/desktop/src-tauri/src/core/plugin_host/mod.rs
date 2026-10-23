@@ -117,6 +117,23 @@ impl From<MarketError> for HostError {
     }
 }
 
+/// Ephemeral browser launch input. Only `reference` belongs in the scheduler;
+/// the credentialed URL must stay out of saved records, views and diagnostics.
+pub struct ResolvedBrowserProxy {
+    pub reference: ProxyReference,
+    pub connection_url: String,
+}
+
+impl std::fmt::Debug for ResolvedBrowserProxy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedBrowserProxy")
+            .field("reference", &self.reference)
+            .field("connection_url", &"[redacted]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginView {
@@ -959,42 +976,44 @@ impl PluginHost {
     pub fn resolve_proxy(
         &self,
         plugin_id: &str,
-        window_id: &str,
+        _window_id: &str,
         endpoint_id: Option<i64>,
     ) -> Result<ProxyReference, HostError> {
+        let (reference, _) = self.resolve_proxy_result(plugin_id, endpoint_id)?;
+        Ok(reference)
+    }
+
+    /// Resolves the reference and the credentialed browser connection in one
+    /// RPC so they describe the same plugin snapshot. Pass the URL only through
+    /// the browser adapter's launch IPC; never persist it or fall back to direct.
+    pub fn resolve_browser_proxy(
+        &self,
+        plugin_id: &str,
+        _window_id: &str,
+        endpoint_id: Option<i64>,
+    ) -> Result<ResolvedBrowserProxy, HostError> {
+        let (reference, value) = self.resolve_proxy_result(plugin_id, endpoint_id)?;
+        let connection_url = parse_proxy_connection_url(&value)?;
+        Ok(ResolvedBrowserProxy {
+            reference,
+            connection_url,
+        })
+    }
+
+    fn resolve_proxy_result(
+        &self,
+        plugin_id: &str,
+        endpoint_id: Option<i64>,
+    ) -> Result<(ProxyReference, Value), HostError> {
         let value = self.call(
             plugin_id,
             Capability::ProxyProvider,
             "proxy.resolve",
-            json!({ "windowId": window_id, "endpointId": endpoint_id }),
+            json!({ "endpointId": endpoint_id }),
             RESOLVE_DEADLINE,
         )?;
-        let configured = value
-            .get("configured")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let handle = value
-            .get("configHandle")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if !configured || handle.trim().is_empty() {
-            return Err(HostError::Process(ProcessError::Plugin(
-                process::PluginErrorPayload::new(
-                    "NOT_CONFIGURED",
-                    "代理插件未选择默认代理，窗口启动被阻断",
-                    false,
-                ),
-            )));
-        }
-        let secret_ref = value
-            .get("secretRef")
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-        Ok(ProxyReference {
-            config_handle: handle,
-            secret_ref,
-        })
+        let reference = parse_proxy_reference(&value, endpoint_id)?;
+        Ok((reference, value))
     }
 
     /// Proxy provider plugins that can be offered when creating a window.
@@ -1032,6 +1051,82 @@ impl PluginHost {
             self.stop(&id);
         }
     }
+}
+
+fn parse_proxy_reference(
+    value: &Value,
+    endpoint_id: Option<i64>,
+) -> Result<ProxyReference, HostError> {
+    let configured = value
+        .get("configured")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let handle = value
+        .get("configHandle")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !configured || handle.trim().is_empty() {
+        return Err(HostError::Process(ProcessError::Plugin(
+            process::PluginErrorPayload::new(
+                "NOT_CONFIGURED",
+                if endpoint_id.is_some() {
+                    "窗口指定的代理不存在或不可用，请重新选择，窗口启动被阻断"
+                } else {
+                    "未选择默认代理，窗口启动被阻断"
+                },
+                false,
+            ),
+        )));
+    }
+    Ok(ProxyReference {
+        config_handle: handle.to_string(),
+        secret_ref: value
+            .get("secretRef")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    })
+}
+
+fn parse_proxy_connection_url(value: &Value) -> Result<String, HostError> {
+    let connection = value
+        .get("connectionUrl")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            HostError::Process(ProcessError::Plugin(process::PluginErrorPayload::new(
+                "NOT_CONFIGURED",
+                "代理插件版本过旧，请更新或重新安装插件，窗口启动被阻断",
+                false,
+            )))
+        })?;
+    let invalid = || {
+        HostError::Process(ProcessError::Protocol(
+            "代理连接配置无效，窗口启动被阻断".into(),
+        ))
+    };
+    let parsed = url::Url::parse(connection).map_err(|_| invalid())?;
+    let (_, authority) = connection.split_once("://").ok_or_else(invalid)?;
+    // Check the raw authority too: URL parsers normalize default ports,
+    // whitespace, backslashes and dot paths, which must not hide bad input.
+    let explicit_port = authority
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .is_some_and(|port| port > 0);
+    if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h")
+        || parsed.host_str().is_none_or(str::is_empty)
+        || !explicit_port
+        || connection
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+        || authority.contains(['/', '\\', '?', '#'])
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    // Preserve the plugin's percent encoding and explicit port.
+    Ok(connection.to_string())
 }
 
 /// Sleeps in slices so a shutdown does not wait for a full interval.

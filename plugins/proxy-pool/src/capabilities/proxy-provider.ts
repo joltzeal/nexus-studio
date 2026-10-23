@@ -1,6 +1,6 @@
 import type { ProxyProvider, ProxyResolution } from '@nexus/plugin-sdk'
 
-import { buildRedactedUrl } from '../domain/credentials.js'
+import { buildConnectionUrl, buildRedactedUrl } from '../domain/credentials.js'
 import { invalidRequest, notConfigured } from '../domain/errors.js'
 import {
   AppendInputSchema,
@@ -100,6 +100,13 @@ function handleFor(row: EndpointRecord): string {
   return `nxproxy:v1:endpoint:${row.id}`
 }
 
+function referenceFor(row: EndpointRecord): ProxyResolution {
+  return {
+    configHandle: handleFor(row),
+    ...(row.secretRef === null ? {} : { secretRef: row.secretRef }),
+  }
+}
+
 export class ProxyPool implements ProxyProvider {
   readonly id = 'proxy.provider'
   readonly name = '代理池'
@@ -123,7 +130,8 @@ export class ProxyPool implements ProxyProvider {
 
   /** ProxyProvider contract: the selected endpoint, never a silent direct connection. */
   async resolve(): Promise<ProxyResolution | null> {
-    return this.resolveEndpoint(null)
+    const row = await this.resolveEndpoint(null)
+    return row === null ? null : referenceFor(row)
   }
 
   /**
@@ -133,7 +141,7 @@ export class ProxyPool implements ProxyProvider {
    */
   private async resolveEndpoint(
     endpointId: number | null,
-  ): Promise<ProxyResolution | null> {
+  ): Promise<EndpointRecord | null> {
     const document = await this.store.read()
     const id = endpointId ?? document.config.defaultEndpointId
     if (id === null) return null
@@ -152,10 +160,7 @@ export class ProxyPool implements ProxyProvider {
           : '窗口指定的代理已停用，窗口启动被阻断',
       )
     }
-    return {
-      configHandle: handleFor(row),
-      ...(row.secretRef === null ? {} : { secretRef: row.secretRef }),
-    }
+    return row
   }
 
   status(): Record<string, unknown> {
@@ -199,10 +204,25 @@ export class ProxyPool implements ProxyProvider {
           payload ?? {},
           '代理解析参数',
         )
-        const resolution = await this.resolveEndpoint(endpointId)
-        return resolution === null
-          ? { configured: false, configHandle: null, secretRef: null }
-          : { configured: true, ...resolution }
+        const row = await this.resolveEndpoint(endpointId)
+        if (row === null) {
+          return { configured: false, configHandle: null, secretRef: null }
+        }
+        // Materialize from the same row snapshot as the opaque reference.
+        // Missing credentials must fail rather than produce an anonymous URL.
+        const password =
+          row.secretRef === null ? '' : await this.vault.resolve(row.secretRef)
+        return {
+          configured: true,
+          ...referenceFor(row),
+          connectionUrl: buildConnectionUrl(
+            chooseScheme(row, null),
+            row.host,
+            row.port,
+            row.username,
+            password,
+          ),
+        }
       }
       case 'proxy.describe':
         return this.describe(payload)
@@ -394,7 +414,7 @@ export class ProxyPool implements ProxyProvider {
           : chooseScheme(row, input.preferredScheme)
       return buildRedactedUrl(scheme, row.host, row.port, row.username)
     })
-    // Credentialed URLs stay out of RPC: the host composes them from the vault.
+    // Display exports omit passwords; only proxy.resolve materializes credentials.
     return {
       urls,
       count: urls.length,

@@ -33,6 +33,7 @@ import { AiImageRoute } from '@/features/ai-image/ai-image-page'
 import { AccountsRoute } from '@/features/accounts/accounts-page'
 import { VintedMonitorRoute } from '@/features/vinted-monitor/vinted-monitor-page'
 import { onAiImageHandoff, type AiImageHandoff } from '@/lib/page-handoff'
+import { APP_VERSION } from '@/lib/platform/app-info'
 
 const SettingsPage = lazy(() =>
   import('@/features/settings/settings-page').then((module) => ({
@@ -173,7 +174,7 @@ export function AppShell() {
           </TabsTrigger>
         </TabsList>
         <div className="sidebar-version">
-          Nexus Studio <span>v0.1.0</span>
+          Nexus Studio <span>v{APP_VERSION}</span>
         </div>
       </aside>
       <header className="app-header">

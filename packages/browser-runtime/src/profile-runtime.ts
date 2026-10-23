@@ -1,6 +1,7 @@
 import { ensureBinary, launchPersistentContext, validateLicense } from 'cloakbrowser'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { retryKernelPreparation, type KernelProgress } from './kernel-install.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -9,6 +10,7 @@ export interface NativeProfile {
   id: string
   binary_path: string
   proxy: string | null
+  proxy_plugin?: string | null
   binding: { profile_id: string; channel_version: string }
   settings?: WindowSettings
 }
@@ -26,8 +28,11 @@ interface WindowSettings {
 
 export function browserOptionsForWindow(
   userDataDir: string,
-  record: Pick<NativeProfile, 'proxy' | 'settings'>,
+  record: Pick<NativeProfile, 'proxy' | 'proxy_plugin' | 'settings'>,
 ): Parameters<typeof launchPersistentContext>[0] {
+  if (record.proxy_plugin && !record.proxy?.trim()) {
+    throw new Error('PROFILE_PROXY_MISSING')
+  }
   const settings = record.settings
   const viewport =
     settings?.viewport === '1440x900'
@@ -70,12 +75,15 @@ async function binaryVersion(binaryPath: string): Promise<string> {
 export async function prepareBinary(
   licenseKey?: string,
   browserVersion?: string,
+  report?: (progress: KernelProgress) => void,
 ): Promise<{
   version: string
   binary_path: string
 }> {
-  const binary_path = await ensureBinary(licenseKey, browserVersion)
-  return { binary_path, version: await binaryVersion(binary_path) }
+  return retryKernelPreparation(async () => {
+    const binary_path = await ensureBinary(licenseKey, browserVersion)
+    return { binary_path, version: await binaryVersion(binary_path) }
+  }, report)
 }
 
 export async function validateBrowserLicense(licenseKey: string): Promise<{

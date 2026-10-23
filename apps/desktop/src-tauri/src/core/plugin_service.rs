@@ -111,6 +111,9 @@ pub async fn plugin_call(
     input: CallInput,
 ) -> Result<Value, String> {
     let capability = capability(&input.capability)?;
+    if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
+        return Err("代理连接解析仅供原生窗口启动调用".into());
+    }
     let deadline = Duration::from_millis(input.deadline_ms.unwrap_or(30_000).clamp(1_000, 120_000));
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {

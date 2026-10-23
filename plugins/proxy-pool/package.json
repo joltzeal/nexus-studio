@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-proxy-pool",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Nexus proxy pool plugin: endpoint inventory, connectivity checks, IP reputation and Clash subscriptions",
   "type": "module",

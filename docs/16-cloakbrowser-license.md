@@ -36,6 +36,8 @@ Nexus 不尝试规避服务端限制。
 - 已配置的非 free 计划可为新窗口填写精确版本，通过锁定 wrapper 的公开 API
   `ensureBinary(licenseKey, browserVersion)` 准备对应内核；下载和授权仍由 SDK 裁决。
 - 已创建 Profile 不自动更换版本；升级需新建 Profile 或单独设计可恢复迁移。
+- 设置中的「浏览器内核」页可先将基础或新版内核下载到本地，窗口创建复用同一准备服务和缓存。
+  下载进度、错误分类及任务边界见[浏览器内核](27-browser-kernels.md)。
 
 ## 并发及错误
 

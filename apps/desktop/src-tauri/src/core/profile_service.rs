@@ -1,3 +1,7 @@
+use super::kernel_service::{
+    KernelFailure, KernelKind, KernelService, KernelStatus,
+    sanitize_kernel_error as sanitize_license_error,
+};
 use super::license_store::LicenseStore;
 use super::network_proxy::NetworkProxyStore;
 use super::plugin_host::PluginHost;
@@ -12,9 +16,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::State;
 
 struct Session {
@@ -32,6 +36,7 @@ pub struct ProfileService {
     store: ProfileStore,
     license_store: LicenseStore,
     runtime: RuntimePaths,
+    kernels: KernelService,
     network: Option<NetworkProxyStore>,
     state: Mutex<SessionState>,
     /// When present, a window that requires a plugin proxy is resolved through
@@ -62,50 +67,6 @@ fn channel(record: &ProfileRecord) -> EngineChannel {
         version: record.binding.channel_version.clone(),
         capacity: EngineCapacity::ProviderEnforced,
     }
-}
-
-fn run_preparation(command: &mut Command, timeout: Duration) -> Result<Output, String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| "未找到 Node.js 运行时，请从项目根目录启动桌面开发命令")?;
-    // Drain both streams while the SDK downloads: waiting with full pipes can block the child.
-    let stdout = child.stdout.take().ok_or("无法读取内核准备结果")?;
-    let stderr = child.stderr.take().ok_or("无法读取内核准备错误")?;
-    let out_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = BufReader::new(stdout).read_to_end(&mut bytes);
-        bytes
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = BufReader::new(stderr).read_to_end(&mut bytes);
-        bytes
-    });
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if started.elapsed() < timeout => {
-                std::thread::sleep(Duration::from_millis(50))
-            }
-            Ok(None) => break Err("内核准备超时，请检查网络后重试".to_string()),
-            Err(_) => break Err("无法等待内核准备进程".to_string()),
-        }
-    };
-    if status.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
-    Ok(Output {
-        status: status?,
-        stdout,
-        stderr,
-    })
 }
 
 fn error_message(error: StoreError) -> String {
@@ -169,6 +130,7 @@ impl ProfileService {
         }
         Ok(Self {
             store,
+            kernels: KernelService::new(license_store.clone(), runtime.clone()),
             license_store,
             runtime,
             network: None,
@@ -181,6 +143,7 @@ impl ProfileService {
     }
 
     pub fn with_network(mut self, network: NetworkProxyStore) -> Self {
+        self.kernels = self.kernels.with_network(network.clone());
         self.network = Some(network);
         self
     }
@@ -219,10 +182,6 @@ impl ProfileService {
         browser_version: Option<String>,
         group_id: Option<String>,
     ) -> Result<ProfileSummary, String> {
-        let script = &self.runtime.browser_script;
-        if !script.is_file() {
-            return Err("浏览器适配器未构建，请从项目根目录启动桌面开发命令".into());
-        }
         let license_key = self.license_store.license_key()?;
         let status = self.license_store.status()?;
         if browser_version.is_some() && !can_pin_browser_version(status.plan.as_deref()) {
@@ -233,43 +192,14 @@ impl ProfileService {
         {
             return Err("内核版本需要是完整的数字版本号".into());
         }
-        let mut command = Command::new(&self.runtime.node);
-        if let Some(network) = &self.network {
-            network
-                .get()?
-                .apply_to_node(&mut command, &self.runtime.network_preload)?;
-        }
-        command
-            .arg(script)
-            .arg("prepare")
-            .env(
-                "CLOAKBROWSER_CACHE_DIR",
-                self.license_store.browser_cache_dir(),
-            )
-            .env_remove("CLOAKBROWSER_LICENSE_KEY")
-            .env_remove("CLOAKBROWSER_VERSION")
-            .env_remove("CLOAKBROWSER_BINARY_PATH")
-            .env_remove("CLOAKBROWSER_DOWNLOAD_URL")
-            .env_remove("CLOAKBROWSER_RELEASE_CHANNEL");
-        if let Some(key) = license_key.as_deref() {
-            command.env("CLOAKBROWSER_LICENSE_KEY", key);
-        }
-        if let Some(version) = browser_version {
-            command.env("CLOAKBROWSER_VERSION", version);
-        }
-        let output = run_preparation(&mut command, Duration::from_secs(12 * 60))?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
-            return Err(sanitize_license_error(&detail));
-        }
-        let line = output
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .rev()
-            .find(|line| !line.is_empty())
-            .ok_or("无法识别 CloakBrowser 内核信息")?;
-        let binary: PreparedBinary =
-            serde_json::from_slice(line).map_err(|_| "无法识别 CloakBrowser 内核信息")?;
+        let binary = self.kernels.prepare(
+            if license_key.is_some() {
+                KernelKind::Latest
+            } else {
+                KernelKind::Base
+            },
+            browser_version.as_deref(),
+        )?;
         self.create_prepared(&name, proxy, settings, binary, group_id.as_deref())
     }
 
@@ -343,25 +273,31 @@ impl ProfileService {
         let record = self.store.get(id).map_err(error_message)?;
         // Resolution happens before a slot is reserved: a plugin that cannot
         // produce a proxy must block the launch, never fall back to direct.
-        let proxy = match (&record.proxy_plugin, &record.proxy) {
+        let (proxy, connection_url) = match (&record.proxy_plugin, &record.proxy) {
             (Some(plugin_id), _) => {
                 let host = self
                     .plugin_host
                     .as_ref()
                     .ok_or_else(|| "代理插件宿主未初始化，窗口启动被阻断".to_string())?;
-                let reference = host
-                    .resolve_proxy(plugin_id, &record.id, record.proxy_endpoint)
-                    .map_err(|error| format!("代理插件未提供可用代理：{}", error.message()))?;
-                ProxyBinding::Required {
-                    plugin_id: plugin_id.clone(),
-                    config_handle: reference.config_handle,
-                    secret_ref: reference.secret_ref,
-                }
+                let resolved = host
+                    .resolve_browser_proxy(plugin_id, &record.id, record.proxy_endpoint)
+                    .map_err(|error| format!("窗口代理不可用：{}", error.message()))?;
+                (
+                    ProxyBinding::Required {
+                        plugin_id: plugin_id.clone(),
+                        config_handle: resolved.reference.config_handle,
+                        secret_ref: resolved.reference.secret_ref,
+                    },
+                    Some(resolved.connection_url),
+                )
             }
-            (None, Some(server)) => ProxyBinding::Configured {
-                server: server.clone(),
-            },
-            (None, None) => ProxyBinding::Direct,
+            (None, Some(server)) => (
+                ProxyBinding::Configured {
+                    server: server.clone(),
+                },
+                Some(server.clone()),
+            ),
+            (None, None) => (ProxyBinding::Direct, None),
         };
         let snapshot = {
             let mut state = self.state.lock().map_err(|_| "Profile 状态不可用")?;
@@ -371,12 +307,12 @@ impl ProfileService {
                 .reserve(LaunchRequest {
                     window_id: record.id.clone(),
                     profile_id: record.id.clone(),
-                    channel_id: record.binding.channel_id,
+                    channel_id: record.binding.channel_id.clone(),
                     proxy,
                 })
                 .map_err(|error| format!("Profile 调度被拒绝：{error:?}"))?
         };
-        match self.spawn_browser(id) {
+        match self.spawn_browser(&record, connection_url.as_deref()) {
             Ok(child) => {
                 let mut state = self.state.lock().map_err(|_| "Profile 状态不可用")?;
                 state
@@ -406,9 +342,16 @@ impl ProfileService {
         }
     }
 
-    fn spawn_browser(&self, id: &str) -> Result<Child, String> {
-        let record = self.store.get(id).map_err(error_message)?;
-        let user_data = self.store.user_data_dir(id).map_err(error_message)?;
+    fn spawn_browser(
+        &self,
+        record: &ProfileRecord,
+        connection_url: Option<&str>,
+    ) -> Result<Child, String> {
+        let launch_record = browser_launch_record(record, connection_url)?;
+        let user_data = self
+            .store
+            .user_data_dir(&record.id)
+            .map_err(error_message)?;
         let license_key = self.license_store.license_key()?;
         let mut command = Command::new(&self.runtime.node);
         if let Some(network) = &self.network {
@@ -436,7 +379,8 @@ impl ProfileService {
             command.env("CLOAKBROWSER_LICENSE_KEY", key);
         }
         let mut child = command.spawn().map_err(|_| "无法启动浏览器适配进程")?;
-        let config = serde_json::to_vec(&record).map_err(|_| "窗口配置无法编码")?;
+        // Runtime credentials travel over stdin only; the saved record stays opaque.
+        let config = serde_json::to_vec(&launch_record).map_err(|_| "窗口配置无法编码")?;
         if child.stdin.as_mut().is_none_or(|stdin| {
             stdin.write_all(&config).is_err() || stdin.write_all(b"\n").is_err()
         }) {
@@ -569,22 +513,49 @@ fn can_pin_browser_version(plan: Option<&str>) -> bool {
     plan.is_some_and(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("free"))
 }
 
-fn sanitize_license_error(detail: &str) -> String {
-    let lower = detail.to_ascii_lowercase();
-    if lower.contains("invalid or expired") || lower.contains("license key is invalid") {
-        "CloakBrowser 授权无效或已过期，请检查密钥".into()
-    } else if lower.contains("could not be validated")
-        || lower.contains("couldn't verify")
-        || lower.contains("license server unreachable")
-    {
-        "无法连接 CloakBrowser 授权服务，请检查网络后重试".into()
-    } else if lower.contains("session limit") || lower.contains("session limit reached") {
-        "CloakBrowser 并发席位已满，请先关闭其他会话或升级授权".into()
-    } else if lower.contains("pro binary unavailable") {
-        "授权有效，但 CloakBrowser 最新内核暂时无法下载，请稍后重试".into()
-    } else {
-        "CloakBrowser 内核准备失败，请检查网络、授权和版本设置".into()
+fn browser_launch_record(
+    record: &ProfileRecord,
+    connection_url: Option<&str>,
+) -> Result<ProfileRecord, String> {
+    if record.proxy_plugin.is_some() && connection_url.is_none_or(|url| url.trim().is_empty()) {
+        return Err("所选代理没有提供连接信息，窗口启动被阻断".into());
     }
+    let mut launch_record = record.clone();
+    launch_record.proxy = connection_url.map(str::to_owned);
+    Ok(launch_record)
+}
+
+#[tauri::command]
+pub async fn kernel_status(
+    state: State<'_, Arc<ProfileService>>,
+    refresh: Option<bool>,
+) -> Result<KernelStatus, KernelFailure> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .kernels
+            .status(refresh.unwrap_or(false))
+            .map_err(KernelFailure::operation)
+    })
+    .await
+    .map_err(|_| KernelFailure::operation("内核状态读取中断"))?
+}
+
+#[tauri::command]
+pub async fn kernel_download(
+    state: State<'_, Arc<ProfileService>>,
+    kind: KernelKind,
+) -> Result<String, KernelFailure> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .kernels
+            .prepare(kind, None)
+            .map(|binary| binary.version)
+            .map_err(|message| state.kernels.failure(message))
+    })
+    .await
+    .map_err(|_| KernelFailure::operation("内核下载任务中断"))?
 }
 
 #[tauri::command]
@@ -696,7 +667,11 @@ mod tests {
         let mut command = Command::new("node");
         command.arg("-e").arg("setInterval(() => {}, 1000)");
         let started = Instant::now();
-        let result = super::run_preparation(&mut command, Duration::from_millis(150));
+        let result = crate::core::kernel_service::run_preparation(
+            &mut command,
+            Duration::from_millis(150),
+            None,
+        );
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
     }
@@ -723,6 +698,35 @@ mod tests {
         assert_eq!(created.version, "145.0.7632.109");
         assert!(!created.running);
         assert_eq!(service.list().unwrap()[0].id, created.id);
+    }
+
+    #[test]
+    fn resolved_proxy_is_only_in_the_launch_record_and_never_written_to_the_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let binary_path = root.path().join("browser");
+        std::fs::write(&binary_path, b"binary").unwrap();
+        let service = ProfileService::new(root.path().join("profiles")).unwrap();
+        let created = service
+            .create_prepared(
+                "Proxy window",
+                ProxySource::plugin("studio.proxy-pool".into(), Some(7)),
+                WindowSettings::default(),
+                PreparedBinary {
+                    version: "145.0.7632.109".into(),
+                    binary_path,
+                },
+                None,
+            )
+            .unwrap();
+        let saved = service.store.get(&created.id).unwrap();
+        assert!(super::browser_launch_record(&saved, None).is_err());
+        let connection = "socks5://account:p%40ss@selected.example:1080";
+        let launching = super::browser_launch_record(&saved, Some(connection)).unwrap();
+        assert_eq!(launching.proxy.as_deref(), Some(connection));
+        assert_eq!(launching.proxy_endpoint, Some(7));
+        assert_eq!(launching.binding, saved.binding);
+        assert!(service.store.get(&created.id).unwrap().proxy.is_none());
+        assert!(!serde_json::to_string(&saved).unwrap().contains("p%40ss"));
     }
 
     #[test]
@@ -775,11 +779,20 @@ mod tests {
             super::sanitize_license_error(
                 "CloakBrowser Pro: license key is invalid or expired: cb_secret"
             ),
-            "CloakBrowser 授权无效或已过期，请检查密钥"
+            "激活码无效或已过期，请检查后重新填写"
         );
         assert_eq!(
             super::sanitize_license_error("session limit reached"),
-            "CloakBrowser 并发席位已满，请先关闭其他会话或升级授权"
+            "同时打开的窗口已达上限，请先关闭其他窗口"
+        );
+    }
+
+    #[test]
+    fn preparation_preserves_safe_download_failure_details() {
+        let detail = "[cloakbrowser] downloading cb_secret\nNEXUS_KERNEL_ERROR {\"code\":\"NOT_FOUND\",\"message\":\"当前平台的内核下载不可用（HTTP 404），请稍后重试。\",\"retryable\":false}\n";
+        assert_eq!(
+            super::sanitize_license_error(detail),
+            "当前平台的内核下载不可用（HTTP 404），请稍后重试。"
         );
     }
 }

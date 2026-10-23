@@ -134,18 +134,25 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 标准输出只承载协议消息。标准错误进入 4 KiB 环形缓冲作为诊断，
 写入前把 `scheme://user:pass@host` 改写为 `scheme://***@host`。
-插件自身的密码不会出现在宿主日志里，因为宿主从不接收它们。
+启动解析的 `connectionUrl` 可能包含认证信息，只用于进程间启动传递，不写入日志；
+`ResolvedBrowserProxy` 的 `Debug` 实现隐藏完整连接地址。
 
 ## 7. 密码归属
 
-宿主不接触密码：没有系统钥匙串，也没有宿主侧凭据库。
+宿主没有系统钥匙串，也没有宿主侧凭据库。
 代理密码与 proxycheck 密钥由插件自己明文写入私有目录的 `secrets.json`（权限 0600），
-与 `proxy-pool.json` 同目录、同样的保护级别。宿主既不读取，也不代为保管。
+与 `proxy-pool.json` 同目录、同样的保护级别。宿主不读取插件存储的业务结构，也不代为保管。
+启动所需的代理密码会由插件解析并放入 `connectionUrl`，临时经过插件 IPC、宿主内存与
+浏览器适配器的标准输入；不能再把这一边界描述为“宿主从不接收密码”。
 
 - manifest 的 `permissions.secrets` 仍声明槽位名，用于说明插件需要哪些密钥，
-  但值不在宿主手里，页面只能展示槽位名，无法报告“已保存”。
-- `proxy.resolve` 返回的 `secretRef` 仍是不透明引用，由插件自己解析；
-  启动快照只保存句柄与引用，不保存密码。
+  宿主不提供密钥库状态，页面只能展示槽位名，无法据此报告“已保存”。
+- `proxy.resolve` 的 `configHandle` 与 `secretRef` 仍是不透明引用，由插件自己解析；
+  调度快照与 `ProxyReference` 只保存句柄和引用，不保存连接地址或密码。
+- `connectionUrl` 只用于本次启动，不写回窗口记录、不进入 UI，也不进入日志或错误消息。
+  插件无法解析必需密码时必须失败，不得生成省略认证的地址。
+- WebView 的通用 `plugin_call` 不允许调用原生启动专用的 `proxy.resolve`，
+  避免将完整连接信息返回页面；普通列表、检测和配置方法继续通过既有插件接口使用。
 - 卸载插件时删除整个安装目录，私有目录由用户或后续清理入口处理。
 - 这是本地明文文件，能读取该用户文件的程序都能读到密码，产品不宣称加密或隔离。
 
@@ -173,11 +180,27 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 启动顺序为：解析代理 → 预留调度槽位 → 启动浏览器。解析失败时槽位不会被占用：
 
-1. 记录里有 `proxy_plugin` 时，调用该插件的 `proxy.resolve`，截止时间 20 秒。
-2. 结果 `configured` 为假或 `configHandle` 为空时返回 `NOT_CONFIGURED`，
-   消息为“代理插件未选择默认代理，窗口启动被阻断”。
-3. 成功时启动快照只保存不透明句柄与可选密钥引用，不保存代理地址或密码。
-4. 记录里没有插件也没有手动代理时才使用直连；插件失败不会退化为直连。
+1. 记录里有 `proxy_plugin` 时，调用 `resolve_browser_proxy(plugin_id, window_id, endpoint_id)`，
+   内部只发一次 `proxy.resolve`，截止时间 20 秒。RPC payload 只有 `{ endpointId }`，
+   不发送严格 schema 不接受的 `windowId`；公开方法保留未使用的 `_window_id` 参数。
+2. `endpoint_id` 指定一行时不要求默认项；未指定时才使用插件默认项。
+   `configured` 为假或 `configHandle` 为空时返回 `NOT_CONFIGURED`，消息区分
+   “窗口指定的代理不存在或不可用”与“未选择默认代理”，不重复添加“代理插件”前缀。
+   指定项已删除、停用或密码引用不可用时透传失败，不改用默认项。
+3. 返回 `ResolvedBrowserProxy { reference: ProxyReference, connection_url: String }`。
+   宿主从同一次响应解析引用与 `connectionUrl`，不读取插件库存或密钥文件。
+   仅支持 `http`、`https`、`socks5`、`socks5h`，必须有主机和有效的显式端口，
+   不允许路径（含末尾 `/`）、查询、片段、空白或反斜线；保留原百分号编码与显式默认端口。
+   已安装插件缺少有效字符串 `connectionUrl` 时明确提示更新或重新安装并阻断启动，
+   无效地址返回不含输入内容的协议错误。
+4. `reference` 用于调度器的必需代理绑定；`connection_url` 只填入本次启动的临时配置，
+   经标准输入传给浏览器适配器，不保存到窗口记录、调度快照或 UI。调用方直接使用该结果，
+   不再调用 `resolve_proxy` 重新解析，避免两次解析选择不同配置。
+5. `resolve_proxy(plugin_id, window_id, endpoint_id) -> Result<ProxyReference, HostError>`
+   保留只返回不透明引用的原有接口，复用相同调用和解析 helper，
+   不要求旧插件返回 `connectionUrl`。公开 SDK 的 `ProxyProvider.resolve()` 也保持只返回引用。
+6. 记录里没有插件也没有手动代理时才使用直连；插件失败不会退化为直连。
+   浏览器适配器收到 `proxy_plugin` 却没有运行时 `proxy` 时也必须拒绝启动。
 
 宿主未初始化时启动直接失败，提示“代理插件宿主未初始化，窗口启动被阻断”。
 
@@ -202,11 +225,18 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 ## 11. 已执行的证据
 
-`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked`
-当前为 60 个用例中 59 个通过、1 个忽略（真实浏览器启动冒烟）。插件宿主相关用例覆盖：
+本次以 Node.js 24.18.0 构建 `studio.proxy-pool` 1.0.1 后执行
+`rtk proxy cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked core::plugin_host`，
+宿主模块 44 个用例全部通过。完整工程检查由主线汇总到[质量与验证](09-quality-and-testing.md)，
+此处只记录宿主模块的实际范围：
 
 - manifest 未知字段、通配符/端口/localhost/IP 域名、不兼容核心与 API、重复能力；
 - 仓库内 `plugins/proxy-pool` 的 manifest 通过校验，且能完成真实握手与 `proxy.list`、`proxy.get` 调用；
+- 实际构建的代理插件在临时目录安装运行，无默认项时指定端点仍能返回精确连接地址与引用，
+  带认证的端点验证百分号编码，密码引用缺失时报错，
+  删除或停用指定项后即使另有可用默认项也失败；
+- 宿主启动解析只发一次 RPC，旧插件缺少 `connectionUrl` 时提示更新，
+  无效协议、端口、路径、查询、片段与空白被拒绝，错误与调试输出不回显连接凭据；
 - 仓库内 `plugins/address-generator` 从 `dist` 安装即启动并调用
   `address.catalog`，同一次会话里用 `proxy.provider` 调用同一方法被 `PERMISSION_DENIED` 拒绝；
 - 仓库内 `plugins/shared-supply` 从 `dist` 安装即启动，

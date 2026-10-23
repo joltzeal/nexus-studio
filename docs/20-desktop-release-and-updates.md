@@ -23,6 +23,8 @@ Node 专用的 JIT entitlement 授予 Rust 主程序。
 环境变量或 CLI 登录；首次创建窗口由官方 SDK 获取对应内核，需要网络。
 最新内核仍受用户自己填入的激活码约束。下载失败不会静默换用系统浏览器。
 浏览器二进制的再分发权需要独立确认，本流程不打包它。
+用户也可先在「应用设置 → 浏览器内核」下载，查看实际进度和本地版本，再创建窗口；
+两条入口复用同一缓存，见[浏览器内核](27-browser-kernels.md)。
 
 ## CI 与草稿
 
@@ -32,8 +34,10 @@ macOS x64 与 Windows x64，使用 GitHub Actions 的
 `TAURI_SIGNING_PRIVATE_KEY` 签名更新包，向私有仓库创建草稿 Release。
 签名密钥不进入源码。本地备份位于开发机的
 `~/Library/Application Support/Nexus Studio Release/updater.key`；丢失密钥后，
-现有安装无法无缝接受新签名。发版前同步三处版本：
-根 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json`。
+现有安装无法无缝接受新签名。发版前同步根 `package.json`、
+`apps/desktop/package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`
+和 `src-tauri/tauri.conf.json` 中的应用版本。侧栏与关于页共用桌面包版本，
+插件保留各自独立的版本号。
 未提供 `APPLE_SIGNING_IDENTITY` 时，macOS 工作流使用临时 ad-hoc 签名使
 应用包及随附 Node 可执行文件具备有效的本地签名；它不提供开发者身份和公证。
 随附 Node 在 Hardened Runtime 下必须携带
@@ -92,3 +96,14 @@ macOS arm64 分阶段运行时检查通过，含 `network-preload.js` 和 SOCKS5
 `runtime:verify-packaged` 对代理预加载模块和浏览器适配器的真实导入检查。
 该验证覆盖当前 macOS arm64 本机构件；macOS x64 由同一发行配置生成，
 仍需在对应机器或 CI runner 上执行同一签名后检查。
+
+## 0.1.2 发行范围（2026-10-23）
+
+本次包含浏览器内核本地清单与提前下载入口、真实下载进度和失败分类，
+并补齐窗口指定代理的解析与浏览器启动参数传递。窗口选择具体代理时不依赖默认项，
+必需代理无法解析时继续阻断启动。现有窗口的内核绑定不因下载而改变。
+
+主应用版本为 `0.1.2`；代理池插件独立升为 `1.0.1`，需要配套更新。
+插件不随桌面安装包分发，推送应用标签不会自动上传插件商店。
+`v0.1.2` 沿用现有桌面工作流生成草稿 Release；推送后不等待 CI，
+实际构件和远端构建结果需以工作流产出为准。本机发布前检查见[质量记录](09-quality-and-testing.md)。
