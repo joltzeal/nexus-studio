@@ -61,7 +61,7 @@ describe('listing payload parsing', () => {
 
   it('counts entries without a usable id as invalid', () => {
     const page = parseItemsPage(
-      { items: [{ title: 'no id' }, { id: 'abc' }, { id: '5' }] },
+      { items: [{ title: 'no id' }, { id: 'abc' }, { id: '5', title: 'Valid' }] },
       3,
       itemUrl,
     )
@@ -70,7 +70,10 @@ describe('listing payload parsing', () => {
   })
 
   it('treats a full page without pagination as "maybe more"', () => {
-    const items = Array.from({ length: 5 }, (_, index) => ({ id: String(index) }))
+    const items = Array.from({ length: 5 }, (_, index) => ({
+      id: String(index + 1),
+      title: 'Valid',
+    }))
     expect(parseItemsPage({ items }, 5, itemUrl).hasMore).toBe(true)
     expect(parseItemsPage({ items }, 10, itemUrl).hasMore).toBe(false)
   })
@@ -83,7 +86,7 @@ describe('listing payload parsing', () => {
 
   it('ignores a non-http photo url', () => {
     const page = parseItemsPage(
-      { items: [{ id: '1', photo: { url: 'javascript:alert(1)' } }] },
+      { items: [{ id: '1', title: 'Valid', photo: { url: 'javascript:alert(1)' } }] },
       1,
       itemUrl,
     )

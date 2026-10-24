@@ -1,0 +1,200 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { callPlugin } from '@/lib/platform/native-plugins'
+import { generate, listRecords, uploadImage, type GenerateInput } from './api'
+import { SOURCE_UPDATE_HINT } from './source'
+import type { GenerationRecord, GenerationSource, RecordPage } from './types'
+
+vi.mock('@/lib/platform/native-plugins', () => ({ callPlugin: vi.fn() }))
+
+const source: GenerationSource = {
+  pluginId: 'studio.vinted-monitor',
+  itemId: 'vinted.fr:123',
+  title: 'Used mug',
+  url: 'https://www.vinted.fr/items/123',
+}
+const sourceFilter = { sourcePluginId: source.pluginId, sourceItemId: source.itemId }
+const input: GenerateInput = {
+  providerId: 'provider',
+  mode: 'edit',
+  presetId: null,
+  prompt: 'An editable product description',
+  size: 'auto',
+  count: 1,
+  inputFileIds: ['image'],
+}
+const page: RecordPage = {
+  items: [],
+  page: 0,
+  pageSize: 10,
+  total: 0,
+  storageDurable: true,
+  sourceFilter,
+}
+
+beforeEach(() => {
+  vi.mocked(callPlugin).mockReset()
+})
+
+describe('source API', () => {
+  it('lists with the identity pair only, before pagination is interpreted by the caller', async () => {
+    vi.mocked(callPlugin).mockResolvedValue(page)
+    expect(await listRecords(2, 10, 'failed', source)).toEqual(page)
+    expect(callPlugin).toHaveBeenCalledExactlyOnceWith(
+      'studio.ai-image',
+      'image.provider',
+      'image.records.list',
+      { page: 2, size: 10, status: 'failed', ...sourceFilter },
+      30000,
+    )
+    const sent = JSON.stringify(vi.mocked(callPlugin).mock.calls)
+    expect(sent).not.toContain(source.title)
+    expect(sent).not.toContain(source.url)
+  })
+
+  it('refuses incomplete identity at runtime before any RPC', async () => {
+    await expect(
+      listRecords(0, 10, undefined, { pluginId: source.pluginId, itemId: '' }),
+    ).rejects.toThrow('商品来源信息无效')
+    expect(callPlugin).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { ...page, sourceFilter: undefined },
+    { ...page, sourceFilter: { ...sourceFilter, sourceItemId: 'other' } },
+    { ...page, items: [{ id: 'unlinked' }] },
+  ])(
+    'does not label an unsupported or unfiltered result as source history',
+    async (result) => {
+      vi.mocked(callPlugin).mockResolvedValue(result)
+      await expect(listRecords(0, 10, undefined, source)).rejects.toThrow(
+        SOURCE_UPDATE_HINT,
+      )
+      expect(callPlugin).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it.each(['INVALID_REQUEST: 请求参数无效', '插件未声明该方法'])(
+    'shows an update hint and never falls back to unlinked paid generation: %s',
+    async (error) => {
+      vi.mocked(callPlugin).mockRejectedValue(error)
+      await expect(generate({ ...input, source })).rejects.toThrow(SOURCE_UPDATE_HINT)
+      expect(callPlugin).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(callPlugin).mock.calls[0]?.[2]).toBe('image.records.list')
+    },
+  )
+
+  it('also translates old generate schema errors without submitting twice', async () => {
+    vi.mocked(callPlugin)
+      .mockResolvedValueOnce(page)
+      .mockRejectedValueOnce('INVALID_REQUEST: 请求参数无效')
+    await expect(generate({ ...input, source })).rejects.toThrow(SOURCE_UPDATE_HINT)
+    expect(callPlugin).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves source and editable prompt after the read-only compatibility check', async () => {
+    const record = { id: 'record', source } as GenerationRecord
+    vi.mocked(callPlugin).mockResolvedValueOnce(page).mockResolvedValueOnce({ record })
+    expect(await generate({ ...input, source })).toEqual({ record })
+    expect(callPlugin).toHaveBeenNthCalledWith(
+      2,
+      'studio.ai-image',
+      'image.provider',
+      'image.generate',
+      { ...input, source },
+      30000,
+    )
+  })
+
+  it('warns that a generation was submitted if a broken plugin loses the source', async () => {
+    vi.mocked(callPlugin)
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce({ record: { id: 'record' } })
+    await expect(generate({ ...input, source })).rejects.toThrow('勿重复提交')
+    expect(callPlugin).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps legacy requests unchanged and network failures distinct from update requirements', async () => {
+    vi.mocked(callPlugin).mockResolvedValueOnce({ record: { id: 'legacy' } })
+    await generate(input)
+    expect(callPlugin).toHaveBeenCalledExactlyOnceWith(
+      'studio.ai-image',
+      'image.provider',
+      'image.generate',
+      input,
+      30000,
+    )
+    vi.mocked(callPlugin).mockRejectedValueOnce('插件进程不可用')
+    await expect(listRecords(0, 10, undefined, source)).rejects.toThrow('插件进程不可用')
+  })
+})
+
+describe('File uploads', () => {
+  it('preserves bytes across chunk boundaries without image preparation', async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 255, 12, 33, 95])
+    const file = new File([bytes], 'source.png', { type: 'image/png' })
+    const stored = { id: 'file', mime: 'image/png', name: file.name, bytes: bytes.length }
+    vi.mocked(callPlugin).mockImplementation(async (_id, _capability, method) => {
+      if (method === 'image.upload.begin') return { uploadId: 'upload', chunkSize: 4 }
+      if (method === 'image.upload.finish') return { file: stored }
+      return {}
+    })
+    expect(await uploadImage(file)).toEqual(stored)
+    const calls = vi.mocked(callPlugin).mock.calls
+    const chunks = calls
+      .filter((call) => call[2] === 'image.upload.chunk')
+      .map((call) => call[3] as { index: number; data: string })
+    expect(chunks.map((chunk) => chunk.index)).toEqual([0, 1, 2])
+    const transferred = chunks.flatMap((chunk) =>
+      Array.from(atob(chunk.data), (character) => character.charCodeAt(0)),
+    )
+    expect(new Uint8Array(transferred)).toEqual(bytes)
+  })
+
+  it('aborts a partially uploaded session on failure', async () => {
+    vi.mocked(callPlugin).mockImplementation(async (_id, _capability, method) => {
+      if (method === 'image.upload.begin') return { uploadId: 'upload', chunkSize: 4 }
+      if (method === 'image.upload.chunk') throw new Error('disk full')
+      return {}
+    })
+    await expect(
+      uploadImage(new File(['bytes'], 'source.png', { type: 'image/png' })),
+    ).rejects.toThrow('disk full')
+    expect(vi.mocked(callPlugin).mock.calls.map((call) => call[2])).toEqual([
+      'image.upload.begin',
+      'image.upload.chunk',
+      'image.upload.abort',
+    ])
+  })
+
+  it('cancellation after begin aborts without uploading or finishing', async () => {
+    const controller = new AbortController()
+    vi.mocked(callPlugin).mockImplementation(async (_id, _capability, method) => {
+      if (method === 'image.upload.begin') {
+        controller.abort()
+        return { uploadId: 'upload', chunkSize: 4 }
+      }
+      return {}
+    })
+    await expect(
+      uploadImage(
+        new File(['bytes'], 'source.png', { type: 'image/png' }),
+        controller.signal,
+      ),
+    ).rejects.toThrow()
+    expect(vi.mocked(callPlugin).mock.calls.map((call) => call[2])).toEqual([
+      'image.upload.begin',
+      'image.upload.abort',
+    ])
+  })
+
+  it('rejects invalid chunk sizes instead of looping forever', async () => {
+    vi.mocked(callPlugin).mockResolvedValue({ uploadId: 'upload', chunkSize: 0 })
+    await expect(
+      uploadImage(new File(['bytes'], 'source.png', { type: 'image/png' })),
+    ).rejects.toThrow('分块大小')
+    expect(vi.mocked(callPlugin).mock.calls.map((call) => call[2])).toEqual([
+      'image.upload.begin',
+      'image.upload.abort',
+    ])
+  })
+})

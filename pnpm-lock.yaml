@@ -421,6 +421,12 @@ importers:
       '@nexus/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+      socks:
+        specifier: 2.8.7
+        version: 2.8.7
+      undici:
+        specifier: 7.16.0
+        version: 7.16.0
       zod:
         specifier: 4.4.3
         version: 4.4.3

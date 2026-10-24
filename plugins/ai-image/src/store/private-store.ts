@@ -3,12 +3,24 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
 import { unavailable } from '../domain/errors.js'
-import type { GenerationRecord, ProviderRecord } from '../domain/types.js'
+import { GenerationSourceSchema } from '../domain/schemas.js'
+import {
+  distinctViews,
+  scenePlanResultFields,
+  sceneViewFields,
+} from '../domain/scene-plan.js'
+import {
+  MAX_PLANS,
+  type GenerationRecord,
+  type ProviderRecord,
+  type ScenePlan,
+} from '../domain/types.js'
 
 export interface StoreDocument {
   schemaVersion: 1
   providers: ProviderRecord[]
   records: GenerationRecord[]
+  plans: ScenePlan[]
 }
 
 export interface PrivateStore {
@@ -45,9 +57,58 @@ const storedFileSchema = z.looseObject({
   bytes: z.number(),
 })
 
+const scenePlanResultSchema = z.looseObject({
+  ...scenePlanResultFields,
+  views: z.array(z.looseObject(sceneViewFields)).min(1).max(4).refine(distinctViews),
+})
+
+const scenePlanSchema = z
+  .looseObject({
+    id: z.string().min(1).max(64),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    status: z.enum(['running', 'success', 'failed']),
+    providerId: z.string().min(1).max(64),
+    providerName: z.string(),
+    providerKind: z.enum(['openai', 'openai_compatible']),
+    model: z.string().min(1).max(120),
+    inputFileId: z.string().min(1).max(64),
+    requirements: z.string().max(12000),
+    count: z.number().int().min(1).max(4),
+    result: scenePlanResultSchema.nullable(),
+    error: z.string().nullable(),
+  })
+  .refine((plan) =>
+    plan.status === 'success'
+      ? plan.result !== null && plan.result.views.length === plan.count
+      : plan.result === null,
+  )
+
+const scenePlanSnapshotSchema = z.looseObject({
+  plan: scenePlanSchema.refine((plan) => plan.status === 'success'),
+  prompt: scenePlanResultFields.prompt,
+  views: z
+    .array(
+      z
+        .looseObject({
+          ...sceneViewFields,
+          status: z.enum(['queued', 'running', 'success', 'failed']),
+          outputFileId: z.string().min(1).max(64).nullable(),
+          error: z.string().nullable(),
+          effectivePrompt: z.string().min(1).max(100000),
+        })
+        .refine((view) => (view.status === 'success') === (view.outputFileId !== null)),
+    )
+    .min(1)
+    .max(4)
+    .refine(distinctViews),
+})
+
 const recordSchema = z
   .looseObject({
     id: z.string(),
+    source: GenerationSourceSchema.optional(),
+    scenePlan: scenePlanSnapshotSchema.optional(),
     createdAt: z.string(),
     updatedAt: z.string(),
     status: z.enum(['running', 'success', 'failed']),
@@ -109,15 +170,34 @@ const recordSchema = z
       record.outputs.some((file) => file.id === record.outputVision?.outputFileId),
     { message: '成片识图图片必须属于记录的输出图' },
   )
+  .refine(
+    (record) => {
+      const scene = record.scenePlan
+      if (scene === undefined) return true
+      return (
+        record.mode === 'edit' &&
+        record.count === scene.views.length &&
+        record.inputs.some((file) => file.id === scene.plan.inputFileId) &&
+        scene.views.every(
+          (view) =>
+            scene.plan.result?.views.some((original) => original.id === view.id) &&
+            (view.outputFileId === null ||
+              record.outputs.some((file) => file.id === view.outputFileId)),
+        )
+      )
+    },
+    { message: '场景规划与参考图、视角或成片不一致' },
+  )
 
 const documentSchema = z.looseObject({
   schemaVersion: z.literal(1),
   providers: z.array(providerSchema),
   records: z.array(recordSchema),
+  plans: z.array(scenePlanSchema).max(MAX_PLANS).default([]),
 })
 
 export function emptyDocument(): StoreDocument {
-  return { schemaVersion: 1, providers: [], records: [] }
+  return { schemaVersion: 1, providers: [], records: [], plans: [] }
 }
 
 function parseDocument(text: string): StoreDocument {

@@ -34,11 +34,17 @@ export {
 export { apiKeyHint, extensionFor, providerView } from './domain/types.js'
 export type {
   GenerationRecord,
+  GenerationSummary,
   ProviderRecord,
   ProviderView,
   StoredFile,
   VisionRecord,
   OutputVisionRecord,
+  GenerationSource,
+  SceneView,
+  ScenePlanResult,
+  ScenePlan,
+  SceneViewRecord,
 } from './domain/types.js'
 export type { PluginManifest }
 

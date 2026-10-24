@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Copy, Download, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import {
   AlertDialog,
@@ -40,27 +40,41 @@ import {
 } from './api'
 import { CompareSlider } from './compare-slider'
 import { RecordImage } from './record-image'
+import { SourceLink } from './source-link'
+import { ScenePlanRecord } from './scene-plan-record'
+import { selectedRecordMedia } from './selection'
+import { RecordSession } from './record-session'
 import {
   formatDuration,
   formatTime,
   message,
   recordTitle,
   statusText,
+  sceneProgress,
+  viewStatusText,
   type GenerationRecord,
   type Provider,
 } from './types'
 
-export function RecordDetailDialog({
-  recordId,
-  providers,
-  onClose,
-  onChanged,
-}: {
+interface RecordDetailDialogProps {
   recordId: string
   providers: Provider[]
   onClose: () => void
   onChanged: () => Promise<void>
-}) {
+}
+
+export function RecordDetailDialog(props: RecordDetailDialogProps) {
+  return <RecordDetailContent key={props.recordId} {...props} />
+}
+
+function RecordDetailContent({
+  recordId,
+  providers,
+  onClose,
+  onChanged,
+}: RecordDetailDialogProps) {
+  const [session] = useState(() => new RecordSession(getRecord))
+  const changed = useRef(onChanged)
   const [record, setRecord] = useState<GenerationRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -68,6 +82,7 @@ export function RecordDetailDialog({
   const [confirming, setConfirming] = useState(false)
   const [exported, setExported] = useState<string[]>([])
   const [selected, setSelected] = useState(0)
+  const [selectedViewId, setSelectedViewId] = useState('')
   const [visionChoice, setVisionChoice] = useState('')
   const running =
     record?.status === 'running' || record?.outputVision?.status === 'running'
@@ -77,93 +92,79 @@ export function RecordDetailDialog({
   const visionProviderId =
     visionChoice || record?.outputVision?.providerId || visionProviders[0]?.id || ''
 
-  const load = useCallback(async () => {
-    try {
-      const result = await getRecord(recordId)
-      setRecord(result.record)
-      setError(null)
-      return result.record
-    } catch (cause) {
-      setError(message(cause))
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }, [recordId])
+  useLayoutEffect(() => {
+    changed.current = onChanged
+  }, [onChanged])
 
-  // The dialog is mounted per record (`key` in the list page), so the initial
-  // state is already correct for this record and the first effect only loads it.
-  useEffect(() => {
-    let active = true
-    void getRecord(recordId).then(
-      (result) => {
-        if (!active) return
-        setRecord(result.record)
+  useLayoutEffect(() => {
+    void session.open(recordId, {
+      onRecord: (next) => {
+        setRecord(next)
         setError(null)
         setLoading(false)
       },
-      (cause: unknown) => {
-        if (!active) return
-        setError(message(cause))
+      onError: (error) => {
+        setError(error)
         setLoading(false)
       },
-    )
-    return () => {
-      active = false
-    }
-  }, [recordId])
+      onSettled: () => changed.current(),
+    })
+    return () => session.close()
+  }, [recordId, session])
 
-  // Poll only while the job is still running; a finished record is static.
-  useEffect(() => {
-    if (!running) return
-    const timer = setInterval(() => {
-      void load().then((next) => {
-        if (
-          next !== null &&
-          next.status !== 'running' &&
-          next.outputVision?.status !== 'running'
-        )
-          void onChanged()
-      })
-    }, 2500)
-    return () => clearInterval(timer)
-  }, [running, load, onChanged])
+  function load() {
+    setLoading(true)
+    setError(null)
+    void session.refresh()
+  }
 
-  const output = record?.outputs[selected] ?? null
-  const reference = record?.vision
-    ? (record.inputs.find((file) => file.id === record.vision?.inputFileId) ?? null)
-    : (record?.inputs[0] ?? null)
-  const meta = useMemo(() => {
-    if (record === null) return []
-    return [
-      ['提交时间', formatTime(record.createdAt)],
-      ['耗时', formatDuration(record.durationMs)],
-      ['方式', record.mode === 'edit' ? '改图（带参考图）' : '文生图'],
-      ['预设', record.presetLabel ?? '自由提示词'],
-      [
-        '服务商',
-        `${record.providerName}（${record.providerKind === 'openai' ? 'OpenAI 官方' : 'OpenAI 兼容'}）`,
-      ],
-      ['生图模型', record.imageModel],
-      ['文案模型', record.textModel === '' ? '未配置' : record.textModel],
-      [
-        '参考图识图',
-        record.vision
-          ? `${record.vision.providerName} · ${record.vision.model}`
-          : '未启用',
-      ],
-      [
-        '识图参考图',
-        record.vision
-          ? `参考图 ${record.inputs.findIndex((file) => file.id === record.vision?.inputFileId) + 1}`
-          : '未选择',
-      ],
-      ['尺寸', record.size === 'auto' ? '由模型决定' : record.size],
-      ['张数', String(record.count)],
-      ['参考图', `${String(record.inputs.length)} 张`],
-      ['输出', `${String(record.outputs.length)} 张`],
-    ]
-  }, [record])
+  function close() {
+    session.close()
+    onClose()
+  }
+
+  function finishAction(revision: number) {
+    if (!session.isCurrent(revision)) return
+    setBusy(false)
+    session.resume(revision)
+  }
+
+  const { selectedView, output, outputIndex, reference, referenceId } =
+    selectedRecordMedia(record, selected, selectedViewId)
+  const progress = record ? sceneProgress(record) : null
+  const meta =
+    record === null
+      ? []
+      : [
+          ['提交时间', formatTime(record.createdAt)],
+          ['耗时', formatDuration(record.durationMs)],
+          ['方式', record.mode === 'edit' ? '改图（带参考图）' : '文生图'],
+          ['预设', record.presetLabel ?? '自由提示词'],
+          [
+            '服务商',
+            `${record.providerName}（${record.providerKind === 'openai' ? 'OpenAI 官方' : 'OpenAI 兼容'}）`,
+          ],
+          ['生图模型', record.imageModel],
+          ['文案模型', record.textModel === '' ? '未配置' : record.textModel],
+          [
+            '参考图识图',
+            record.scenePlan
+              ? `${record.scenePlan.plan.providerName} · ${record.scenePlan.plan.model}`
+              : record.vision
+                ? `${record.vision.providerName} · ${record.vision.model}`
+                : '未启用',
+          ],
+          [
+            '识图参考图',
+            referenceId
+              ? `参考图 ${record.inputs.findIndex((file) => file.id === referenceId) + 1}`
+              : '未选择',
+          ],
+          ['尺寸', record.size === 'auto' ? '由模型决定' : record.size],
+          ['张数', String(record.count)],
+          ['参考图', `${String(record.inputs.length)} 张`],
+          ['输出', `${String(record.outputs.length)} 张`],
+        ]
 
   async function copy(text: string, what: string) {
     if (text.trim() === '') return
@@ -172,17 +173,18 @@ export function RecordDetailDialog({
   }
 
   async function retry() {
-    if (record === null || busy) return
+    if (record === null || busy || running) return
+    const revision = session.beginAction()
     setBusy(true)
     setError(null)
     try {
       const result = await retryRecord(record.id)
-      setRecord(result.record)
+      if (!session.accept(revision, result.record)) return
       await onChanged()
     } catch (cause) {
-      setError(message(cause))
+      if (session.isCurrent(revision)) setError(message(cause))
     } finally {
-      setBusy(false)
+      finishAction(revision)
     }
   }
 
@@ -196,6 +198,7 @@ export function RecordDetailDialog({
       setError('请选择可用的独立识图服务商和一张成片。')
       return
     }
+    const revision = session.beginAction()
     setBusy(true)
     setError(null)
     try {
@@ -204,50 +207,55 @@ export function RecordDetailDialog({
           ? { id: record.id, retry: true }
           : { id: record.id, providerId: visionProviderId, fileId: output?.id ?? null },
       )
-      setRecord(result.record)
+      if (!session.accept(revision, result.record)) return
       await onChanged()
-      toast.success('已提交单张成片识图')
+      if (session.isCurrent(revision)) toast.success('已提交单张成片识图')
     } catch (cause) {
-      setError(message(cause))
+      if (session.isCurrent(revision)) setError(message(cause))
     } finally {
-      setBusy(false)
+      finishAction(revision)
     }
   }
 
   async function exportImages() {
     if (record === null || busy) return
+    const revision = session.beginAction()
     setBusy(true)
     setError(null)
     try {
       const result = await exportRecord(record.id)
+      if (!session.isCurrent(revision)) return
       setExported(result.paths)
       toast.success(`已导出 ${String(result.paths.length)} 张图片`)
     } catch (cause) {
-      setError(message(cause))
+      if (session.isCurrent(revision)) setError(message(cause))
     } finally {
-      setBusy(false)
+      finishAction(revision)
     }
   }
 
   async function remove() {
-    if (record === null || busy) return
+    if (record === null || busy || running) return
+    const revision = session.beginAction()
     setBusy(true)
     setError(null)
     try {
       await removeRecord(record.id)
+      if (!session.isCurrent(revision)) return
       await onChanged()
+      if (!session.isCurrent(revision)) return
       setConfirming(false)
-      onClose()
       toast.success('已删除生成记录')
+      close()
     } catch (cause) {
-      setError(message(cause))
+      if (session.isCurrent(revision)) setError(message(cause))
     } finally {
-      setBusy(false)
+      finishAction(revision)
     }
   }
 
   return (
-    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+    <Dialog open onOpenChange={(open) => (open ? undefined : close())}>
       <DialogContent className="ai-dialog ai-detail-dialog">
         <DialogHeader>
           <DialogTitle>{record === null ? '生成详情' : recordTitle(record)}</DialogTitle>
@@ -263,9 +271,43 @@ export function RecordDetailDialog({
         {record === null ? null : (
           <div className="ai-detail-body">
             <section className="ai-detail-media" aria-label="图片对比">
+              {record.scenePlan ? (
+                <Field>
+                  <FieldLabel htmlFor="ai-detail-view">生成视角</FieldLabel>
+                  <LabeledSelect
+                    id="ai-detail-view"
+                    ariaLabel="生成视角"
+                    value={selectedView?.id ?? ''}
+                    onValueChange={setSelectedViewId}
+                    options={record.scenePlan.views.map((view) => ({
+                      value: view.id,
+                      label: `${view.label} · ${viewStatusText(view.status)}`,
+                    }))}
+                  />
+                  <FieldDescription>
+                    已完成 {progress?.completed ?? 0} / {progress?.total ?? 0} 个视角。
+                    {record.status === 'failed' && record.outputs.length > 0
+                      ? '已完成图片保留，可查看或导出；重试仅处理未完成视角。'
+                      : ''}
+                  </FieldDescription>
+                </Field>
+              ) : null}
               {output === null ? (
                 <div className="ai-detail-placeholder">
-                  {running ? (
+                  {selectedView ? (
+                    <>
+                      {selectedView.status === 'running' ||
+                      selectedView.status === 'queued' ? (
+                        <Loader2 className="size-5 animate-spin" aria-hidden="true" />
+                      ) : null}
+                      <p>
+                        {selectedView.label} · {viewStatusText(selectedView.status)}
+                      </p>
+                      {selectedView.error ? (
+                        <FieldError>{selectedView.error}</FieldError>
+                      ) : null}
+                    </>
+                  ) : running ? (
                     <>
                       <Loader2 className="size-5 animate-spin" aria-hidden="true" />
                       <p>{statusText(record)}…</p>
@@ -279,11 +321,11 @@ export function RecordDetailDialog({
                   before={reference}
                   after={output}
                   beforeLabel="参考图"
-                  afterLabel={`生成图 ${String(selected + 1)}`}
+                  afterLabel={selectedView?.label ?? `生成图 ${String(selected + 1)}`}
                 />
               )}
 
-              {record.outputs.length > 1 ? (
+              {!record.scenePlan && record.outputs.length > 1 ? (
                 <div className="ai-output-strip" role="tablist" aria-label="生成结果">
                   {record.outputs.map((file, index) => (
                     <button
@@ -346,8 +388,13 @@ export function RecordDetailDialog({
                       onValueChange={setVisionChoice}
                     />
                     <FieldDescription>
-                      当前选择成片 {selected + 1}
-                      。点击上方缩略图可换图；只发送这一张，不重新生图或改写已有文案。
+                      {outputIndex < 0
+                        ? '当前视角尚无成片。'
+                        : `当前选择成片 ${String(outputIndex + 1)}。`}
+                      {record.scenePlan
+                        ? '切换上方视角可换图；'
+                        : '点击上方缩略图可换图；'}
+                      只发送这一张，不重新生图或改写已有文案。
                       {visionProviders.length === 0
                         ? '请先在模型配置中填写独立识图模型。'
                         : ''}
@@ -425,6 +472,8 @@ export function RecordDetailDialog({
             </section>
 
             <section className="ai-detail-side" aria-label="记录信息">
+              {record.source ? <SourceLink source={record.source} /> : null}
+              {record.scenePlan ? <ScenePlanRecord scene={record.scenePlan} /> : null}
               {record.error === null ? null : (
                 <FieldError role="alert" className="ai-detail-error">
                   {record.error}
@@ -527,6 +576,15 @@ export function RecordDetailDialog({
           </div>
         )}
 
+        {record === null && error !== null ? (
+          <FieldError role="alert">
+            {error}
+            <Button type="button" variant="outline" onClick={() => void load()}>
+              重试读取
+            </Button>
+          </FieldError>
+        ) : null}
+
         <DialogFooter>
           <Button
             type="button"
@@ -540,11 +598,17 @@ export function RecordDetailDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={record === null || busy || running || record.status === 'success'}
+            disabled={
+              record === null ||
+              busy ||
+              running ||
+              record.status === 'success' ||
+              (progress !== null && progress.completed === progress.total)
+            }
             onClick={() => void retry()}
           >
             <RefreshCw data-icon="inline-start" />
-            重试
+            {record?.scenePlan ? '仅重试未完成视角' : '重试'}
           </Button>
           <Button
             type="button"
@@ -555,7 +619,7 @@ export function RecordDetailDialog({
             <Trash2 data-icon="inline-start" />
             删除
           </Button>
-          <Button type="button" onClick={onClose}>
+          <Button type="button" onClick={close}>
             关闭
           </Button>
         </DialogFooter>

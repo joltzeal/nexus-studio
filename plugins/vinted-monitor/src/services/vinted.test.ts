@@ -93,7 +93,12 @@ describe('vinted http client', () => {
         new Response(
           JSON.stringify({
             items: [
-              { id: 5, title: 'Coat', price: { amount: '9.5', currency_code: 'EUR' } },
+              {
+                id: 5,
+                title: 'Coat',
+                user_id: 12,
+                price: { amount: '9.5', currency_code: 'EUR' },
+              },
             ],
             pagination: { current_page: 1, total_pages: 2 },
           }),
@@ -103,5 +108,44 @@ describe('vinted http client', () => {
     expect(page.items[0]?.title).toBe('Coat')
     expect(page.items[0]?.url).toBe('https://vinted.fr/items/5')
     expect(page.hasMore).toBe(true)
+  })
+
+  it.each([
+    { current_page: null, total_pages: 1 },
+    { current_page: 2, total_pages: 2 },
+    { current_page: 1, total_pages: -1 },
+    { current_page: 1, total_pages: 2 },
+  ])('rejects ambiguous or contradictory pagination %j', async (pagination) => {
+    const vinted = client(async () => Response.json({ items: [], pagination }))
+    expect((await failure(vinted.items(target, 1, 20))).reason).toBe('invalid-response')
+  })
+
+  it('keeps its timeout active through a stalled body and cancels the stream', async () => {
+    let cancelled = false
+    const vinted = new VintedClient({
+      timeoutMs: 20,
+      fetchImpl: (async () =>
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true
+            },
+          }),
+        )) as typeof fetch,
+    })
+    expect((await failure(vinted.items(target, 1, 20))).reason).toBe('timeout')
+    expect(cancelled).toBe(true)
+  })
+
+  it('validates the returned seller identity without exposing transport secrets', async () => {
+    await expect(
+      client(async () => Response.json({ user: { id: 13 } })).user('vinted.fr', '12'),
+    ).rejects.toThrow('invalid-response')
+    const error = await failure(
+      client(async () => {
+        throw new Error('http://user:password@proxy')
+      }).user('vinted.fr', '12'),
+    )
+    expect(error.message).not.toContain('password')
   })
 })

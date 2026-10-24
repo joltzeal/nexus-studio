@@ -150,14 +150,14 @@ describe('vinted monitor capability', () => {
 
     const run = await settle(fix, started.run.id)
     expect(run).toMatchObject({
-      status: 'success',
+      status: 'partial',
       discovered: 4,
       inserted: 4,
       updated: 0,
       skipped: 2,
       truncated: false,
       pages: 3,
-      error: null,
+      error: expect.any(String),
     })
     expect(fix.requests).toHaveLength(3)
 
@@ -165,7 +165,12 @@ describe('vinted monitor capability', () => {
       context('vinted.items.list', { monitorId, page: 0, pageSize: 10 }),
     )) as { total: number; items: { id: string }[] }
     expect(items.total).toBe(4)
-    expect(items.items.map((entry) => entry.id).sort()).toEqual(['1', '2', '3', '4'])
+    expect(items.items.map((entry) => entry.id).sort()).toEqual([
+      'vinted.fr:1',
+      'vinted.fr:2',
+      'vinted.fr:3',
+      'vinted.fr:4',
+    ])
   })
 
   it('updates instead of duplicating on a second run', async () => {
@@ -253,7 +258,7 @@ describe('vinted monitor capability', () => {
     await settle(fix, started.run.id)
   })
 
-  it('deletes the monitor together with its items and runs', async () => {
+  it('deletes the monitor while retaining archived items and run history', async () => {
     const fix = fixture()
     fix.pages.set(1, { items: [item('1')], invalid: 0, hasMore: false })
     const monitorId = await createMonitor(fix)
@@ -265,8 +270,9 @@ describe('vinted monitor capability', () => {
     await fix.plugin.call(context('vinted.monitors.remove', { monitorId }))
     const document = await fix.store.read()
     expect(document.monitors).toHaveLength(0)
-    expect(document.items).toHaveLength(0)
-    expect(document.runs).toHaveLength(0)
+    expect(document.items).toHaveLength(1)
+    expect(document.items[0]?.monitorIds).toEqual([])
+    expect(document.runs).toHaveLength(1)
   })
 
   it('marks a run left running by a previous process as interrupted', async () => {
@@ -283,6 +289,7 @@ describe('vinted monitor capability', () => {
         discovered: 3,
         inserted: 3,
         updated: 0,
+        userFailed: 0,
         skipped: 0,
         failed: 0,
         truncated: false,
@@ -380,7 +387,7 @@ describe('vinted monitor capability', () => {
       }),
     )) as { total: number; items: { id: string }[] }
     expect(filtered.total).toBe(1)
-    expect(filtered.items[0]?.id).toBe('2')
+    expect(filtered.items[0]?.id).toBe('vinted.fr:2')
 
     const paged = (await fix.plugin.call(
       context('vinted.items.list', { monitorId, page: 1, pageSize: 1 }),

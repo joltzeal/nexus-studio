@@ -20,7 +20,7 @@ export function RecordImage({
   alt,
   className,
 }: {
-  file: StoredFile | null
+  file: Pick<StoredFile, 'id' | 'mime'> | null
   alt: string
   className?: string
 }) {

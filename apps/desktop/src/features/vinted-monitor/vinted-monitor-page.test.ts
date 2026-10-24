@@ -22,7 +22,7 @@ function plugin(overrides: Partial<PluginView> = {}): PluginView {
     source: 'installed',
     state: 'running',
     enabled: true,
-    methods: ['vinted.monitors.list'],
+    methods: ['vinted.monitors.list', 'vinted.items.get', 'vinted.proxies.list'],
     status: { storage: 'file' },
     lastError: null,
     storageDurable: true,
@@ -75,5 +75,12 @@ describe('vinted monitor page', () => {
     expect(html).toContain('新增监控')
     expect(html).toContain('vinted-skeleton')
     expect(html).not.toContain('还没有监控')
+  })
+
+  it('requires a plugin update before exposing incompatible page actions', () => {
+    const html = render({ plugin: plugin({ methods: ['vinted.monitors.list'] }) })
+    expect(html).toContain('请更新 Vinted 监控插件')
+    expect(html).not.toContain('新增监控')
+    expect(html).not.toContain('vinted-skeleton')
   })
 })

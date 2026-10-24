@@ -1,4 +1,5 @@
 import { UpstreamError } from './errors.js'
+import { counter, imageUrls, numericId, profileTime } from './sellers.js'
 
 /** One listing as read from the upstream payload, before it reaches the store. */
 export interface DraftItem {
@@ -13,6 +14,11 @@ export interface DraftItem {
   imageUrl: string
   seller: string
   listedAt: string | null
+  userId?: string | null
+  images?: string[]
+  detail?: Record<string, unknown>
+  favouriteCount?: number | null
+  viewCount?: number | null
 }
 
 export interface ItemsPage {
@@ -50,13 +56,7 @@ function absoluteUrl(value: unknown): string {
 
 /** `created_at_ts` is unix seconds as a string on some endpoints, a number on others. */
 function timestamp(value: unknown): string | null {
-  const raw = typeof value === 'number' ? value : Number(text(value))
-  if (!Number.isFinite(raw) || raw <= 0) return null
-  // Guard against milliseconds sneaking in: anything past year 5138 is bogus.
-  const seconds = raw > 1e11 ? Math.floor(raw / 1000) : Math.floor(raw)
-  const date = new Date(seconds * 1000)
-  if (Number.isNaN(date.getTime())) return null
-  return date.toISOString()
+  return profileTime(value)
 }
 
 function priceOf(value: unknown): { price: string; currency: string } {
@@ -64,44 +64,77 @@ function priceOf(value: unknown): { price: string; currency: string } {
   if (price === null) return { price: text(value, 32), currency: '' }
   return {
     price: text(price.amount, 32),
-    currency: text(price.currency_code, 8).toUpperCase(),
+    currency: text(price.currency_code ?? price.currency, 8).toUpperCase(),
   }
 }
 
 function draftItem(entry: unknown, itemUrl: (id: string) => string): DraftItem | null {
   const raw = asRecord(entry)
   if (raw === null) return null
-  const id = text(raw.id, 64)
-  if (id === '' || !/^\d+$/.test(id)) return null
+  const id = numericId(raw.id)
+  if (id === null) return null
   const money = priceOf(raw.price)
   const photo = asRecord(raw.photo)
   const user = asRecord(raw.user)
   const title = text(raw.title)
+  if (title === '') return null
+  const ids = [raw.user_id, user?.id].filter((v) => v !== undefined && v !== null)
+  const parsedIds = ids.map(numericId)
+  if (parsedIds.includes(null) || new Set(parsedIds).size > 1) return null
+  const images = imageUrls(raw)
   return {
     id,
     title,
     price: money.price,
-    currency: money.currency,
+    currency: money.currency || text(raw.currency, 16),
     brand: text(raw.brand_title, 80),
     size: text(raw.size_title, 80),
     condition: text(raw.status, 80),
-    url: absoluteUrl(raw.url) || itemUrl(id),
-    imageUrl: absoluteUrl(photo?.url) || absoluteUrl(photo?.full_size_url),
+    url: itemUrl(id),
+    imageUrl: images[0] ?? (absoluteUrl(photo?.url) || absoluteUrl(photo?.full_size_url)),
     seller: text(user?.login, 80),
     listedAt: timestamp(raw.created_at_ts),
+    userId: parsedIds[0] ?? null,
+    images,
+    detail: structuredClone(raw),
+    favouriteCount: counter(raw.favourite_count),
+    viewCount: counter(raw.view_count),
   }
 }
 
-function hasMore(pagination: unknown, received: number, perPage: number): boolean {
+function hasMore(
+  pagination: unknown,
+  received: number,
+  perPage: number,
+  expectedPage?: number,
+): boolean {
   const page = asRecord(pagination)
   if (page !== null) {
-    const totalPages = Number(text(page.total_pages))
-    const currentPage = Number(text(page.current_page))
-    if (Number.isFinite(totalPages) && Number.isFinite(currentPage)) {
+    const totalPages = counter(page.total_pages)
+    const currentPage =
+      page.current_page === undefined ? expectedPage : counter(page.current_page)
+    if (
+      page.current_page !== undefined &&
+      (currentPage === null ||
+        currentPage === 0 ||
+        (expectedPage !== undefined && currentPage !== expectedPage))
+    ) {
+      throw new UpstreamError('invalid-response')
+    }
+    if (page.total_pages !== undefined && totalPages === null)
+      throw new UpstreamError('invalid-response')
+    if (totalPages !== null && currentPage !== undefined && currentPage !== null) {
+      if (
+        (received > 0 && totalPages < currentPage) ||
+        (received === 0 && currentPage < totalPages)
+      )
+        throw new UpstreamError('invalid-response')
       return currentPage < totalPages
     }
     if (page.next_page !== null && page.next_page !== undefined) return true
   }
+  if (pagination !== undefined && pagination !== null && page === null)
+    throw new UpstreamError('invalid-response')
   // No pagination block: a full page is the only signal that more may exist.
   return received >= perPage
 }
@@ -110,9 +143,12 @@ export function parseItemsPage(
   payload: unknown,
   perPage: number,
   itemUrl: (id: string) => string,
+  expectedPage?: number,
 ): ItemsPage {
   const root = asRecord(payload)
   if (root === null) throw new UpstreamError('invalid-response')
+  if (root.code !== undefined && root.code !== 0)
+    throw new UpstreamError('invalid-response')
   const list = root.items
   if (!Array.isArray(list)) throw new UpstreamError('invalid-response')
   const items: DraftItem[] = []
@@ -125,5 +161,9 @@ export function parseItemsPage(
     }
     items.push(item)
   }
-  return { items, invalid, hasMore: hasMore(root.pagination, list.length, perPage) }
+  return {
+    items,
+    invalid,
+    hasMore: hasMore(root.pagination, list.length, perPage, expectedPage),
+  }
 }

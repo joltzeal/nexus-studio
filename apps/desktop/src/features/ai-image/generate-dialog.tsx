@@ -6,7 +6,7 @@ import {
   useState,
   type ChangeEvent,
 } from 'react'
-import { ImagePlus, Loader2, X } from 'lucide-react'
+import { ImagePlus, Loader2, Sparkles, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -27,12 +27,37 @@ import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toast'
-import { generate, uploadImage, uploadRemoteImage } from './api'
+import { generate, uploadImage } from './api'
 import { checkReference, prepareReference } from './prepare-reference'
 import { PresetPicker } from './preset-picker'
 import { RecordImage } from './record-image'
 import { FIRST_REFERENCE, MAX_PROMPT_CHARACTERS, selectedVisionFile } from './selection'
-import { SIZES, message, type Provider, type ScenePreset, type StoredFile } from './types'
+import {
+  MAX_REFERENCES,
+  ReferenceTransfers,
+  transferInitialImage,
+  type InitialImage,
+} from './reference-transfer'
+import { SourceLink } from './source-link'
+import { ScenePlanEditor } from './scene-plan-editor'
+import {
+  plannedGeneration,
+  SCENE_PLAN_UPDATE_HINT,
+  applySceneRecommendation,
+  visionProviderKey,
+  type ScenePresetChoice,
+} from './scene-plan'
+import { useScenePlanner } from './use-scene-planner'
+import {
+  SIZES,
+  message,
+  type GenerationSource,
+  type Provider,
+  type ScenePreset,
+  type StoredFile,
+} from './types'
+
+export type { InitialImage } from './reference-transfer'
 
 interface Reference {
   key: string
@@ -41,20 +66,16 @@ interface Reference {
   state: 'uploading' | 'ready' | 'failed'
   file: StoredFile | null
   error: string | null
+  initialImage?: InitialImage
 }
-
-/** A picture another page already chose, e.g. a product's photos. */
-export interface InitialImage {
-  url: string
-  name: string
-}
-
-const MAX_REFERENCES = 6
 
 export function GenerateDialog({
   providers,
   presets,
   initialImages,
+  source,
+  initialPrompt,
+  pluginMethods,
   onOpenChange,
   onSubmitted,
   onConfigure,
@@ -63,6 +84,9 @@ export function GenerateDialog({
   presets: ScenePreset[]
   /** Uploaded as soon as the dialog opens, so the user only writes the prompt. */
   initialImages?: InitialImage[]
+  source?: GenerationSource
+  initialPrompt?: string
+  pluginMethods?: readonly string[]
   onOpenChange: (open: boolean) => void
   onSubmitted: () => Promise<void>
   onConfigure: () => void
@@ -73,9 +97,29 @@ export function GenerateDialog({
   const visionProviders = providers.filter(
     (provider) => provider.hasApiKey && (provider.visionModel ?? '').trim() !== '',
   )
-  const [references, setReferences] = useState<Reference[]>([])
-  const [presetId, setPresetId] = useState<string | null>(presets[0]?.id ?? null)
-  const [prompt, setPrompt] = useState('')
+  const [origin] = useState(source)
+  const [initialReferences] = useState<Reference[]>(() =>
+    (initialImages ?? []).map((image, index) => ({
+      key: crypto.randomUUID(),
+      name: image.name,
+      preview: '',
+      state: index < MAX_REFERENCES ? 'uploading' : 'failed',
+      file: null,
+      error:
+        index < MAX_REFERENCES ? null : '超过六张上限，尚未传输；移除多余图片后可重试。',
+      initialImage: image,
+    })),
+  )
+  const [references, setReferences] = useState<Reference[]>(initialReferences)
+  const [transfers] = useState(() => new ReferenceTransfers())
+  const previews = useRef(new Set<string>())
+  const removed = useRef(new Set<string>())
+  const mounted = useRef(false)
+  const [presetChoice, setPresetChoice] = useState<ScenePresetChoice>({
+    id: presets[0]?.id ?? null,
+    revision: 0,
+  })
+  const [prompt, setPrompt] = useState(initialPrompt ?? '')
   const [providerChoice, setProviderChoice] = useState('')
   const [visionProviderId, setVisionProviderId] = useState('__none__')
   const [visionChoice, setVisionChoice] = useState(FIRST_REFERENCE)
@@ -93,67 +137,99 @@ export function GenerateDialog({
 
   const uploading = references.some((entry) => entry.state === 'uploading')
   const mode = references.length > 0 ? 'edit' : 'generate'
+  const planningProviderId =
+    visionProviderId === '__none__' ? (visionProviders[0]?.id ?? '') : visionProviderId
+  const planningProvider = visionProviders.find(
+    (provider) => provider.id === planningProviderId,
+  )
+  let planningFileId = ''
+  let planningFileError: string | null = null
+  try {
+    planningFileId = selectedVisionFile(references, visionChoice)
+  } catch (cause) {
+    planningFileError = message(cause)
+  }
+  const planContext = {
+    providerId: planningProviderId,
+    providerKey: visionProviderKey(planningProvider),
+    inputFileId: planningFileId,
+    requirements: prompt,
+    count,
+  }
+  const planner = useScenePlanner(planContext, pluginMethods, (draft) => {
+    setPresetChoice((current) => applySceneRecommendation(current, draft))
+  })
+  const presetId = presetChoice.id
+  function setPresetId(id: string | null) {
+    setPresetChoice((current) => ({
+      id,
+      revision: current.revision + 1,
+    }))
+  }
   const preset = useMemo(
     () => presets.find((entry) => entry.id === presetId) ?? null,
     [presets, presetId],
   )
 
-  /**
-   * Remote pictures are downloaded by the plugin and previewed through its file
-   * API after upload. `room` is read from the functional update so
-   * a batch never depends on a stale render.
-   */
-  const addRemote = useCallback(async (images: InitialImage[]) => {
-    if (images.length > MAX_REFERENCES) {
-      setError(
-        `收到 ${images.length} 张图片，本次只载入前 ${MAX_REFERENCES} 张；可移除后重新选择。`,
-      )
-    }
-    const batch = images.slice(0, MAX_REFERENCES)
-    setReferences((current) => {
-      const room = MAX_REFERENCES - current.length
-      return [
-        ...current,
-        ...batch.slice(0, Math.max(0, room)).map((image, position) => ({
-          key: `remote-${image.url}-${String(position)}`,
-          name: image.name,
-          preview: image.url,
-          state: 'uploading' as const,
-          file: null,
-          error: null,
-        })),
-      ]
-    })
-    for (const [index, image] of batch.entries()) {
-      const key = `remote-${image.url}-${String(index)}`
-      try {
-        const stored = await uploadRemoteImage(image.url, image.name)
-        setReferences((current) =>
-          current.map((entry) =>
-            entry.key === key ? { ...entry, state: 'ready', file: stored } : entry,
+  const transfer = useCallback(
+    (entry: Reference) =>
+      transfers.start(
+        entry.key,
+        (signal) => {
+          if (entry.initialImage === undefined) {
+            return Promise.reject(new Error('请重新选择本地图片。'))
+          }
+          return transferInitialImage(entry.initialImage, origin, signal)
+        },
+        (stored) =>
+          setReferences((current) =>
+            current.map((item) =>
+              item.key === entry.key
+                ? { ...item, state: 'ready', file: stored, error: null }
+                : item,
+            ),
           ),
-        )
-      } catch (cause) {
-        setReferences((current) =>
-          current.map((entry) =>
-            entry.key === key
-              ? { ...entry, state: 'failed', error: message(cause) }
-              : entry,
+        (cause) =>
+          setReferences((current) =>
+            current.map((item) =>
+              item.key === entry.key
+                ? { ...item, state: 'failed', error: message(cause) }
+                : item,
+            ),
           ),
-        )
-      }
-    }
-  }, [])
+      ),
+    [origin, transfers],
+  )
 
-  // Only the first mount of this dialog instance carries a payload: reopening it
-  // by hand must not re-upload the same pictures.
-  const seeded = useRef(false)
   useEffect(() => {
-    if (seeded.current) return
-    seeded.current = true
-    if (initialImages === undefined || initialImages.length === 0) return
-    void addRemote(initialImages)
-  }, [initialImages, addRemote])
+    mounted.current = true
+    let active = true
+    void (async () => {
+      for (const entry of initialReferences.slice(0, MAX_REFERENCES)) {
+        if (!active) break
+        if (removed.current.has(entry.key)) continue
+        await transfer(entry)
+      }
+    })()
+    const urls = previews.current
+    return () => {
+      mounted.current = false
+      active = false
+      transfers.cancelAll()
+      for (const url of urls) URL.revokeObjectURL(url)
+      urls.clear()
+    }
+  }, [initialReferences, transfer, transfers])
+
+  function retryTransfer(entry: Reference) {
+    if (busy || references.length > MAX_REFERENCES) return
+    setReferences((current) =>
+      current.map((item) =>
+        item.key === entry.key ? { ...item, state: 'uploading', error: null } : item,
+      ),
+    )
+    void transfer(entry)
+  }
 
   async function addFiles(files: File[]) {
     const room = MAX_REFERENCES - references.length
@@ -164,58 +240,81 @@ export function GenerateDialog({
     setError(
       files.length > room ? `本次最多再加入 ${room} 张图片，其余图片未加入。` : null,
     )
-    for (const file of files.slice(0, room)) {
+    // Reserve the whole batch before awaiting so removal and another selection
+    // cannot reintroduce a removed file or overbook the six slots.
+    const batch = files.slice(0, room).map((file) => {
       const invalid = checkReference(file)
-      const key = `${file.name}-${String(file.lastModified)}-${Math.random().toString(36).slice(2)}`
       const preview = URL.createObjectURL(file)
-      if (invalid !== null) {
-        setReferences((current) => [
-          ...current,
-          { key, name: file.name, preview, state: 'failed', file: null, error: invalid },
-        ])
-        continue
+      previews.current.add(preview)
+      const entry: Reference = {
+        key: crypto.randomUUID(),
+        name: file.name,
+        preview,
+        state: invalid === null ? 'uploading' : 'failed',
+        file: null,
+        error: invalid,
       }
-      setReferences((current) => [
-        ...current,
-        { key, name: file.name, preview, state: 'uploading', file: null, error: null },
-      ])
-      try {
-        const prepared = await prepareReference(file)
-        const stored = await uploadImage(prepared)
-        setReferences((current) =>
-          current.map((entry) =>
-            entry.key === key
-              ? { ...entry, state: 'ready', file: stored, name: prepared.name }
-              : entry,
-          ),
+      return { file, entry }
+    })
+    setReferences((current) => [...current, ...batch.map(({ entry }) => entry)])
+    await Promise.all(
+      batch.map(({ file, entry }) => {
+        if (entry.error !== null) return Promise.resolve()
+        return transfers.start(
+          entry.key,
+          async (signal) => {
+            const prepared = await prepareReference(file)
+            signal.throwIfAborted()
+            return uploadImage(prepared, signal)
+          },
+          (stored) =>
+            setReferences((current) =>
+              current.map((item) =>
+                item.key === entry.key ? { ...item, state: 'ready', file: stored } : item,
+              ),
+            ),
+          (cause) =>
+            setReferences((current) =>
+              current.map((item) =>
+                item.key === entry.key
+                  ? { ...item, state: 'failed', error: message(cause) }
+                  : item,
+              ),
+            ),
         )
-      } catch (cause) {
-        setReferences((current) =>
-          current.map((entry) =>
-            entry.key === key
-              ? { ...entry, state: 'failed', error: message(cause) }
-              : entry,
-          ),
-        )
-      }
-    }
+      }),
+    )
   }
 
   function remove(key: string) {
-    setReferences((current) => {
-      const target = current.find((entry) => entry.key === key)
-      if (target !== undefined) URL.revokeObjectURL(target.preview)
-      return current.filter((entry) => entry.key !== key)
-    })
+    const selectedKey =
+      visionChoice === FIRST_REFERENCE ? references[0]?.key : visionChoice
+    if (key === selectedKey) planner.cancel()
+    removed.current.add(key)
+    transfers.cancel(key)
+    const target = references.find((entry) => entry.key === key)
+    if (target?.preview.startsWith('blob:')) {
+      URL.revokeObjectURL(target.preview)
+      previews.current.delete(target.preview)
+    }
+    setReferences((current) => current.filter((entry) => entry.key !== key))
   }
 
   async function submit() {
-    if (busy || uploading) return
+    if (busy || uploading || planner.pending) return
+    if (planner.smart && !planner.ready) {
+      setError(planner.current?.error ?? planner.problem ?? '请等待场景方案完成。')
+      return
+    }
+    if (references.length > MAX_REFERENCES) {
+      setError('最多六张参考图片，请明确移除多余图片后再提交。')
+      return
+    }
     if (!usable.some((provider) => provider.id === providerId)) {
       setError('请先在模型配置中保存一个服务商。')
       return
     }
-    if (presetId === null && prompt.trim() === '') {
+    if (!planner.smart && presetId === null && prompt.trim() === '') {
       setError('自由提示词不能为空；也可以选择一个场景预设。')
       return
     }
@@ -239,7 +338,7 @@ export function GenerateDialog({
     setBusy(true)
     setError(null)
     try {
-      const recognize = visionProviderId !== '__none__'
+      const recognize = !planner.smart && visionProviderId !== '__none__'
       if (
         recognize &&
         !visionProviders.some((provider) => provider.id === visionProviderId)
@@ -254,6 +353,14 @@ export function GenerateDialog({
         size,
         count,
         inputFileIds: files.map((entry) => entry.id),
+        ...(origin === undefined ? {} : { source: origin }),
+        ...(planner.smart && planner.draft
+          ? plannedGeneration(
+              planner.draft,
+              planContext,
+              files.map((entry) => entry.id),
+            )
+          : {}),
         ...(recognize
           ? {
               visionProviderId,
@@ -261,18 +368,28 @@ export function GenerateDialog({
             }
           : {}),
       })
+      if (!mounted.current) return
       await onSubmitted()
+      if (!mounted.current) return
       toast.success('已提交生成任务，记录里可以查看进度')
       onOpenChange(false)
     } catch (cause) {
-      setError(message(cause))
+      if (mounted.current) setError(message(cause))
     } finally {
-      setBusy(false)
+      if (mounted.current) setBusy(false)
     }
   }
 
   return (
-    <Dialog open onOpenChange={(open) => (busy ? undefined : onOpenChange(open))}>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!busy) {
+          if (!open) planner.cancel()
+          onOpenChange(open)
+        }
+      }}
+    >
       <DialogContent className="ai-dialog">
         <DialogHeader>
           <DialogTitle>AI 生图</DialogTitle>
@@ -280,6 +397,8 @@ export function GenerateDialog({
             上传一张或多张参考图会走改图接口；不上传图片则按提示词直接生成。每次生成都会写入记录。
           </DialogDescription>
         </DialogHeader>
+
+        {origin === undefined ? null : <SourceLink source={origin} />}
 
         <div className="ai-dialog-body">
           <section className="ai-dialog-column" aria-label="参考图片">
@@ -354,9 +473,16 @@ export function GenerateDialog({
               }}
             />
             <FieldDescription>
-              支持 JPEG、PNG、WebP，单张不超过 8 MB；页面会先缩到最长边 1536 像素再上传。
+              支持 JPEG、PNG、WebP，单张不超过 8 MB；本地选图会缩到最长边 1536 像素。
+              Vinted 选图由监控插件通过采集代理下载，传输保留原始字节。
               不上传图片时按文生图处理。
             </FieldDescription>
+            {references.length > MAX_REFERENCES ? (
+              <FieldError role="alert">
+                收到 {references.length} 张图片，最多使用六张；请移除多余图片。
+                尚未传输的图片保留在列表中，选择完成后可重试传输。
+              </FieldError>
+            ) : null}
             {references.some((entry) => entry.error !== null) ? (
               <FieldError>
                 {references
@@ -365,16 +491,30 @@ export function GenerateDialog({
                   .join('；')}
               </FieldError>
             ) : null}
+            {references
+              .filter((entry) => entry.state === 'failed' && entry.initialImage)
+              .map((entry) => (
+                <Button
+                  key={entry.key}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || references.length > MAX_REFERENCES}
+                  onClick={() => retryTransfer(entry)}
+                >
+                  重试传输 {entry.name}
+                </Button>
+              ))}
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="ai-vision-provider">识图服务商 / 模型</FieldLabel>
                 <LabeledSelect
                   id="ai-vision-provider"
                   ariaLabel="识图服务商 / 模型"
-                  value={visionProviderId}
+                  value={planner.smart ? planningProviderId : visionProviderId}
                   disabled={busy}
                   options={[
-                    { value: '__none__', label: '不识图' },
+                    ...(planner.smart ? [] : [{ value: '__none__', label: '不识图' }]),
                     ...visionProviders.map((provider) => ({
                       value: provider.id,
                       label: `${provider.name} · ${provider.visionModel ?? ''}`,
@@ -389,13 +529,30 @@ export function GenerateDialog({
                         ]
                       : []),
                   ]}
-                  onValueChange={setVisionProviderId}
+                  onValueChange={(value) => {
+                    const nextId =
+                      value === '__none__' ? (visionProviders[0]?.id ?? '') : value
+                    if (nextId !== planningProviderId) planner.cancel()
+                    setVisionProviderId(value)
+                  }}
                 />
                 <FieldDescription>
-                  可在模型配置中单独填写识图模型。开启后先识别一张参考图，将观察结果用于生图与文案；失败会停止，不自动换模型。
+                  {planner.smart
+                    ? '用于识别商品并推荐场景和视角，完成后可编辑方案。'
+                    : '手动模式可选择先识图再生成；也可点击智能识图，先编辑推荐的场景与视角。'}{' '}
+                  <button
+                    type="button"
+                    className="ai-link"
+                    disabled={busy}
+                    onClick={onConfigure}
+                  >
+                    模型配置
+                  </button>
                 </FieldDescription>
               </Field>
-              {visionProviderId === '__none__' ? null : (
+              {references.length === 0 &&
+              visionProviderId === '__none__' &&
+              !planner.smart ? null : (
                 <Field>
                   <FieldLabel htmlFor="ai-vision-file">用于识图的参考图</FieldLabel>
                   <LabeledSelect
@@ -414,13 +571,126 @@ export function GenerateDialog({
                         ? [{ value: visionChoice, label: '已选图片已移除，请重新选择' }]
                         : []),
                     ]}
-                    onValueChange={setVisionChoice}
+                    onValueChange={(value) => {
+                      const next =
+                        value === FIRST_REFERENCE
+                          ? references[0]
+                          : references.find((entry) => entry.key === value)
+                      if ((next?.file?.id ?? '') !== planningFileId) planner.cancel()
+                      setVisionChoice(value)
+                    }}
                   />
                   <FieldDescription>
-                    仅这一张发给识图模型；改图仍使用全部已上传参考图。生成完成后也可在详情选择某一张成片重新识图。
+                    仅这一张发给识图模型；生成时保留已上传的参考图。
                   </FieldDescription>
                 </Field>
               )}
+              <Field>
+                <FieldLabel htmlFor="ai-count">
+                  {planner.smart ? '生成视角数' : '生成张数'}
+                </FieldLabel>
+                <Input
+                  id="ai-count"
+                  type="number"
+                  min={1}
+                  max={4}
+                  step={1}
+                  className="ai-count-input"
+                  disabled={busy}
+                  value={count}
+                  onChange={(event) => {
+                    const next = Number(event.target.value)
+                    const value = Number.isFinite(next)
+                      ? Math.min(4, Math.max(1, Math.trunc(next)))
+                      : 1
+                    if (value !== count) planner.cancel()
+                    setCount(value)
+                  }}
+                />
+                <FieldDescription>
+                  {planner.smart
+                    ? '每个视角生成一张；更改数量后需重新识图，已完成的成片会分别保留。'
+                    : '智能识图按此数量规划 1–4 个视角；手动生成沿用服务商的张数设置。'}
+                </FieldDescription>
+              </Field>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    busy ||
+                    planner.pending ||
+                    !planner.supported ||
+                    !planningProvider ||
+                    !planningFileId ||
+                    prompt.length > MAX_PROMPT_CHARACTERS
+                  }
+                  onClick={() => {
+                    setError(null)
+                    if (!planner.smart && planner.ready) planner.useExisting()
+                    else void planner.start(presetChoice.revision)
+                  }}
+                >
+                  {planner.pending ? (
+                    <Loader2 data-icon="inline-start" className="animate-spin" />
+                  ) : (
+                    <Sparkles data-icon="inline-start" />
+                  )}
+                  {planner.pending
+                    ? '正在智能识图…'
+                    : !planner.smart && planner.ready
+                      ? '使用已有智能方案'
+                      : planner.smart
+                        ? '重新识图 / 推荐场景'
+                        : '智能识图 / 推荐场景'}
+                </Button>
+                {planner.smart ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={planner.manual}
+                  >
+                    返回手动模式
+                  </Button>
+                ) : null}
+              </div>
+              <FieldDescription>
+                {!planner.supported
+                  ? SCENE_PLAN_UPDATE_HINT
+                  : planningFileError
+                    ? planningFileError
+                    : !planningProvider
+                      ? '请先配置独立识图模型。'
+                      : `智能识图使用 ${planningProvider.name} · ${planningProvider.visionModel ?? ''}；点击后请求一次识图模型。`}
+              </FieldDescription>
+              {planner.smart && planner.pending ? (
+                <p role="status" className="text-xs text-muted-foreground">
+                  正在识别商品、材质并规划 {count} 个视角…
+                </p>
+              ) : null}
+              {planner.smart && planner.current?.error ? (
+                <FieldError>{planner.current.error}</FieldError>
+              ) : null}
+              {planner.smart && planner.current?.status === 'read-error' ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={planner.resume}
+                >
+                  重新读取方案
+                </Button>
+              ) : null}
+              {planner.smart && !planner.pending && planner.draft && planner.problem ? (
+                <FieldError>{planner.problem}</FieldError>
+              ) : null}
+              {planner.smart && planner.stale && !planner.draft ? (
+                <FieldError>参考图、识图模型、要求或张数已变化，请重新识图。</FieldError>
+              ) : null}
             </FieldGroup>
           </section>
 
@@ -431,6 +701,14 @@ export function GenerateDialog({
               disabled={busy}
               onChange={setPresetId}
             />
+            {planner.smart && planner.draft ? (
+              <ScenePlanEditor
+                key={planner.draft.plan.id}
+                draft={planner.draft}
+                disabled={busy || planner.pending}
+                onChange={planner.setDraft}
+              />
+            ) : null}
 
             <Field data-invalid={prompt.length > MAX_PROMPT_CHARACTERS}>
               <FieldLabel htmlFor="ai-prompt">
@@ -448,7 +726,10 @@ export function GenerateDialog({
                     : '例如：商品靠左，保留右侧划痕和标签文字，不添加配件。'
                 }
                 value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
+                onChange={(event) => {
+                  if (event.target.value !== prompt) planner.cancel()
+                  setPrompt(event.target.value)
+                }}
               />
               <FieldDescription id="ai-prompt-description">
                 {preset === null
@@ -497,28 +778,6 @@ export function GenerateDialog({
               </Field>
             </div>
 
-            <Field>
-              <FieldLabel htmlFor="ai-count">生成张数</FieldLabel>
-              <Input
-                id="ai-count"
-                type="number"
-                min={1}
-                max={4}
-                className="ai-count-input"
-                disabled={busy}
-                value={count}
-                onChange={(event) => {
-                  const next = Number(event.target.value)
-                  setCount(Number.isFinite(next) ? Math.min(4, Math.max(1, next)) : 1)
-                }}
-              />
-              <FieldDescription>
-                {mode === 'edit'
-                  ? '部分兼容接口的改图一次只返回一张，多张会被服务商拒绝。'
-                  : '一次请求生成 1–4 张，费用按张计算。'}
-              </FieldDescription>
-            </Field>
-
             {error === null ? null : <FieldError role="alert">{error}</FieldError>}
           </section>
         </div>
@@ -531,7 +790,10 @@ export function GenerateDialog({
             type="button"
             variant="outline"
             disabled={busy}
-            onClick={() => onOpenChange(false)}
+            onClick={() => {
+              planner.cancel()
+              onOpenChange(false)
+            }}
           >
             取消
           </Button>
@@ -540,8 +802,10 @@ export function GenerateDialog({
             disabled={
               busy ||
               uploading ||
+              references.length > MAX_REFERENCES ||
               providerId === '' ||
-              prompt.length > MAX_PROMPT_CHARACTERS
+              prompt.length > MAX_PROMPT_CHARACTERS ||
+              (planner.smart && !planner.ready)
             }
             onClick={() => void submit()}
           >

@@ -38,7 +38,7 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [20 · 桌面发行与更新](20-desktop-release-and-updates.md) | Node sidecar、发行工作流、签名与更新源边界              |
 | [21 · 共享货源插件](21-shared-supply-plugin.md)          | 仓库内 `studio.shared-supply` 的目录协议、收藏与限制    |
 | [22 · AI 生图插件](22-ai-image-plugin.md)                | 仓库内 `studio.ai-image` 的生图改图、明文模型配置与记录 |
-| [23 · Vinted 监控插件](23-vinted-monitor-plugin.md)      | 仓库内 `studio.vinted-monitor` 的采集、运行记录与归档   |
+| [23 · Vinted 监控插件](23-vinted-monitor-plugin.md)      | 独立采集代理、监控与商品表格、卖家资料及 AI 生图关联    |
 | [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)   | 仓库内 `studio.vinted-accounts` 的账密、导入与窗口关联  |
 | [25 · 插件商店与在线更新](25-plugin-market.md)           | 商店地址、`catalog.json`、`.nexuspkg` 加密包与定时更新  |
 | [26 · 应用代理](26-application-network-proxy.md)         | 设置项、后台请求、系统代理与插件网络边界                |
@@ -46,6 +46,7 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [28 · 窗口加密迁移](28-window-transfer.md)               | 加密导入导出、浏览器站点状态、插件附件与导入恢复        |
 | [29 · 窗口同步插件](29-window-sync-plugin.md)            | 设备配对、直连传输、完整性校验与手动快照同步            |
 | [30 · SIM8 接码插件](30-sim8-plugin.md)                  | 仓库内 `studio.sim8` 的买号、取码、筛选与账号联动       |
+| [31 · 智能场景规划](31-ai-scene-planning.md)             | AI 识图、场景推荐、可编辑多视角方案与部分失败重试       |
 
 ## 阅读与维护
 

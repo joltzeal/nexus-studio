@@ -72,8 +72,63 @@ export interface OutputVisionRecord {
   error: string | null
 }
 
+/** Public source metadata, never included in model requests. */
+export interface GenerationSource {
+  pluginId: string
+  itemId: string
+  title: string
+  url: string
+}
+
+export interface SceneView {
+  id: string
+  label: string
+  prompt: string
+}
+
+export interface ScenePlanResult {
+  product: string
+  material: string
+  observations: string
+  uncertainties: string
+  presetId: string
+  reason: string
+  prompt: string
+  views: SceneView[]
+}
+
+export interface ScenePlan {
+  id: string
+  createdAt: string
+  updatedAt: string
+  status: RecordStatus
+  providerId: string
+  providerName: string
+  providerKind: ProviderKind
+  model: string
+  inputFileId: string
+  requirements: string
+  count: number
+  result: ScenePlanResult | null
+  error: string | null
+}
+
+export interface SceneViewRecord extends SceneView {
+  status: 'queued' | RecordStatus
+  outputFileId: string | null
+  error: string | null
+  effectivePrompt: string
+}
+
 export interface GenerationRecord {
   id: string
+  /** Absent on legacy records and generations started without a source. */
+  source?: GenerationSource
+  scenePlan?: {
+    plan: ScenePlan
+    prompt: string
+    views: SceneViewRecord[]
+  }
   createdAt: string
   updatedAt: string
   status: RecordStatus
@@ -107,7 +162,40 @@ export interface GenerationRecord {
   durationMs: number | null
 }
 
+/**
+ * List-only projection; get/retry and the stored record retain complete data.
+ * Prompt/source-title previews are capped at 500/120 serialized UTF-8 bytes.
+ * Source identifiers and URLs are unchanged. No copy, reference, or plan text
+ * is returned here; consumers open get for the complete record.
+ */
+export interface GenerationSummary extends Pick<
+  GenerationRecord,
+  | 'id'
+  | 'source'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'status'
+  | 'stage'
+  | 'mode'
+  | 'prompt'
+  | 'presetId'
+  | 'presetLabel'
+  | 'size'
+  | 'count'
+  | 'providerId'
+  | 'providerName'
+  | 'providerKind'
+  | 'imageModel'
+  | 'title'
+  | 'durationMs'
+> {
+  outputs: Pick<StoredFile, 'id' | 'mime'>[]
+  scenePlan?: { views: Pick<SceneViewRecord, 'status' | 'outputFileId'>[] }
+  outputVision?: Pick<OutputVisionRecord, 'status'> | null
+}
+
 export const MAX_RECORDS = 120
+export const MAX_PLANS = 120
 export const MAX_INPUT_BYTES = 8 * 1024 * 1024
 export const UPLOAD_CHUNK_BYTES = 192 * 1024
 

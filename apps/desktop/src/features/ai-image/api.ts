@@ -1,12 +1,29 @@
 import { callPlugin } from '@/lib/platform/native-plugins'
+import { checkReference } from './prepare-reference'
+import {
+  parseScenePlan,
+  scenePlanError,
+  validateScenePlanInput,
+  type ScenePlanInput,
+} from './scene-plan'
+import {
+  generationSource,
+  sourceIdentity,
+  sourceRequestError,
+  SOURCE_UPDATE_HINT,
+  type SourceIdentity,
+} from './source'
 import {
   AI_IMAGE_CAPABILITY,
   AI_IMAGE_PLUGIN_ID,
   type GenerationRecord,
+  type GenerationSource,
   type Provider,
   type RecordPage,
   type RecordStatus,
   type ScenePreset,
+  type ScenePlan,
+  type SceneView,
   type StoredFile,
 } from './types'
 
@@ -62,15 +79,61 @@ export function listPresets(): Promise<{ presets: ScenePreset[] }> {
   return call('image.presets')
 }
 
-export function listRecords(
+export async function createScenePlan(input: ScenePlanInput): Promise<ScenePlan> {
+  validateScenePlanInput(input)
+  try {
+    const result = await call<{ plan: unknown }>('image.plans.create', input)
+    return parseScenePlan(result?.plan)
+  } catch (cause) {
+    throw scenePlanError(cause)
+  }
+}
+
+export async function getScenePlan(id: string): Promise<ScenePlan> {
+  try {
+    const result = await call<{ plan: unknown }>('image.plans.get', { id })
+    return parseScenePlan(result?.plan)
+  } catch (cause) {
+    throw scenePlanError(cause)
+  }
+}
+
+export async function listRecords(
   page: number,
   size: number,
   status?: RecordStatus,
+  source?: SourceIdentity,
 ): Promise<RecordPage> {
-  return call(
-    'image.records.list',
-    status === undefined ? { page, size } : { page, size, status },
-  )
+  const identity = source === undefined ? undefined : sourceIdentity(source)
+  const sourceFilter =
+    identity === undefined
+      ? undefined
+      : { sourcePluginId: identity.pluginId, sourceItemId: identity.itemId }
+  try {
+    const result = await call<RecordPage>('image.records.list', {
+      page,
+      size,
+      ...(status === undefined ? {} : { status }),
+      ...sourceFilter,
+    })
+    if (
+      sourceFilter !== undefined &&
+      (result.sourceFilter?.sourcePluginId !== sourceFilter.sourcePluginId ||
+        result.sourceFilter.sourceItemId !== sourceFilter.sourceItemId ||
+        !Array.isArray(result.items) ||
+        result.items.some(
+          (record) =>
+            record.source?.pluginId !== sourceFilter.sourcePluginId ||
+            record.source.itemId !== sourceFilter.sourceItemId,
+        ))
+    ) {
+      throw new Error(SOURCE_UPDATE_HINT)
+    }
+    return result
+  } catch (error) {
+    if (sourceFilter !== undefined) throw sourceRequestError(error)
+    throw error
+  }
 }
 
 export function getRecord(id: string): Promise<{ record: GenerationRecord }> {
@@ -105,12 +168,66 @@ export interface GenerateInput {
   size: string
   count: number
   inputFileIds: string[]
+  source?: GenerationSource
   visionProviderId?: string | null
   visionFileId?: string | null
+  scenePlan?: { id: string; prompt: string; views: SceneView[] }
 }
 
-export function generate(input: GenerateInput): Promise<{ record: GenerationRecord }> {
-  return call('image.generate', input)
+export async function generate(
+  input: GenerateInput,
+): Promise<{ record: GenerationRecord }> {
+  if (
+    input.scenePlan !== undefined &&
+    (input.visionProviderId !== undefined ||
+      input.visionFileId !== undefined ||
+      input.mode !== 'edit' ||
+      input.count !== input.scenePlan.views.length ||
+      input.count < 1 ||
+      input.count > 4 ||
+      input.inputFileIds.length === 0)
+  ) {
+    throw new Error('场景方案需使用对应参考图和视角数量，不能同时发起重复识图。')
+  }
+  const source = input.source === undefined ? undefined : generationSource(input.source)
+  // Read-only compatibility check before a potentially paid generation. Never
+  // retry without the source if an old installed package rejects the schema.
+  if (source !== undefined) await listRecords(0, 1, undefined, source)
+  let result: { record: GenerationRecord }
+  try {
+    result = await call(
+      'image.generate',
+      source === undefined ? input : { ...input, source },
+    )
+  } catch (error) {
+    if (input.scenePlan !== undefined) throw scenePlanError(error)
+    if (source !== undefined) throw sourceRequestError(error)
+    throw error
+  }
+  const submittedScene = result?.record?.scenePlan
+  if (
+    input.scenePlan !== undefined &&
+    (submittedScene?.plan?.id !== input.scenePlan.id ||
+      !Array.isArray(submittedScene.views) ||
+      submittedScene.views.length !== input.scenePlan.views.length ||
+      submittedScene.views.some(
+        (view, index) => view.id !== input.scenePlan?.views[index]?.id,
+      ))
+  ) {
+    throw new Error(
+      '生成任务已提交，但插件未保留视角方案。请先查看记录，勿重复提交；更新 AI 生图插件后再使用智能方案。',
+    )
+  }
+  if (
+    source !== undefined &&
+    (result.record.source?.pluginId !== source.pluginId ||
+      result.record.source.itemId !== source.itemId)
+  ) {
+    throw new Error(
+      '生成任务已提交，但插件未保留商品来源。请先查看 AI 生图记录，勿重复提交；更新 AI 生图插件后再使用来源关联。',
+    )
+  }
+  return result
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -136,24 +253,35 @@ function bytesToBase64(bytes: Uint8Array): string {
  * at 1 MiB. The session is aborted on any failure so a half-written image never
  * becomes a record input.
  */
-export async function uploadImage(input: {
-  base64: string
-  mime: string
-  name: string
-}): Promise<StoredFile> {
-  const bytes = base64ToBytes(input.base64)
-  if (bytes.byteLength === 0) throw new Error('图片内容为空')
+export async function uploadImage(
+  input: { base64: string; mime: string; name: string } | File,
+  signal?: AbortSignal,
+): Promise<StoredFile> {
+  signal?.throwIfAborted()
+  const isFile = input instanceof File
+  const mime = isFile ? input.type : input.mime
+  const bytes = isFile
+    ? new Uint8Array(await input.arrayBuffer())
+    : base64ToBytes(input.base64)
+  const invalid = checkReference({ type: mime, size: bytes.byteLength })
+  if (invalid !== null) throw new Error(invalid)
+  signal?.throwIfAborted()
   const begun = await call<{ uploadId: string; chunkSize: number }>(
     'image.upload.begin',
     {
-      mime: input.mime,
+      mime,
       size: bytes.byteLength,
     },
   )
   try {
+    signal?.throwIfAborted()
+    if (!Number.isSafeInteger(begun.chunkSize) || begun.chunkSize <= 0) {
+      throw new Error('AI 生图插件返回了无效的上传分块大小，请更新插件。')
+    }
     const step = Math.min(CHUNK_BYTES, begun.chunkSize)
     let index = 0
     for (let offset = 0; offset < bytes.byteLength; offset += step) {
+      signal?.throwIfAborted()
       await call(
         'image.upload.chunk',
         {
@@ -165,10 +293,12 @@ export async function uploadImage(input: {
       )
       index += 1
     }
+    signal?.throwIfAborted()
     const finished = await call<{ file: StoredFile }>('image.upload.finish', {
       uploadId: begun.uploadId,
       name: input.name,
     })
+    signal?.throwIfAborted()
     return finished.file
   } catch (error) {
     await call('image.upload.abort', { uploadId: begun.uploadId }).catch(() => undefined)

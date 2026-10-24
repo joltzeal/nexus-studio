@@ -26,24 +26,107 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-shared-supply...' build
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' build
       - name: Pack companion plugins
-        run: |
-          node scripts/pack-plugin.mjs plugins/ai-image --changelog "100 everyday scenes, independent vision models and reference image selection."
-          node scripts/pack-plugin.mjs plugins/shared-supply --changelog "Proxy-aware image downloads, chunked transport and validated image data."
-          node scripts/build-market.mjs
-      - name: Verify packaged plugin startup
+        id: plugin-market
         shell: bash
         run: |
-          for file in market/plugins/*/*.nexuspkg; do
-            node scripts/verify-package.mjs "$file"
-          done
+          market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
+          echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "AI scene planning, multi-view generation and source image history."
+          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "Archived item and seller management, private proxies and scoped image downloads."
+          node scripts/build-market.mjs --out "$market_dir"
+      - name: Verify packaged plugin startup
+        shell: bash
+        env:
+          PLUGIN_MARKET_DIR: ${{ steps.plugin-market.outputs.directory }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+          import { createHash } from 'node:crypto'
+          import { readFileSync, readdirSync } from 'node:fs'
+          import { join, resolve, sep } from 'node:path'
+
+          const required = {
+            'ai-image': ['image.plans.create', 'image.plans.get'],
+            'vinted-monitor': [
+              'vinted.monitors.list',
+              'vinted.monitors.save',
+              'vinted.monitors.remove',
+              'vinted.monitors.run',
+              'vinted.runs.list',
+              'vinted.runs.get',
+              'vinted.items.list',
+              'vinted.items.get',
+              'vinted.items.star',
+              'vinted.items.availability',
+              'vinted.items.remove',
+              'vinted.items.monitorSeller',
+              'vinted.proxies.list',
+              'vinted.proxies.save',
+              'vinted.proxies.remove',
+              'vinted.proxies.default',
+              'vinted.image.open',
+              'vinted.image.read',
+              'vinted.image.close',
+              'vinted.url.inspect',
+            ],
+          }
+          const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
+          const market = resolve(process.env.PLUGIN_MARKET_DIR)
+          const catalog = readJson(join(market, 'catalog.json'))
+          assert.equal(catalog.schemaVersion, 1, 'Unsupported catalog schema')
+          assert.equal(catalog.plugins.length, Object.keys(required).length,
+            'The partial catalog must contain only this release companion plugins')
+
+          const expectedPackages = []
+          for (const [name, methods] of Object.entries(required)) {
+            const directory = join('plugins', name)
+            const manifest = readJson(join(directory, 'dist/nexus.plugin.json'))
+            const pkg = readJson(join(directory, 'package.json'))
+            assert.equal(manifest.version, pkg.version, `${name}: package/manifest version mismatch`)
+            const entries = catalog.plugins.filter((entry) => entry.manifest.id === manifest.id)
+            assert.equal(entries.length, 1, `${name}: missing or duplicate catalog entry`)
+            const entry = entries[0]
+            assert.deepEqual(entry.manifest, manifest, `${name}: catalog manifest mismatch`)
+            const path = `plugins/${manifest.id}/${manifest.version}.nexuspkg`
+            assert.equal(entry.package.url, path, `${name}: unexpected package path`)
+            const file = join(market, path)
+            const bytes = readFileSync(file)
+            assert.equal(entry.package.size, bytes.length, `${name}: package size mismatch`)
+            assert.equal(entry.package.sha256, createHash('sha256').update(bytes).digest('hex'),
+              `${name}: package digest mismatch`)
+            expectedPackages.push(path)
+
+            const report = execFileSync(process.execPath, ['scripts/verify-package.mjs', file], {
+              encoding: 'utf8',
+              timeout: 15_000,
+            })
+            process.stdout.write(report)
+            assert.equal(report.split('\n')[0], `ok ${manifest.id} ${manifest.version}`,
+              `${name}: verified package identity mismatch`)
+            // The existing verifier prints the ready handshake's localized method list.
+            const methodLine = report.match(/^\s+\S+ (\d+) \S+\uFF1A([^\r\n]*)$/m)
+            assert.ok(methodLine, `${name}: missing handshake method report`)
+            const advertised = methodLine[2].split(', ').filter(Boolean)
+            assert.equal(advertised.length, Number(methodLine[1]), `${name}: invalid method count`)
+            for (const method of methods) {
+              assert.ok(advertised.includes(method), `${name}: missing RPC ${method}`)
+            }
+          }
+          const packages = readdirSync(join(market, 'plugins'), { recursive: true })
+            .filter((file) => file.endsWith('.nexuspkg'))
+            .map((file) => `plugins/${file.split(sep).join('/')}`)
+          assert.deepEqual(packages.sort(), expectedPackages.sort(),
+            'The artifact must not include stale or unrelated plugin packages')
+          NODE
       - uses: actions/upload-artifact@v4
         with:
           name: plugin-market-${{ github.ref_name }}
           path: |
-            market/catalog.json
-            market/plugins/**/*.nexuspkg
+            ${{ steps.plugin-market.outputs.directory }}/catalog.json
+            ${{ steps.plugin-market.outputs.directory }}/plugins/**/*.nexuspkg
           if-no-files-found: error
           retention-days: 14
 

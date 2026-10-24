@@ -3,6 +3,33 @@ export const VINTED_CAPABILITY = 'monitor.collector'
 
 export type MonitorKind = 'catalog' | 'member'
 export type RunStatus = 'running' | 'success' | 'partial' | 'failed' | 'interrupted'
+export type AvailabilityStatus = 'unknown' | 'pending' | 'available' | 'sold' | 'ignored'
+export type ReviewStatus = Exclude<AvailabilityStatus, 'unknown'>
+export type ItemOrder = 'collected_desc' | 'favourite_asc' | 'favourite_desc'
+export type FavouriteOperator =
+  'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le' | 'between' | 'isNull' | 'notNull'
+
+export interface MonitorProxy {
+  id: string
+  name: string
+  scheme: 'http' | 'https' | 'socks5' | 'socks5h'
+  host: string
+  port: number
+  username: string
+  hasPassword: boolean
+  enabled: boolean
+}
+
+export type ProxyInput = Omit<MonitorProxy, 'id' | 'hasPassword'> & {
+  id?: string
+  password?: string
+}
+
+export interface ProxyList {
+  items: MonitorProxy[]
+  defaultProxyId: string | null
+  storageDurable: boolean
+}
 
 export interface Monitor {
   id: string
@@ -11,6 +38,7 @@ export interface Monitor {
   kind: MonitorKind
   host: string
   userId: string | null
+  proxyId: string | null
   intervalMinutes: number
   maxPages: number
   perPage: number
@@ -31,6 +59,7 @@ export interface Run {
   discovered: number
   inserted: number
   updated: number
+  userFailed: number
   skipped: number
   failed: number
   truncated: boolean
@@ -38,9 +67,12 @@ export interface Run {
   error: string | null
 }
 
-export interface Item {
+export interface ItemSummary {
   id: string
+  externalId: string
+  domain: string
   monitorId: string
+  monitorIds: string[]
   title: string
   price: string
   currency: string
@@ -50,9 +82,72 @@ export interface Item {
   url: string
   imageUrl: string
   seller: string
+  userId: string | null
+  sellerProfile: SellerSummary | null
+  favouriteCount: number | null
+  viewCount: number | null
+  starred: boolean
+  availabilityStatus: AvailabilityStatus
+  missingSince: string | null
+  missingMonitorId: string | null
+  statusCheckedAt: string | null
+  statusNote: string | null
+  collectedAt: string
   listedAt: string | null
   firstSeenAt: string
   lastSeenAt: string
+}
+
+export interface Item extends ItemSummary {
+  sellerProfile: Seller | null
+  images: string[]
+  detail: Record<string, unknown>
+}
+
+export type SellerSummary = Omit<Seller, 'detail'>
+
+export interface Seller {
+  id: string
+  externalId: string
+  domain: string
+  login: string | null
+  name: string | null
+  profileUrl: string
+  avatarUrl: string | null
+  country: string | null
+  city: string | null
+  feedbackReputation: number | null
+  feedbackCount: number | null
+  followersCount: number | null
+  itemCount: number | null
+  verification: Record<
+    string,
+    { valid: boolean | null; available: boolean | null; verifiedAt: string | null }
+  >
+  lastLogedOnTs: string | null
+  updatedOn: string | null
+  collectedAt: string | null
+  checkedAt: string
+  error: string | null
+  detail: Record<string, unknown> | null
+}
+
+export interface Pagination {
+  page: number
+  pageSize: number
+}
+
+export interface ItemFilters {
+  monitorId?: string
+  keyword?: string
+  externalId?: string
+  availabilityStatus?: AvailabilityStatus
+  starred?: boolean
+  order?: ItemOrder
+  favouriteCountOp?: FavouriteOperator
+  favouriteCount?: number
+  favouriteCountStart?: number
+  favouriteCountEnd?: number
 }
 
 export interface MonitorList {
@@ -60,24 +155,32 @@ export interface MonitorList {
   total: number
   itemCounts: Record<string, number>
   storageDurable: boolean
+  page?: number
+  pageSize?: number
+  totalPages?: number
 }
 
 export interface RunList {
   items: Run[]
   total: number
+  page?: number
+  pageSize?: number
+  totalPages?: number
 }
 
 export interface ItemList {
-  items: Item[]
+  items: ItemSummary[]
   total: number
   page: number
   pageSize: number
+  totalPages: number
 }
 
 export interface MonitorInput {
   id?: string
   name: string
   searchUrl: string
+  proxyId: string | null
   intervalMinutes: number
   maxPages: number
   perPage: number
@@ -87,6 +190,7 @@ export interface MonitorInput {
 export const DEFAULT_MONITOR: Omit<MonitorInput, 'id'> = {
   name: '',
   searchUrl: '',
+  proxyId: null,
   intervalMinutes: 10,
   maxPages: 3,
   perPage: 20,
@@ -103,7 +207,7 @@ export function message(error: unknown): string {
 }
 
 export function kindText(kind: MonitorKind): string {
-  return kind === 'member' ? '会员衣柜' : '目录搜索'
+  return kind === 'member' ? '用户商品监控' : '搜索商品监控'
 }
 
 export function runStatusText(status: RunStatus): string {
@@ -128,7 +232,7 @@ export function formatTime(iso: string | null): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-export function priceText(item: Item): string {
+export function priceText(item: Pick<ItemSummary, 'price' | 'currency'>): string {
   if (item.price === '') return '价格未标注'
   if (item.currency === '') return item.price
   return `${item.price} ${item.currency}`
@@ -138,8 +242,17 @@ export function priceText(item: Item): string {
 export function runSummary(run: Run): string {
   const parts = [`发现 ${String(run.discovered)}`, `新增 ${String(run.inserted)}`]
   if (run.updated > 0) parts.push(`更新 ${String(run.updated)}`)
+  if (run.userFailed > 0) parts.push(`卖家失败 ${String(run.userFailed)}`)
   if (run.skipped > 0) parts.push(`跳过 ${String(run.skipped)}`)
   if (run.failed > 0) parts.push(`失败 ${String(run.failed)}`)
   if (run.truncated) parts.push('已达页数上限')
   return parts.join(' · ')
+}
+
+export const AVAILABILITY_LABELS: Record<AvailabilityStatus, string> = {
+  unknown: '未核查',
+  pending: '待核查',
+  available: '仍在售',
+  sold: '已售出',
+  ignored: '已忽略',
 }

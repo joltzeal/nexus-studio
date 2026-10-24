@@ -9,7 +9,7 @@ export interface ScenePreset {
 }
 
 /** Original prompts authored for this plugin; legacy IDs remain stable. */
-const PRESERVE =
+export const PRESERVE =
   'Use the reference product as the source of truth. Preserve its exact shape, proportions, material, colour, readable markings, labels, logos, artwork and text, including spelling and punctuation. Preserve the actual secondhand condition: every visible scratch, stain, dent, chip, crease, faded area, worn edge, missing part and repair. Do not clean, restore, polish, retouch away defects, complete missing parts or make the item look newer. Do not invent hidden details, unreadable text, brands, accessories or additional items for sale. Change only the surroundings and plausible ambient lighting; keep condition and markings visible.'
 
 const EVERYDAY =

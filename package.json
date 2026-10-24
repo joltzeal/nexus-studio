@@ -1,6 +1,6 @@
 {
   "name": "nexus-studio",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Nexus consumer desktop workspace foundation",
   "scripts": {
     "dev": "pnpm build:packages && pnpm --filter @nexus/desktop dev",

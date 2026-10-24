@@ -14,15 +14,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import {
-  listPlugins,
-  pluginHostAvailable,
-  type PluginView,
-} from '@/lib/platform/native-plugins'
+import { pluginHostAvailable, type PluginView } from '@/lib/platform/native-plugins'
 import { PluginGate } from '@/features/plugins/plugin-gate'
+import { watchPluginCatalog } from '@/features/plugins/watch-plugin-catalog'
 import { listPresets, listProviders, listRecords } from './api'
 import { RecordDetailDialog } from './detail-dialog'
-import { GenerateDialog, type InitialImage } from './generate-dialog'
+import { GenerateDialog } from './generate-dialog'
+import { handoffImages } from './reference-transfer'
+import { SourceLink } from './source-link'
 import { ProvidersSheet } from './providers-sheet'
 import { RecordImage } from './record-image'
 import type { AiImageHandoff } from '@/lib/page-handoff'
@@ -32,7 +31,7 @@ import {
   message,
   recordTitle,
   statusText,
-  type GenerationRecord,
+  type GenerationSummary,
   type Provider,
   type RecordStatus,
   type ScenePreset,
@@ -61,10 +60,10 @@ export function AiImagePage({
   handoff = null,
   onHandoffConsumed,
 }: AiImagePageProps) {
-  const running = plugin !== null && plugin.state === 'running'
+  const running = hostAvailable && plugin?.enabled === true && plugin.state === 'running'
   // Rows remember the query they belong to, so switching filter or page shows the
   // skeleton during the fetch without an effect that resets state by hand.
-  const [rows, setRows] = useState<{ key: string; items: GenerationRecord[] } | null>(
+  const [rows, setRows] = useState<{ key: string; items: GenerationSummary[] } | null>(
     null,
   )
   const [total, setTotal] = useState(0)
@@ -187,14 +186,7 @@ export function AiImagePage({
    * Deriving it from props keeps the effect out of the picture entirely.
    */
   const pendingHandoff = handoff !== null && running
-  const initialImages = useMemo<InitialImage[]>(() => {
-    if (handoff === null) return []
-    const title = handoff.title.trim()
-    return handoff.images.map((url, index) => ({
-      url,
-      name: `${title === '' ? '商品图' : title}-${String(index + 1)}`,
-    }))
-  }, [handoff])
+  const initialImages = useMemo(() => handoffImages(handoff), [handoff])
 
   return (
     <section
@@ -346,6 +338,7 @@ export function AiImagePage({
                           <TableCell>
                             <div className="ai-row-title">{recordTitle(record)}</div>
                             <div className="ai-row-prompt">{record.prompt}</div>
+                            {record.source ? <SourceLink source={record.source} /> : null}
                           </TableCell>
                           <TableCell>
                             <Badge
@@ -401,6 +394,17 @@ export function AiImagePage({
                 </div>
               )}
             </>
+          ) : plugin?.state === 'available' || plugin?.enabled === false ? (
+            <Empty>
+              <EmptyHeader>
+                <EmptyTitle>
+                  {plugin.state === 'available'
+                    ? 'AI 生图插件尚未安装'
+                    : 'AI 生图插件已禁用'}
+                </EmptyTitle>
+                <EmptyDescription>请到插件中心安装或启用后再试。</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             <PluginGate label="AI 生图" plugin={plugin} hostAvailable={hostAvailable} />
           )}
@@ -433,22 +437,24 @@ export function AiImagePage({
         ) : null}
       </Card>
 
-      {generating || pendingHandoff ? (
+      {running && (generating || pendingHandoff) ? (
         <GenerateDialog
+          key={handoff === null ? 'manual' : JSON.stringify(handoff)}
           providers={providers}
           presets={presets}
+          pluginMethods={plugin?.methods}
           initialImages={initialImages}
+          {...(handoff?.source === undefined ? {} : { source: handoff.source })}
+          {...(handoff?.initialPrompt === undefined
+            ? {}
+            : { initialPrompt: handoff.initialPrompt })}
           onOpenChange={(open) => {
             setGenerating(open)
             // Closing the dialog ends the handoff, otherwise it would reopen.
             if (!open) onHandoffConsumed?.()
           }}
           onSubmitted={refreshRecords}
-          onConfigure={() => {
-            setGenerating(false)
-            onHandoffConsumed?.()
-            setConfiguring(true)
-          }}
+          onConfigure={() => setConfiguring(true)}
         />
       ) : null}
 
@@ -485,43 +491,20 @@ export function AiImageRoute({
   const [plugin, setPlugin] = useState<PluginView | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    if (!hostAvailable) return
-    try {
-      const catalog = await listPlugins()
-      setPlugin(catalog.find((entry) => entry.id === AI_IMAGE_PLUGIN_ID) ?? null)
-    } catch (cause) {
-      setError(message(cause))
-    }
-  }, [hostAvailable])
-
-  useEffect(() => {
-    if (!hostAvailable) return
-    let active = true
-    void listPlugins().then(
-      (catalog) => {
-        if (active) {
+  useEffect(
+    () =>
+      watchPluginCatalog(
+        (catalog) => {
           setPlugin(catalog.find((entry) => entry.id === AI_IMAGE_PLUGIN_ID) ?? null)
-        }
-      },
-      (cause: unknown) => {
-        if (active) setError(message(cause))
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [hostAvailable])
-
-  // The host has no push channel: keep looking while the process is coming up.
-  const pending = plugin === null || plugin.state !== 'running'
-  useEffect(() => {
-    if (!hostAvailable || !pending) return
-    const timer = setInterval(() => {
-      void refresh()
-    }, 2000)
-    return () => clearInterval(timer)
-  }, [hostAvailable, pending, refresh])
+          setError(null)
+        },
+        () => {
+          setPlugin(null)
+          setError('无法读取 AI 生图插件状态，请检查插件中心。')
+        },
+      ),
+    [],
+  )
 
   return (
     <>

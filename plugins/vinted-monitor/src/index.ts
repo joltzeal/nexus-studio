@@ -37,7 +37,16 @@ export {
 } from './domain/urls.js'
 export { parseItemsPage } from './domain/items.js'
 export type { DraftItem, ItemsPage } from './domain/items.js'
-export type { ItemRecord, MonitorRecord, RunRecord, RunStatus } from './domain/types.js'
+export type {
+  ItemRecord,
+  ItemSummary,
+  MonitorRecord,
+  ProxyView,
+  RunRecord,
+  RunStatus,
+  Seller,
+  SellerSummary,
+} from './domain/types.js'
 export type { MonitorTarget } from './domain/urls.js'
 export type { PluginManifest }
 
@@ -134,7 +143,7 @@ export function startVintedMonitorPlugin(
   instance.server.start()
   // `unref` keeps the process able to exit when the host closes the pipes.
   const timer = setInterval(() => {
-    void instance.plugin.tick()
+    void instance.plugin.tick().catch(() => instance.logger.error('定时采集异常'))
   }, TICK_INTERVAL_MS)
   timer.unref()
   return {

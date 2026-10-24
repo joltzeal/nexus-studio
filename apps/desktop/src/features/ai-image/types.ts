@@ -1,3 +1,7 @@
+import type { GenerationSource } from '@/lib/page-handoff'
+
+export type { GenerationSource } from '@/lib/page-handoff'
+
 export const AI_IMAGE_PLUGIN_ID = 'studio.ai-image'
 export const AI_IMAGE_CAPABILITY = 'image.provider'
 
@@ -28,8 +32,55 @@ export interface StoredFile {
   bytes: number
 }
 
+export interface SceneView {
+  id: string
+  label: string
+  prompt: string
+}
+
+export interface ScenePlanResult {
+  product: string
+  material: string
+  observations: string
+  uncertainties: string
+  presetId: string
+  reason: string
+  prompt: string
+  views: SceneView[]
+}
+
+export interface ScenePlan {
+  id: string
+  createdAt: string
+  updatedAt: string
+  status: RecordStatus
+  providerId: string
+  providerName: string
+  providerKind: ProviderKind
+  model: string
+  inputFileId: string
+  requirements: string
+  count: number
+  result: ScenePlanResult | null
+  error: string | null
+}
+
+export interface SceneViewRecord extends SceneView {
+  status: 'queued' | 'running' | 'success' | 'failed'
+  outputFileId: string | null
+  error: string | null
+  effectivePrompt: string
+}
+
+export function viewStatusText(status: SceneViewRecord['status']): string {
+  return { queued: '等待生成', running: '正在生成', success: '已完成', failed: '失败' }[
+    status
+  ]
+}
+
 export interface GenerationRecord {
   id: string
+  source?: GenerationSource
   createdAt: string
   updatedAt: string
   status: RecordStatus
@@ -47,6 +98,11 @@ export interface GenerationRecord {
   imageModel: string
   textModel: string
   copySupportsVision?: boolean
+  scenePlan?: {
+    plan: ScenePlan
+    prompt: string
+    views: SceneViewRecord[]
+  }
   vision?: {
     providerId: string
     providerName: string
@@ -74,6 +130,38 @@ export interface GenerationRecord {
   durationMs: number | null
 }
 
+/** Prompt/source-title previews are capped at 500/120 escaped JSON UTF-8 bytes. */
+export interface GenerationSummary extends Pick<
+  GenerationRecord,
+  | 'id'
+  | 'source'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'status'
+  | 'stage'
+  | 'mode'
+  | 'prompt'
+  | 'presetId'
+  | 'presetLabel'
+  | 'size'
+  | 'count'
+  | 'providerId'
+  | 'providerName'
+  | 'providerKind'
+  | 'imageModel'
+  | 'title'
+  | 'durationMs'
+> {
+  outputs: Pick<StoredFile, 'id' | 'mime'>[]
+  scenePlan?: { views: Pick<SceneViewRecord, 'status' | 'outputFileId'>[] }
+  outputVision?: { status: RecordStatus } | null
+}
+
+type RecordProgress = Pick<
+  GenerationSummary,
+  'status' | 'stage' | 'scenePlan' | 'outputVision'
+>
+
 export interface ScenePreset {
   id: string
   label: string
@@ -84,11 +172,12 @@ export interface ScenePreset {
 }
 
 export interface RecordPage {
-  items: GenerationRecord[]
+  items: GenerationSummary[]
   total: number
   page: number
   pageSize: number
   storageDurable: boolean
+  sourceFilter?: { sourcePluginId: string; sourceItemId: string }
 }
 
 export const PROVIDER_KINDS: { value: ProviderKind; label: string; hint: string }[] = [
@@ -122,8 +211,16 @@ export function message(error: unknown): string {
       : '请求失败，请稍后重试'
 }
 
-export function statusText(record: GenerationRecord): string {
+export function statusText(record: RecordProgress): string {
   if (record.outputVision?.status === 'running') return '正在识别成片'
+  const progress = sceneProgress(record)
+  if (progress !== null) {
+    const fraction = `${String(progress.completed)}/${String(progress.total)}`
+    if (record.status === 'failed')
+      return `${progress.completed > 0 ? '部分完成' : '失败'} · ${fraction}`
+    if (record.status === 'success') return `已完成 · ${fraction}`
+    return `正在生成视角 · ${fraction}`
+  }
   if (record.status === 'success') return '已生成'
   if (record.status === 'failed') return '失败'
   if (record.stage === 'vision') return '正在识别参考图'
@@ -132,7 +229,21 @@ export function statusText(record: GenerationRecord): string {
   return '排队中'
 }
 
-export function recordTitle(record: GenerationRecord): string {
+export function sceneProgress(
+  record: Pick<RecordProgress, 'scenePlan'>,
+): { completed: number; total: number } | null {
+  if (!record.scenePlan) return null
+  return {
+    completed: record.scenePlan.views.filter(
+      (view) => view.status === 'success' && view.outputFileId !== null,
+    ).length,
+    total: record.scenePlan.views.length,
+  }
+}
+
+export function recordTitle(
+  record: Pick<GenerationSummary, 'title' | 'presetLabel' | 'mode'>,
+): string {
   if (record.title !== null && record.title !== '') return record.title
   if (record.presetLabel !== null) return record.presetLabel
   return record.mode === 'edit' ? '改图' : '文生图'

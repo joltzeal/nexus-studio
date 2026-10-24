@@ -1,29 +1,49 @@
 import { randomUUID } from 'node:crypto'
-
-import { invalidRequest, unavailable } from '../domain/errors.js'
-import type { DraftItem } from '../domain/items.js'
+import { invalidRequest } from '../domain/errors.js'
+import { proxyHost, proxyView, selectProxy, validateProxy } from '../domain/proxies.js'
 import {
+  EmptyInputSchema,
+  ImageCloseInputSchema,
+  ImageOpenInputSchema,
+  ImageReadInputSchema,
+  ItemAvailabilityInputSchema,
+  ItemIdInputSchema,
+  ItemStarInputSchema,
   ItemsListInputSchema,
   MonitorIdInputSchema,
+  MonitorListInputSchema,
   MonitorSaveInputSchema,
+  ProxyDefaultInputSchema,
+  ProxyIdInputSchema,
+  ProxySaveInputSchema,
   RunIdInputSchema,
   RunsListInputSchema,
   UrlInspectInputSchema,
   parseOrThrow,
 } from '../domain/schemas.js'
+import { sellerRecord } from '../domain/sellers.js'
 import type {
   CollectionCounts,
-  ItemRecord,
   MonitorRecord,
+  ProxyRecord,
   RunRecord,
-  RunStatus,
 } from '../domain/types.js'
 import { normalizeMonitorUrl } from '../domain/urls.js'
 import type { DispatchContext } from '../rpc/protocol.js'
 import type { Logger } from '../rpc/redact.js'
-import { collect, describeFailure } from '../services/collector.js'
+import { collect, describeFailure, type CollectResult } from '../services/collector.js'
+import { VintedImages } from '../services/images.js'
 import { VintedClient } from '../services/vinted.js'
-import type { PrivateStore } from '../store/private-store.js'
+import {
+  applyItems,
+  itemView,
+  markMissing,
+  paginate,
+  queryItems,
+  requireItem,
+  scanKey,
+} from '../store/archive.js'
+import type { PrivateStore, StoreDocument } from '../store/private-store.js'
 
 export const VINTED_METHODS = [
   'vinted.monitors.list',
@@ -33,14 +53,24 @@ export const VINTED_METHODS = [
   'vinted.runs.list',
   'vinted.runs.get',
   'vinted.items.list',
+  'vinted.items.get',
+  'vinted.items.star',
+  'vinted.items.availability',
+  'vinted.items.remove',
+  'vinted.items.monitorSeller',
+  'vinted.proxies.list',
+  'vinted.proxies.save',
+  'vinted.proxies.remove',
+  'vinted.proxies.default',
+  'vinted.image.open',
+  'vinted.image.read',
+  'vinted.image.close',
   'vinted.url.inspect',
 ] as const
-
-/** Local caps: one JSON document holds everything, so growth must be bounded. */
 export const MAX_MONITORS = 40
 export const MAX_RUNS = 200
+/** Legacy export only: archived items are never silently evicted. */
 export const MAX_ITEMS = 4000
-
 export interface VintedMonitorOptions {
   store: PrivateStore
   logger: Logger
@@ -49,35 +79,27 @@ export interface VintedMonitorOptions {
   idFactory?: () => string
   pause?: (milliseconds: number) => Promise<void>
 }
-
 function emptyCounts(): CollectionCounts {
   return {
     discovered: 0,
     inserted: 0,
     updated: 0,
+    userFailed: 0,
     skipped: 0,
     failed: 0,
     truncated: false,
     pages: 0,
   }
 }
-
-function itemKey(monitorId: string, itemId: string): string {
-  return `${monitorId}\u0000${itemId}`
+function requireMonitor(document: StoreDocument, id: string): MonitorRecord {
+  const monitor = document.monitors.find((m) => m.id === id)
+  if (!monitor) throw invalidRequest('监控不存在或已被删除')
+  return monitor
 }
 
-/**
- * `monitor.collector` capability: saved Vinted searches plus a wardrobe monitor,
- * a run record per collection and a deduplicated item table.
- *
- * Collection is started, not awaited. A 20-page walk can outlast the host's
- * 120 s call deadline, so the call returns the `running` record and the page
- * polls `vinted.runs.get` — the record, not the call, is the source of truth.
- */
 export class VintedMonitor {
   readonly id = 'monitor.collector'
   readonly name = 'Vinted 商品监控'
-
   private readonly store: PrivateStore
   private readonly logger: Logger
   private readonly client: VintedClient
@@ -85,9 +107,9 @@ export class VintedMonitor {
   private readonly idFactory: () => string
   private readonly pause: ((milliseconds: number) => Promise<void>) | undefined
   private readonly active = new Set<string>()
+  private readonly images = new VintedImages()
   private reconciled: Promise<void> | null = null
   private ticking = false
-
   constructor(options: VintedMonitorOptions) {
     this.store = options.store
     this.logger = options.logger
@@ -96,7 +118,6 @@ export class VintedMonitor {
     this.idFactory = options.idFactory ?? randomUUID
     this.pause = options.pause
   }
-
   status(): Record<string, unknown> {
     return {
       storage: this.store.kind,
@@ -104,424 +125,511 @@ export class VintedMonitor {
       activeRuns: this.active.size,
     }
   }
-
   async call(context: DispatchContext): Promise<unknown> {
     await this.ensureReconciled()
     context.assertAlive()
+    const payload = context.payload
     switch (context.method) {
-      case 'vinted.monitors.list':
-        return await this.listMonitors(context)
+      case 'vinted.monitors.list': {
+        const input = parseOrThrow(MonitorListInputSchema, payload)
+        const doc = await this.store.read()
+        const itemCounts: Record<string, number> = Object.fromEntries(
+          doc.monitors.map((m) => [m.id, 0]),
+        )
+        for (const item of doc.items) {
+          if (item.deletedAt !== null) continue
+          for (const id of item.monitorIds) itemCounts[id] = (itemCounts[id] ?? 0) + 1
+        }
+        const page =
+          input.page === undefined && input.pageSize === undefined
+            ? { items: doc.monitors, total: doc.monitors.length }
+            : paginate(doc.monitors, input.page ?? 0, input.pageSize ?? 20)
+        return { ...page, itemCounts, storageDurable: this.store.durable }
+      }
       case 'vinted.monitors.save':
-        return await this.saveMonitor(context)
+        return this.saveMonitor(payload)
       case 'vinted.monitors.remove':
-        return await this.removeMonitor(context)
-      case 'vinted.monitors.run':
-        return await this.runMonitor(context)
-      case 'vinted.runs.list':
-        return await this.listRuns(context)
-      case 'vinted.runs.get':
-        return await this.getRun(context)
+        return this.removeMonitor(payload)
+      case 'vinted.monitors.run': {
+        const { monitorId } = parseOrThrow(MonitorIdInputSchema, payload)
+        return { run: await this.startRun(monitorId) }
+      }
+      case 'vinted.runs.list': {
+        const input = parseOrThrow(RunsListInputSchema, payload)
+        const rows = (await this.store.read()).runs.filter(
+          (r) => input.monitorId === undefined || input.monitorId === r.monitorId,
+        )
+        if (input.page !== undefined || input.pageSize !== undefined)
+          return paginate(rows, input.page ?? 0, input.pageSize ?? 20)
+        return { items: rows.slice(0, input.limit ?? 20), total: rows.length }
+      }
+      case 'vinted.runs.get': {
+        const { runId } = parseOrThrow(RunIdInputSchema, payload)
+        const item = (await this.store.read()).runs.find((r) => r.id === runId)
+        if (!item) throw invalidRequest('采集记录不存在或已被清理')
+        return { item }
+      }
       case 'vinted.items.list':
-        return await this.listItems(context)
-      case 'vinted.url.inspect':
-        return await this.inspectUrl(context)
+        return queryItems(
+          await this.store.read(),
+          parseOrThrow(ItemsListInputSchema, payload),
+        )
+      case 'vinted.items.get': {
+        const { itemId } = parseOrThrow(ItemIdInputSchema, payload)
+        const doc = await this.store.read()
+        return { item: itemView(doc, requireItem(doc, itemId)) }
+      }
+      case 'vinted.items.star': {
+        const input = parseOrThrow(ItemStarInputSchema, payload)
+        return this.store.mutate((doc) => {
+          const item = requireItem(doc, input.itemId)
+          item.starred = input.starred
+          return { item: itemView(doc, item) }
+        })
+      }
+      case 'vinted.items.availability': {
+        const input = parseOrThrow(ItemAvailabilityInputSchema, payload)
+        return this.store.mutate((doc) => {
+          const item = requireItem(doc, input.itemId)
+          item.availabilityStatus = input.status
+          item.statusCheckedAt = this.now().toISOString()
+          item.statusNote = input.note || null
+          if (input.status === 'pending') item.missingSince ??= item.statusCheckedAt
+          return { item: itemView(doc, item) }
+        })
+      }
+      case 'vinted.items.remove': {
+        const { itemId } = parseOrThrow(ItemIdInputSchema, payload)
+        return this.store.mutate((doc) => {
+          const item = doc.items.find((i) => i.id === itemId)
+          if (!item || item.deletedAt !== null) return { removed: false }
+          item.deletedAt = this.now().toISOString()
+          return { removed: true }
+        })
+      }
+      case 'vinted.items.monitorSeller':
+        return this.monitorSeller(payload)
+      case 'vinted.proxies.list': {
+        parseOrThrow(EmptyInputSchema, payload)
+        const doc = await this.store.read()
+        return {
+          items: doc.proxies.map(proxyView),
+          defaultProxyId: doc.defaultProxyId,
+          storageDurable: this.store.durable,
+        }
+      }
+      case 'vinted.proxies.save':
+        return this.saveProxy(payload)
+      case 'vinted.proxies.remove': {
+        const { proxyId } = parseOrThrow(ProxyIdInputSchema, payload)
+        return this.store.mutate((doc) => {
+          if (
+            doc.defaultProxyId === proxyId ||
+            doc.monitors.some((m) => m.proxyId === proxyId)
+          ) {
+            throw invalidRequest('此代理仍被监控或默认代理引用，请先修改引用')
+          }
+          const before = doc.proxies.length
+          doc.proxies = doc.proxies.filter((p) => p.id !== proxyId)
+          return { removed: before !== doc.proxies.length }
+        })
+      }
+      case 'vinted.proxies.default': {
+        const { proxyId } = parseOrThrow(ProxyDefaultInputSchema, payload)
+        return this.store.mutate((doc) => {
+          if (proxyId !== null) selectProxy(doc, proxyId)
+          doc.defaultProxyId = proxyId
+          return { defaultProxyId: proxyId }
+        })
+      }
+      case 'vinted.image.open': {
+        const input = parseOrThrow(ImageOpenInputSchema, payload)
+        const doc = await this.store.read()
+        const item = requireItem(doc, input.itemId)
+        const source = doc.monitors.find((m) => m.id === item.monitorId)
+        const proxy = selectProxy(doc, source ? source.proxyId : item.sourceProxyId)
+        const scope = this.client.scope(proxy)
+        try {
+          return await this.images.open(
+            itemView(doc, item),
+            input.url,
+            scope.transport.fetch,
+            context,
+          )
+        } finally {
+          await scope.transport.close()
+        }
+      }
+      case 'vinted.image.read': {
+        const input = parseOrThrow(ImageReadInputSchema, payload)
+        return this.images.read(input.id, input.offset)
+      }
+      case 'vinted.image.close':
+        return this.images.close(parseOrThrow(ImageCloseInputSchema, payload).id)
+      case 'vinted.url.inspect': {
+        const { url, kind, host, userId } = normalizeMonitorUrl(
+          parseOrThrow(UrlInspectInputSchema, payload).url,
+        )
+        return { url, kind, host, userId }
+      }
       default:
         throw invalidRequest('插件不支持该方法')
     }
   }
-
-  /**
-   * Scheduler entry point, called on an interval by the process entry.
-   *
-   * Runs are sequential: a monitor whose interval has elapsed is collected
-   * before the next one starts, so a tick never opens several connections to
-   * the same host at once.
-   */
+  /** Manual runs and timer ticks share the same synchronous admission lock. */
   async tick(): Promise<void> {
-    if (this.ticking) return
+    if (this.ticking || this.active.size > 0) return
     this.ticking = true
     try {
       await this.ensureReconciled()
-      const document = await this.store.read()
+      const doc = await this.store.read()
       const now = this.now().getTime()
-      for (const monitor of document.monitors) {
-        if (!monitor.enabled) continue
-        if (this.active.has(monitor.id)) continue
-        if (!this.due(monitor, now)) continue
+      const due = doc.monitors
+        .filter(
+          (m) =>
+            m.enabled &&
+            (m.lastRunAt === null ||
+              now - Date.parse(m.lastRunAt) >= m.intervalMinutes * 60_000),
+        )
+        .sort((a, b) => (a.lastRunAt ?? '').localeCompare(b.lastRunAt ?? ''))
+      for (const m of due) {
+        if (this.active.size) break
         try {
-          await this.startRun(monitor)
-        } catch (error) {
-          this.logger.warn('定时采集启动失败', {
-            monitorId: monitor.id,
-            error: error instanceof Error ? error.message : String(error),
-          })
+          await this.startRun(m.id)
+          break
+        } catch {
+          this.logger.warn('定时采集启动失败', { monitorId: m.id })
         }
       }
+    } catch {
+      this.logger.error('定时采集无法读取或更新私有存储')
     } finally {
       this.ticking = false
     }
   }
-
-  private due(monitor: MonitorRecord, now: number): boolean {
-    if (monitor.lastRunAt === null) return true
-    const last = Date.parse(monitor.lastRunAt)
-    if (Number.isNaN(last)) return true
-    return now - last >= monitor.intervalMinutes * 60_000
-  }
-
-  /** A run left `running` by a previous process can never finish. */
   private async ensureReconciled(): Promise<void> {
-    if (this.reconciled === null) {
-      this.reconciled = this.reconcile()
-    }
+    this.reconciled ??= this.reconcile().catch((error: unknown) => {
+      this.reconciled = null
+      throw error
+    })
     await this.reconciled
   }
-
   private async reconcile(): Promise<void> {
-    const document = await this.store.read()
-    const stale = document.runs.filter((run) => run.status === 'running')
-    if (stale.length === 0) return
-    const finishedAt = this.now().toISOString()
+    const doc = await this.store.read()
+    if (!doc.runs.some((r) => r.status === 'running')) return
     await this.store.mutate((draft) => {
-      for (const run of draft.runs) {
-        if (run.status !== 'running') continue
-        run.status = 'interrupted'
-        run.finishedAt = finishedAt
-        run.error = '插件进程已重启，本次采集被中断'
-      }
-      for (const monitor of draft.monitors) {
-        if (monitor.lastStatus === 'running') monitor.lastStatus = 'interrupted'
-      }
-    })
-    this.logger.warn('已将中断的采集记录标记为 interrupted', { count: stale.length })
-  }
-
-  private async listMonitors(context: DispatchContext): Promise<unknown> {
-    const document = await this.store.read()
-    context.assertAlive()
-    const counts = new Map<string, number>()
-    for (const item of document.items) {
-      counts.set(item.monitorId, (counts.get(item.monitorId) ?? 0) + 1)
-    }
-    return {
-      items: document.monitors,
-      total: document.monitors.length,
-      itemCounts: Object.fromEntries(counts),
-      storageDurable: this.store.durable,
-    }
-  }
-
-  private async saveMonitor(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(MonitorSaveInputSchema, context.payload)
-    // Validated before the write so an unusable URL never reaches storage.
-    const target = normalizeMonitorUrl(input.searchUrl)
-    const now = this.now().toISOString()
-
-    const result = await this.store.mutate((document) => {
-      if (input.id === undefined) {
-        if (document.monitors.length >= MAX_MONITORS) {
-          throw invalidRequest(`监控上限为 ${MAX_MONITORS} 个，请先删除部分监控`)
+      for (const r of draft.runs)
+        if (r.status === 'running') {
+          r.status = 'interrupted'
+          r.finishedAt = this.now().toISOString()
+          r.error = '插件进程已重启，本次采集被中断'
         }
-        const created: MonitorRecord = {
-          id: this.idFactory(),
-          name: input.name,
+      for (const m of draft.monitors)
+        if (m.lastStatus === 'running') m.lastStatus = 'interrupted'
+    })
+  }
+  private async saveMonitor(payload: unknown) {
+    const input = parseOrThrow(MonitorSaveInputSchema, payload)
+    const target = normalizeMonitorUrl(input.searchUrl)
+    return this.store.mutate((doc) => {
+      const existing = input.id === undefined ? undefined : requireMonitor(doc, input.id)
+      const proxyId =
+        input.proxyId === undefined ? (existing?.proxyId ?? null) : input.proxyId
+      selectProxy(doc, proxyId, !input.enabled)
+      const now = this.now().toISOString()
+      if (existing !== undefined) {
+        Object.assign(existing, input, {
+          proxyId,
           searchUrl: target.url,
           kind: target.kind,
           host: target.host,
           userId: target.userId,
-          intervalMinutes: input.intervalMinutes,
-          maxPages: input.maxPages,
-          perPage: input.perPage,
-          enabled: input.enabled,
-          createdAt: now,
           updatedAt: now,
-          lastRunAt: null,
-          lastStatus: null,
+        })
+        return { item: existing, created: false }
+      }
+      if (doc.monitors.length >= MAX_MONITORS)
+        throw invalidRequest(`监控上限为 ${MAX_MONITORS} 个`)
+      const m: MonitorRecord = {
+        ...input,
+        id: this.idFactory(),
+        proxyId,
+        searchUrl: target.url,
+        kind: target.kind,
+        host: target.host,
+        userId: target.userId,
+        createdAt: now,
+        updatedAt: now,
+        lastRunAt: null,
+        lastStatus: null,
+      }
+      doc.monitors.unshift(m)
+      return { item: m, created: true }
+    })
+  }
+  private async removeMonitor(payload: unknown) {
+    const { monitorId } = parseOrThrow(MonitorIdInputSchema, payload)
+    return this.store.mutate((doc) => {
+      if (this.active.has(monitorId))
+        throw invalidRequest('该监控正在采集中，请等本次采集结束后再删除')
+      const before = doc.monitors.length
+      const source = doc.monitors.find((m) => m.id === monitorId)
+      doc.monitors = doc.monitors.filter((m) => m.id !== monitorId)
+      for (const item of doc.items) {
+        if (item.monitorId === monitorId && source) item.sourceProxyId = source.proxyId
+        item.monitorIds = item.monitorIds.filter((id) => id !== monitorId)
+        item.associations = item.associations.filter((a) => a.monitorId !== monitorId)
+      }
+      return { removed: before !== doc.monitors.length }
+    })
+  }
+  private async saveProxy(payload: unknown) {
+    const input = parseOrThrow(ProxySaveInputSchema, payload)
+    const host = proxyHost(input.host)
+    return this.store.mutate((doc) => {
+      const previous =
+        input.id === undefined ? undefined : doc.proxies.find((p) => p.id === input.id)
+      if (input.id !== undefined && !previous) throw invalidRequest('代理不存在')
+      const proxy: ProxyRecord = {
+        ...previous,
+        ...input,
+        host,
+        id: previous?.id ?? this.idFactory(),
+        password: input.password ?? previous?.password ?? '',
+      }
+      validateProxy({ ...proxy, enabled: true })
+      if (previous) Object.assign(previous, proxy)
+      else doc.proxies.unshift(proxy)
+      return { item: proxyView(proxy), created: !previous }
+    })
+  }
+  private async monitorSeller(payload: unknown) {
+    const { itemId } = parseOrThrow(ItemIdInputSchema, payload)
+    return this.store.mutate((doc) => {
+      const item = requireItem(doc, itemId)
+      if (item.userId === null) throw invalidRequest('商品缺少卖家 ID')
+      const target = normalizeMonitorUrl(`https://${item.domain}/member/${item.userId}`)
+      const existing = doc.monitors
+        .filter((m) => m.searchUrl === target.url)
+        .sort(
+          (a, b) =>
+            Number(b.enabled) - Number(a.enabled) ||
+            b.createdAt.localeCompare(a.createdAt) ||
+            b.id.localeCompare(a.id),
+        )[0]
+      if (existing) return { monitor: existing, created: false }
+      const sources = doc.monitors
+        .filter((m) => item.monitorIds.includes(m.id))
+        .sort(
+          (a, b) =>
+            Number(b.enabled) - Number(a.enabled) ||
+            (
+              item.associations.find((l) => l.monitorId === b.id)?.lastSeenAt ?? ''
+            ).localeCompare(
+              item.associations.find((l) => l.monitorId === a.id)?.lastSeenAt ?? '',
+            ) ||
+            b.id.localeCompare(a.id),
+        )
+      const source = sources.find((m) => {
+        try {
+          selectProxy(doc, m.proxyId)
+          return true
+        } catch {
+          return false
         }
-        document.monitors.unshift(created)
-        return { item: created, created: true }
+      })
+      if (!source) throw invalidRequest('没有可用的来源监控和代理')
+      if (doc.monitors.length >= MAX_MONITORS)
+        throw invalidRequest(`监控上限为 ${MAX_MONITORS} 个`)
+      const now = this.now().toISOString()
+      const monitor: MonitorRecord = {
+        id: this.idFactory(),
+        name: `卖家 ${item.userId}`,
+        searchUrl: target.url,
+        kind: target.kind,
+        host: target.host,
+        userId: target.userId,
+        proxyId: source.proxyId,
+        intervalMinutes: source.intervalMinutes,
+        maxPages: 20,
+        perPage: 96,
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+        lastRunAt: null,
+        lastStatus: null,
       }
-      const existing = document.monitors.find((entry) => entry.id === input.id)
-      if (existing === undefined) throw invalidRequest('监控不存在或已被删除')
-      existing.name = input.name
-      existing.searchUrl = target.url
-      existing.kind = target.kind
-      existing.host = target.host
-      existing.userId = target.userId
-      existing.intervalMinutes = input.intervalMinutes
-      existing.maxPages = input.maxPages
-      existing.perPage = input.perPage
-      existing.enabled = input.enabled
-      existing.updatedAt = now
-      return { item: existing, created: false }
+      doc.monitors.unshift(monitor)
+      return { monitor, created: true }
     })
-    context.assertAlive()
-    return result
   }
-
-  private async removeMonitor(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(MonitorIdInputSchema, context.payload)
-    if (this.active.has(input.monitorId)) {
-      throw invalidRequest('该监控正在采集中，请等本次采集结束后再删除')
-    }
-    const removed = await this.store.mutate((document) => {
-      const before = document.monitors.length
-      document.monitors = document.monitors.filter(
-        (entry) => entry.id !== input.monitorId,
-      )
-      document.runs = document.runs.filter((run) => run.monitorId !== input.monitorId)
-      document.items = document.items.filter((item) => item.monitorId !== input.monitorId)
-      return before !== document.monitors.length
-    })
-    context.assertAlive()
-    return { monitorId: input.monitorId, removed }
-  }
-
-  private async runMonitor(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(MonitorIdInputSchema, context.payload)
-    const document = await this.store.read()
-    const monitor = document.monitors.find((entry) => entry.id === input.monitorId)
-    if (monitor === undefined) throw invalidRequest('监控不存在或已被删除')
-    if (this.active.has(monitor.id)) {
-      throw invalidRequest('该监控正在采集中，请稍后查看记录')
-    }
-    const run = await this.startRun(monitor)
-    context.assertAlive()
-    return { run }
-  }
-
-  /** Creates the run record, kicks off the walk and returns immediately. */
-  private async startRun(monitor: MonitorRecord): Promise<RunRecord> {
-    const startedAt = this.now().toISOString()
-    const run: RunRecord = {
-      id: this.idFactory(),
-      monitorId: monitor.id,
-      monitorName: monitor.name,
-      status: 'running',
-      startedAt,
-      finishedAt: null,
-      discovered: 0,
-      inserted: 0,
-      updated: 0,
-      skipped: 0,
-      failed: 0,
-      truncated: false,
-      pages: 0,
-      error: null,
-    }
-    await this.store.mutate((document) => {
-      document.runs.unshift(run)
-      if (document.runs.length > MAX_RUNS) document.runs.length = MAX_RUNS
-      const target = document.monitors.find((entry) => entry.id === monitor.id)
-      if (target !== undefined) {
-        // Written before the walk starts so the scheduler cannot re-trigger it.
-        target.lastRunAt = startedAt
-        target.lastStatus = 'running'
-      }
-    })
-    this.active.add(monitor.id)
-    void this.execute(monitor, run.id)
-    return run
-  }
-
-  private async execute(monitor: MonitorRecord, runId: string): Promise<void> {
-    const outcome = await this.walk(monitor, runId)
-    await this.finishRun(runId, monitor.id, outcome.status, outcome.counts, outcome.error)
-    this.active.delete(monitor.id)
-  }
-
-  /** One collection attempt, with every failure folded into a runnable result. */
-  private async walk(
-    monitor: MonitorRecord,
-    runId: string,
-  ): Promise<{ status: RunStatus; counts: CollectionCounts; error: string | null }> {
+  private async startRun(monitorId: string): Promise<RunRecord> {
+    if (this.active.size > 0) throw invalidRequest('监控正在采集中，请稍后查看记录')
+    this.active.add(monitorId)
     try {
-      const target = normalizeMonitorUrl(monitor.searchUrl)
-      const result = await collect({
-        monitor,
-        target,
-        client: this.client,
-        hooks: {
-          applyPage: (items) => this.upsertItems(monitor.id, items),
-          progress: (progress) => this.patchRun(runId, progress),
-        },
-        ...(this.pause === undefined ? {} : { pause: this.pause }),
-      })
-      return result
-    } catch (cause) {
-      this.logger.warn('采集失败', {
-        monitorId: monitor.id,
-        error: cause instanceof Error ? cause.message : String(cause),
-      })
-      return {
-        status: 'failed',
-        counts: emptyCounts(),
-        error: describeFailure(cause),
-      }
-    }
-  }
-
-  private async upsertItems(
-    monitorId: string,
-    drafts: DraftItem[],
-  ): Promise<{ inserted: number; updated: number }> {
-    const now = this.now().toISOString()
-    return await this.store.mutate((document) => {
-      const positions = new Map<string, number>()
-      document.items.forEach((item, index) => {
-        positions.set(itemKey(item.monitorId, item.id), index)
-      })
-      const added: ItemRecord[] = []
-      let inserted = 0
-      let updated = 0
-      for (const draft of drafts) {
-        const at = positions.get(itemKey(monitorId, draft.id))
-        if (at === undefined) {
-          added.push({ ...draft, monitorId, firstSeenAt: now, lastSeenAt: now })
-          inserted += 1
-          continue
-        }
-        const existing = document.items[at]
-        if (existing === undefined) continue
-        // `firstSeenAt` is the point of the whole table: it never moves.
-        document.items[at] = {
-          ...existing,
-          ...draft,
+      const { run, monitor, proxy } = await this.store.mutate((doc) => {
+        const monitor = requireMonitor(doc, monitorId)
+        if (!monitor.enabled) throw invalidRequest('请先启用监控再执行')
+        const proxy = selectProxy(doc, monitor.proxyId)
+        const startedAt = this.now().toISOString()
+        const run: RunRecord = {
+          id: this.idFactory(),
           monitorId,
-          firstSeenAt: existing.firstSeenAt,
-          lastSeenAt: now,
+          monitorName: monitor.name,
+          status: 'running',
+          startedAt,
+          finishedAt: null,
+          ...emptyCounts(),
+          error: null,
+          scanKey: scanKey(monitor),
         }
-        updated += 1
-      }
-      if (added.length > 0) {
-        document.items = [...added, ...document.items]
-      }
-      if (document.items.length > MAX_ITEMS) {
-        document.items = document.items.slice(0, MAX_ITEMS)
-      }
-      return { inserted, updated }
-    })
+        doc.runs.unshift(run)
+        // Preserve each monitor's comparable baseline beyond the recent-history cap.
+        const baseline = new Set<string>()
+        doc.runs = doc.runs.filter((r, index) => {
+          const key = `${r.monitorId}:${r.scanKey ?? ''}`
+          const needed =
+            r.status === 'success' &&
+            !r.truncated &&
+            !r.failed &&
+            !r.userFailed &&
+            !r.error &&
+            !baseline.has(key)
+          if (needed) baseline.add(key)
+          return index < MAX_RUNS || needed
+        })
+        monitor.lastRunAt = startedAt
+        monitor.lastStatus = 'running'
+        return { run, monitor: structuredClone(monitor), proxy }
+      })
+      void this.execute(monitor, run, proxy)
+      return run
+    } catch (error) {
+      this.active.delete(monitorId)
+      throw error
+    }
   }
-
-  private async patchRun(runId: string, counts: CollectionCounts): Promise<void> {
-    await this.store.mutate((document) => {
-      const run = document.runs.find((entry) => entry.id === runId)
-      if (run === undefined || run.status !== 'running') return
-      run.discovered = counts.discovered
-      run.inserted = counts.inserted
-      run.updated = counts.updated
-      run.skipped = counts.skipped
-      run.failed = counts.failed
-      run.truncated = counts.truncated
-      run.pages = counts.pages
-    })
-  }
-
-  private async finishRun(
-    runId: string,
-    monitorId: string,
-    status: RunStatus,
-    counts: CollectionCounts,
-    error: string | null,
+  private async execute(
+    monitor: MonitorRecord,
+    run: RunRecord,
+    proxy: Readonly<ProxyRecord> | null,
   ): Promise<void> {
-    const finishedAt = this.now().toISOString()
+    let scope: ReturnType<VintedClient['scope']> | undefined
+    let counts = emptyCounts()
+    let outcome: CollectResult
     try {
-      await this.store.mutate((document) => {
-        const run = document.runs.find((entry) => entry.id === runId)
-        if (run !== undefined) {
-          run.status = status
-          run.finishedAt = finishedAt
-          run.discovered = counts.discovered
-          run.inserted = counts.inserted
-          run.updated = counts.updated
-          run.skipped = counts.skipped
-          run.failed = counts.failed
-          run.truncated = counts.truncated
-          run.pages = counts.pages
-          run.error = error
+      scope = this.client.scope?.(proxy)
+      const client = scope?.client ?? this.client
+      try {
+        outcome = await collect({
+          monitor,
+          target: normalizeMonitorUrl(monitor.searchUrl),
+          client,
+          hooks: {
+            applyPage: (items) =>
+              this.store.mutate((doc) =>
+                applyItems(doc, monitor, items, this.now().toISOString()),
+              ),
+            progress: async (progress) => {
+              counts = progress
+              await this.store.mutate((doc) => {
+                const r = doc.runs.find((r) => r.id === run.id)
+                if (r) Object.assign(r, progress)
+              })
+            },
+            refreshUser: (id, remaining) =>
+              this.refreshUser(client, monitor.host, id, remaining),
+          },
+          ...(this.pause ? { pause: this.pause } : {}),
+        })
+      } catch (error) {
+        outcome = {
+          status: counts.pages > 0 ? 'partial' : 'failed',
+          counts: { ...counts, failed: counts.failed + 1 },
+          error: describeFailure(error),
+          seenItemIds: [],
         }
-        const monitor = document.monitors.find((entry) => entry.id === monitorId)
-        if (monitor !== undefined) monitor.lastStatus = status
+      }
+      await this.store.mutate((doc) => {
+        const current = doc.runs.find((r) => r.id === run.id)
+        if (current) {
+          Object.assign(current, outcome.counts, {
+            status: outcome.status,
+            finishedAt: this.now().toISOString(),
+            error: outcome.error,
+            seenItemIds: outcome.seenItemIds,
+          })
+          markMissing(doc, current, this.now().toISOString())
+        }
+        const m = doc.monitors.find((m) => m.id === monitor.id)
+        if (m) m.lastStatus = outcome.status
       })
+    } catch {
+      this.logger.error('采集结束状态未能保存，请检查私有存储', { runId: run.id })
+      try {
+        await this.store.mutate((doc) => {
+          const r = doc.runs.find((r) => r.id === run.id)
+          if (r) {
+            r.status = 'failed'
+            r.error = '采集失败或结果写入失败'
+            r.finishedAt = this.now().toISOString()
+          }
+          const m = doc.monitors.find((m) => m.id === monitor.id)
+          if (m) m.lastStatus = 'failed'
+        })
+      } catch {
+        this.logger.error('无法写入失败状态，重启后将标记为中断', { runId: run.id })
+      }
+    } finally {
+      try {
+        await scope?.transport.close()
+      } catch {
+        this.logger.warn('采集连接清理失败')
+      } finally {
+        this.active.delete(monitor.id)
+      }
+    }
+  }
+  private async refreshUser(
+    client: VintedClient,
+    domain: string,
+    userId: string,
+    remaining: number,
+  ): Promise<boolean> {
+    const existing = (await this.store.read()).sellers.find(
+      (s) => s.domain === domain && s.externalId === userId,
+    )
+    if (existing?.collectedAt) return true
+    const checkedAt = this.now().toISOString()
+    let profile: Record<string, unknown> | null = null
+    let error: string | null = null
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (remaining <= 0) throw new Error('budget')
+      profile = await Promise.race([
+        client.user(domain, userId),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('budget')), remaining)
+        }),
+      ])
     } catch (cause) {
-      // The walk already happened; failing to write the outcome must not crash
-      // the plugin process, but the user still deserves the truth.
-      this.logger.error('采集记录写入失败', {
-        runId,
-        error: cause instanceof Error ? cause.message : String(cause),
-      })
-      throw unavailable('采集记录写入失败', cause)
+      error = describeFailure(cause)
+    } finally {
+      clearTimeout(timer)
     }
-    this.logger.info('采集完成', {
-      runId,
-      status,
-      discovered: counts.discovered,
-      inserted: counts.inserted,
-    })
-  }
-
-  private async listRuns(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(RunsListInputSchema, context.payload)
-    const document = await this.store.read()
-    context.assertAlive()
-    const limit = input.limit ?? 20
-    const items = document.runs
-      .filter((run) => input.monitorId === undefined || run.monitorId === input.monitorId)
-      .slice(0, limit)
-    return { items, total: items.length }
-  }
-
-  private async getRun(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(RunIdInputSchema, context.payload)
-    const document = await this.store.read()
-    context.assertAlive()
-    const run = document.runs.find((entry) => entry.id === input.runId)
-    if (run === undefined) throw invalidRequest('采集记录不存在或已被清理')
-    return { item: run }
-  }
-
-  private async listItems(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(ItemsListInputSchema, context.payload)
-    const document = await this.store.read()
-    context.assertAlive()
-    const keyword = (input.keyword ?? '').toLowerCase()
-    const rows = document.items
-      .filter(
-        (item) => input.monitorId === undefined || item.monitorId === input.monitorId,
+    await this.store.mutate((doc) => {
+      const at = doc.sellers.findIndex(
+        (s) => s.domain === domain && s.externalId === userId,
       )
-      .filter((item) => keyword === '' || matches(item, keyword))
-      .sort(byNewest)
-    const start = input.page * input.pageSize
-    return {
-      items: rows.slice(start, start + input.pageSize),
-      total: rows.length,
-      page: input.page,
-      pageSize: input.pageSize,
-    }
+      const previous = doc.sellers[at]
+      if (previous && previous.checkedAt > checkedAt) return
+      const next =
+        profile === null && previous
+          ? { ...previous, checkedAt, error }
+          : { ...previous, ...sellerRecord(domain, userId, checkedAt, profile, error) }
+      if (at >= 0) doc.sellers[at] = next
+      else doc.sellers.push(next)
+    })
+    return error === null
   }
-
-  private async inspectUrl(context: DispatchContext): Promise<unknown> {
-    const input = parseOrThrow(UrlInspectInputSchema, context.payload)
-    const target = normalizeMonitorUrl(input.url)
-    return {
-      kind: target.kind,
-      host: target.host,
-      userId: target.userId,
-      url: target.url,
-    }
-  }
-}
-
-function matches(item: ItemRecord, keyword: string): boolean {
-  return (
-    item.title.toLowerCase().includes(keyword) ||
-    item.brand.toLowerCase().includes(keyword) ||
-    item.seller.toLowerCase().includes(keyword)
-  )
-}
-
-function byNewest(left: ItemRecord, right: ItemRecord): number {
-  const a = left.listedAt ?? left.firstSeenAt
-  const b = right.listedAt ?? right.firstSeenAt
-  return b.localeCompare(a)
 }

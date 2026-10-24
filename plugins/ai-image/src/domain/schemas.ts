@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 import { invalidRequest } from './errors.js'
+import { ScenePlanSelectionSchema } from './scene-plan.js'
 import { MAX_INPUT_BYTES, UPLOAD_CHUNK_BYTES } from './types.js'
 
 const pageSchema = z.number().int().min(0).max(1000)
@@ -94,11 +95,28 @@ export const FileChunkInputSchema = z.strictObject({
     .max(512 * 1024),
 })
 
-export const RecordsListInputSchema = z.strictObject({
-  page: pageSchema,
-  size: sizeSchema,
-  status: z.enum(['running', 'success', 'failed']).optional(),
+const sourceIdSchema = z.string().trim().min(1).max(128)
+
+export const GenerationSourceSchema = z.strictObject({
+  pluginId: sourceIdSchema,
+  itemId: sourceIdSchema,
+  title: z.string().trim().min(1).max(500),
+  url: z.string().trim().min(8).max(2048).refine(isHttpUrl),
 })
+
+export const RecordsListInputSchema = z
+  .strictObject({
+    page: pageSchema,
+    size: sizeSchema,
+    status: z.enum(['running', 'success', 'failed']).optional(),
+    sourcePluginId: sourceIdSchema.optional(),
+    sourceItemId: sourceIdSchema.optional(),
+  })
+  .refine(
+    (input) =>
+      (input.sourcePluginId === undefined) === (input.sourceItemId === undefined),
+    { path: ['sourceItemId'], message: '来源插件和商品标识必须同时提供' },
+  )
 
 export const RecordIdInputSchema = z.strictObject({
   id: z.string().trim().min(1).max(64),
@@ -116,21 +134,48 @@ export const RecordRecognizeInputSchema = z.union([
   }),
 ])
 
-export const GenerateInputSchema = z.strictObject({
-  providerId: z.string().trim().min(1).max(64),
-  mode: z.enum(['generate', 'edit']),
-  /** `null` means "send the prompt as typed", without a preset preamble. */
-  presetId: z.string().trim().max(64).nullable(),
-  // Reject over-limit input instead of silently trimming pasted constraints.
-  prompt: z.string().max(12000),
-  size: z.enum(['1024x1024', '1024x1536', '1536x1024', 'auto']),
-  count: z.number().int().min(1).max(4),
-  inputFileIds: z.array(z.string().trim().min(1).max(64)).max(6),
-  /** Omitted/null keeps the legacy generation/copy flow. */
-  visionProviderId: z.string().trim().min(1).max(64).nullable().optional(),
-  /** Omitted/null selects the first input, only when recognition is enabled. */
-  visionFileId: z.string().trim().min(1).max(64).nullable().optional(),
-})
+export const GenerateInputSchema = z
+  .strictObject({
+    providerId: z.string().trim().min(1).max(64),
+    mode: z.enum(['generate', 'edit']),
+    /** `null` means "send the prompt as typed", without a preset preamble. */
+    presetId: z.string().trim().max(64).nullable(),
+    // Reject over-limit input instead of silently trimming pasted constraints.
+    prompt: z.string().max(12000),
+    size: z.enum(['1024x1024', '1024x1536', '1536x1024', 'auto']),
+    count: z.number().int().min(1).max(4),
+    inputFileIds: z.array(z.string().trim().min(1).max(64)).max(6),
+    source: GenerationSourceSchema.optional(),
+    scenePlan: ScenePlanSelectionSchema.optional(),
+    /** Omitted/null keeps the legacy generation/copy flow. */
+    visionProviderId: z.string().trim().min(1).max(64).nullable().optional(),
+    /** Omitted/null selects the first input, only when recognition is enabled. */
+    visionFileId: z.string().trim().min(1).max(64).nullable().optional(),
+  })
+  .superRefine((input, context) => {
+    if (input.scenePlan === undefined) return
+    if (input.mode !== 'edit') {
+      context.addIssue({
+        code: 'custom',
+        path: ['mode'],
+        message: '场景规划只能用于改图',
+      })
+    }
+    if (input.count !== input.scenePlan.views.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['count'],
+        message: '张数必须与视角数一致',
+      })
+    }
+    if (input.visionProviderId !== undefined || input.visionFileId !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['scenePlan'],
+        message: '场景规划不能重复启用生成前识图',
+      })
+    }
+  })
 
 export function parseOrThrow<T>(schema: z.ZodType<T>, payload: unknown): T {
   const parsed = schema.safeParse(payload)

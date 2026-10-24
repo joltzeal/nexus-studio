@@ -6,11 +6,22 @@
  * smallest thing that survives that handover — a send that fires immediately and
  * a listener the shell keeps for its whole life.
  */
+/** Public item metadata only; never credentials or model instructions. */
+export interface GenerationSource {
+  pluginId: string
+  itemId: string
+  title: string
+  url: string
+}
+
 export interface AiImageHandoff {
   /** Remote picture URLs, in the order the source page showed them. */
   images: string[]
   /** Where the pictures came from, so the dialog can say so. */
   title: string
+  source?: GenerationSource
+  /** Editable product title/description, without automatically added directions. */
+  initialPrompt?: string
 }
 
 type Listener = (payload: AiImageHandoff) => void
