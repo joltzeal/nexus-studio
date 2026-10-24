@@ -11,8 +11,8 @@ import { callPlugin } from '@/lib/platform/native-plugins'
  *
  * This composes the accounts plugin's existing list/save methods instead of
  * adding a narrow `setPhone` method to it: the page then works against every
- * version of that plugin already installed, and a future field on the account
- * record is carried through untouched.
+ * version of that plugin already installed. Keep mergeAccountNumber in sync
+ * when the account's editable fields change.
  */
 export interface AccountTarget {
   id: string
@@ -41,6 +41,25 @@ export async function listAccountTargets(): Promise<AccountTarget[]> {
     status: account.status,
     note: account.note,
   }))
+}
+
+/** Compare the supplied digits only; never infer a country code or drop zeroes. */
+export function canonicalPhone(phone: string): string {
+  return phone.replace(/\D/g, '')
+}
+
+export function indexAccountPhones(
+  accounts: readonly AccountTarget[],
+): Map<string, AccountTarget[]> {
+  const index = new Map<string, AccountTarget[]>()
+  for (const account of accounts) {
+    const phone = canonicalPhone(account.phone)
+    if (phone === '') continue
+    const owners = index.get(phone)
+    if (owners) owners.push(account)
+    else index.set(phone, [account])
+  }
+  return index
 }
 
 /**
@@ -75,21 +94,25 @@ export interface ContactPatch {
 export async function updateContact(
   accountId: string,
   patch: ContactPatch,
-): Promise<void> {
+): Promise<Account> {
   const result = await call<AccountList>('vinted.accounts.list')
   const target = result.items.find((account) => account.id === accountId)
   if (target === undefined) throw new Error('账号不存在或已被删除')
   const phone = patch.phone ?? target.phone
   const smsOtpUrl = patch.smsOtpUrl ?? target.smsOtpUrl
   // An unchanged record still costs a full save round trip; skip it.
-  if (phone === target.phone && smsOtpUrl === target.smsOtpUrl) return
-  await call('vinted.accounts.save', mergeAccountNumber(target, phone, smsOtpUrl))
+  if (phone === target.phone && smsOtpUrl === target.smsOtpUrl) return target
+  const saved = await call<{ item: Account; created: boolean }>(
+    'vinted.accounts.save',
+    mergeAccountNumber(target, phone, smsOtpUrl),
+  )
+  return saved.item
 }
 
 export function attachNumber(
   accountId: string,
   phone: string,
   smsOtpUrl: string,
-): Promise<void> {
+): Promise<Account> {
   return updateContact(accountId, { phone, smsOtpUrl })
 }

@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { AiImage } from './ai-image.js'
 import type { GenerationRecord, ProviderView } from '../domain/types.js'
-import { createMemoryStore } from '../store/private-store.js'
-import { createMemoryImageStore } from '../store/image-files.js'
+import {
+  createFileStore,
+  createMemoryStore,
+  type PrivateStore,
+} from '../store/private-store.js'
+import {
+  createFileImageStore,
+  createMemoryImageStore,
+  type ImageStore,
+} from '../store/image-files.js'
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9, 9])
 const PNG_B64 = PNG.toString('base64')
@@ -31,9 +42,10 @@ function stubFetch(
   return mock
 }
 
-function setup() {
-  const store = createMemoryStore()
-  const images = createMemoryImageStore()
+function setup(
+  store: PrivateStore = createMemoryStore(),
+  images: ImageStore = createMemoryImageStore(),
+) {
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   let counter = 0
   const plugin = new AiImage({
@@ -88,8 +100,14 @@ async function addProvider(
 
 const VISION = { textModel: 'gpt-4o-mini', supportsVision: true }
 
-afterEach(() => {
+const directories: string[] = []
+afterEach(async () => {
   vi.unstubAllGlobals()
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  )
 })
 
 describe('模型配置', () => {
@@ -175,7 +193,7 @@ describe('生成', () => {
       inputFileIds: [],
     })
     expect(created.record.status).toBe('running')
-    expect(created.record.prompt).toContain('seamless pure white studio background')
+    expect(created.record.prompt).toContain('white laminate table')
 
     const finished = await settle(call, created.record.id)
     expect(finished.status).toBe('success')
@@ -496,5 +514,454 @@ describe('remote image uploads', () => {
     await expect(
       call('image.upload.remote', { url: 'file:///etc/passwd' }),
     ).rejects.toThrow('请求参数无效')
+  })
+})
+
+const SECOND_PNG = Buffer.concat([PNG, Buffer.from('second-image')])
+const OBSERVATION = 'A used blue mug with a chipped rim and the readable marking ABC.'
+const GENERATION_INPUT = {
+  mode: 'edit',
+  presetId: 'home-sofa',
+  prompt: 'Keep the chip and every letter.',
+  size: 'auto',
+  count: 1,
+  inputFileIds: ['source-one', 'source-two'],
+}
+
+function visionResponse(): Response {
+  return json({
+    choices: [{ message: { content: JSON.stringify({ description: OBSERVATION }) } }],
+  })
+}
+
+function chatBody(init: RequestInit | undefined): {
+  model: string
+  messages: { content: { type: string; text?: string; image_url?: { url: string } }[] }[]
+} {
+  return JSON.parse(String(init?.body)) as ReturnType<typeof chatBody>
+}
+
+async function references(images: ImageStore) {
+  await images.write('source-one', 'image/png', PNG)
+  await images.write('source-two', 'image/png', SECOND_PNG)
+}
+
+async function waitOutput(call: ReturnType<typeof setup>['call'], id: string) {
+  return vi.waitFor(async () => {
+    const { record } = await call<{ record: GenerationRecord }>('image.records.get', {
+      id,
+    })
+    expect(record.outputVision?.status).not.toBe('running')
+    expect(record.outputVision).toBeTruthy()
+    return record
+  })
+}
+
+describe('独立识图与原图选择', () => {
+  it('旧服务商编辑不清空新增识图配置；可显式清空或创建只识图配置', async () => {
+    const { call } = setup()
+    const provider = await addProvider(call, {
+      imageModel: '',
+      visionModel: 'vision-only',
+    })
+    expect(provider.visionModel).toBe('vision-only')
+    const edited = await addProvider(call, { id: provider.id })
+    expect(edited.visionModel).toBe('vision-only')
+    const cleared = await addProvider(call, { id: provider.id, visionModel: '' })
+    expect(cleared.visionModel).toBe('')
+    const old = await addProvider(call)
+    expect(old.visionModel).toBe('')
+  })
+
+  it.each([undefined, 'source-two'])(
+    '使用独立模型且只发送选定原图 %s',
+    async (visionFileId) => {
+      const { call, images } = setup()
+      await references(images)
+      const generator = await addProvider(call, {
+        imageModel: 'image-chosen',
+        textModel: 'copy-chosen',
+        supportsVision: false,
+      })
+      const vision = await addProvider(call, {
+        name: '独立识图',
+        kind: 'openai_compatible',
+        baseUrl: 'https://vision.example.test/v1',
+        apiKey: 'vision-key',
+        imageModel: '',
+        visionModel: 'vision-chosen',
+      })
+      const fetchMock = stubFetch((url) => {
+        if (url.startsWith(vision.baseUrl)) return visionResponse()
+        if (url.endsWith('/chat/completions'))
+          return json({
+            choices: [
+              {
+                message: {
+                  content: '{"title":"缺口杯","description":"有缺口和可读文字。"}',
+                },
+              },
+            ],
+          })
+        return imageResponse()
+      })
+      const created = await call<{ record: GenerationRecord }>('image.generate', {
+        ...GENERATION_INPUT,
+        providerId: generator.id,
+        visionProviderId: vision.id,
+        ...(visionFileId === undefined ? {} : { visionFileId }),
+      })
+      const result = await settle(call, created.record.id)
+      expect(result.status).toBe('success')
+      expect(result.vision?.model).toBe('vision-chosen')
+      expect(result.vision?.inputFileId).toBe(visionFileId ?? 'source-one')
+      expect(result.vision?.description).toBe(OBSERVATION)
+      const [url, init] = fetchMock.mock.calls[0] ?? []
+      expect(url).toBe('https://vision.example.test/v1/chat/completions')
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer vision-key' })
+      const request = chatBody(init)
+      expect(request.model).toBe('vision-chosen')
+      expect(
+        request.messages[1]?.content.filter((part) => part.type === 'image_url'),
+      ).toEqual([
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:image/png;base64,${(visionFileId ? SECOND_PNG : PNG).toString('base64')}`,
+          },
+        },
+      ])
+      const form = fetchMock.mock.calls[1]?.[1]?.body as FormData
+      expect(form.get('model')).toBe('image-chosen')
+      expect(form.getAll('image[]')).toHaveLength(2)
+      expect(form.get('prompt')).toContain(OBSERVATION)
+      expect(form.get('prompt')).toContain(GENERATION_INPUT.prompt)
+      const copy = chatBody(fetchMock.mock.calls[2]?.[1])
+      expect(copy.model).toBe('copy-chosen')
+      expect(
+        copy.messages[1]?.content.filter((part) => part.type === 'image_url'),
+      ).toHaveLength(0)
+      expect(copy.messages[1]?.content[0]?.text).toContain(OBSERVATION)
+    },
+  )
+
+  it('不会把旧文案模型当作独立识图模型或接受其他记录的图片', async () => {
+    const { call, images } = setup()
+    await references(images)
+    const generator = await addProvider(call, VISION)
+    const vision = await addProvider(call, { visionModel: 'vision' })
+    const fetchMock = stubFetch(() => imageResponse())
+    await expect(
+      call('image.generate', {
+        ...GENERATION_INPUT,
+        providerId: generator.id,
+        visionProviderId: generator.id,
+      }),
+    ).rejects.toThrow('未配置独立识图模型')
+    await expect(
+      call('image.generate', {
+        ...GENERATION_INPUT,
+        providerId: generator.id,
+        visionProviderId: vision.id,
+        visionFileId: 'foreign',
+      }),
+    ).rejects.toThrow('请选择参考图片中的一张')
+    await expect(
+      call('image.generate', {
+        ...GENERATION_INPUT,
+        providerId: generator.id,
+        visionFileId: 'source-one',
+      }),
+    ).rejects.toThrow('必须指定独立识图服务商')
+    await expect(
+      call('image.generate', {
+        ...GENERATION_INPUT,
+        mode: 'generate',
+        inputFileIds: [],
+        providerId: generator.id,
+        visionProviderId: vision.id,
+      }),
+    ).rejects.toThrow('请选择参考图片中的一张')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['http', 'invalid', 'empty', 'timeout'])(
+    '识图失败 %s 阻断生图且不回退',
+    async (failure) => {
+      const { call, images } = setup()
+      await references(images)
+      const provider = await addProvider(call, { visionModel: 'vision' })
+      const fetchMock = stubFetch(() => {
+        if (failure === 'timeout') throw new DOMException('timeout', 'TimeoutError')
+        if (failure === 'http')
+          return json({ error: { message: 'model unavailable' } }, 404)
+        if (failure === 'empty')
+          return json({ choices: [{ message: { content: '{"description":""}' } }] })
+        return json({ choices: [{ message: { content: 'not JSON' } }] })
+      })
+      const { record } = await call<{ record: GenerationRecord }>('image.generate', {
+        ...GENERATION_INPUT,
+        providerId: provider.id,
+        visionProviderId: provider.id,
+      })
+      const result = await settle(call, record.id)
+      expect(result.status).toBe('failed')
+      expect(result.error).toContain('识图失败')
+      expect(result.outputs).toHaveLength(0)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/chat/completions')
+    },
+  )
+
+  it('重启后重试沿用原识图模型与图片，且不重复叠加观察内容', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-vision-'))
+    directories.push(directory)
+    const first = setup(
+      createFileStore(directory),
+      createFileImageStore(join(directory, 'images')),
+    )
+    await references(first.images)
+    const provider = await addProvider(first.call, { visionModel: 'vision-original' })
+    stubFetch((url) =>
+      url.endsWith('/chat/completions')
+        ? visionResponse()
+        : json({ error: 'failed' }, 500),
+    )
+    const created = await first.call<{ record: GenerationRecord }>('image.generate', {
+      ...GENERATION_INPUT,
+      providerId: provider.id,
+      visionProviderId: provider.id,
+      visionFileId: 'source-two',
+    })
+    expect((await settle(first.call, created.record.id)).status).toBe('failed')
+    await vi.waitFor(() => expect(first.plugin.status()['running']).toBe(0))
+    await addProvider(first.call, {
+      id: provider.id,
+      visionModel: 'vision-new',
+      imageModel: 'image-new',
+    })
+    const second = setup(
+      createFileStore(directory),
+      createFileImageStore(join(directory, 'images')),
+    )
+    const fetchMock = stubFetch((url) =>
+      url.endsWith('/chat/completions') ? visionResponse() : imageResponse(),
+    )
+    await second.call('image.records.retry', { id: created.record.id })
+    const result = await settle(second.call, created.record.id)
+    expect(result.status).toBe('success')
+    expect(chatBody(fetchMock.mock.calls[0]?.[1]).model).toBe('vision-original')
+    expect(
+      chatBody(fetchMock.mock.calls[0]?.[1]).messages[1]?.content[1]?.image_url?.url,
+    ).toBe(`data:image/png;base64,${SECOND_PNG.toString('base64')}`)
+    const form = fetchMock.mock.calls[1]?.[1]?.body as FormData
+    expect(form.get('model')).toBe('gpt-image-1')
+    expect(String(form.get('prompt')).split('Source-photo observations')).toHaveLength(2)
+    const persisted = JSON.parse(
+      await readFile(join(directory, 'ai-image.json'), 'utf8'),
+    ) as { records: GenerationRecord[] }
+    expect(persisted.records[0]?.vision?.inputFileId).toBe('source-two')
+  })
+
+  it('参考图丢失的重试明确失败，不丢图后继续或改走文生图', async () => {
+    const { call, images, plugin } = setup()
+    await references(images)
+    const provider = await addProvider(call)
+    stubFetch(() => json({ error: 'failed' }, 500))
+    const created = await call<{ record: GenerationRecord }>('image.generate', {
+      ...GENERATION_INPUT,
+      providerId: provider.id,
+    })
+    await settle(call, created.record.id)
+    await vi.waitFor(() => expect(plugin.status()['running']).toBe(0))
+    await images.remove('source-two')
+    const fetchMock = stubFetch(() => imageResponse())
+    await call('image.records.retry', { id: created.record.id })
+    const result = await settle(call, created.record.id)
+    expect(result.status).toBe('failed')
+    expect(result.error).toContain('图片文件不存在')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('长附加要求尾部实际进入请求，不静默裁剪', async () => {
+    const { call } = setup()
+    const provider = await addProvider(call)
+    const fetchMock = stubFetch(() => imageResponse())
+    const prompt = `${'preserve condition; '.repeat(500)}END-KEEP-MARKINGS`
+    const created = await call<{ record: GenerationRecord }>('image.generate', {
+      ...GENERATION_INPUT,
+      mode: 'generate',
+      inputFileIds: [],
+      providerId: provider.id,
+      prompt,
+    })
+    await settle(call, created.record.id)
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      prompt: string
+    }
+    expect(body.prompt.endsWith(prompt)).toBe(true)
+  })
+})
+
+describe('已生成组图的单张重识图', () => {
+  async function generated() {
+    const instance = setup()
+    const provider = await addProvider(instance.call, { visionModel: 'vision-original' })
+    stubFetch(() =>
+      json({
+        data: [{ b64_json: PNG_B64 }, { b64_json: SECOND_PNG.toString('base64') }],
+      }),
+    )
+    const { record } = await instance.call<{ record: GenerationRecord }>(
+      'image.generate',
+      {
+        ...GENERATION_INPUT,
+        mode: 'generate',
+        inputFileIds: [],
+        count: 2,
+        providerId: provider.id,
+      },
+    )
+    const result = await settle(instance.call, record.id)
+    await vi.waitFor(() => expect(instance.plugin.status()['running']).toBe(0))
+    return { ...instance, provider, record: result }
+  }
+
+  it.each([0, 1])('仅将成片 %s 发给指定识图模型，不重新生成图片', async (index) => {
+    const { call, provider, record, store } = await generated()
+    const distinct = await addProvider(call, {
+      imageModel: '',
+      visionModel: 'output-vision',
+      baseUrl: 'https://vision.example.test/v1',
+    })
+    const fetchMock = stubFetch(() => visionResponse())
+    await call('image.records.recognize', {
+      id: record.id,
+      providerId: distinct.id,
+      ...(index === 0 ? {} : { fileId: record.outputs[index]?.id }),
+    })
+    const result = await waitOutput(call, record.id)
+    expect(result.status).toBe('success')
+    expect(result.outputs).toEqual(record.outputs)
+    expect(result.providerId).toBe(provider.id)
+    expect(result.outputVision?.status).toBe('success')
+    expect(result.outputVision?.outputFileId).toBe(record.outputs[index]?.id)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'https://vision.example.test/v1/chat/completions',
+    )
+    const request = chatBody(fetchMock.mock.calls[0]?.[1])
+    expect(request.model).toBe('output-vision')
+    expect(
+      request.messages[1]?.content.filter((part) => part.type === 'image_url'),
+    ).toEqual([
+      {
+        type: 'image_url',
+        image_url: {
+          url: `data:image/png;base64,${(index === 0 ? PNG : SECOND_PNG).toString('base64')}`,
+        },
+      },
+    ])
+    expect((await store.read()).records[0]?.outputVision?.description).toBe(OBSERVATION)
+  })
+
+  it('失败保留成片且重试固定原模型原图片，拒绝重试时偷换选择', async () => {
+    const { call, provider, record, plugin } = await generated()
+    stubFetch(() => json({ error: 'unavailable' }, 500))
+    await call('image.records.recognize', {
+      id: record.id,
+      providerId: provider.id,
+      fileId: record.outputs[1]?.id,
+    })
+    const failed = await waitOutput(call, record.id)
+    expect(failed.status).toBe('success')
+    expect(failed.outputVision?.status).toBe('failed')
+    expect(failed.outputVision?.error).not.toBeNull()
+    await vi.waitFor(() => expect(plugin.status()['running']).toBe(0))
+    await addProvider(call, { id: provider.id, visionModel: 'vision-new' })
+    const fetchMock = stubFetch(() => visionResponse())
+    await expect(
+      call('image.records.recognize', {
+        id: record.id,
+        retry: true,
+        fileId: record.outputs[0]?.id,
+      }),
+    ).rejects.toThrow('请求参数无效')
+    await call('image.records.recognize', { id: record.id, retry: true })
+    const result = await waitOutput(call, record.id)
+    expect(result.outputVision?.status).toBe('success')
+    const body = chatBody(fetchMock.mock.calls[0]?.[1])
+    expect(body.model).toBe('vision-original')
+    expect(body.messages[1]?.content[1]?.image_url?.url).toBe(
+      `data:image/png;base64,${SECOND_PNG.toString('base64')}`,
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('非本记录成片或缺失成片明确拒绝，不退回第一张', async () => {
+    const { call, provider, record, images } = await generated()
+    const fetchMock = stubFetch(() => visionResponse())
+    await expect(
+      call('image.records.recognize', {
+        id: record.id,
+        providerId: provider.id,
+        fileId: 'foreign',
+      }),
+    ).rejects.toThrow('必须属于这条记录的成片')
+    const selectedId = record.outputs[1]?.id ?? ''
+    await images.remove(selectedId)
+    await expect(
+      call('image.records.recognize', {
+        id: record.id,
+        providerId: provider.id,
+        fileId: selectedId,
+      }),
+    ).rejects.toThrow('图片文件不存在')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('重启后的成片识图中断记录可见失败，并能沿用存储的模型和图片重试', async () => {
+    const { record, provider, images, store } = await generated()
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-output-vision-'))
+    directories.push(directory)
+    const durable = createFileStore(directory)
+    const original = await store.read()
+    await durable.mutate((document) => {
+      document.providers = original.providers
+      document.records = [
+        {
+          ...record,
+          outputVision: {
+            providerId: provider.id,
+            providerName: provider.name,
+            providerKind: provider.kind,
+            model: 'vision-before-restart',
+            outputFileId: record.outputs[1]?.id ?? '',
+            status: 'running',
+            description: null,
+            error: null,
+          },
+        },
+      ]
+    })
+    const reopened = setup(createFileStore(directory), images)
+    const fetchMock = stubFetch(() => visionResponse())
+    const read = await reopened.call<{ record: GenerationRecord }>('image.records.get', {
+      id: record.id,
+    })
+    expect(read.record.outputVision?.status).toBe('failed')
+    expect(read.record.outputVision?.error).toContain('已中断')
+    expect(fetchMock).not.toHaveBeenCalled()
+    await reopened.call('image.records.recognize', { id: record.id, retry: true })
+    const result = await waitOutput(reopened.call, record.id)
+    expect(result.outputVision?.status).toBe('success')
+    const body = chatBody(fetchMock.mock.calls[0]?.[1])
+    expect(body.model).toBe('vision-before-restart')
+    expect(
+      body.messages[1]?.content.filter((part) => part.type === 'image_url'),
+    ).toHaveLength(1)
+    expect(body.messages[1]?.content[1]?.image_url?.url).toBe(
+      `data:image/png;base64,${SECOND_PNG.toString('base64')}`,
+    )
   })
 })

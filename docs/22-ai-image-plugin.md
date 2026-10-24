@@ -1,175 +1,272 @@
 # AI 生图插件 `studio.ai-image`
 
-本文说明仓库内 AI 生图插件的实际范围。插件规则见[插件对接开发规范](14-plugin-integration-guide.md)，
-页面交互见[页面交互](11-demo-pages.md)，宿主协议见[插件宿主](17-plugin-host.md)。
+本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
+宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
 
-## 当前事实
+## 当前能力
 
-插件包位于 `plugins/ai-image`，实现 `image.provider` 能力的 16 个方法、私有存储、
-图片文件存储与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/ai-image`。
+插件提供 `image.provider` 的 18 个 RPC 方法，支持 `openai` 与 `openai_compatible`。
+生图只走 `/images/generations` 与 `/images/edits`；独立识图与文案使用 `/chat/completions`。
+不支持网站自动化生图、chat 多模态出图或异步轮询型供应商通道。
 
-- 只支持两个服务商类型：`openai`（OpenAI 官方）与 `openai_compatible`（兼容接口）。
-  参考实现里的 `website_tasks` 网站异步生图通道已删除，`mhoo_images` 与
-  `chat_completions` 生图分支也未迁移：本插件只走 `POST /images/generations`
-  与 `POST /images/edits`。
-- 生图模型与文案模型都配置在插件里，API Key 按**明文**保存在插件私有目录的
-  `ai-image.json`（0600）。宿主不托管这些密钥，也不提供回读接口。
-- 文案模型的作用是看图写标题与描述；它在生图之后运行，读的是本次生成的成片。
-- 每次生成都是一条记录，主页即生成记录列表；记录上限 120 条，超出后淘汰最旧的并删除其文件。
-- 图片不落宿主，也不写系统相册：文件在插件私有目录的 `images/`，导出时复制到 `exports/`。
+- 生图、识图、文案是三个独立模型字段。识图服务商可以不同于生图服务商。
+- 生图前可识别一张参考图；生成完成后可在详情选择一张成片，明确点击识图。
+- API Key **明文**保存于插件私有目录 `ai-image.json`（0600），只回显有无及末四位提示。
+- 每次生成是一条记录，记录上限 120；图片在私有目录 `images/`，导出副本在 `exports/`。
+- 本次不修改插件或应用版本，不构建、不打包、不发布。
 
-## 包结构
+## 包结构与宿主边界
 
-```text
-plugins/ai-image/
-├── package.json          # ESM、锁定依赖、dist 由构建生成
-├── nexus.plugin.ts       # manifest 唯一来源，由 definePluginManifest 校验
-├── src/
-│   ├── index.ts          # 组装存储、能力与协议；进程入口
-│   ├── capabilities/     # image.provider 方法表
-│   ├── domain/           # 场景预设、zod 校验、错误码、类型与常量
-│   ├── rpc/              # 协议、服务端、脱敏日志（与另三个插件同源，按包自包含）
-│   ├── services/         # OpenAI 兼容接口调用（生图、改图、文案、连通性检查）
-│   └── store/            # 私有 JSON 文档与图片文件存储
-└── dist/                 # 构建产物：dist/src/index.js 与 dist/nexus.plugin.json
+`nexus.plugin.ts` 是 manifest 来源；`src/domain` 定义预设、输入校验与类型，
+`src/services/openai.ts` 负责请求，`src/capabilities/ai-image.ts` 组织流程，
+`src/store` 负责私有文档与图片文件，`src/rpc` 提供逐行 JSON RPC。
+页面只通过宿主调用插件，不直接持有服务商 API Key 或直连模型接口。
+
+manifest 保持 `apiVersion: 1`、`studio.ai-image`、`version: 1.0.0`，
+`wantsBrowserAccess: false`、`storage: private`、`secrets: []`。
+网络域名声明含 OpenAI 及常见兼容网关；这是权限声明，不将它描述为网络执行沙箱。
+
+## 模型配置与兼容性
+
+| 字段             | 用途                                                      |
+| ---------------- | --------------------------------------------------------- |
+| `imageModel`     | 生图或改图；生成时必须非空                                |
+| `visionModel`    | 独立图片理解；不会从 `textModel` 或 `imageModel` 自动推断 |
+| `textModel`      | 标题与描述；留空跳过文案                                  |
+| `supportsVision` | 既有文案模型能否直接读取生成成片，不控制独立识图          |
+
+服务商沿用 `id/name/kind/baseUrl/apiKey/imageModel/textModel/supportsVision`。
+`image.providers.save` 新增可选 `visionModel`；省略保留已存值，显式空字符串清空。
+旧文档读取时缺失的 `visionModel` 视为空字符串。只用于识图的配置可留空
+`imageModel`，但三个模型字段至少填写一个。省略 `apiKey` 仍保留原 Key。
+
+页面标签为“生图模型”“识图模型”“文案模型”“文案模型可直接读取成片”。
+配置测试仍然只调用 `/models`，不证明某个模型支持识图、生图或结构化返回。
+
+## 100 个原创场景
+
+`src/domain/presets.ts` 固定提供 **100 个不同场景、10 类各 10 个**。
+全部为本项目原创英文指令，未复制市场照片或第三方提示词，不声称来自实地摄影调查。
+每项含稳定 `id`、中文短 `label`、中文 `category/hint` 与详细英文 `prompt`。
+每个场景明确普通欧洲或美国住家环境、承托面、视角和日常光线。
+
+| 分类     | 数量 | 内容举例                         |
+| -------- | ---- | -------------------------------- |
+| 素色家居 | 10   | 白墙小桌、灰墙边柜、软木垫桌     |
+| 客厅角落 | 10   | 布艺沙发、茶几地毯、书柜下层     |
+| 卧室织物 | 10   | 棉被床铺、床头小柜、短绒地毯     |
+| 书桌餐桌 | 10   | 木质书桌、圆桌一角、折叶小桌     |
+| 厨房日常 | 10   | 厨房台面、瓷砖台角、厨房推车     |
+| 玄关收纳 | 10   | 家用储物架、玄关鞋凳、壁橱搁板   |
+| 庭院阳台 | 10   | 阴天院桌、公寓阳台、门廊木凳     |
+| 衣物鞋包 | 10   | 门上衣架、地板平铺、包袋玄台     |
+| 手持细节 | 10   | 单手托物、标签近拍、磨损近拍     |
+| 家务兴趣 | 10   | 车库工作台、兴趣室桌、闲置打包桌 |
+
+原有 10 个 ID 全部保留。旧记录中的名称、提示词快照不会被改写：
+
+| 旧 ID              | 当前标签   |
+| ------------------ | ---------- |
+| `white-studio`     | 白墙小桌   |
+| `grey-studio`      | 灰墙边柜   |
+| `home-sofa`        | 布艺沙发   |
+| `bedroom-bed`      | 棉被床铺   |
+| `wood-desk`        | 木质书桌   |
+| `kitchen-counter`  | 厨房台面   |
+| `wall-hang`        | 客厅挂墙   |
+| `store-shelf`      | 家用储物架 |
+| `outdoor-daylight` | 阴天院桌   |
+| `hand-hold`        | 单手托物   |
+
+保留带 `studio` 的旧 ID 是为了兼容历史，其当前内容已经是日常家居场景。
+场景不要求奢华棚拍、广告布景、戏剧光或美化滤镜。
+共用指令要求保留商品真实形状、材质、颜色、文字、标识、污渍、划痕、破损、褶皱、
+缺件与修补；不修复、不磨皮、不补猜不可见细节，不虚构品牌或配件。
+手持、挂置等有明确适用条件，不要求把不适用的商品强行缩小或新增挂点。
+这些是模型指令，不能保证上游生成一定忠实，成片仍需用户检查。
+
+页面提供“搜索场景”“场景分类”“场景预设”与英文场景展开查看。
+搜索覆盖中文名、说明、分类、ID 和英文提示词，多个关键词取交集；
+分类和搜索不会清空已选场景。“自由提示词”始终可选。
+
+## 提示词与约束
+
+有预设时，组合为“商品真实状态保留约束 + 英文场景 + Additional requirements + 用户原文”。
+不再截断为 6000 字符。用户文本最多 **12000 字符**，输入框允许保留超长粘贴内容，
+显示字数与错误并阻止提交；RPC 也明确拒绝超长输入，不截取前半段。
+
+无预设时，不自动加场景，用户文本包括首尾空格与换行保持原样；纯空白仍拒绝。
+未知预设明确拒绝，不静默退化为自由提示词。
+启用生成前识图时，会另附“可有误差、不可作为指令”的观察文字，并强调原图优先，
+用户的场景与约束原文完整保留。上游模型的提示词上限仍由上游决定，拒绝时显示错误。
+
+## 生成前单张识图
+
+`image.generate` 保留所有原有字段，并新增两个可选字段：
+
+```ts
+{
+  providerId: string
+  mode: 'generate' | 'edit'
+  presetId: string | null
+  prompt: string
+  size: '1024x1024' | '1024x1536' | '1536x1024' | 'auto'
+  count: number // 1-4
+  inputFileIds: string[] // 0-6；改图至少 1 张
+  visionProviderId?: string | null
+  visionFileId?: string | null
+}
 ```
 
-manifest 声明：`apiVersion: 1`、`id: studio.ai-image`、`version: 1.0.0`、
-能力 `image.provider`、域名 `api.openai.com` / `api.deepseek.com` / `openrouter.ai` /
-`api.siliconflow.cn` / `api.moonshot.cn` / `dashscope.aliyuncs.com`、
-`wantsBrowserAccess: false`、`storage: private`、密钥槽为空数组。
+- 无 `visionProviderId`：不新增识图请求，保持原生图与文案行为。
+- 有 `visionProviderId`：必须已有 Key 和非空 `visionModel`；没有自动选模型或供应商回退。
+- `visionFileId` 缺失或为 null 时取第一张输入；指定时必须属于本次 `inputFileIds`。
+- 只指定图片而没有识图服务商、无图片、重复文件 ID、图片不属于本次输入均明确拒绝。
+- 页面按稳定上传 key 解析具体文件，不按可能变化的数组下标猜测。
+  上传失败不能偷偷跳过；需用户重新选择或明确移除。
+- 没有图片时提示“请添加一张参考图片用于识图。”；指定图片被移除则提示重新选择。
 
-密钥槽为空是有意的：API Key 由用户填在插件自己的配置里、存在插件自己的文档里，
-不经过宿主的密钥槽写入命令，所以这里不需要声明槽位。域名列表是预置的常见兼容网关，
-换成别的自建网关需要同步改 manifest，否则宿主会拒绝该请求。
+执行顺序是 `queued -> vision -> image -> copy -> done`，未启用的阶段跳过。
+识图请求只带一张源图，不携带整组。改图仍发送全部已选参考图。
+识图成功后观察结果进入生图上下文；若配置文案模型，文案只接收观察文字，
+不会把整组或成片再次送去看图，纯文本模型也可用于此阶段。
+未启用独立识图时，保留 `supportsVision` 开启后文案读取最多两张生成成片的既有行为。
 
-## 与 nexus-cart `vinted-scenes` 的对应关系
+生成前识图的 HTTP 错误、超时、无效 JSON、空描述或超长描述会让任务失败并阻止生图。
+缺失参考图也会失败，不能丢图后继续或把改图退化为文生图。
+文案失败仍仅写 `copyError`，不使已经生成的图片作废。
 
-参考实现是一个批量套图工作台（批次列表、参考图选择器、历史弹窗）。本次只搬功能，
-不搬批量流程，对应关系如下：
+## 详情内单张成片识图
 
-| 原模块                                                | 本插件 / 页面                               | 变化                                                     |
-| ----------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------- |
-| `providers-sheet.tsx` 的 `image_api` 四选一           | `features/ai-image/providers-sheet.tsx`     | 只留 `images` 一种调用方式，删掉网站异步通道             |
-| `api.ts` 的 `ProviderBody`（snake_case）              | `src/domain/schemas.ts`                     | 字段改 camelCase，用 zod 校验地址与尺寸                  |
-| `templates.ts` 的 presentation × environment × camera | `src/domain/presets.ts`                     | 三个级联下拉改为 10 个一键场景预设，自由提示词照原样发送 |
-| `batch-list.tsx` + `batch-reference-picker.tsx`       | `ai-image-page.tsx` + `generate-dialog.tsx` | 批次改为单次生成记录；参考图改为弹窗内 1–6 张上传        |
-| `detail-dialog.tsx` 的左右并排对比                    | `compare-slider.tsx`                        | 改为滑动对比：一张叠一张，拖分割线看前后                 |
-| `history-dialog.tsx`                                  | 主页记录列表 + `detail-dialog.tsx`          | 历史升为主页，详情单独成弹窗                             |
-| `structuredScenePrompt`（策略 + 兼容矩阵）            | `composePrompt`                             | 去掉策略矩阵，固定“还原商品本体 + 场景句 + 附加要求”     |
-| 后端任务表与轮询                                      | 插件记录 + 页面轮询                         | 记录即任务状态，页面每 2.5 s 读一次                      |
-| 参考图文件服务                                        | `image.upload.*` / `image.file.chunk`       | 分块 RPC 代替 HTTP 上传与静态文件服务                    |
+用户先看到已生成的组图，点击缩略图“选择成片 1/2/…”选择目标，默认第一张。
+在“成片识图服务商 / 模型”选择配置，点击“识别当前成片”才发出请求。
+只有当前成片被发送，不重新生成图片、不改写既有标题与描述。
+远程参考图上传时用占位，成功后由 `RecordImage` 通过插件文件 API 显示；
+本地 blob 可以即时预览，WebView 不直接加载远程预览 URL。
 
-## 方法清单
+新增方法 `image.records.recognize`，与现有生成方法一样立即返回 `{ record }`：
 
-| 方法                     | 作用                                               |
-| ------------------------ | -------------------------------------------------- |
-| `image.providers.list`   | 列出服务商，只回显 `hasApiKey` 与末四位提示        |
-| `image.providers.save`   | 新增或修改；省略 `apiKey` 时保留原值               |
-| `image.providers.remove` | 删除服务商，按 id 幂等                             |
-| `image.providers.test`   | `GET /models` 检查地址与 Key，返回模型数量         |
-| `image.presets`          | 返回 10 个场景预设（id、名称、说明、提示词）       |
-| `image.upload.begin`     | 开始上传，返回 `uploadId` 与建议分块大小           |
-| `image.upload.chunk`     | 追加一块 base64，累计不得超过声明尺寸              |
-| `image.upload.finish`    | 校验总大小后写入 `images/`，返回文件描述           |
-| `image.upload.abort`     | 丢弃未完成的上传会话                               |
-| `image.file.chunk`       | 按偏移读取图片字节，供页面显示或导出前校验         |
-| `image.records.list`     | 按状态筛选、按时间倒序分页，返回总数与是否可持久化 |
-| `image.records.get`      | 取单条记录（页面轮询用）                           |
-| `image.records.remove`   | 删除记录并清理它的输入与输出文件                   |
-| `image.records.retry`    | 重置状态后重新执行同一条记录                       |
-| `image.records.export`   | 把输出复制到 `exports/`，返回可复制的路径          |
-| `image.generate`         | 建记录并立即返回 `running`，真正执行在后台         |
-
-同时最多 6 个上传会话、120 条记录；单张参考图上限 8 MiB，只接受
-`image/png`、`image/jpeg`、`image/webp`。超过上限是明确拒绝，不静默截断。
-
-## 上游协议
-
-- 文生图：`POST {baseUrl}/images/generations`，JSON 入参 `model`、`prompt`、`n`，
-  需要固定尺寸时带 `size`（`auto` 不带）。响应取 `data[].b64_json`，没有 base64
-  时按 `url` 回源下载一次。
-- 改图：`POST {baseUrl}/images/edits`，multipart，参考图字段名为 `image[]`
-  （多张即多个同名字段），其余字段与文生图一致。请求里不带 `size` 表示交给模型。
-- 文案：`POST {baseUrl}/chat/completions`，一条文本指令加最多两张 `image_url`，
-  要求只回 `{"title","description"}`。模型返回代码块或夹带说明时也能解析出 JSON；
-  解析不出来算文案失败，不影响已生成的图片。
-- 连通性：`GET {baseUrl}/models`，只用来确认地址与 Key 可用。
-- `dall-e-3` 只认 1792 长边，`1024x1536` / `1536x1024` 会别名成 `1024x1792` / `1792x1024`。
-- 超时：生图 180 s、文案 60 s、连通性 20 s；失败按 401/403、404、429、4xx、5xx
-  分别映射成 `AUTH_FAILED`、`UNAVAILABLE`、`RATE_LIMITED` 等可读中文原因。
-
-## 场景预设与提示词
-
-预设不是模板填空，而是一句写好的场景描述。选择预设时，实际发出的提示词是：
-
-```text
-<还原约束：重建商品本体，保留形状/材质/颜色/图案/可见文字，去掉原背景与光影>
-<场景句：白底棚拍、客厅沙发、手持随拍……>
-Additional requirements: <用户填的附加要求>
+```ts
+// 新识图：省略或 null fileId 取第一张成片
+{ id: string, providerId: string, fileId?: string | null }
+// 原选择重试：不允许同时覆盖 providerId/fileId
+{ id: string, retry: true }
 ```
 
-不选预设时，用户输入的提示词原样发送，不加任何前缀。整段提示词截断到 6000 字符。
-预设名称会快照到记录上，之后改名不影响历史。
+指定图片必须属于该记录的 `outputs` 且文件可读。其他记录图片、参考图、缺失成片
+或未配置识图模型均拒绝，不退回第一张。失败在结果区显示，提供
+“重试成片识图（原模型与原图片）”。新识图可以显式换图或换服务商；重试固定原选择。
 
-| id                 | 名称       | 适用           |
-| ------------------ | ---------- | -------------- |
-| `white-studio`     | 纯白棚拍   | 电商主图       |
-| `grey-studio`      | 浅灰棚拍   | 需要材质质感   |
-| `home-sofa`        | 客厅沙发   | 家居生活场景   |
-| `bedroom-bed`      | 卧室床铺   | 床品、纺织     |
-| `wood-desk`        | 木质书桌   | 桌面平铺       |
-| `kitchen-counter`  | 厨房台面   | 厨具、餐具     |
-| `wall-hang`        | 墙面挂置   | 画类、挂件     |
-| `store-shelf`      | 货架陈列   | 零售陈列       |
-| `outdoor-daylight` | 户外自然光 | 户外用品       |
-| `hand-hold`        | 手持随拍   | 二手平台实拍感 |
+成片识图用独立 `outputVision.status`，原记录的 `status` 保持生成结果；
+页面按 `image.records.get` 轮询两种任务状态。进行中的同记录任务阻止删除和重试。
 
-## 数据边界
+## 新增记录字段与重试
 
-- `ai-image.json`（0600）存服务商与记录，`images/` 存上传的参考图与生成的图片，
-  `exports/` 存导出副本。三个位置都在宿主注入的插件私有目录下，宿主不读取。
-- 私有文档用 `z.looseObject` 校验：已知字段必须合法，多出来的字段原样保留，便于以后加字段。
-  `schemaVersion` 必须是 1；不是合法 JSON 或结构不符时拒绝读写并给出明确原因，
-  不会把旧文档清空重写。
-- 写入走“临时文件 + rename”，修改失败时保留上一版文档，本次修改不落盘。
-- 导出文件名带序号，重复导出不会覆盖已有文件。
-- 宿主未提供私有目录时退回内存存储，重启即丢，页面标注“仅本次运行”。
+旧记录缺失这些字段仍可读取；`schemaVersion` 仍为 1：
 
-## 外部服务、费用与数据发送
+```ts
+basePrompt?: string // 识图前的预设与用户约束，重试避免重复附加观察
+copySupportsVision?: boolean
+vision?: {
+  providerId: string
+  providerName: string
+  providerKind: 'openai' | 'openai_compatible'
+  model: string
+  inputFileId: string
+  description: string | null
+} | null
+outputVision?: {
+  providerId: string
+  providerName: string
+  providerKind: 'openai' | 'openai_compatible'
+  model: string
+  outputFileId: string
+  status: 'running' | 'success' | 'failed'
+  description: string | null
+  error: string | null
+} | null
+```
 
-| 服务                                                                               | 用途              | 发送内容                               | 费用与限制                       |
-| ---------------------------------------------------------------------------------- | ----------------- | -------------------------------------- | -------------------------------- |
-| `api.openai.com`                                                                   | 官方生图与文案    | 提示词、参考图、生成的图片（文案阶段） | 按官方计价，图片按张计费         |
-| `api.deepseek.com` 等兼容网关                                                      | 兼容接口生图/文案 | 同上                                   | 取决于所选服务商，插件不代为计费 |
-| `api.siliconflow.cn`、`api.moonshot.cn`、`dashscope.aliyuncs.com`、`openrouter.ai` | 兼容网关          | 同上                                   | 同上                             |
+`prompt` 记录实际生图提示词，`basePrompt` 保存识图前版本；旧记录无后者时使用原 `prompt`。
+`vision` 保存源图识图快照，`outputVision` 保存最近一次成片识图的模型、图片、结果或错误。
+文件 ID 与输入/输出的归属关系在私有文档读取时校验，损坏时拒绝而非猜测替代。
 
-插件不发送本机路径、窗口资料、代理配置或收藏内容；参考图只在生图与文案请求中出现。
-图片里可能包含商品实拍的背景信息，是否上传由用户自己决定。
+生成重试使用已记录的生图、文案、识图模型和图片；成片识图重试使用已记录的模型与成片。
+修改提供方配置不会把已有重试换成新模型；端点和 Key 仍取该提供方当前配置，
+便于修正凭据。提供方删除、Key 缺失或文件丢失会明确失败。
+旧记录不会因新增了 `visionModel` 而自动启用识图。
 
-## 已知限制
+## RPC 方法
 
-- 只实现了 `/images/generations` 与 `/images/edits`。走 chat 多模态出图、或需要
-  异步任务轮询的接口，本插件不支持。
-- 文案模型必须支持看图；关掉“支持看图”开关后不会调用文案阶段，记录里标题与描述为空。
-- 后台任务按记录独立执行，没有并发上限；同时提交多条会并行请求上游。
-- 记录上限 120 条，淘汰最旧记录时会删除其图片文件，已导出的副本不受影响。
-- 导出是把文件复制到插件私有目录，需要用户自己复制路径去取；桌面端没有保存对话框。
-- 只在 macOS 上执行过类型检查、单测与宿主安装/启用/调用测试；Windows 未验证。
+| 方法                      | 作用                                    |
+| ------------------------- | --------------------------------------- |
+| `image.providers.list`    | 提供方列表，不回传明文 Key              |
+| `image.providers.save`    | 保存配置；省略 Key/visionModel 保留原值 |
+| `image.providers.remove`  | 删除配置，保留生成记录                  |
+| `image.providers.test`    | GET /models 连通性检查                  |
+| `image.presets`           | 返回 100 个场景，含 category            |
+| `image.upload.begin`      | 开始分块上传                            |
+| `image.upload.chunk`      | 追加图片分块                            |
+| `image.upload.finish`     | 校验总大小并写入图片                    |
+| `image.upload.abort`      | 放弃上传会话                            |
+| `image.upload.remote`     | 插件下载远程图片，按实际字节校验格式    |
+| `image.file.chunk`        | 页面分块读取插件图片                    |
+| `image.records.list`      | 按状态筛选、倒序分页                    |
+| `image.records.get`       | 读取记录，含两类识图状态                |
+| `image.records.remove`    | 删除记录及其图片文件                    |
+| `image.records.retry`     | 重试生成，沿用模型与选图快照            |
+| `image.records.recognize` | 识别单张成片，或按原选择重试            |
+| `image.records.export`    | 复制输出到私有 exports 目录             |
+| `image.generate`          | 创建记录并后台执行                      |
 
-## 本地验证
+同时最多 6 个上传会话；单图最多 8 MiB，仅接受 PNG/JPEG/WebP。
+本地上传预处理会缩放到最长边 1536 像素，原图细节可能因此减少；远程下载保持原字节。
+
+## 上游请求与外部数据
+
+- 生图：JSON `POST /images/generations`，传 `model/prompt/n` 与可选 `size`。
+- 改图：multipart `POST /images/edits`，参考图字段 `image[]`，其余参数同生图。
+- 独立识图：`POST /chat/completions`，明确的识图 `model`，一条文字指令加
+  **恰好一个** base64 `image_url`，要求返回 `{"description":"..."}`。
+  描述必须非空且不超过 6000 字符，否则报错，不能截断后当作成功。
+- 文案：相同 chat 路径，使用 `textModel`，要求 `{"title":"...","description":"..."}`。
+  独立识图路径不附图片；旧路径最多附两张生成成片。
+- 超时：生图 180 秒、识图/文案各 60 秒、连通性/远程图片下载各 20 秒。
+- 保留既有尺寸映射与错误分类，供应商不支持模型/格式时显示真实错误。
+
+生图服务商收到提示词和改图参考图；独立识图服务商只收到所选的一张源图或成片。
+生成前识图的观察结果还会发送给生图/文案服务商。详情成片识图的观察结果仅保存与显示。
+所有请求可能产生供应商费用；用户明确触发，失败不自动重试。
+不发送本机路径、窗口资料、代理配置或收藏内容。图片本身可能含背景信息。
+
+## 存储与限制
+
+私有文档用 `z.looseObject` 校验，保留未知字段，写入使用临时文件加 rename。
+写入失败不报告已保存；损坏文档拒绝读写，不清空重建。
+宿主未提供目录时使用内存，页面标记“仅本次运行”。导出重复文件名不会覆盖。
+
+- 上游需支持相应图像/多模态协议；不保证任意兼容网关或任意模型可用。
+- 识图可能误读文字或瑕疵，不能作为成色、真伪或工作状态的保证。
+- 成片识图只保存最近一次结果；新识图替换旧识图结果，不建立完整识图历史。
+- 进程重启不会自动重发请求。详情读取时会把中断的成片识图标记失败，允许按原选择手动重试。
+  原生图任务没有自动续跑。没有全局任务并发上限；每条记录独立执行。
+- 超过 120 条会淘汰旧记录并清理图片；导出副本不受影响。
+- 导出到私有目录，由用户复制路径取文件；尚无系统保存对话框。
+
+## 本次定向验证
+
+本次只运行无构建的检查，命令使用仓库固定 Node/pnpm：
 
 ```bash
-pnpm --filter @nexus/plugin-ai-image build
-pnpm exec vitest run plugins/ai-image
-pnpm exec eslint plugins/ai-image apps/desktop/src/features/ai-image --max-warnings 0
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run plugins/ai-image apps/desktop/src/features/ai-image --maxWorkers=4
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec eslint plugins/ai-image apps/desktop/src/features/ai-image --max-warnings 0
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p plugins/ai-image/tsconfig.json --noEmit
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p apps/desktop/tsconfig.json --noEmit
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p tsconfig.tests.json --noEmit
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec prettier --check plugins/ai-image apps/desktop/src/features/ai-image docs/22-ai-image-plugin.md
 ```
 
-插件侧 33 个用例：预设组合与截断（5）、地址归一化与凭据拒绝（3）、
-私有存储持久化与损坏拒绝（5）、图片分块读写与导出不覆盖（5）、
-能力层 15 个（服务商保存与密钥保留、文生图落盘、改图走 multipart 且带 `image[]`、
-文案读取成片、鉴权失败映射、文案失败不影响图片、空提示词与缺参考图拒绝、
-记录筛选与删除清理文件、上传未完成拒绝、内存存储拒绝导出）。
-
-这些用例都替换了全局 `fetch`，不请求真实接口，因此不证明上游行为、不证明计费，
-也不代表 Windows 上的文件权限表现。
+测试验证 100 项唯一性与旧 ID、搜索、完整约束、实际请求的提供方/模型/单张图片字节、
+旧流程、识图失败阻断、文件缺失、原选择重试，以及旧文档和识图快照持久化。
+测试替换 `fetch`，不证明真实接口效果、计费或模型能力；未执行真实付费请求、
+Windows、Rust、构建、打包或签名验证。主线质量记录由主线维护。

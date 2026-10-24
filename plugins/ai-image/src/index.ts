@@ -37,6 +37,8 @@ export type {
   ProviderRecord,
   ProviderView,
   StoredFile,
+  VisionRecord,
+  OutputVisionRecord,
 } from './domain/types.js'
 export type { PluginManifest }
 

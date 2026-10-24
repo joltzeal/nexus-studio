@@ -176,6 +176,8 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
   重复收藏只刷新快照，保留原 `favoriteId` 与 `savedAt`，并回报 `alreadySaved`。
 - 以图搜图只接受 JPEG：页面用 canvas 统一转码，插件校验 `FF D8 FF` 魔数后转发，
   非 JPEG 一律拒绝，不做格式猜测。
+- 展示图片使用 `supply.image.open/read/close`，由插件继承应用代理下载并按 256 KiB 分块传输，
+  页面只显示 Blob；精确限制来源、跳转、大小、MIME 与文件魔数，旧插件缺少方法时提示更新。
 - 收藏导出 CSV 带 BOM 与 CRLF，并对以 `= + - @` 等开头的单元格加前缀，避免公式注入。
 
 ### 6.4 平台账号 `platform.adapter`
@@ -226,6 +228,10 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
   密钥不进入日志，也不作为响应字段返回。
 - 生成是“先落记录、再后台执行”：`image.generate` 立即返回 `running` 记录，
   慢任务不受 120 s 请求超时约束，页面按 2.5 s 轮询记录状态。
+- 模型配置可独立填写 `visionModel`；`image.generate` 可指定 `visionProviderId` 与
+  属于输入组图的单个 `visionFileId`。`image.records.recognize` 对一张已生成成片识图，
+  不重新生图；模型、图片与结果持久化，重试保持原选择。字段及失败语义见模块文档。
+- `image.presets` 返回 100 个原创生活化场景及分类，保留旧 ID；自定义约束不静默截断。
 - 只声明用到的域名，没有通配符；插件不申请浏览器访问权限。
 - 生成结果只回到记录里，不自动发布到任何平台。
 

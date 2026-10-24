@@ -15,6 +15,8 @@
 - 手机号右侧的「号码池」按钮可以直接从
   [SIM8 接码插件](30-sim8-plugin.md) 的已购号码里选一个，选中后手机号与手机
   接码地址一起填好；SIM8 没装或没运行时按钮照常显示，点开只给一行说明。
+  编辑时会传入当前账号标识，号码池标记当前账号使用的号码，并列出其他使用者；
+  无法读取账号池时显示占用情况未知，不会误报号码未使用，也不禁止继续选择。
 - 登录方式与账密是必填项，缺任何一项都不能写入；其余字段留空是合法状态，
   不做“猜一个默认值”的补齐。
 - 登录方式只有四种：`email` / `google` / `apple` / `facebook`。
@@ -22,8 +24,9 @@
   `blocked`（封禁）。状态是操作者的记录，插件不探测真实账号状态。
 - 密码明文存在插件私有目录（文件权限 0600），宿主不加密、不代管。
   页面在表格里不显示密码，只在编辑弹窗里回读，默认隐藏。
-- 插件不发起任何网络请求，`networkDomains` 为空、`secrets` 为空、
-  `wantsBrowserAccess: false`。
+- 保存与关联不执行账号登录。用户显式读取验证码时，插件请求账号已保存的
+  邮箱或手机接码链接；`networkDomains` 与 `secrets` 仍为空，
+  `wantsBrowserAccess: false`，这些声明不代表网络沙箱。
 
 ## 包结构
 
@@ -52,6 +55,7 @@ plugins/vinted-accounts/
 | `vinted.accounts.bind`     | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突     |
 | `vinted.accounts.unbind`   | `{ windowId }`                                | 解除该窗口的关联                 |
 | `vinted.accounts.bindings` | —                                             | 绑定列表，附带账号摘要           |
+| `vinted.accounts.otp`      | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文 |
 | `transfer.export`          | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照   |
 | `transfer.import`          | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执 |
 | `transfer.rollback`        | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定   |
@@ -165,9 +169,27 @@ bindings: [{ windowId, accountId, boundAt }]
   插件复制一份只会过期；提示文案里的窗口名由窗口页自己拼。
 
 窗口页（`spaces-page.tsx`）在插件运行中读取 `vinted.accounts.bindings` 与
-`vinted.accounts.list`，在表格里加一列显示已关联账号，并在每行 `…` 菜单里提供
-“关联账号 / 更换账号 / 解除关联”。插件没就绪时这一列留空、菜单仍可打开，
+`vinted.accounts.list`，在表格里显示已关联账号；已有手机号以语义强调色显示，
+点击号码即可复制，手机图标也标记已有手机号。在每行 `…` 菜单里提供
+“关联账号 / 更换账号 / 解除关联”。插件没就绪时关联操作不可用，
 弹窗里会说明插件尚未就绪。
+
+未关联行的「添加账号」使用 shadcn Tabs，在「选择已有 / 新建账号」之间切换，
+搜索列表与创建表单不同时展开；弹层和内容区限制高度，长列表可滚动。
+保存失败保留输入与错误反馈，重复账号关联仍沿用已有确认流程。
+
+手机图标弹层明确显示账号身份与可复制的当前手机号，提供
+「验证码 / 号码池 / 编辑链接」三个互斥页签：
+
+- 选择 SIM8 号码，把 `phone` 与 `smsOtpUrl` 写入这个账号；仅编辑链接时只更新
+  `smsOtpUrl`，保留该账号的手机号以及其他业务字段，不把号码写在窗口记录上。
+- 写入成功后使用插件返回的账号立即更新窗口行与弹层，停留在「验证码」页签；
+  同一账号关联的其他窗口行也更新。写入失败保留链接草稿，不提示保存成功。
+- 「读取短信验证码」通过 `readOtp(account.id, 'sms')` 读取账号已保存的链接，
+  结果、无唯一验证码时的说明、响应原文与请求错误都在弹层内展示，验证码与原文
+  可以复制；原文按文本展示，不执行返回的 HTML。
+- 编辑链接产生未保存的修改时禁止取码并提示先保存；切换页签和关闭后重新打开
+  都保留草稿，不会悄悄用未保存链接发起请求。更新链接会清掉旧取码结果。
 
 ## 已知边界
 
@@ -180,15 +202,16 @@ bindings: [{ windowId, accountId, boundAt }]
 
 ## 本地验证
 
+按当前开发约定，本地只直接运行测试、lint、格式与无产物类型检查，不构建或打包。
+使用仓库固定 Node.js 24.18.0，并在复用已安装依赖时设置
+`pnpm_config_verify_deps_before_run=false`。前端联动回归入口：
+
 ```bash
-rtk proxy pnpm --filter @nexus/plugin-vinted-accounts run build
-rtk proxy pnpm exec vitest run plugins/vinted-accounts
-rtk proxy pnpm exec eslint plugins/vinted-accounts --max-warnings 0
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run apps/desktop/src/features/accounts/accounts-page.test.ts apps/desktop/src/features/sim8/accounts-bridge.test.ts apps/desktop/src/features/sim8/number-picker.test.ts apps/desktop/src/features/spaces/spaces-page.test.ts --maxWorkers=4
 ```
 
-使用仓库固定 Node.js 24.18.0，并在复用已安装依赖时设置
-`pnpm_config_verify_deps_before_run=false`。
+前端回归覆盖账号字段保留、保存结果回传、写入失败、号码规范化与占用提醒。
 传输测试启动实际构建的 Node.js 入口，经握手和逐行 RPC 验证选中范围、完整凭据、
 共享账号的窗口重映射、调用方事务 UUID、重启后的回滚/提交、同 ID 替换恢复、
 真实文件写入失败与重试。另有取消、幂等重试与账号上限的原子性测试。
-必须先构建再运行真实进程测试；这些验证不代表账号登录、Windows 或完整宿主归档集成已通过。
+依赖构建的真实进程测试交由 CI；这些验证不代表账号登录、Windows 或完整宿主归档集成已通过。

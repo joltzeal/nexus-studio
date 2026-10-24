@@ -43,6 +43,7 @@ interface FormState {
   apiKey: string
   imageModel: string
   textModel: string
+  visionModel: string
   supportsVision: boolean
 }
 
@@ -55,6 +56,7 @@ function emptyForm(): FormState {
     apiKey: '',
     imageModel: 'gpt-image-1',
     textModel: 'gpt-4o-mini',
+    visionModel: '',
     supportsVision: true,
   }
 }
@@ -68,6 +70,7 @@ function formOf(provider: Provider): FormState {
     apiKey: '',
     imageModel: provider.imageModel,
     textModel: provider.textModel,
+    visionModel: provider.visionModel ?? '',
     supportsVision: provider.supportsVision,
   }
 }
@@ -111,9 +114,11 @@ export function ProvidersSheet({
     if (
       form.name.trim() === '' ||
       form.baseUrl.trim() === '' ||
-      form.imageModel.trim() === ''
+      (form.imageModel.trim() === '' &&
+        form.textModel.trim() === '' &&
+        form.visionModel.trim() === '')
     ) {
-      setError('名称、基础地址和生图模型都需要填写。')
+      setError('请填写名称、基础地址，以及至少一个生图、文案或识图模型。')
       return
     }
     if (form.id === null && form.apiKey.trim() === '') {
@@ -129,6 +134,7 @@ export function ProvidersSheet({
       baseUrl: form.baseUrl.trim(),
       imageModel: form.imageModel.trim(),
       textModel: form.textModel.trim(),
+      visionModel: form.visionModel.trim(),
       supportsVision: form.supportsVision,
       ...(form.id === null ? {} : { id: form.id }),
       ...(form.apiKey.trim() === '' ? {} : { apiKey: form.apiKey.trim() }),
@@ -186,7 +192,7 @@ export function ProvidersSheet({
         <SheetHeader>
           <SheetTitle>模型配置</SheetTitle>
           <SheetDescription>
-            生图与文案各用一个模型，可以来自同一服务商。只支持 OpenAI 官方与 OpenAI
+            生图、识图与文案分别配置。识图可选另一服务商；只支持 OpenAI 官方与 OpenAI
             兼容接口。
           </SheetDescription>
         </SheetHeader>
@@ -209,10 +215,13 @@ export function ProvidersSheet({
                   </div>
                   <p className="ai-provider-meta">{provider.baseUrl}</p>
                   <p className="ai-provider-meta">
-                    生图 {provider.imageModel}
+                    生图 {provider.imageModel || '未配置'}
                     {provider.textModel === ''
                       ? ' · 未配置文案模型'
                       : ` · 文案 ${provider.textModel}`}
+                    {provider.visionModel
+                      ? ` · 识图 ${provider.visionModel}`
+                      : ' · 未配置独立识图'}
                     {provider.hasApiKey ? ` · Key ${provider.apiKeyHint}` : ''}
                   </p>
                 </div>
@@ -345,6 +354,7 @@ export function ProvidersSheet({
                   disabled={pending}
                   onChange={(event) => update('imageModel', event.target.value)}
                 />
+                <FieldDescription>只用于识图的服务商可留空。</FieldDescription>
               </Field>
               <Field>
                 <FieldLabel htmlFor="ai-provider-text">文案模型</FieldLabel>
@@ -359,6 +369,20 @@ export function ProvidersSheet({
                 <FieldDescription>留空则不生成标题与描述。</FieldDescription>
               </Field>
             </div>
+            <Field>
+              <FieldLabel htmlFor="ai-provider-vision-model">识图模型</FieldLabel>
+              <Input
+                id="ai-provider-vision-model"
+                maxLength={120}
+                placeholder="填写该服务商支持图片输入的模型 ID"
+                value={form.visionModel}
+                disabled={pending}
+                onChange={(event) => update('visionModel', event.target.value)}
+              />
+              <FieldDescription>
+                独立于生图和文案模型。生成前可识别一张参考图，也可在详情选择成片识图；留空不启用，不自动复用文案模型。
+              </FieldDescription>
+            </Field>
             <div className="ai-switch-row">
               <Switch
                 id="ai-provider-vision"
@@ -367,9 +391,9 @@ export function ProvidersSheet({
                 onCheckedChange={(checked) => update('supportsVision', checked)}
               />
               <div>
-                <label htmlFor="ai-provider-vision">文案模型支持识图</label>
+                <label htmlFor="ai-provider-vision">文案模型可直接读取成片</label>
                 <p className="ai-muted">
-                  开启后把生成的图片发给文案模型写标题与描述；关闭则不调用文案模型。
+                  未启用独立识图时，开启后把成片发给文案模型。已启用独立识图时，文案只读取识图结果文字。
                 </p>
               </div>
             </div>

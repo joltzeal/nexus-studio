@@ -10,6 +10,9 @@ import { favoritesCsv, productRecord, type FavoriteRecord } from '../domain/prod
 import {
   FavoriteAddInputSchema,
   FavoriteRemoveInputSchema,
+  ImageCloseInputSchema,
+  ImageOpenInputSchema,
+  ImageReadInputSchema,
   ImageSearchInputSchema,
   MAX_IMAGE_BYTES,
   ProductsInputSchema,
@@ -27,6 +30,7 @@ import {
   type SharedSupplyClient,
 } from '../services/upstream.js'
 import type { PrivateStore } from '../store/private-store.js'
+import { SharedSupplyImages } from '../services/images.js'
 
 export const SUPPLY_METHODS = [
   'supply.catalog',
@@ -34,6 +38,9 @@ export const SUPPLY_METHODS = [
   'supply.products',
   'supply.search',
   'supply.imageSearch',
+  'supply.image.open',
+  'supply.image.read',
+  'supply.image.close',
   'supply.favorites.list',
   'supply.favorites.add',
   'supply.favorites.remove',
@@ -51,6 +58,7 @@ export interface SharedSupplyOptions {
   logger: Logger
   now?: () => Date
   idFactory?: () => string
+  images?: SharedSupplyImages
 }
 
 function jpegPayload(base64: string): Buffer {
@@ -77,6 +85,7 @@ export class SharedSupply {
   private readonly logger: Logger
   private readonly now: () => Date
   private readonly idFactory: () => string
+  private readonly images: SharedSupplyImages
 
   constructor(options: SharedSupplyOptions) {
     this.client = options.client
@@ -84,6 +93,7 @@ export class SharedSupply {
     this.logger = options.logger
     this.now = options.now ?? (() => new Date())
     this.idFactory = options.idFactory ?? randomUUID
+    this.images = options.images ?? new SharedSupplyImages()
   }
 
   status(): Record<string, unknown> {
@@ -103,6 +113,20 @@ export class SharedSupply {
         return await this.search(context)
       case 'supply.imageSearch':
         return await this.imageSearch(context)
+      case 'supply.image.open': {
+        const input = parseOrThrow(ImageOpenInputSchema, context.payload)
+        return await this.images.open(input.url, context)
+      }
+      case 'supply.image.read': {
+        context.assertAlive()
+        const input = parseOrThrow(ImageReadInputSchema, context.payload)
+        return this.images.read(input.id, input.offset)
+      }
+      case 'supply.image.close': {
+        context.assertAlive()
+        const input = parseOrThrow(ImageCloseInputSchema, context.payload)
+        return this.images.close(input.id)
+      }
       case 'supply.favorites.list':
         return await this.listFavorites(context)
       case 'supply.favorites.add':

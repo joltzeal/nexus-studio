@@ -5,6 +5,21 @@ import { CATEGORY_IDS } from '../services/upstream.js'
 
 const pageSchema = z.number().int().min(0).max(1000)
 
+export const ImageOpenInputSchema = z.strictObject({
+  url: z.string().min(1).max(2048),
+})
+
+export const ImageReadInputSchema = z.strictObject({
+  id: z.uuid(),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .max(8 * 1024 * 1024),
+})
+
+export const ImageCloseInputSchema = z.strictObject({ id: z.uuid() })
+
 /** Base64 payload cap: 5 MiB of image data plus encoding overhead. */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_IMAGE_BASE64 = Math.ceil(MAX_IMAGE_BYTES / 3) * 4

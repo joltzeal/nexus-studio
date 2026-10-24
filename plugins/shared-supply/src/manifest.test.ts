@@ -13,6 +13,7 @@ describe('shared supply manifest', () => {
       'gz.aliyizhan.com',
       'aliyizhan.com',
       'product.aliyizhan.com',
+      'thirdwx.qlogo.cn',
     ])
     expect(manifest.permissions.wantsBrowserAccess).toBe(false)
     expect(manifest.permissions.storage).toBe('private')
@@ -41,6 +42,9 @@ describe('shared supply manifest', () => {
       'supply.products',
       'supply.search',
       'supply.imageSearch',
+      'supply.image.open',
+      'supply.image.read',
+      'supply.image.close',
       'supply.favorites.list',
       'supply.favorites.add',
       'supply.favorites.remove',

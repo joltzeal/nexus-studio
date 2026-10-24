@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useRef, useState } from 'react'
 import { Check, Loader2, Pencil, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,10 +22,10 @@ export function WindowNote({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pending = useRef(false)
+  const cancelled = useRef(false)
 
-  async function save(event: FormEvent) {
-    event.preventDefault()
-    if (pending.current) return
+  async function save() {
+    if (pending.current || cancelled.current) return
     if (draft.trim() === note) {
       setEditing(false)
       return
@@ -39,13 +39,14 @@ export function WindowNote({
       setEditing(false)
       toast.success('备注已保存')
     } catch (cause) {
-      setError(
+      const message =
         typeof cause === 'string'
           ? cause
           : cause instanceof Error
             ? cause.message
-            : '备注保存失败，请重试。',
-      )
+            : '备注保存失败，请重试。'
+      setError(message)
+      toast.error(message)
     } finally {
       pending.current = false
       setSaving(false)
@@ -62,6 +63,7 @@ export function WindowNote({
         onClick={() => {
           setDraft(note)
           setError(null)
+          cancelled.current = false
           setEditing(true)
         }}
       >
@@ -72,13 +74,23 @@ export function WindowNote({
   }
 
   return (
-    <form className="window-note-form" onSubmit={(event) => void save(event)}>
+    <form
+      className="window-note-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void save()
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) void save()
+      }}
+    >
       <div className="window-note-controls">
         <Input
           autoFocus
           aria-label={`${name} 的备注`}
           aria-invalid={error !== null}
           aria-describedby={error === null ? undefined : `note-error-${id}`}
+          title={error ?? undefined}
           placeholder="添加备注"
           maxLength={120}
           value={draft}
@@ -91,7 +103,10 @@ export function WindowNote({
             }
             if (event.key === 'Escape') {
               event.preventDefault()
-              if (!pending.current) setEditing(false)
+              if (!pending.current) {
+                cancelled.current = true
+                setEditing(false)
+              }
             }
           }}
         />
@@ -101,6 +116,7 @@ export function WindowNote({
           variant="ghost"
           disabled={saving}
           aria-label={`保存 ${name} 的备注`}
+          onPointerDown={(event) => event.preventDefault()}
         >
           {saving ? <Loader2 className="animate-spin" /> : <Check />}
         </Button>
@@ -110,13 +126,17 @@ export function WindowNote({
           variant="ghost"
           disabled={saving}
           aria-label={`取消编辑 ${name} 的备注`}
-          onClick={() => setEditing(false)}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            cancelled.current = true
+            setEditing(false)
+          }}
         >
           <X />
         </Button>
       </div>
       {error === null ? null : (
-        <FieldError id={`note-error-${id}`} role="alert">
+        <FieldError id={`note-error-${id}`} className="sr-only" role="alert">
           {error}
         </FieldError>
       )}

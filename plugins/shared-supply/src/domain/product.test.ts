@@ -77,6 +77,17 @@ describe('productRecord', () => {
 })
 
 describe('merchantRecord', () => {
+  it('normalises the observed logo hosts to HTTPS and rejects arbitrary remote content', () => {
+    expect(
+      merchantRecord({ iconUrl: 'http://product.aliyizhan.com/upload-file/logo.jpg' })
+        .iconUrl,
+    ).toBe('https://product.aliyizhan.com/upload-file/logo.jpg')
+    expect(
+      merchantRecord({ iconUrl: 'https://thirdwx.qlogo.cn/mmopen/logo/0' }).iconUrl,
+    ).toBe('https://thirdwx.qlogo.cn/mmopen/logo/0')
+    expect(merchantRecord({ iconUrl: 'https://evil.example/logo.svg' }).iconUrl).toBe('')
+  })
+
   it('keeps the six fields the page renders', () => {
     expect(
       merchantRecord({

@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { Loader2, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DialogContent,
@@ -14,16 +14,13 @@ export type GateStage =
   | { stage: 'checking' }
   | { stage: 'blocked'; outcome: ProxyCheckOutcome }
   | { stage: 'launching'; outcome: ProxyCheckOutcome | null }
-  | { stage: 'launched'; outcome: ProxyCheckOutcome | null }
   | { stage: 'unconfirmed'; error: string; reading?: boolean }
   | { stage: 'failed'; error: string }
 
 /**
  * Blocking gate in front of a launch. While it is open the rest of the page is
  * inert: the user is waiting on one decision, not browsing a table.
- *
- * The last stage keeps the preflight measurement visible, without claiming it
- * proves the running browser's exit IP.
+ * A confirmed running browser closes the gate in the launch controller.
  */
 export function ProxyGateDialog({
   name,
@@ -83,10 +80,6 @@ export function ProxyGateDialog({
           <ProxyCheckSummary result={stage.outcome.result} />
         ) : null}
 
-        {stage.stage === 'launched' && stage.outcome?.kind === 'checked' ? (
-          <ProxyCheckSummary result={stage.outcome.result} />
-        ) : null}
-
         {stage.stage === 'blocked' &&
         stage.outcome.kind === 'checked' &&
         !stage.outcome.result.ok ? (
@@ -107,11 +100,6 @@ export function ProxyGateDialog({
             {stage.error}
           </p>
         ) : null}
-        {stage.stage === 'launched' && stage.outcome?.kind === 'checked' ? (
-          <p className="proxy-gate-note">
-            上方为启动前的代理检测结果；浏览器内的实际出口仍需通过真实请求验证。
-          </p>
-        ) : null}
       </div>
 
       <DialogFooter>
@@ -126,8 +114,6 @@ export function ProxyGateDialog({
             </Button>
             <Button onClick={onProceed}>重新检测</Button>
           </>
-        ) : stage.stage === 'launched' ? (
-          <Button onClick={onCancel}>关闭</Button>
         ) : stage.stage === 'unconfirmed' ? (
           <>
             <Button variant="outline" onClick={onCancel}>
@@ -156,7 +142,6 @@ function StageIcon({ stage }: { stage: GateStage }) {
   ) {
     return <Loader2 className="animate-spin" aria-hidden="true" />
   }
-  if (stage.stage === 'launched') return <CheckCircle2 aria-hidden="true" />
   if (stage.stage === 'failed' || stage.stage === 'unconfirmed')
     return <ShieldAlert aria-hidden="true" />
   if (stage.outcome.kind === 'checked' && stage.outcome.result.ok) {
@@ -168,7 +153,6 @@ function StageIcon({ stage }: { stage: GateStage }) {
 function titleOf(stage: GateStage): string {
   if (stage.stage === 'checking') return '正在检测代理'
   if (stage.stage === 'launching') return '正在打开窗口'
-  if (stage.stage === 'launched') return '窗口已打开'
   if (stage.stage === 'failed') return '窗口打开失败'
   if (stage.stage === 'unconfirmed') return '窗口运行状态尚未确认'
   if (stage.outcome.kind === 'unsupported') return '无法检测代理'
@@ -181,9 +165,6 @@ function descriptionOf(stage: GateStage, name: string): string {
   }
   if (stage.stage === 'launching')
     return '启动前代理检测通过，正在等待宿主准备内核并确认运行状态，最长等待 120 秒。'
-  if (stage.stage === 'launched') {
-    return `宿主已确认「${name}」的浏览器进程正在运行。`
-  }
   if (stage.stage === 'failed') return `「${name}」没能打开。`
   if (stage.stage === 'unconfirmed')
     return '等待已结束，后台请求仍可能继续。重新读取状态不会再次发起启动。'

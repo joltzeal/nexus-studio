@@ -32,6 +32,7 @@ const providerSchema = z.looseObject({
   apiKey: z.string(),
   imageModel: z.string(),
   textModel: z.string(),
+  visionModel: z.string().max(120).default(''),
   supportsVision: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -44,31 +45,70 @@ const storedFileSchema = z.looseObject({
   bytes: z.number(),
 })
 
-const recordSchema = z.looseObject({
-  id: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  status: z.enum(['running', 'success', 'failed']),
-  stage: z.enum(['queued', 'copy', 'image', 'done']),
-  mode: z.enum(['generate', 'edit']),
-  prompt: z.string(),
-  presetId: z.string().nullable(),
-  presetLabel: z.string().nullable(),
-  size: z.string(),
-  count: z.number(),
-  providerId: z.string(),
-  providerName: z.string(),
-  providerKind: z.enum(['openai', 'openai_compatible']),
-  imageModel: z.string(),
-  textModel: z.string(),
-  inputs: z.array(storedFileSchema),
-  outputs: z.array(storedFileSchema),
-  title: z.string().nullable(),
-  description: z.string().nullable(),
-  error: z.string().nullable(),
-  copyError: z.string().nullable(),
-  durationMs: z.number().nullable(),
-})
+const recordSchema = z
+  .looseObject({
+    id: z.string(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    status: z.enum(['running', 'success', 'failed']),
+    stage: z.enum(['queued', 'vision', 'copy', 'image', 'done']),
+    mode: z.enum(['generate', 'edit']),
+    prompt: z.string(),
+    basePrompt: z.string().optional(),
+    presetId: z.string().nullable(),
+    presetLabel: z.string().nullable(),
+    size: z.string(),
+    count: z.number(),
+    providerId: z.string(),
+    providerName: z.string(),
+    providerKind: z.enum(['openai', 'openai_compatible']),
+    imageModel: z.string(),
+    textModel: z.string(),
+    copySupportsVision: z.boolean().optional(),
+    vision: z
+      .looseObject({
+        providerId: z.string().min(1),
+        providerName: z.string(),
+        providerKind: z.enum(['openai', 'openai_compatible']),
+        model: z.string().trim().min(1).max(120),
+        inputFileId: z.string().min(1),
+        description: z.string().nullable(),
+      })
+      .nullable()
+      .default(null),
+    outputVision: z
+      .looseObject({
+        providerId: z.string().min(1),
+        providerName: z.string(),
+        providerKind: z.enum(['openai', 'openai_compatible']),
+        model: z.string().trim().min(1).max(120),
+        outputFileId: z.string().min(1),
+        status: z.enum(['running', 'success', 'failed']),
+        description: z.string().nullable(),
+        error: z.string().nullable(),
+      })
+      .nullable()
+      .default(null),
+    inputs: z.array(storedFileSchema),
+    outputs: z.array(storedFileSchema),
+    title: z.string().nullable(),
+    description: z.string().nullable(),
+    error: z.string().nullable(),
+    copyError: z.string().nullable(),
+    durationMs: z.number().nullable(),
+  })
+  .refine(
+    (record) =>
+      record.vision === null ||
+      record.inputs.some((file) => file.id === record.vision?.inputFileId),
+    { message: '识图图片必须属于记录的参考图' },
+  )
+  .refine(
+    (record) =>
+      record.outputVision === null ||
+      record.outputs.some((file) => file.id === record.outputVision?.outputFileId),
+    { message: '成片识图图片必须属于记录的输出图' },
+  )
 
 const documentSchema = z.looseObject({
   schemaVersion: z.literal(1),

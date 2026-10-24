@@ -14,6 +14,7 @@ import {
   type PrivateStore,
 } from './store/private-store.js'
 import { SharedSupplyClient } from './services/upstream.js'
+import { SharedSupplyImages } from './services/images.js'
 
 export { manifest }
 export {
@@ -81,6 +82,9 @@ export function createSharedSupplyPlugin(
 
   const plugin = new SharedSupply({
     client,
+    images: new SharedSupplyImages(
+      options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
+    ),
     store,
     logger,
     now,

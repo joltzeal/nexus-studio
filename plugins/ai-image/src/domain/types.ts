@@ -15,6 +15,9 @@ export interface ProviderRecord {
   apiKey: string
   imageModel: string
   textModel: string
+  /** Optional on legacy configurations; never inferred from the copy model. */
+  visionModel?: string
+  /** Legacy copy stage: whether the text model can read generated images. */
   supportsVision: boolean
   createdAt: string
   updatedAt: string
@@ -28,6 +31,7 @@ export interface ProviderView {
   baseUrl: string
   imageModel: string
   textModel: string
+  visionModel: string
   supportsVision: boolean
   hasApiKey: boolean
   apiKeyHint: string
@@ -37,7 +41,7 @@ export interface ProviderView {
 
 export type GenerationMode = 'generate' | 'edit'
 export type RecordStatus = 'running' | 'success' | 'failed'
-export type RecordStage = 'queued' | 'copy' | 'image' | 'done'
+export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
 
 /** A file the plugin owns under its private `images/` directory. */
 export interface StoredFile {
@@ -45,6 +49,27 @@ export interface StoredFile {
   name: string
   mime: string
   bytes: number
+}
+
+export interface VisionRecord {
+  providerId: string
+  providerName: string
+  providerKind: ProviderKind
+  model: string
+  /** Exactly one of this record's inputs, resolved before the job starts. */
+  inputFileId: string
+  description: string | null
+}
+
+export interface OutputVisionRecord {
+  providerId: string
+  providerName: string
+  providerKind: ProviderKind
+  model: string
+  outputFileId: string
+  status: RecordStatus
+  description: string | null
+  error: string | null
 }
 
 export interface GenerationRecord {
@@ -56,6 +81,8 @@ export interface GenerationRecord {
   mode: GenerationMode
   /** The final prompt sent to the image model, already composed with the preset. */
   prompt: string
+  /** Preset + user constraints before recognition, reused unchanged on retry. */
+  basePrompt?: string
   presetId: string | null
   presetLabel: string | null
   size: string
@@ -65,11 +92,15 @@ export interface GenerationRecord {
   providerKind: ProviderKind
   imageModel: string
   textModel: string
+  copySupportsVision?: boolean
+  /** Missing on legacy records means no separate recognition request. */
+  vision?: VisionRecord | null
+  outputVision?: OutputVisionRecord | null
   inputs: StoredFile[]
   outputs: StoredFile[]
   title: string | null
   description: string | null
-  /** Image-stage failure. A failed record keeps its prompt and inputs so retry works. */
+  /** Recognition/image failure. Keeps model and input selections for retry. */
   error: string | null
   /** Copy-stage failure. The image can still succeed, so it is reported separately. */
   copyError: string | null
@@ -151,6 +182,7 @@ export function providerView(record: ProviderRecord): ProviderView {
     baseUrl: record.baseUrl,
     imageModel: record.imageModel,
     textModel: record.textModel,
+    visionModel: record.visionModel ?? '',
     supportsVision: record.supportsVision,
     hasApiKey: record.apiKey !== '',
     apiKeyHint: apiKeyHint(record.apiKey),

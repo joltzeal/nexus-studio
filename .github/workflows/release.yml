@@ -9,6 +9,44 @@ permissions:
   contents: write
 
 jobs:
+  plugins:
+    if: github.repository == 'joltzeal/nexus-studio'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build companion plugins
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-shared-supply...' build
+      - name: Pack companion plugins
+        run: |
+          node scripts/pack-plugin.mjs plugins/ai-image --changelog "100 everyday scenes, independent vision models and reference image selection."
+          node scripts/pack-plugin.mjs plugins/shared-supply --changelog "Proxy-aware image downloads, chunked transport and validated image data."
+          node scripts/build-market.mjs
+      - name: Verify packaged plugin startup
+        shell: bash
+        run: |
+          for file in market/plugins/*/*.nexuspkg; do
+            node scripts/verify-package.mjs "$file"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-market-${{ github.ref_name }}
+          path: |
+            market/catalog.json
+            market/plugins/**/*.nexuspkg
+          if-no-files-found: error
+          retention-days: 14
+
   package:
     if: github.repository == 'joltzeal/nexus-studio'
     strategy:
@@ -64,7 +102,7 @@ jobs:
 
   publish:
     if: github.repository == 'joltzeal/nexus-studio'
-    needs: package
+    needs: [package, plugins]
     runs-on: ubuntu-latest
     steps:
       - name: Publish completed release

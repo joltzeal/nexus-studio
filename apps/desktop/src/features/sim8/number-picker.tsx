@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Loader2, Search, Smartphone } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
@@ -14,6 +14,12 @@ import {
 import { listPlugins, pluginHostAvailable } from '@/lib/platform/native-plugins'
 import { listRecords } from './api'
 import {
+  canonicalPhone,
+  indexAccountPhones,
+  listAccountTargets,
+  type AccountTarget,
+} from './accounts-bridge'
+import {
   SIM8_PLUGIN_ID,
   message,
   recordExpired,
@@ -25,6 +31,81 @@ import {
 export interface PickedNumber {
   tel: string
   api: string
+}
+
+type AccountLookup =
+  | { state: 'loading' }
+  | { state: 'unavailable' }
+  | { state: 'ready'; items: AccountTarget[] }
+
+export function NumberPoolOptions({
+  records,
+  accounts,
+  currentAccountId,
+  onPick,
+  disabled = false,
+}: {
+  records: SmsRecord[]
+  accounts: AccountLookup
+  currentAccountId?: string | undefined
+  onPick: (number: PickedNumber) => void
+  disabled?: boolean
+}) {
+  const usage = useMemo(
+    () => indexAccountPhones(accounts.state === 'ready' ? accounts.items : []),
+    [accounts],
+  )
+
+  return (
+    <>
+      {accounts.state === 'ready' ? null : (
+        <p className="sim8-hint" role="status">
+          {accounts.state === 'loading'
+            ? '正在查询账号占用…'
+            : '无法读取 Vinted 账号，号码占用情况未知；仍可选择号码。'}
+        </p>
+      )}
+      {records.length === 0 ? null : (
+        <div className="sim8-pick-list" role="listbox" aria-label="已购号码">
+          {records.map((record) => {
+            const owners = usage.get(canonicalPhone(record.tel)) ?? []
+            const current = owners.some((owner) => owner.id === currentAccountId)
+            const others = owners.filter((owner) => owner.id !== currentAccountId)
+            return (
+              <button
+                key={record.tel}
+                type="button"
+                role="option"
+                aria-selected={current}
+                className="sim8-pick-row"
+                disabled={disabled || record.api === ''}
+                title={record.api === '' ? '这个号码没有接码链接' : '使用号码与接码链接'}
+                onClick={() => onPick({ tel: record.tel, api: record.api })}
+              >
+                <span className="sim8-tel">
+                  <strong>{record.tel}</strong>
+                  {current ? <Badge variant="secondary">当前账号</Badge> : null}
+                  {recordExpired(record) ? <Badge variant="outline">已过期</Badge> : null}
+                </span>
+                <small>
+                  {record.api === ''
+                    ? '没有接码链接'
+                    : `${record.remark || '已购'} · 到期 ${shortTime(record.endTime)}`}
+                </small>
+                {others.length > 0 ? (
+                  <span className="sim8-number-usage" data-used="true">
+                    其他账号已使用：{others.map((owner) => owner.account).join('、')}
+                  </span>
+                ) : accounts.state === 'ready' && !current ? (
+                  <span className="sim8-number-usage">暂无账号使用</span>
+                ) : null}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </>
+  )
 }
 
 /**
@@ -39,14 +120,17 @@ export interface PickedNumber {
 export function NumberPoolList({
   onPick,
   disabled = false,
+  currentAccountId,
 }: {
   onPick: (number: PickedNumber) => void
   disabled?: boolean
+  currentAccountId?: string | undefined
 }) {
   const [query, setQuery] = useState('')
   const [records, setRecords] = useState<SmsRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [accounts, setAccounts] = useState<AccountLookup>({ state: 'loading' })
 
   useEffect(() => {
     let active = true
@@ -70,6 +154,15 @@ export function NumberPoolList({
           if (active) setError('SIM8 接码插件正在启动，稍后再试。')
           return
         }
+        // Account lookup must not hide usable numbers when that plugin is down.
+        void listAccountTargets().then(
+          (items) => {
+            if (active) setAccounts({ state: 'ready', items })
+          },
+          () => {
+            if (active) setAccounts({ state: 'unavailable' })
+          },
+        )
         const list = await listRecords()
         if (active) setRecords(list.items)
       } catch (cause) {
@@ -119,32 +212,15 @@ export function NumberPoolList({
             : '没有匹配的号码。'}
         </p>
       ) : null}
-      {visible.length === 0 ? null : (
-        <div className="sim8-pick-list" role="listbox" aria-label="已购号码">
-          {visible.map((record) => (
-            <button
-              key={record.tel}
-              type="button"
-              role="option"
-              aria-selected={false}
-              className="sim8-pick-row"
-              disabled={disabled || record.api === ''}
-              title={record.api === '' ? '这个号码没有接码链接' : record.api}
-              onClick={() => onPick({ tel: record.tel, api: record.api })}
-            >
-              <span className="sim8-tel">
-                <strong>{record.tel}</strong>
-                {recordExpired(record) ? <Badge variant="outline">已过期</Badge> : null}
-              </span>
-              <small>
-                {record.api === ''
-                  ? '没有接码链接'
-                  : `${record.remark || '已购'} · 到期 ${shortTime(record.endTime)}`}
-              </small>
-            </button>
-          ))}
-        </div>
-      )}
+      {!loading && error === null ? (
+        <NumberPoolOptions
+          records={visible}
+          accounts={accounts}
+          currentAccountId={currentAccountId}
+          disabled={disabled}
+          onPick={onPick}
+        />
+      ) : null}
     </div>
   )
 }
@@ -157,6 +233,7 @@ export function NumberPoolPicker({
   ariaLabel = '从号码池选择号码',
   size = 'xs',
   variant = 'outline',
+  currentAccountId,
 }: {
   onPick: (number: PickedNumber) => void
   disabled?: boolean
@@ -164,6 +241,7 @@ export function NumberPoolPicker({
   ariaLabel?: string
   size?: 'xs' | 'sm' | 'icon-xs'
   variant?: 'outline' | 'ghost' | 'secondary'
+  currentAccountId?: string | undefined
 }) {
   const [open, setOpen] = useState(false)
 
@@ -182,12 +260,13 @@ export function NumberPoolPicker({
           {size === 'icon-xs' ? null : label}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="sim8-picker">
+      <PopoverContent align="end" className="sim8-picker account-compact-popover">
         <PopoverHeader>
           <PopoverTitle>从号码池选</PopoverTitle>
         </PopoverHeader>
         <NumberPoolList
           disabled={disabled}
+          currentAccountId={currentAccountId}
           onPick={(number) => {
             onPick(number)
             setOpen(false)

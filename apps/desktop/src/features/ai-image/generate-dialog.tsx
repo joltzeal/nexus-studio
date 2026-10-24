@@ -16,13 +16,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toast'
 import { generate, uploadImage, uploadRemoteImage } from './api'
 import { checkReference, prepareReference } from './prepare-reference'
+import { PresetPicker } from './preset-picker'
+import { RecordImage } from './record-image'
+import { FIRST_REFERENCE, MAX_PROMPT_CHARACTERS, selectedVisionFile } from './selection'
 import { SIZES, message, type Provider, type ScenePreset, type StoredFile } from './types'
 
 interface Reference {
@@ -58,11 +67,18 @@ export function GenerateDialog({
   onSubmitted: () => Promise<void>
   onConfigure: () => void
 }) {
-  const usable = providers.filter((provider) => provider.hasApiKey)
+  const usable = providers.filter(
+    (provider) => provider.hasApiKey && provider.imageModel.trim() !== '',
+  )
+  const visionProviders = providers.filter(
+    (provider) => provider.hasApiKey && (provider.visionModel ?? '').trim() !== '',
+  )
   const [references, setReferences] = useState<Reference[]>([])
   const [presetId, setPresetId] = useState<string | null>(presets[0]?.id ?? null)
   const [prompt, setPrompt] = useState('')
   const [providerChoice, setProviderChoice] = useState('')
+  const [visionProviderId, setVisionProviderId] = useState('__none__')
+  const [visionChoice, setVisionChoice] = useState(FIRST_REFERENCE)
   const [size, setSize] = useState('1024x1024')
   const [count, setCount] = useState(1)
   const [busy, setBusy] = useState(false)
@@ -73,9 +89,7 @@ export function GenerateDialog({
    * A handoff can open this dialog before the provider list has arrived, so the
    * first usable provider is a fallback rather than an initial value.
    */
-  const providerId = usable.some((entry) => entry.id === providerChoice)
-    ? providerChoice
-    : (usable[0]?.id ?? '')
+  const providerId = providerChoice === '' ? (usable[0]?.id ?? '') : providerChoice
 
   const uploading = references.some((entry) => entry.state === 'uploading')
   const mode = references.length > 0 ? 'edit' : 'generate'
@@ -85,11 +99,16 @@ export function GenerateDialog({
   )
 
   /**
-   * Remote pictures arrive as URLs: the preview can use them directly, the
-   * plugin has to fetch the bytes. `room` is read from the functional update so
+   * Remote pictures are downloaded by the plugin and previewed through its file
+   * API after upload. `room` is read from the functional update so
    * a batch never depends on a stale render.
    */
   const addRemote = useCallback(async (images: InitialImage[]) => {
+    if (images.length > MAX_REFERENCES) {
+      setError(
+        `收到 ${images.length} 张图片，本次只载入前 ${MAX_REFERENCES} 张；可移除后重新选择。`,
+      )
+    }
     const batch = images.slice(0, MAX_REFERENCES)
     setReferences((current) => {
       const room = MAX_REFERENCES - current.length
@@ -142,7 +161,9 @@ export function GenerateDialog({
       setError(`最多 ${String(MAX_REFERENCES)} 张参考图片。`)
       return
     }
-    setError(null)
+    setError(
+      files.length > room ? `本次最多再加入 ${room} 张图片，其余图片未加入。` : null,
+    )
     for (const file of files.slice(0, room)) {
       const invalid = checkReference(file)
       const key = `${file.name}-${String(file.lastModified)}-${Math.random().toString(36).slice(2)}`
@@ -190,12 +211,22 @@ export function GenerateDialog({
 
   async function submit() {
     if (busy || uploading) return
-    if (providerId === '') {
+    if (!usable.some((provider) => provider.id === providerId)) {
       setError('请先在模型配置中保存一个服务商。')
       return
     }
     if (presetId === null && prompt.trim() === '') {
       setError('自由提示词不能为空；也可以选择一个场景预设。')
+      return
+    }
+    if (prompt.length > MAX_PROMPT_CHARACTERS) {
+      setError(
+        `提示词最多 ${MAX_PROMPT_CHARACTERS} 字符，超出内容仍保留在输入框，请自行精简。`,
+      )
+      return
+    }
+    if (references.some((entry) => entry.state !== 'ready' || entry.file === null)) {
+      setError('有参考图片未上传成功，请重新选择或明确移除后再提交。')
       return
     }
     const files = references
@@ -208,14 +239,27 @@ export function GenerateDialog({
     setBusy(true)
     setError(null)
     try {
+      const recognize = visionProviderId !== '__none__'
+      if (
+        recognize &&
+        !visionProviders.some((provider) => provider.id === visionProviderId)
+      ) {
+        throw new Error('已选识图服务商不可用，请重新选择或明确关闭识图。')
+      }
       await generate({
         providerId,
         mode,
         presetId,
-        prompt: prompt.trim(),
+        prompt,
         size,
         count,
         inputFileIds: files.map((entry) => entry.id),
+        ...(recognize
+          ? {
+              visionProviderId,
+              visionFileId: selectedVisionFile(references, visionChoice),
+            }
+          : {}),
       })
       await onSubmitted()
       toast.success('已提交生成任务，记录里可以查看进度')
@@ -246,9 +290,24 @@ export function GenerateDialog({
               </span>
             </div>
             <div className="ai-dropzone">
-              {references.map((entry) => (
+              {references.map((entry, index) => (
                 <div key={entry.key} className="ai-thumb">
-                  <img src={entry.preview} alt={entry.name} />
+                  {entry.state === 'ready' && entry.file !== null ? (
+                    <RecordImage file={entry.file} alt={entry.name} />
+                  ) : entry.preview.startsWith('blob:') ? (
+                    <img src={entry.preview} alt={entry.name} />
+                  ) : (
+                    <span
+                      className="flex size-full items-center justify-center text-xs text-muted-foreground"
+                      role="img"
+                      aria-label={`${entry.name}：${entry.state === 'failed' ? '上传失败' : '正在上传'}`}
+                    >
+                      {entry.state === 'failed' ? '上传失败' : '正在上传'}
+                    </span>
+                  )}
+                  <span className="absolute bottom-1 left-1 rounded bg-background px-1 text-xs text-foreground">
+                    参考图 {index + 1}
+                  </span>
                   {entry.state === 'uploading' ? (
                     <span className="ai-thumb-state">
                       <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
@@ -306,63 +365,100 @@ export function GenerateDialog({
                   .join('；')}
               </FieldError>
             ) : null}
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="ai-vision-provider">识图服务商 / 模型</FieldLabel>
+                <LabeledSelect
+                  id="ai-vision-provider"
+                  ariaLabel="识图服务商 / 模型"
+                  value={visionProviderId}
+                  disabled={busy}
+                  options={[
+                    { value: '__none__', label: '不识图' },
+                    ...visionProviders.map((provider) => ({
+                      value: provider.id,
+                      label: `${provider.name} · ${provider.visionModel ?? ''}`,
+                    })),
+                    ...(visionProviderId !== '__none__' &&
+                    !visionProviders.some((provider) => provider.id === visionProviderId)
+                      ? [
+                          {
+                            value: visionProviderId,
+                            label: '已选服务商不可用，请重新选择',
+                          },
+                        ]
+                      : []),
+                  ]}
+                  onValueChange={setVisionProviderId}
+                />
+                <FieldDescription>
+                  可在模型配置中单独填写识图模型。开启后先识别一张参考图，将观察结果用于生图与文案；失败会停止，不自动换模型。
+                </FieldDescription>
+              </Field>
+              {visionProviderId === '__none__' ? null : (
+                <Field>
+                  <FieldLabel htmlFor="ai-vision-file">用于识图的参考图</FieldLabel>
+                  <LabeledSelect
+                    id="ai-vision-file"
+                    ariaLabel="用于识图的参考图"
+                    value={visionChoice}
+                    disabled={busy}
+                    options={[
+                      { value: FIRST_REFERENCE, label: '第一张参考图' },
+                      ...references.map((entry, index) => ({
+                        value: entry.key,
+                        label: `参考图 ${index + 1} · ${entry.name}${entry.state === 'ready' ? '' : '（尚未上传成功）'}`,
+                      })),
+                      ...(visionChoice !== FIRST_REFERENCE &&
+                      !references.some((entry) => entry.key === visionChoice)
+                        ? [{ value: visionChoice, label: '已选图片已移除，请重新选择' }]
+                        : []),
+                    ]}
+                    onValueChange={setVisionChoice}
+                  />
+                  <FieldDescription>
+                    仅这一张发给识图模型；改图仍使用全部已上传参考图。生成完成后也可在详情选择某一张成片重新识图。
+                  </FieldDescription>
+                </Field>
+              )}
+            </FieldGroup>
           </section>
 
           <section className="ai-dialog-column" aria-label="生成设置">
-            <div className="ai-form-head">
-              <h3>场景预设</h3>
-              <span className="ai-muted">点选后自动补充说明</span>
-            </div>
-            <div className="ai-preset-grid" role="radiogroup" aria-label="场景预设">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={presetId === null}
-                className={presetId === null ? 'ai-preset is-active' : 'ai-preset'}
-                disabled={busy}
-                onClick={() => setPresetId(null)}
-              >
-                <strong>自由提示词</strong>
-                <span>完全按你写的内容生成</span>
-              </button>
-              {presets.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={presetId === entry.id}
-                  className={presetId === entry.id ? 'ai-preset is-active' : 'ai-preset'}
-                  disabled={busy}
-                  onClick={() => setPresetId(entry.id)}
-                >
-                  <strong>{entry.label}</strong>
-                  <span>{entry.hint}</span>
-                </button>
-              ))}
-            </div>
+            <PresetPicker
+              presets={presets}
+              value={presetId}
+              disabled={busy}
+              onChange={setPresetId}
+            />
 
-            <Field>
+            <Field data-invalid={prompt.length > MAX_PROMPT_CHARACTERS}>
               <FieldLabel htmlFor="ai-prompt">
                 {presetId === null ? '提示词' : '附加要求（可选）'}
               </FieldLabel>
               <Textarea
                 id="ai-prompt"
                 rows={4}
-                maxLength={4000}
+                aria-invalid={prompt.length > MAX_PROMPT_CHARACTERS}
+                aria-describedby="ai-prompt-description"
                 disabled={busy}
                 placeholder={
                   presetId === null
-                    ? '例如：把商品放在浅灰背景前，正面平视，柔和侧光。'
-                    : '例如：背景再暖一点，商品靠左放置。'
+                    ? '例如：商品放在家用餐桌上，用窗边自然光，保留标签和边角磨损。'
+                    : '例如：商品靠左，保留右侧划痕和标签文字，不添加配件。'
                 }
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
               />
-              <FieldDescription>
+              <FieldDescription id="ai-prompt-description">
                 {preset === null
-                  ? '这段文字会原样发给生图模型。'
-                  : `预设「${preset.label}」会先加入商品重建说明，再追加你写的要求。`}
+                  ? '自由提示词不加预设；开启独立识图时会另附观察结果。'
+                  : `预设「${preset.label}」保留实际标识、瑕疵与成色，并完整追加你写的要求。`}{' '}
+                {prompt.length} / {MAX_PROMPT_CHARACTERS} 字符，不自动截断。
               </FieldDescription>
+              {prompt.length > MAX_PROMPT_CHARACTERS ? (
+                <FieldError>超出长度限制，请自行精简；原文已保留。</FieldError>
+              ) : null}
             </Field>
 
             <div className="ai-form-grid">
@@ -441,7 +537,12 @@ export function GenerateDialog({
           </Button>
           <Button
             type="button"
-            disabled={busy || uploading || providerId === ''}
+            disabled={
+              busy ||
+              uploading ||
+              providerId === '' ||
+              prompt.length > MAX_PROMPT_CHARACTERS
+            }
             onClick={() => void submit()}
           >
             {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
-import { ImageOff, LayoutGrid, List, Loader2 } from 'lucide-react'
+import { LayoutGrid, List, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { publishedText, type Product } from './types'
+import { SupplyImage } from './supply-image'
 
 export type ProductView = 'list' | 'waterfall'
 
@@ -64,11 +65,7 @@ export function ProductGrid({
           onClick={() => onOpen(row)}
         >
           <span className="supply-card-media">
-            {row.coverUrl === '' ? (
-              <ImageOff aria-hidden="true" className="supply-card-placeholder" />
-            ) : (
-              <img src={row.coverUrl} alt="" loading="lazy" />
-            )}
+            <SupplyImage url={row.coverUrl} lazy />
           </span>
           <span className="supply-card-body">
             <span className="supply-card-title">

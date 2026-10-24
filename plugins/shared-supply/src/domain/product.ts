@@ -4,8 +4,9 @@
  * leaking through into the UI.
  */
 
-export const IMAGE_HOST = 'product.aliyizhan.com'
-export const IMAGE_PATH_PREFIX = '/person/'
+import { IMAGE_HOST, IMAGE_PATH_PREFIX, supplyImageUrl } from './image-url.js'
+
+export { IMAGE_HOST, IMAGE_PATH_PREFIX } from './image-url.js'
 
 /** Earliest and latest plausible publish timestamps (2000-01-01 .. 2100-01-01). */
 const MIN_TIMESTAMP = 946_684_800
@@ -63,17 +64,11 @@ export function imageUrls(product: Record<string, unknown>): string[] {
   const urls: string[] = []
   for (const value of values) {
     if (typeof value !== 'string') continue
-    let parsed: URL
-    try {
-      parsed = new URL(value)
-    } catch {
-      continue
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue
+    const url = supplyImageUrl(value)
+    if (url === null) continue
+    const parsed = new URL(url)
     if (parsed.hostname !== IMAGE_HOST) continue
     if (!parsed.pathname.startsWith(IMAGE_PATH_PREFIX)) continue
-    // Fragments carry no meaning for the image and would break de-duplication.
-    const url = `https://${IMAGE_HOST}${parsed.pathname}${parsed.search}`
     if (!urls.includes(url)) urls.push(url)
   }
   return urls
@@ -110,7 +105,7 @@ export function merchantRecord(merchant: Record<string, unknown>): MerchantRecor
     id: text(merchant['id']),
     uid: text(merchant['uid']),
     nickName: text(merchant['nickName']),
-    iconUrl: text(merchant['iconUrl']),
+    iconUrl: supplyImageUrl(merchant['iconUrl']) ?? '',
     floor: text(merchant['floor']),
     houseNumber: text(merchant['houseNumber']),
   }

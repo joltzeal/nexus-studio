@@ -20,11 +20,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { FieldError } from '@/components/ui/field'
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
+import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
-import { exportRecord, getRecord, removeRecord, retryRecord } from './api'
+import {
+  exportRecord,
+  getRecord,
+  recognizeRecord,
+  removeRecord,
+  retryRecord,
+} from './api'
 import { CompareSlider } from './compare-slider'
 import { RecordImage } from './record-image'
 import {
@@ -34,14 +47,17 @@ import {
   recordTitle,
   statusText,
   type GenerationRecord,
+  type Provider,
 } from './types'
 
 export function RecordDetailDialog({
   recordId,
+  providers,
   onClose,
   onChanged,
 }: {
   recordId: string
+  providers: Provider[]
   onClose: () => void
   onChanged: () => Promise<void>
 }) {
@@ -52,7 +68,14 @@ export function RecordDetailDialog({
   const [confirming, setConfirming] = useState(false)
   const [exported, setExported] = useState<string[]>([])
   const [selected, setSelected] = useState(0)
-  const running = record?.status === 'running'
+  const [visionChoice, setVisionChoice] = useState('')
+  const running =
+    record?.status === 'running' || record?.outputVision?.status === 'running'
+  const visionProviders = providers.filter(
+    (provider) => provider.hasApiKey && (provider.visionModel ?? '') !== '',
+  )
+  const visionProviderId =
+    visionChoice || record?.outputVision?.providerId || visionProviders[0]?.id || ''
 
   const load = useCallback(async () => {
     try {
@@ -95,14 +118,21 @@ export function RecordDetailDialog({
     if (!running) return
     const timer = setInterval(() => {
       void load().then((next) => {
-        if (next !== null && next.status !== 'running') void onChanged()
+        if (
+          next !== null &&
+          next.status !== 'running' &&
+          next.outputVision?.status !== 'running'
+        )
+          void onChanged()
       })
     }, 2500)
     return () => clearInterval(timer)
   }, [running, load, onChanged])
 
-  const output = record?.outputs[selected] ?? record?.outputs[0] ?? null
-  const reference = record?.inputs[0] ?? null
+  const output = record?.outputs[selected] ?? null
+  const reference = record?.vision
+    ? (record.inputs.find((file) => file.id === record.vision?.inputFileId) ?? null)
+    : (record?.inputs[0] ?? null)
   const meta = useMemo(() => {
     if (record === null) return []
     return [
@@ -116,6 +146,18 @@ export function RecordDetailDialog({
       ],
       ['生图模型', record.imageModel],
       ['文案模型', record.textModel === '' ? '未配置' : record.textModel],
+      [
+        '参考图识图',
+        record.vision
+          ? `${record.vision.providerName} · ${record.vision.model}`
+          : '未启用',
+      ],
+      [
+        '识图参考图',
+        record.vision
+          ? `参考图 ${record.inputs.findIndex((file) => file.id === record.vision?.inputFileId) + 1}`
+          : '未选择',
+      ],
       ['尺寸', record.size === 'auto' ? '由模型决定' : record.size],
       ['张数', String(record.count)],
       ['参考图', `${String(record.inputs.length)} 张`],
@@ -137,6 +179,34 @@ export function RecordDetailDialog({
       const result = await retryRecord(record.id)
       setRecord(result.record)
       await onChanged()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function recognize(retry = false) {
+    if (record === null || busy || running) return
+    if (
+      !retry &&
+      (output === null ||
+        !visionProviders.some((provider) => provider.id === visionProviderId))
+    ) {
+      setError('请选择可用的独立识图服务商和一张成片。')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await recognizeRecord(
+        retry
+          ? { id: record.id, retry: true }
+          : { id: record.id, providerId: visionProviderId, fileId: output?.id ?? null },
+      )
+      setRecord(result.record)
+      await onChanged()
+      toast.success('已提交单张成片识图')
     } catch (cause) {
       setError(message(cause))
     } finally {
@@ -220,6 +290,7 @@ export function RecordDetailDialog({
                       key={file.id}
                       type="button"
                       role="tab"
+                      aria-label={`选择成片 ${String(index + 1)}`}
                       aria-selected={index === selected}
                       className={
                         index === selected
@@ -243,6 +314,94 @@ export function RecordDetailDialog({
                   ))}
                 </div>
               ) : null}
+
+              {record.outputs.length === 0 ? null : (
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="ai-output-vision-provider">
+                      成片识图服务商 / 模型
+                    </FieldLabel>
+                    <LabeledSelect
+                      id="ai-output-vision-provider"
+                      ariaLabel="成片识图服务商 / 模型"
+                      value={visionProviderId}
+                      disabled={busy || running}
+                      options={[
+                        ...visionProviders.map((provider) => ({
+                          value: provider.id,
+                          label: `${provider.name} · ${provider.visionModel ?? ''}`,
+                        })),
+                        ...(visionProviderId &&
+                        !visionProviders.some(
+                          (provider) => provider.id === visionProviderId,
+                        )
+                          ? [
+                              {
+                                value: visionProviderId,
+                                label: '已选服务商不可用，请重新选择',
+                              },
+                            ]
+                          : []),
+                      ]}
+                      onValueChange={setVisionChoice}
+                    />
+                    <FieldDescription>
+                      当前选择成片 {selected + 1}
+                      。点击上方缩略图可换图；只发送这一张，不重新生图或改写已有文案。
+                      {visionProviders.length === 0
+                        ? '请先在模型配置中填写独立识图模型。'
+                        : ''}
+                    </FieldDescription>
+                  </Field>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={
+                      busy ||
+                      running ||
+                      output === null ||
+                      !visionProviders.some(
+                        (provider) => provider.id === visionProviderId,
+                      )
+                    }
+                    onClick={() => void recognize()}
+                  >
+                    识别当前成片
+                  </Button>
+                  {record.outputVision ? (
+                    <div className="flex flex-col gap-2 text-sm" aria-live="polite">
+                      <p>
+                        成片{' '}
+                        {record.outputs.findIndex(
+                          (file) => file.id === record.outputVision?.outputFileId,
+                        ) + 1}{' '}
+                        · {record.outputVision.providerName} · {record.outputVision.model}
+                      </p>
+                      {record.outputVision.status === 'running' ? (
+                        <p>正在识别成片…</p>
+                      ) : null}
+                      {record.outputVision.description ? (
+                        <p className="whitespace-pre-wrap break-words">
+                          {record.outputVision.description}
+                        </p>
+                      ) : null}
+                      {record.outputVision.error ? (
+                        <FieldError>{record.outputVision.error}</FieldError>
+                      ) : null}
+                      {record.outputVision.status === 'failed' ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={busy || running}
+                          onClick={() => void recognize(true)}
+                        >
+                          重试成片识图（原模型与原图片）
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </FieldGroup>
+              )}
 
               <div className="ai-detail-status">
                 <Badge
@@ -276,6 +435,13 @@ export function RecordDetailDialog({
                   文案没有生成：{record.copyError}
                 </p>
               )}
+
+              {record.vision?.description ? (
+                <div className="ai-copy-block">
+                  <h3>参考图识图结果</h3>
+                  <p className="ai-copy-text">{record.vision.description}</p>
+                </div>
+              ) : null}
 
               <div className="ai-copy-block">
                 <div className="ai-form-head">

@@ -44,7 +44,15 @@ export function useWindowLaunch(
       10_000,
       '读取运行状态超时；原生操作结果仍未确认。',
     )
-    if (mounted.current) onRecords(records)
+    if (mounted.current) {
+      onRecords(records)
+      setGate((current) =>
+        current !== null &&
+        records.some((record) => record.id === current.window.id && record.running)
+          ? null
+          : current,
+      )
+    }
     return records
   }
 
@@ -93,7 +101,7 @@ export function useWindowLaunch(
     try {
       await withOperating(window, () => launch(window))
       if (!mounted.current) return
-      setGate({ window, stage: { stage: 'launched', outcome } })
+      setGate(null)
       toast.success(`「${window.name}」已打开`)
     } catch (cause) {
       if (!mounted.current) return
@@ -169,7 +177,7 @@ export function useWindowLaunch(
       }
       if (running) {
         markOperating(window.id, false)
-        setGate({ window, stage: { stage: 'launched', outcome: null } })
+        setGate(null)
       } else {
         setGate({
           window,

@@ -161,7 +161,11 @@ export function AiImagePage({
   }, [running])
 
   const hasRunning = useMemo(
-    () => (records ?? []).some((record) => record.status === 'running'),
+    () =>
+      (records ?? []).some(
+        (record) =>
+          record.status === 'running' || record.outputVision?.status === 'running',
+      ),
     [records],
   )
 
@@ -205,7 +209,7 @@ export function AiImagePage({
             </h1>
             <p className="page-description">
               用 OpenAI
-              或兼容接口生成与改图，文案模型按成片写标题和描述。每次生成都会留下记录。
+              或兼容接口生成与改图，可单独配置识图模型，选择一张参考图或成片识别商品。每次生成都会留下记录。
             </p>
           </div>
           <div className="section-actions">
@@ -461,6 +465,7 @@ export function AiImagePage({
         <RecordDetailDialog
           key={detailId}
           recordId={detailId}
+          providers={providers}
           onClose={() => setDetailId(null)}
           onChanged={refreshRecords}
         />

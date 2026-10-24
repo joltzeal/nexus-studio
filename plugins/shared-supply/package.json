@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-shared-supply",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Nexus shared supply plugin: catalogue browsing, image search and local favourites",
   "type": "module",

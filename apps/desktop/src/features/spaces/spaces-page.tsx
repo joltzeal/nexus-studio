@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
-  Smartphone,
   Square,
   Trash2,
   Unlink,
@@ -57,6 +56,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toast'
 import {
   Select,
@@ -93,8 +93,6 @@ import {
   type Account,
   type BindingView,
 } from '@/features/accounts/types'
-import { attachNumber, updateContact } from '@/features/sim8/accounts-bridge'
-import { NumberPoolList } from '@/features/sim8/number-picker'
 import { listGroups, type WindowGroup } from '@/lib/platform/native-groups'
 import {
   createNativeProfile,
@@ -133,6 +131,7 @@ import { useTransferRecovery } from './use-transfer-recovery'
 import { toggleSelection, withDeadline } from './transfer-state'
 import { useWindowLaunch } from './use-window-launch'
 import { WindowNote } from './window-note'
+import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -635,17 +634,29 @@ export function SpacesPage() {
                         <span className="account-cell-row">
                           <span className="account-cell">
                             <strong>{account.account?.account ?? '账号已删除'}</strong>
-                            <small>
-                              {account.account
-                                ? STATUS_LABELS[account.account.status]
-                                : ''}
-                            </small>
+                            <span className="account-cell-meta">
+                              <small>
+                                {account.account
+                                  ? STATUS_LABELS[account.account.status]
+                                  : ''}
+                              </small>
+                              {linked === null ? null : (
+                                <AccountPhoneCopy account={linked} />
+                              )}
+                            </span>
                           </span>
                           {linked === null ? null : (
-                            <AccountSmsQuickAdd
+                            <AccountSmsPopover
+                              key={linked.id}
                               account={linked}
                               ready={accountsRunning}
-                              onSaved={refreshBindings}
+                              onSaved={(saved) =>
+                                setAccounts((current) =>
+                                  current.map((item) =>
+                                    item.id === saved.id ? saved : item,
+                                  ),
+                                )
+                              }
                             />
                           )}
                         </span>
@@ -1111,9 +1122,7 @@ function TimeCell({
 }
 
 /**
- * Binding an account straight from the window row. The pool comes first —
- * most windows reuse a record that already exists — and the create form stays
- * below it for the first account of a new shop.
+ * Keep choosing an account and creating one in separate, compact views.
  */
 function AccountQuickAdd({
   window,
@@ -1127,6 +1136,7 @@ function AccountQuickAdd({
   onSaved: () => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState('existing')
   const [query, setQuery] = useState('')
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
@@ -1134,13 +1144,11 @@ function AccountQuickAdd({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const visible = accounts
-    .filter((item) =>
-      `${item.account} ${item.note} ${item.phone}`
-        .toLowerCase()
-        .includes(query.trim().toLowerCase()),
-    )
-    .slice(0, 40)
+  const visible = accounts.filter((item) =>
+    `${item.account} ${item.note} ${item.phone}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
+  )
 
   function reset() {
     setQuery('')
@@ -1205,8 +1213,15 @@ function AccountQuickAdd({
     <Popover
       open={open}
       onOpenChange={(next) => {
+        if (pending) return
+        if (next) {
+          setTab(
+            accounts.length === 0 || account !== '' || password !== '' || note !== ''
+              ? 'create'
+              : 'existing',
+          )
+        }
         setOpen(next)
-        if (!next) reset()
       }}
     >
       <PopoverTrigger asChild>
@@ -1220,218 +1235,122 @@ function AccountQuickAdd({
           添加账号
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="account-quick-add">
+      <PopoverContent align="start" className="account-quick-add account-compact-popover">
         <PopoverHeader>
           <PopoverTitle>关联 Vinted 账号</PopoverTitle>
         </PopoverHeader>
-        {accounts.length === 0 ? (
-          <p className="account-quick-note">账号池还是空的，在下面新建一个。</p>
-        ) : (
-          <div className="account-quick-pool">
-            <div className="search-field">
-              <Search aria-hidden="true" />
-              <Input
-                aria-label="搜索账号池"
-                placeholder="搜索账号池，点一行直接关联"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
-            <div className="account-picker" role="listbox" aria-label="账号池">
-              {visible.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="option"
-                  aria-selected={false}
-                  className="account-option"
+        <Tabs value={tab} onValueChange={setTab} className="account-popover-tabs">
+          <TabsList aria-label="关联账号方式">
+            <TabsTrigger value="existing" disabled={pending}>
+              选择已有
+            </TabsTrigger>
+            <TabsTrigger value="create" disabled={pending}>
+              新建账号
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="existing">
+            {accounts.length === 0 ? (
+              <p className="account-quick-note">账号池为空，请切换到「新建账号」。</p>
+            ) : (
+              <div className="account-quick-pool">
+                <div className="search-field">
+                  <Search aria-hidden="true" />
+                  <Input
+                    aria-label="搜索账号池"
+                    placeholder="搜索账号，点选关联"
+                    disabled={pending}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </div>
+                <div className="account-picker" role="listbox" aria-label="账号池">
+                  {visible.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="option"
+                      aria-selected={false}
+                      className="account-option"
+                      disabled={pending}
+                      onClick={() => void link(item)}
+                    >
+                      <span>
+                        <strong>{item.account}</strong>
+                        <small>
+                          {LOGIN_METHOD_LABELS[item.loginMethod]} ·{' '}
+                          {STATUS_LABELS[item.status]}
+                          {item.phone === '' ? '' : ` · ${item.phone}`}
+                        </small>
+                      </span>
+                      <UserRound aria-hidden="true" />
+                    </button>
+                  ))}
+                  {visible.length === 0 ? (
+                    <p className="account-quick-note">没有匹配的账号。</p>
+                  ) : null}
+                </div>
+              </div>
+            )}
+          </TabsContent>
+          <TabsContent value="create">
+            <form className="account-quick-form" onSubmit={(event) => void submit(event)}>
+              <Field>
+                <FieldLabel htmlFor={`quick-account-${window.id}`}>账号</FieldLabel>
+                <Input
+                  id={`quick-account-${window.id}`}
+                  autoComplete="off"
+                  placeholder="登录邮箱或用户名"
+                  maxLength={190}
                   disabled={pending}
-                  onClick={() => void link(item)}
+                  value={account}
+                  onChange={(event) => setAccount(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`quick-password-${window.id}`}>密码</FieldLabel>
+                <Input
+                  id={`quick-password-${window.id}`}
+                  type="password"
+                  autoComplete="off"
+                  placeholder="登录密码"
+                  maxLength={190}
+                  disabled={pending}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`quick-note-${window.id}`}>备注</FieldLabel>
+                <Input
+                  id={`quick-note-${window.id}`}
+                  placeholder="可选"
+                  maxLength={200}
+                  disabled={pending}
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                />
+              </Field>
+              <div className="account-quick-actions">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => {
+                    reset()
+                    setOpen(false)
+                  }}
                 >
-                  <span>
-                    <strong>{item.account}</strong>
-                    <small>
-                      {LOGIN_METHOD_LABELS[item.loginMethod]} ·{' '}
-                      {STATUS_LABELS[item.status]}
-                      {item.phone === '' ? '' : ` · ${item.phone}`}
-                    </small>
-                  </span>
-                  <UserRound aria-hidden="true" />
-                </button>
-              ))}
-              {visible.length === 0 ? (
-                <p className="account-quick-note">没有匹配的账号。</p>
-              ) : null}
-            </div>
-          </div>
-        )}
-        <p className="account-quick-divider">
-          {accounts.length === 0 ? '新建账号' : '或新建一个账号'}
-        </p>
-        <form className="account-quick-form" onSubmit={(event) => void submit(event)}>
-          <Field>
-            <FieldLabel htmlFor={`quick-account-${window.id}`}>账号</FieldLabel>
-            <Input
-              id={`quick-account-${window.id}`}
-              autoComplete="off"
-              placeholder="登录邮箱或用户名"
-              value={account}
-              onChange={(event) => setAccount(event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`quick-password-${window.id}`}>密码</FieldLabel>
-            <Input
-              id={`quick-password-${window.id}`}
-              type="password"
-              autoComplete="off"
-              placeholder="登录密码"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`quick-note-${window.id}`}>备注</FieldLabel>
-            <Input
-              id={`quick-note-${window.id}`}
-              placeholder="可选"
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-            />
-          </Field>
-          {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-          <div className="account-quick-actions">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={pending}
-              onClick={() => {
-                reset()
-                setOpen(false)
-              }}
-            >
-              取消
-            </Button>
-            <Button type="submit" size="sm" disabled={pending}>
-              {pending ? '保存中…' : '保存并关联'}
-            </Button>
-          </div>
-        </form>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-/**
- * A record link straight from the window row. Picking a purchased number writes
- * both the number and its link; pasting just a link keeps the number the
- * account already had. Reading a code stays on the account page.
- */
-function AccountSmsQuickAdd({
-  account,
-  ready,
-  onSaved,
-}: {
-  account: Account
-  ready: boolean
-  onSaved: () => Promise<void>
-}) {
-  const [open, setOpen] = useState(false)
-  const [url, setUrl] = useState(account.smsOtpUrl)
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function apply(write: () => Promise<void>, done: string) {
-    if (pending) return
-    setPending(true)
-    setError(null)
-    try {
-      await write()
-      await onSaved()
-      toast.success(done)
-      setOpen(false)
-    } catch (cause) {
-      setError(message(cause))
-    } finally {
-      setPending(false)
-    }
-  }
-
-  function saveLink(event: FormEvent) {
-    event.preventDefault()
-    const next = url.trim()
-    if (next === '') {
-      setError('先填接码链接。')
-      return
-    }
-    void apply(() => updateContact(account.id, { smsOtpUrl: next }), '接码链接已保存')
-  }
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next)
-        if (next) {
-          setUrl(account.smsOtpUrl)
-          setError(null)
-        }
-      }}
-    >
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`为 ${account.account} 添加接码链接`}
-          title={account.smsOtpUrl === '' ? '添加接码链接' : '更换接码链接'}
-          disabled={!ready}
-        >
-          <Smartphone />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="account-sms-quick">
-        <PopoverHeader>
-          <PopoverTitle>接码链接</PopoverTitle>
-        </PopoverHeader>
-        <p className="account-quick-note">
-          {account.phone === '' ? '这个账号还没有手机号。' : `手机号 ${account.phone}`}
-          {account.smsOtpUrl === '' ? ' · 还没有接码链接' : ' · 已有接码链接'}
-        </p>
-        <NumberPoolList
-          disabled={pending}
-          onPick={(number) =>
-            void apply(
-              () => attachNumber(account.id, number.tel, number.api),
-              '号码和接码链接已保存',
-            )
-          }
-        />
-        <p className="account-quick-divider">或只填接码链接</p>
-        <form className="account-quick-form" onSubmit={saveLink}>
-          <Input
-            aria-label="接码链接"
-            placeholder="https://…"
-            disabled={pending}
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-          />
-          {error === null ? null : <FieldError role="alert">{error}</FieldError>}
-          <div className="account-quick-actions">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={pending}
-              onClick={() => setOpen(false)}
-            >
-              取消
-            </Button>
-            <Button type="submit" size="sm" disabled={pending}>
-              {pending ? '保存中…' : '保存链接'}
-            </Button>
-          </div>
-        </form>
+                  取消
+                </Button>
+                <Button type="submit" size="sm" disabled={pending}>
+                  {pending ? '保存中…' : '保存并关联'}
+                </Button>
+              </div>
+            </form>
+          </TabsContent>
+        </Tabs>
+        {error === null ? null : <FieldError role="alert">{error}</FieldError>}
       </PopoverContent>
     </Popover>
   )
@@ -1751,9 +1670,9 @@ function WindowEditor({
     <DialogContent className="window-editor">
       <DialogHeader>
         <DialogTitle>{window ? '编辑窗口' : '创建窗口'}</DialogTitle>
-        <DialogDescription>
+        <DialogDescription className={window ? 'sr-only' : undefined}>
           {window
-            ? `内核 ${majorVersion(window.version)} 已固定；配置在下次打开时生效。`
+            ? `编辑窗口「${window.name}」的设置。`
             : '创建独立浏览器环境。可先在设置的「浏览器内核」中下载所需内核。'}
         </DialogDescription>
       </DialogHeader>

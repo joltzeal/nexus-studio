@@ -788,6 +788,7 @@ function AccountEditor({
                 />
                 <NumberPoolPicker
                   disabled={pending}
+                  currentAccountId={account?.id}
                   ariaLabel="从号码池选择手机号和接码链接"
                   onPick={(number) => patch({ phone: number.tel, smsOtpUrl: number.api })}
                 />

@@ -13,6 +13,7 @@ import { copyText } from '@/lib/clipboard'
 import { sendToAiImage } from '@/lib/page-handoff'
 import { addFavorite, removeFavorite } from './api'
 import { message, productText, publishedText, type Favorite, type Product } from './types'
+import { SupplyImage } from './supply-image'
 
 const COPY_FAILED = '复制失败，请检查剪贴板权限后重试。'
 
@@ -114,7 +115,7 @@ export function ProductDialog({
                 {shown.images[index] === undefined ? (
                   <span className="supply-empty">这件商品没有图片</span>
                 ) : (
-                  <img src={shown.images[index]} alt={shown.title} />
+                  <SupplyImage url={shown.images[index]} alt={shown.title} retryButton />
                 )}
               </div>
               {shown.images.length <= 1 ? null : (
@@ -132,7 +133,7 @@ export function ProductDialog({
                       }
                       onClick={() => setIndex(position)}
                     >
-                      <img src={url} alt="" loading="lazy" />
+                      <SupplyImage url={url} lazy compact />
                     </button>
                   ))}
                 </div>

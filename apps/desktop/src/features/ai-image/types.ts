@@ -3,7 +3,7 @@ export const AI_IMAGE_CAPABILITY = 'image.provider'
 
 export type ProviderKind = 'openai' | 'openai_compatible'
 export type RecordStatus = 'running' | 'success' | 'failed'
-export type RecordStage = 'queued' | 'copy' | 'image' | 'done'
+export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
 export type GenerationMode = 'generate' | 'edit'
 
 export interface Provider {
@@ -13,6 +13,7 @@ export interface Provider {
   baseUrl: string
   imageModel: string
   textModel: string
+  visionModel?: string
   supportsVision: boolean
   hasApiKey: boolean
   apiKeyHint: string
@@ -35,6 +36,7 @@ export interface GenerationRecord {
   stage: RecordStage
   mode: GenerationMode
   prompt: string
+  basePrompt?: string
   presetId: string | null
   presetLabel: string | null
   size: string
@@ -44,6 +46,25 @@ export interface GenerationRecord {
   providerKind: ProviderKind
   imageModel: string
   textModel: string
+  copySupportsVision?: boolean
+  vision?: {
+    providerId: string
+    providerName: string
+    providerKind: ProviderKind
+    model: string
+    inputFileId: string
+    description: string | null
+  } | null
+  outputVision?: {
+    providerId: string
+    providerName: string
+    providerKind: ProviderKind
+    model: string
+    outputFileId: string
+    status: RecordStatus
+    description: string | null
+    error: string | null
+  } | null
   inputs: StoredFile[]
   outputs: StoredFile[]
   title: string | null
@@ -56,6 +77,8 @@ export interface GenerationRecord {
 export interface ScenePreset {
   id: string
   label: string
+  /** Older installed plugin packages may not yet include categories. */
+  category?: string
   hint: string
   prompt: string
 }
@@ -100,8 +123,10 @@ export function message(error: unknown): string {
 }
 
 export function statusText(record: GenerationRecord): string {
+  if (record.outputVision?.status === 'running') return '正在识别成片'
   if (record.status === 'success') return '已生成'
   if (record.status === 'failed') return '失败'
+  if (record.stage === 'vision') return '正在识别参考图'
   if (record.stage === 'copy') return '正在写文案'
   if (record.stage === 'image') return '正在生成图片'
   return '排队中'

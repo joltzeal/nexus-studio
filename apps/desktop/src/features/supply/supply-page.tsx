@@ -30,6 +30,7 @@ import {
   type ProductView,
 } from './product-grid'
 import { checkImageFile, prepareJpeg } from './image-prepare'
+import { SupplyImage, SupplyImageGroup } from './supply-image'
 import { AI_IMAGE_PLUGIN_ID } from '@/features/ai-image/types'
 import {
   SUPPLY_PLUGIN_ID,
@@ -315,7 +316,7 @@ export function SupplyPage({
   }
 
   return (
-    <SupplyViewport>
+    <SupplyViewport imageGeneration={reload}>
       <Card className="supply-shell">
         <div className="supply-shell-head">
           <h1 className="page-heading" id="supply-heading">
@@ -372,6 +373,7 @@ export function SupplyPage({
                     size="sm"
                     variant={typeId === category.id ? 'default' : 'outline'}
                     onClick={() => {
+                      if (typeId === category.id) return
                       setTypeId(category.id)
                       setMerchants(null)
                       setProducts(null)
@@ -411,6 +413,7 @@ export function SupplyPage({
                             : 'supply-merchant'
                         }
                         onClick={() => {
+                          if (merchantId === merchant.uid) return
                           setMerchantId(merchant.uid)
                           setProducts(null)
                           setProductPage(0)
@@ -418,7 +421,13 @@ export function SupplyPage({
                           setProductMore(false)
                         }}
                       >
-                        <Store aria-hidden="true" />
+                        {merchant.iconUrl === '' ? (
+                          <Store aria-hidden="true" />
+                        ) : (
+                          <span className="mt-0.5 block size-6 shrink-0 overflow-hidden rounded-sm">
+                            <SupplyImage url={merchant.iconUrl} lazy compact />
+                          </span>
+                        )}
                         <span>
                           <span className="supply-merchant-name">
                             {merchantTitle(merchant)}
@@ -625,6 +634,7 @@ export function SupplyPage({
       </Card>
 
       <ProductDialog
+        key={selected?.id ?? 'closed'}
         product={selected}
         favorite={favorite}
         aiImageReady={aiImageReady}
@@ -640,14 +650,22 @@ export function SupplyPage({
  * the card is the only thing that scrolls. States keep the same frame as the
  * loaded page: a shorter card would otherwise jump when the plugin starts.
  */
-function SupplyViewport({ children }: { children: ReactNode }) {
+function SupplyViewport({
+  children,
+  imageGeneration = 0,
+}: {
+  children: ReactNode
+  imageGeneration?: number
+}) {
   return (
-    <section
-      className="collection-page page-reveal supply-viewport"
-      aria-labelledby="supply-heading"
-    >
-      {children}
-    </section>
+    <SupplyImageGroup generation={imageGeneration}>
+      <section
+        className="collection-page page-reveal supply-viewport"
+        aria-labelledby="supply-heading"
+      >
+        {children}
+      </section>
+    </SupplyImageGroup>
   )
 }
 

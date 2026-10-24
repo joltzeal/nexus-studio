@@ -33,6 +33,7 @@ export interface ProviderInput {
   apiKey?: string
   imageModel: string
   textModel: string
+  visionModel?: string
   supportsVision: boolean
 }
 
@@ -84,6 +85,14 @@ export function retryRecord(id: string): Promise<{ record: GenerationRecord }> {
   return call('image.records.retry', { id })
 }
 
+export function recognizeRecord(
+  input:
+    | { id: string; providerId: string; fileId?: string | null }
+    | { id: string; retry: true },
+): Promise<{ record: GenerationRecord }> {
+  return call('image.records.recognize', input)
+}
+
 export function exportRecord(id: string): Promise<{ paths: string[] }> {
   return call('image.records.export', { id }, UPLOAD_DEADLINE)
 }
@@ -96,6 +105,8 @@ export interface GenerateInput {
   size: string
   count: number
   inputFileIds: string[]
+  visionProviderId?: string | null
+  visionFileId?: string | null
 }
 
 export function generate(input: GenerateInput): Promise<{ record: GenerationRecord }> {

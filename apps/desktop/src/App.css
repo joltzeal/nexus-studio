@@ -605,12 +605,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.window-note-trigger,
+.window-note-form {
+  width: 180px;
+  max-width: 100%;
+  height: 22px;
+}
 .window-note-trigger {
   display: flex;
   align-items: center;
   gap: 4px;
-  max-width: 250px;
-  min-height: 22px;
   padding: 0 2px;
   border-radius: var(--radius-sm);
   color: var(--muted-foreground);
@@ -637,8 +641,7 @@
   outline-offset: 2px;
 }
 .window-note-form {
-  width: 250px;
-  margin-top: 2px;
+  margin: 0;
 }
 .window-note-controls {
   display: flex;
@@ -646,13 +649,17 @@
   gap: 2px;
 }
 .window-note-controls input {
-  height: 26px;
+  height: 22px;
   min-width: 0;
-  font-size: 12px;
+  padding-block: 0;
+  padding-inline: 2px;
+  font-size: 11px;
+  line-height: 20px;
 }
-.window-note-form [role='alert'] {
-  margin-top: 4px;
-  white-space: normal;
+.window-note-controls [data-slot='button'] {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
 }
 .table-group {
   color: var(--muted-foreground);
@@ -684,6 +691,72 @@
 }
 .account-sms-quick {
   width: 320px;
+}
+.account-compact-popover {
+  max-width: calc(100vw - 24px);
+  max-height: min(440px, calc(var(--radix-popover-content-available-height) - 8px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.account-popover-tabs [data-slot='tabs-list'] {
+  width: 100%;
+}
+.account-popover-tabs [data-slot='tabs-trigger'] {
+  flex: 1;
+}
+.account-cell-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+.account-phone-copy {
+  height: 22px;
+  max-width: 170px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.account-phone-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-phone-trigger[data-has-phone='true'] {
+  background: var(--accent);
+  color: var(--primary);
+}
+.account-sms-identity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.account-sms-identity > strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-sms-identity > small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.account-sms-identity .account-phone-copy {
+  justify-self: start;
+}
+.account-sms-code {
+  color: var(--primary);
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 2px;
+}
+.account-sms-result .otp-raw {
+  max-height: 120px;
+  margin: 0;
 }
 /* Verification codes: the digits stay put, the buttons re-fetch on demand. */
 .otp-cell {
@@ -784,7 +857,7 @@
   flex-wrap: wrap;
   gap: 4px;
 }
-/* Quick add: the account pool on top, the create form underneath. */
+/* Quick add switches between the account pool and create form. */
 .account-quick-add {
   width: 320px;
 }
@@ -4594,6 +4667,21 @@ a.address-source:hover {
 .sim8-pick-row:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+.sim8-pick-row[aria-selected='true'] {
+  background: var(--accent);
+}
+.sim8-pick-row .sim8-tel {
+  flex-wrap: wrap;
+}
+.sim8-number-usage {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sim8-number-usage[data-used='true'] {
+  color: var(--warning-foreground);
 }
 .sim8-pick-row small {
   overflow: hidden;

@@ -72,7 +72,13 @@ describe('私有存储', () => {
     const document = await second.read()
     expect(document.providers).toHaveLength(1)
     expect(document.providers[0]?.apiKey).toBe('sk-test')
+    expect(document.providers[0]?.visionModel).toBe('')
     expect(document.records[0]?.id).toBe('r1')
+    expect(document.records[0]?.vision).toBeNull()
+    expect(document.records[0]?.outputVision).toBeNull()
+    expect(document.records[0]?.presetId).toBe('white-studio')
+    expect(document.records[0]?.presetLabel).toBe('纯白棚拍')
+    expect(document.records[0]?.prompt).toBe('prompt')
   })
 
   it('写入失败时不会替换已保存的文档', async () => {
@@ -120,5 +126,67 @@ describe('私有存储', () => {
     await writeFile(join(directory, 'ai-image.json'), '{"schemaVersion": 2}')
     const store = createFileStore(directory)
     await expect(store.read()).rejects.toThrow('插件私有存储结构无效')
+  })
+
+  it('独立识图与成片识图的选择、错误和模型快照重启后保留', async () => {
+    const directory = await temporary()
+    const store = createFileStore(directory)
+    const file = { id: 'input', name: 'input.png', mime: 'image/png', bytes: 12 }
+    const output = { ...file, id: 'output', name: 'output.png' }
+    const vision = {
+      providerId: 'p1',
+      providerName: 'OpenAI',
+      providerKind: 'openai' as const,
+      model: 'vision-saved',
+      inputFileId: file.id,
+      description: 'A chipped mug.',
+    }
+    const outputVision = {
+      providerId: 'p1',
+      providerName: 'OpenAI',
+      providerKind: 'openai' as const,
+      model: 'output-vision-saved',
+      outputFileId: output.id,
+      status: 'failed' as const,
+      description: null,
+      error: '模型暂不可用',
+    }
+    await store.mutate((document) => {
+      document.providers.push({ ...provider, visionModel: 'vision-current' })
+      document.records.push({
+        ...record,
+        basePrompt: 'original constraints',
+        inputs: [file],
+        outputs: [output],
+        vision,
+        outputVision,
+      })
+    })
+    const reopened = await createFileStore(directory).read()
+    expect(reopened.records[0]?.vision).toEqual(vision)
+    expect(reopened.records[0]?.outputVision).toEqual(outputVision)
+    expect(reopened.records[0]?.basePrompt).toBe('original constraints')
+    expect(reopened.providers[0]?.visionModel).toBe('vision-current')
+  })
+
+  it('持久化中的识图选择损坏时拒绝读取，不改用第一张', async () => {
+    const directory = await temporary()
+    const store = createFileStore(directory)
+    await store.mutate((document) => {
+      document.records.push({
+        ...record,
+        vision: {
+          providerId: 'p1',
+          providerName: 'OpenAI',
+          providerKind: 'openai',
+          model: 'vision',
+          inputFileId: 'missing',
+          description: null,
+        },
+      })
+    })
+    await expect(createFileStore(directory).read()).rejects.toThrow(
+      '插件私有存储结构无效',
+    )
   })
 })

@@ -38,8 +38,10 @@ export const ProviderSaveInputSchema = z.strictObject({
   baseUrl: baseUrlSchema,
   /** Omitted keeps the stored key, so editing other fields does not need it. */
   apiKey: z.string().trim().max(400).optional(),
-  imageModel: z.string().trim().min(1).max(120),
+  imageModel: z.string().trim().max(120),
   textModel: z.string().trim().max(120),
+  /** Omitted preserves the saved choice; an empty string explicitly clears it. */
+  visionModel: z.string().trim().max(120).optional(),
   supportsVision: z.boolean(),
 })
 
@@ -102,15 +104,32 @@ export const RecordIdInputSchema = z.strictObject({
   id: z.string().trim().min(1).max(64),
 })
 
+export const RecordRecognizeInputSchema = z.union([
+  z.strictObject({
+    id: z.string().trim().min(1).max(64),
+    providerId: z.string().trim().min(1).max(64),
+    fileId: z.string().trim().min(1).max(64).nullable().optional(),
+  }),
+  z.strictObject({
+    id: z.string().trim().min(1).max(64),
+    retry: z.literal(true),
+  }),
+])
+
 export const GenerateInputSchema = z.strictObject({
   providerId: z.string().trim().min(1).max(64),
   mode: z.enum(['generate', 'edit']),
   /** `null` means "send the prompt as typed", without a preset preamble. */
   presetId: z.string().trim().max(64).nullable(),
-  prompt: z.string().trim().max(4000),
+  // Reject over-limit input instead of silently trimming pasted constraints.
+  prompt: z.string().max(12000),
   size: z.enum(['1024x1024', '1024x1536', '1536x1024', 'auto']),
   count: z.number().int().min(1).max(4),
   inputFileIds: z.array(z.string().trim().min(1).max(64)).max(6),
+  /** Omitted/null keeps the legacy generation/copy flow. */
+  visionProviderId: z.string().trim().min(1).max(64).nullable().optional(),
+  /** Omitted/null selects the first input, only when recognition is enabled. */
+  visionFileId: z.string().trim().min(1).max(64).nullable().optional(),
 })
 
 export function parseOrThrow<T>(schema: z.ZodType<T>, payload: unknown): T {
