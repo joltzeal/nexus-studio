@@ -5,6 +5,9 @@
 接入规则见[插件对接规范](14-plugin-integration-guide.md)，宿主规则见
 [插件宿主](17-plugin-host.md)，应用网络边界见[应用代理](26-application-network-proxy.md)。
 
+`1.1.1` 修复匿名会话与衣柜请求地址，保留 `1.1.0` 的存储和 RPC 契约。
+独立构建与商店上传步骤见[插件商店](25-plugin-market.md)。
+
 ## 与参考实现的对应
 
 行为参考 `nexus-cart/packages/platform/src/pages/vinted-monitors`、`vinted-items`
@@ -103,8 +106,9 @@ verification: Record<string, {valid, available, verifiedAt}>,
 lastLogedOnTs, updatedOn, collectedAt, checkedAt, error, detail
 ```
 
-卖家按站点与 externalId 共享。每轮每个卖家最多请求一次，
-`GET https://<host>/api/v2/users/<id>` 的返回身份必须匹配。
+卖家按站点与 externalId 共享。每轮每个卖家仅安排一次资料补全，
+会话失效时允许下述一次刷新重试；
+`GET https://www.<host>/api/v2/users/<id>` 的返回身份必须匹配。
 失败保留占位、checkedAt、安全 error，下一次再出现会重试；成功资料按参考实现持续
 缓存，不设置虚构刷新周期，不自动重抓已经成功的资料。profile 时间兼容秒、毫秒与
 ISO 日期。整轮卖家获取预算为 120 秒，每个 HTTP 请求最多 20 秒。
@@ -132,6 +136,36 @@ HTTP(S) 代理域名仍需本机解析；目标 HTTPS 保留证书与主机名�
 校验证书。每个操作独立 dispatcher，不改全局代理，不受 NO_PROXY 绕过，不关闭 TLS。
 一次采集的列表、后续页与卖家请求持有同一代理配置/dispatcher；编辑密码、默认代理或
 停用配置只影响后续操作。
+
+## 匿名采集会话
+
+归档身份与已保存的监控 URL 继续使用去除 `www.` 的站点，保持旧商品 ID、
+卖家缓存与监控关联不变。实际 HTTP 请求使用 `www.<host>` 首页、衣柜和卖家接口；
+目录仍使用 `api.<host>`。不能把用于去重的站点字符串直接作为衣柜请求地址：
+2026-10-25 实测 `vinted.com/api/v2/wardrobe/...` 返回 302，
+此前 `redirect: error` 将这个跳转变成了笼统网络错误。
+插件 manifest 的网络域名同步声明裸域、`www.` 与 `api.`，不依赖隐式子域权限。
+
+参考 `nexus-cart` 的 `BoundSession` / `HttpSession`：
+
+- 每轮先通过该轮所选代理 `HEAD https://www.<host>/` 建立匿名会话，再读取 JSON。
+- 使用开源 `tough-cookie@6.0.2` 在内存处理 Cookie 更新、过期、域名和路径；
+  同轮分页与卖家请求复用会话，下一轮重新建立。会话不读取浏览器 Profile、
+  不复用登录账号、不写入业务存储，结束时清空。
+- 首页匿名会话仅允许传给本国 `www.<host>` 与 `api.<host>`；
+  目录接口沿用参考实现向同站点兄弟域传递首页 Cookie 的规则。
+  其他国家、其他代理和其他轮次隔离，拒绝 Cookie 跳转到任意第三方。
+- 补齐站点对应的 `Locale`、`Accept-Language`、`Platform: web`、
+  `X-Next-App: marketplace-web`、`X-Money-Object: true`、`Origin` 和 `Referer`；
+  衣柜带 `order=newest_first`。
+- API 返回 401/403 时，清空并重新建立一次匿名会话后重试一次。429、跳转、
+  网络错误和初始化失败不循环重试，也不切换代理或直连。
+- 单次数据操作的初始化、刷新、重试与响应体共用 20 秒截止时间，
+  不能因为增加会话步骤而无限延长等待。
+
+运行错误保留 HTTP 状态与失败阶段（初始化会话、获取商品、获取卖家资料），
+区分重定向、站点拒绝、限流、代理认证、代理连接、DNS、TLS 和超时。
+不保存原始异常、响应体、跳转地址、Cookie 或代理口令。
 
 ## RPC
 
@@ -219,8 +253,10 @@ schemaVersion=2 包含 monitors、runs、items、sellers、proxies、defaultProx
 ## 上游与验证边界
 
 目录请求 `https://api.<host>/svc-catalogue/items`，衣柜请求
-`https://<host>/api/v2/wardrobe/<id>/items`，卖家请求 `https://<host>/api/v2/users/<id>`。
-列表/卖家响应最多 4 MiB、20 秒，页间等待 400 ms；重定向不自动跟随。
+`https://www.<host>/api/v2/wardrobe/<id>/items`，卖家请求
+`https://www.<host>/api/v2/users/<id>`，其中 `<host>` 不含 `www.`。
+列表/卖家响应最多 4 MiB，每次操作最多 20 秒，页间等待 400 ms；
+重定向不自动跟随，明确记录状态。
 分页块矛盾、页码重复、衣柜卖家不符或非零上游 code 均不能宣称完整扫描。
 公共接口可能限流、拒绝或改变格式；未实现账号登录、验证码、反爬绕过或出售判定。
 
@@ -232,6 +268,14 @@ rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_con
 rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc --noEmit -p plugins/vinted-monitor/tsconfig.json
 ```
 
-测试使用假上游响应、临时私有文件、本机 HTTP/HTTPS/SOCKS 代理和专用测试证书。
-不请求真实 Vinted、账号或付费接口；不执行本地 build、Rust 编译/测试/Clippy、
-安装包、签名或 Windows 检查。这些局部验证不代表真实平台连通性或发行验收。
+自动化测试使用假上游响应、临时私有文件、本机 HTTP/HTTPS/SOCKS 代理和专用测试证书，
+不自动访问外部站点。会话回归覆盖规范地址、Cookie 轮换与隔离、401/403 有界重试、
+429 不重试、跳转阻断、共用截止时间和安全错误分类。
+
+2026-10-25 按用户明确指定，另通过实际插件源码对公开会员 `3192040080` 执行实网采集。
+本机 `http://127.0.0.1:7890` 代理下结果为 success：1 页、12 件商品全部入库、
+1 位卖家资料成功、failed=0、userFailed=0、truncated=false。
+使用临时独立私有目录，重新打开文件仍有 12 件商品，未改动用户现有监控或商品。
+同机直连初始化返回 HTTP 403，不能把代理下成功推广为任意出口都能采集。
+本地未执行 build、Rust 编译/测试/Clippy、安装包、签名或 Windows 检查；
+实网采集成功不代表新插件包已发布。

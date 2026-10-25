@@ -13,7 +13,11 @@ function stubFetch(handler: Handler) {
 const target = normalizeMonitorUrl('https://www.vinted.fr/member/12-x')
 
 function client(handler: Handler): VintedClient {
-  return new VintedClient({ fetchImpl: stubFetch(handler) as unknown as typeof fetch })
+  return new VintedClient({
+    fetchImpl: stubFetch(async (url, init) =>
+      init?.method === 'HEAD' ? new Response(null) : handler(url, init),
+    ) as unknown as typeof fetch,
+  })
 }
 
 async function failure(promise: Promise<unknown>): Promise<UpstreamError> {
@@ -31,9 +35,11 @@ describe('vinted http client', () => {
     const fetchImpl = stubFetch(async () => Response.json({ items: [] }))
     const vinted = new VintedClient({ fetchImpl: fetchImpl as unknown as typeof fetch })
     await vinted.items(target, 2, 24)
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchImpl.mock.calls[0] ?? []
-    expect(url).toBe('https://vinted.fr/api/v2/wardrobe/12/items?page=2&per_page=24')
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const [url, init] = fetchImpl.mock.calls[1] ?? []
+    expect(url).toBe(
+      'https://www.vinted.fr/api/v2/wardrobe/12/items?page=2&per_page=24&order=newest_first',
+    )
     const headers = (init?.headers ?? {}) as Record<string, string>
     expect(headers['user-agent']).toContain('Mozilla/5.0')
     expect(headers['accept']).toContain('application/json')
@@ -45,7 +51,7 @@ describe('vinted http client', () => {
     [403, 'blocked'],
     [404, 'upstream-refused'],
     [500, 'unavailable'],
-    [302, 'upstream-network'],
+    [302, 'redirect'],
   ])('maps status %i to %s', async (status, reason) => {
     const vinted = client(async () => new Response('', { status }))
     const error = await failure(vinted.items(target, 1, 20))

@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-vinted-monitor",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Nexus Vinted monitor plugin: scheduled listing collection with run history",
   "type": "module",
@@ -29,6 +29,7 @@
   "dependencies": {
     "@nexus/plugin-sdk": "workspace:*",
     "socks": "2.8.7",
+    "tough-cookie": "6.0.2",
     "undici": "7.16.0",
     "zod": "4.4.3"
   }

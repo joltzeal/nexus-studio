@@ -1,10 +1,18 @@
-import { UpstreamError } from '../domain/errors.js'
+import { UpstreamError, type UpstreamPhase } from '../domain/errors.js'
 import { parseItemsPage, type ItemsPage } from '../domain/items.js'
 import { numericId, record } from '../domain/sellers.js'
 import type { ProxyRecord } from '../domain/types.js'
-import { itemPageUrl, itemRequestUrl, type MonitorTarget } from '../domain/urls.js'
+import {
+  itemPageUrl,
+  itemRequestUrl,
+  storefrontOrigin,
+  stripWww,
+  type MonitorTarget,
+} from '../domain/urls.js'
 import { createProxyTransport } from './proxy-transport.js'
 import { readBody } from './body.js'
+import { networkFailure, statusFailure } from './request-errors.js'
+import { AnonymousSession } from './session.js'
 
 /**
  * Vinted serves the same JSON to its own web client. A desktop user agent is
@@ -23,29 +31,12 @@ export interface VintedClientOptions {
   maxBytes?: number
 }
 
-function reasonForStatus(status: number): UpstreamError {
-  if (status === 429) return new UpstreamError('rate-limit')
-  if (status === 401 || status === 403) return new UpstreamError('blocked')
-  if (status === 408 || status === 504) return new UpstreamError('timeout')
-  if (status === 404) return new UpstreamError('upstream-refused', '页面不存在')
-  if (status >= 500) return new UpstreamError('unavailable')
-  return new UpstreamError('upstream-network')
-}
-
-function isAbort(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'name' in error &&
-    (error as { name?: unknown }).name === 'AbortError'
-  )
-}
-
 export class VintedClient {
   private readonly fetchImpl: typeof fetch
   private readonly timeoutMs: number
   private readonly maxBytes: number
   private readonly injectedFetch: typeof fetch | undefined
+  private readonly sessions = new Map<string, AnonymousSession>()
 
   constructor(options: VintedClientOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch
@@ -60,7 +51,7 @@ export class VintedClient {
    */
   async items(target: MonitorTarget, page: number, perPage: number): Promise<ItemsPage> {
     const url = itemRequestUrl(target, page, perPage)
-    const payload = await this.json(url)
+    const payload = await this.json(target.host, url, 'items')
     const result = parseItemsPage(payload, perPage, (id) => itemPageUrl(target, id), page)
     if (
       target.kind === 'member' &&
@@ -72,7 +63,14 @@ export class VintedClient {
   }
 
   async user(domain: string, userId: string): Promise<Record<string, unknown>> {
-    const payload = record(await this.json(`https://${domain}/api/v2/users/${userId}`))
+    if (numericId(userId) !== userId) throw new UpstreamError('invalid-response')
+    const payload = record(
+      await this.json(
+        domain,
+        `${storefrontOrigin(domain)}/api/v2/users/${userId}`,
+        'user',
+      ),
+    )
     const profile = record(payload?.user)
     if (
       !profile ||
@@ -89,49 +87,116 @@ export class VintedClient {
     transport: ReturnType<typeof createProxyTransport>
   } {
     const transport = createProxyTransport(proxy, this.fetchImpl, this.injectedFetch)
+    const client = new VintedClient({
+      fetchImpl: transport.fetch,
+      timeoutMs: this.timeoutMs,
+      maxBytes: this.maxBytes,
+    })
     return {
-      transport,
-      client: new VintedClient({
-        fetchImpl: transport.fetch,
-        timeoutMs: this.timeoutMs,
-        maxBytes: this.maxBytes,
-      }),
+      transport: {
+        ...transport,
+        close: async () => {
+          for (const session of client.sessions.values()) session.clear()
+          client.sessions.clear()
+          await transport.close()
+        },
+      },
+      client,
     }
   }
 
-  private async json(url: string): Promise<unknown> {
+  private async request(
+    session: AnonymousSession,
+    url: string,
+    method: 'HEAD' | 'GET',
+    signal: AbortSignal,
+    phase: UpstreamPhase,
+  ): Promise<Response> {
+    try {
+      const cookie = session.cookieHeader(url)
+      const response = await this.fetchImpl(url, {
+        method,
+        redirect: 'manual',
+        credentials: 'omit',
+        signal,
+        headers: {
+          accept: method === 'HEAD' ? 'text/html' : 'application/json',
+          'accept-language': session.locale,
+          'user-agent': USER_AGENT,
+          locale: session.locale,
+          platform: 'web',
+          'x-next-app': 'marketplace-web',
+          'x-money-object': 'true',
+          origin: session.origin,
+          referer: `${session.origin}/`,
+          ...(cookie ? { cookie } : {}),
+        },
+      })
+      session.accept(url, response)
+      return response
+    } catch (error) {
+      if (signal.aborted) throw new UpstreamError('timeout', null, { phase })
+      throw networkFailure(error, phase)
+    }
+  }
+
+  private async initialize(session: AnonymousSession, signal: AbortSignal) {
+    session.clear()
+    const response = await this.request(
+      session,
+      `${session.origin}/`,
+      'HEAD',
+      signal,
+      'session',
+    )
+    await response.body?.cancel()
+    if (!response.ok) {
+      session.clear()
+      throw statusFailure(response.status, 'session')
+    }
+    session.ready = true
+  }
+
+  private async json(
+    domain: string,
+    url: string,
+    phase: UpstreamPhase,
+  ): Promise<unknown> {
+    const host = stripWww(domain)
+    let session = this.sessions.get(host)
+    if (!session) {
+      session = new AnonymousSession(host)
+      this.sessions.set(host, session)
+    }
     const controller = new AbortController()
     const timer = setTimeout(() => {
       controller.abort()
     }, this.timeoutMs)
 
     try {
-      const response = await this.fetchImpl(url, {
-        method: 'GET',
-        redirect: 'error',
-        credentials: 'omit',
-        signal: controller.signal,
-        headers: {
-          accept: 'application/json, text/plain, */*',
-          'accept-language': 'en-US,en;q=0.9',
-          'user-agent': USER_AGENT,
-        },
-      })
+      if (!session.ready) await this.initialize(session, controller.signal)
+      let response = await this.request(session, url, 'GET', controller.signal, phase)
+      if (response.status === 401 || response.status === 403) {
+        await response.body?.cancel()
+        await this.initialize(session, controller.signal)
+        response = await this.request(session, url, 'GET', controller.signal, phase)
+      }
       if (!response.ok) {
         await response.body?.cancel()
-        throw reasonForStatus(response.status)
+        throw statusFailure(response.status, phase)
       }
       const body = await readBody(response, this.maxBytes, controller.signal)
       try {
         return JSON.parse(body.toString('utf8')) as unknown
       } catch {
-        throw new UpstreamError('invalid-response')
+        throw new UpstreamError('invalid-response', null, { phase })
       }
     } catch (error) {
       if (error instanceof UpstreamError) throw error
-      if (isAbort(error) || controller.signal.aborted) throw new UpstreamError('timeout')
-      if (error instanceof RangeError) throw new UpstreamError('invalid-response')
-      throw new UpstreamError('upstream-network')
+      if (controller.signal.aborted) throw new UpstreamError('timeout', null, { phase })
+      if (error instanceof RangeError)
+        throw new UpstreamError('invalid-response', null, { phase })
+      throw networkFailure(error, phase)
     } finally {
       clearTimeout(timer)
     }

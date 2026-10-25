@@ -107,6 +107,11 @@ function normalizeHost(hostname: string): string {
   return host
 }
 
+/** Archive identities omit www; HTTP requests must use the actual storefront. */
+export function storefrontOrigin(hostname: string): string {
+  return `https://www.${normalizeHost(hostname)}`
+}
+
 /**
  * Turns a pasted Vinted URL into the canonical form the collector uses.
  *
@@ -205,8 +210,9 @@ export function wardrobeRequest(
   const query = new URLSearchParams({
     page: String(page),
     per_page: String(perPage),
+    order: 'newest_first',
   })
-  return `https://${target.host}/api/v2/wardrobe/${userId}/items?${query.toString()}`
+  return `${storefrontOrigin(target.host)}/api/v2/wardrobe/${userId}/items?${query.toString()}`
 }
 
 export function itemRequestUrl(

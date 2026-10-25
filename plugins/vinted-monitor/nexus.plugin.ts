@@ -4,11 +4,11 @@ import { VINTED_DOMAINS } from './src/domain/urls.js'
 import { VINTED_IMAGE_DOMAINS } from './src/domain/image-urls.js'
 
 /**
- * Every storefront plus its `api.` sibling: catalogue searches are served from
- * `api.<domain>`, wardrobes from `<domain>` itself.
+ * Declare canonical storefronts for anonymous sessions, wardrobes and sellers,
+ * their catalogue siblings, and the legacy bare domains kept in saved URLs.
  */
 const networkDomains = [
-  ...VINTED_DOMAINS.flatMap((domain) => [domain, `api.${domain}`]),
+  ...VINTED_DOMAINS.flatMap((domain) => [domain, `www.${domain}`, `api.${domain}`]),
   ...VINTED_IMAGE_DOMAINS,
 ]
 
@@ -17,7 +17,7 @@ const networkDomains = [
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.vinted-monitor',
-  version: '1.1.0',
+  version: '1.1.1',
   name: 'Vinted 商品监控',
   minCoreVersion: '0.1.0',
   capabilities: ['monitor.collector'],

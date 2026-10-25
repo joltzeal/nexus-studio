@@ -1,5 +1,21 @@
 # 插件商店与在线更新
 
+## Vinted 监控 1.1.1 独立更新
+
+`studio.vinted-monitor 1.1.1` 修复衣柜请求域名和匿名 Cookie 会话缺失造成的采集失败，
+并提供带阶段、HTTP 状态的错误信息。插件数据和 RPC 方法保持兼容，
+主程序版本不变，更新从现有插件商店分发。
+
+`.github/workflows/plugin-release.yml` 由 `plugin-vinted-monitor@<版本>` 标签触发。
+仅在远程构建 Vinted 插件及其依赖，运行插件测试和 lint，
+校验标签、package/manifest、目录和包摘要，再实际启动包核验全部 RPC 方法。
+产物名称为 `plugin-market-plugin-vinted-monitor@<版本>`，只包含该插件与局部目录。
+
+发布时下载这个 CI artifact，回读 R2 原目录，仅合并 Vinted 条目；
+先上传新版本包并回读校验，确认原目录未变后再上传合并目录并复核。
+其他插件及历史版本包保持原字节。CI artifact 完成不等于 R2 已上线，
+实际结果单独记录在质量文档。用户在“插件中心 → 检查更新”安装该版本。
+
 ## 0.1.10 配套插件
 
 本次主程序配套 AI 生图 `studio.ai-image 1.1.0` 与

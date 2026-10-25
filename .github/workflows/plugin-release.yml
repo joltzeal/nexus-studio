@@ -1,0 +1,89 @@
+name: Plugin release
+
+on:
+  push:
+    tags:
+      - 'plugin-vinted-monitor@*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.repository == 'joltzeal/nexus-studio'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build Vinted plugin and dependencies
+        run: pnpm -r --filter '@nexus/plugin-vinted-monitor...' build
+      - name: Check Vinted plugin
+        run: |
+          pnpm exec eslint plugins/vinted-monitor --max-warnings 0
+          pnpm exec vitest run plugins/vinted-monitor --maxWorkers=2
+      - name: Pack Vinted plugin
+        id: market
+        shell: bash
+        run: |
+          market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
+          echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
+          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "修复商品采集失败：规范请求域名、匿名会话初始化与 Cookie 复用、代理保持一致，并显示具体失败阶段及 HTTP 状态。"
+          node scripts/build-market.mjs --out "$market_dir"
+      - name: Verify artifact and plugin startup
+        env:
+          PLUGIN_MARKET_DIR: ${{ steps.market.outputs.directory }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+          import { createHash } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { readPackage } from './scripts/lib/market-package.mjs'
+          import { VINTED_METHODS } from './plugins/vinted-monitor/dist/src/capabilities/vinted-monitor.js'
+
+          const json = (path) => JSON.parse(readFileSync(path, 'utf8'))
+          const manifest = json('plugins/vinted-monitor/dist/nexus.plugin.json')
+          const pkg = json('plugins/vinted-monitor/package.json')
+          assert.equal(manifest.id, 'studio.vinted-monitor')
+          assert.equal(manifest.version, pkg.version)
+          assert.equal(process.env.GITHUB_REF_NAME, `plugin-vinted-monitor@${pkg.version}`)
+          const catalog = json(join(process.env.PLUGIN_MARKET_DIR, 'catalog.json'))
+          assert.equal(catalog.schemaVersion, 1)
+          assert.equal(catalog.plugins.length, 1)
+          const entry = catalog.plugins[0]
+          assert.deepEqual(entry.manifest, manifest)
+          assert.equal(entry.package.url, `plugins/${manifest.id}/${manifest.version}.nexuspkg`)
+          const file = join(process.env.PLUGIN_MARKET_DIR, entry.package.url)
+          const bytes = readFileSync(file)
+          assert.equal(bytes.length, entry.package.size)
+          assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.package.sha256)
+          assert.deepEqual(readPackage(bytes).header.manifest, manifest)
+          const report = execFileSync(process.execPath, ['scripts/verify-package.mjs', file], {
+            encoding: 'utf8',
+            timeout: 15_000,
+          })
+          assert.equal(report.split('\n')[0], `ok ${manifest.id} ${manifest.version}`)
+          const methodLine = report.match(/^\s+\S+ (\d+) \S+\uFF1A([^\r\n]*)$/m)
+          assert.ok(methodLine, 'Missing ready method report')
+          const advertised = methodLine[2].split(', ').filter(Boolean)
+          assert.equal(advertised.length, Number(methodLine[1]))
+          for (const method of VINTED_METHODS) assert.ok(advertised.includes(method), method)
+          process.stdout.write(report)
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-market-${{ github.ref_name }}
+          path: |
+            ${{ steps.market.outputs.directory }}/catalog.json
+            ${{ steps.market.outputs.directory }}/plugins/**/*.nexuspkg
+          if-no-files-found: error
+          retention-days: 14

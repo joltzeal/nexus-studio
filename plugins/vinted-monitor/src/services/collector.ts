@@ -1,4 +1,4 @@
-import { UpstreamError, upstreamReasonText } from '../domain/errors.js'
+import { UpstreamError, upstreamErrorText } from '../domain/errors.js'
 import type { DraftItem } from '../domain/items.js'
 import type { CollectionCounts, MonitorRecord, RunStatus } from '../domain/types.js'
 import type { MonitorTarget } from '../domain/urls.js'
@@ -33,7 +33,7 @@ export interface CollectOptions {
 }
 
 export function describeFailure(error: unknown): string {
-  if (error instanceof UpstreamError) return upstreamReasonText(error.reason)
+  if (error instanceof UpstreamError) return upstreamErrorText(error)
   if (error instanceof Error && error.message !== '') return '采集过程中出现意外错误'
   return '采集失败'
 }

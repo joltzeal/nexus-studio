@@ -75,7 +75,9 @@ export function createProxyTransport(
               ? 443
               : 80
           socket = connectTcp({ host: proxy.host, port: proxy.port })
-          socket.once('error', () => finish(new Error('Proxy connection failed')))
+          socket.once('error', (cause) =>
+            finish(new Error('Proxy connection failed', { cause })),
+          )
           await once(socket, 'connect')
           if (settled) return
           const connected = await SocksClient.createConnection({
@@ -107,8 +109,10 @@ export function createProxyTransport(
           })
           socket = tls
           tls.once('secureConnect', () => finish(null, tls))
-          tls.once('error', () => finish(new Error('Proxy TLS failed')))
-        })().catch(() => finish(new Error('Proxy connection failed')))
+          tls.once('error', (cause) => finish(new Error('Proxy TLS failed', { cause })))
+        })().catch((cause: unknown) =>
+          finish(new Error('Proxy connection failed', { cause })),
+        )
       },
     })
   }

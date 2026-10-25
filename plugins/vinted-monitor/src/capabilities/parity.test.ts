@@ -63,6 +63,10 @@ function setup(
   const client = new VintedClient({
     fetchImpl: (async (url: string, init?: RequestInit) => {
       await options.beforeRequest?.(url, init)
+      if (init?.method === 'HEAD')
+        return new Response(null, {
+          headers: { 'set-cookie': 'access_token_web=test; Path=/; Secure' },
+        })
       if (url.includes('/users/')) {
         userRequests += 1
         return failUser
@@ -633,7 +637,7 @@ describe('reference item semantics', () => {
     })
     release?.()
     expect(await pending).toMatchObject({ userFailed: 0 })
-    expect(dispatchers.length).toBe(3)
+    expect(dispatchers.length).toBe(4)
     expect(dispatchers[0]).toBeDefined()
     expect(dispatchers.every((d) => d === dispatchers[0])).toBe(true)
     await expect(f.call('monitors.run', { monitorId: m.id })).rejects.toThrow(/代理/)

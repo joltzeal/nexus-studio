@@ -101,7 +101,7 @@ describe('collection endpoints', () => {
   it('builds the wardrobe request on the storefront host', () => {
     const target = normalizeMonitorUrl('https://www.vinted.fr/member/777-x')
     expect(wardrobeRequest(target, 1, 20)).toBe(
-      'https://vinted.fr/api/v2/wardrobe/777/items?page=1&per_page=20',
+      'https://www.vinted.fr/api/v2/wardrobe/777/items?page=1&per_page=20&order=newest_first',
     )
   })
 
