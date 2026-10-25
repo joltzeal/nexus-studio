@@ -278,4 +278,5 @@ rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_con
 使用临时独立私有目录，重新打开文件仍有 12 件商品，未改动用户现有监控或商品。
 同机直连初始化返回 HTTP 403，不能把代理下成功推广为任意出口都能采集。
 本地未执行 build、Rust 编译/测试/Clippy、安装包、签名或 Windows 检查；
-实网采集成功不代表新插件包已发布。
+`1.1.1` 后续远程构建、正式插件包实网复验及商店发布证据见
+[质量记录](09-quality-and-testing.md)。

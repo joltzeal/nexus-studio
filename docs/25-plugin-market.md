@@ -5,6 +5,8 @@
 `studio.vinted-monitor 1.1.1` 修复衣柜请求域名和匿名 Cookie 会话缺失造成的采集失败，
 并提供带阶段、HTTP 状态的错误信息。插件数据和 RPC 方法保持兼容，
 主程序版本不变，更新从现有插件商店分发。
+2026-10-25 已完成远程构建、加密包实网采集验证、R2 上传和目录/包回读校验；
+线上 Vinted 版本为 `1.1.1`，其他 7 个插件条目未变。证据见[质量记录](09-quality-and-testing.md)。
 
 `.github/workflows/plugin-release.yml` 由 `plugin-vinted-monitor@<版本>` 标签触发。
 仅在远程构建 Vinted 插件及其依赖，运行插件测试和 lint，
