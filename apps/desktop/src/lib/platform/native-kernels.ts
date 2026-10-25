@@ -21,6 +21,21 @@ export interface InstalledKernel {
   binaryPath: string
 }
 
+export interface KernelRelease {
+  version: string
+  platform: string
+  checkedAt: string
+}
+
+export function isKernelVersion(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 48 &&
+    value.trim() === value &&
+    /^[0-9]+(?:\.[0-9]+){3,4}$/.test(value)
+  )
+}
+
 export interface KernelDownload {
   phase: KernelPhase
   percent: number | null
@@ -206,5 +221,32 @@ export async function downloadKernel(): Promise<string> {
     return result.trim()
   } catch (cause) {
     throw operationError(cause, '内核下载失败，请重试。')
+  }
+}
+
+export async function checkLatestKernel(): Promise<KernelRelease> {
+  requireDesktop()
+  try {
+    const result = await invoke<unknown>('kernel_check_latest')
+    if (
+      !isRecord(result) ||
+      !isKernelVersion(result.version) ||
+      !isText(result.platform) ||
+      !['darwin-arm64', 'darwin-x64', 'windows-x64', 'linux-arm64', 'linux-x64'].includes(
+        result.platform,
+      ) ||
+      !isText(result.checkedAt) ||
+      !/^\d{4}-\d{2}-\d{2}T/.test(result.checkedAt) ||
+      !Number.isFinite(Date.parse(result.checkedAt))
+    ) {
+      throw invalidResponse()
+    }
+    return {
+      version: result.version,
+      platform: result.platform,
+      checkedAt: result.checkedAt,
+    }
+  } catch (cause) {
+    throw operationError(cause, '无法检查最新内核，请检查应用代理或网络后重试。')
   }
 }

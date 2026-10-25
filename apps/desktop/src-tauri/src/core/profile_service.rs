@@ -1,5 +1,6 @@
 use super::kernel_service::{
-    KernelFailure, KernelService, KernelStatus, sanitize_kernel_error as sanitize_license_error,
+    KernelFailure, KernelRelease, KernelService, KernelStatus,
+    sanitize_kernel_error as sanitize_license_error,
 };
 use super::license_store::LicenseStore;
 use super::network_proxy::NetworkProxyStore;
@@ -674,6 +675,16 @@ pub async fn kernel_status(
 }
 
 #[tauri::command]
+pub async fn kernel_check_latest(
+    state: State<'_, Arc<ProfileService>>,
+) -> Result<KernelRelease, KernelFailure> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.kernels.check_latest())
+        .await
+        .map_err(|_| KernelFailure::operation("内核版本检查中断"))?
+}
+
+#[tauri::command]
 pub async fn kernel_download(
     state: State<'_, Arc<ProfileService>>,
 ) -> Result<String, KernelFailure> {
@@ -681,7 +692,7 @@ pub async fn kernel_download(
     tauri::async_runtime::spawn_blocking(move || {
         state
             .kernels
-            .prepare(None)
+            .download_latest()
             .map(|binary| binary.version)
             .map_err(|message| state.kernels.failure(message))
     })

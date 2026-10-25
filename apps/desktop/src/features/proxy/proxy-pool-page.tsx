@@ -62,7 +62,7 @@ import {
   listProxies,
   setConfig as saveConfig,
 } from './api'
-import { DetectionCell, QualityCell } from './proxy-detail'
+import { DetectionCell, ProxyUsernameCell, QualityCell } from './proxy-detail'
 import { ProxyBatchSheet } from './proxy-batch-sheet'
 import { ProxyConfigSheet } from './proxy-config-sheet'
 import { ProxyFilters } from './proxy-filters'
@@ -623,7 +623,9 @@ export function ProxyPoolPage({ plugin, hostAvailable }: ProxyPoolPageProps) {
                     </TableCell>
                     <TableCell>{row.port}</TableCell>
                     {columns.username ? (
-                      <TableCell>{row.username === '' ? '—' : row.username}</TableCell>
+                      <TableCell>
+                        <ProxyUsernameCell row={row} />
+                      </TableCell>
                     ) : null}
                     {columns.password ? (
                       <TableCell>{row.hasPassword ? '已配置' : '—'}</TableCell>

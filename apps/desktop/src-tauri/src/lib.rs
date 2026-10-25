@@ -30,6 +30,7 @@ pub fn run() {
             core::updater_service::app_update_check,
             core::updater_service::app_update_begin_install,
             core::profile_service::kernel_status,
+            core::profile_service::kernel_check_latest,
             core::profile_service::kernel_download,
             core::license_service::license_status,
             core::license_service::license_set,

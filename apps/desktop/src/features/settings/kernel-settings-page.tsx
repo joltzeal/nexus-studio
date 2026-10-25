@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Download, RefreshCw } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import {
   Card,
   CardAction,
@@ -21,13 +22,16 @@ import {
 } from '@/components/ui/table'
 import {
   downloadKernel,
+  checkLatestKernel,
   getKernelStatus,
   KernelOperationError,
   nativeKernelsAvailable,
   type KernelFailure,
   type KernelPhase,
   type KernelStatus,
+  type KernelRelease,
 } from '@/lib/platform/native-kernels'
+import { kernelAvailability } from './kernel-release-state'
 
 const phaseLabels: Record<KernelPhase, string> = {
   idle: '暂无下载任务',
@@ -64,9 +68,13 @@ function useKernelSettings(native: boolean) {
   const [statusError, setStatusError] = useState<KernelFailure | null>(null)
   const [downloadError, setDownloadError] = useState<KernelFailure | null>(null)
   const [completed, setCompleted] = useState<string | null>(null)
+  const [release, setRelease] = useState<KernelRelease | null>(null)
+  const [checking, setChecking] = useState(native)
+  const [checkError, setCheckError] = useState<KernelFailure | null>(null)
   const actions = useRef<{
     refresh: () => void
     download: () => void
+    check: () => void
   } | null>(null)
 
   useEffect(() => {
@@ -76,8 +84,25 @@ function useKernelSettings(native: boolean) {
     let queued = false
     let queuedRefresh = false
     let downloading = false
+    let checkingRelease = false
     let latest: KernelStatus | null = null
     let timer: ReturnType<typeof setTimeout> | undefined
+
+    async function check() {
+      if (!mounted || checkingRelease) return
+      checkingRelease = true
+      setChecking(true)
+      setCheckError(null)
+      try {
+        const result = await checkLatestKernel()
+        if (mounted) setRelease(result)
+      } catch (cause) {
+        if (mounted) setCheckError(failure(cause))
+      } finally {
+        checkingRelease = false
+        if (mounted) setChecking(false)
+      }
+    }
 
     function read(refresh = false) {
       if (!mounted) return
@@ -125,6 +150,7 @@ function useKernelSettings(native: boolean) {
       if (
         !mounted ||
         downloading ||
+        checkingRelease ||
         !latest ||
         isActive(latest.download.phase) ||
         !latest.activationConfigured
@@ -147,6 +173,7 @@ function useKernelSettings(native: boolean) {
           downloading = false
           setPending(false)
           read(true)
+          void check()
         }
       }
     }
@@ -154,8 +181,10 @@ function useKernelSettings(native: boolean) {
     actions.current = {
       refresh: () => read(true),
       download: () => void download(),
+      check: () => void check(),
     }
     read()
+    void check()
     return () => {
       mounted = false
       clearTimeout(timer)
@@ -171,8 +200,12 @@ function useKernelSettings(native: boolean) {
     statusError,
     downloadError,
     completed,
+    release,
+    checking,
+    checkError,
     refresh: () => actions.current?.refresh(),
     download: () => actions.current?.download(),
+    check: () => actions.current?.check(),
   }
 }
 
@@ -182,6 +215,10 @@ export function KernelSettingsPage() {
   const { status, pending } = view
   const download = status?.download
   const busy = view.loading || view.refreshing || pending || isActive(download?.phase)
+  const availability =
+    view.checkError || view.checking || view.statusError
+      ? 'unknown'
+      : kernelAvailability(view.release, status)
   const failed =
     view.downloadError ??
     (!pending && download?.phase === 'failed'
@@ -252,13 +289,32 @@ export function KernelSettingsPage() {
           ) : null}
           <Card>
             <CardHeader>
-              <CardTitle>下载内核</CardTitle>
+              <CardTitle>内核更新</CardTitle>
               <CardDescription>切换页面后，下载仍会在桌面应用后台继续。</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="m-0 font-medium">最新内核</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="m-0 font-medium">
+                      {view.release
+                        ? `${view.checkError || view.checking ? '上次查询版本' : '最新版本'} ${view.release.version}`
+                        : '最新内核'}
+                    </p>
+                    {availability !== 'unknown' ? (
+                      <Badge
+                        variant={
+                          availability === 'downloadable' ? 'secondary' : 'outline'
+                        }
+                      >
+                        {availability === 'downloadable'
+                          ? '可下载'
+                          : availability === 'installed'
+                            ? '已下载'
+                            : '本机已有更新版本'}
+                      </Badge>
+                    ) : null}
+                  </div>
                   <p
                     id="latest-kernel-description"
                     className="m-0 text-xs text-muted-foreground"
@@ -269,17 +325,40 @@ export function KernelSettingsPage() {
                         : '请先在「激活码」页保存激活码。'
                       : '读取激活码状态后可下载。'}
                   </p>
+                  <p className="m-0 text-xs text-muted-foreground">
+                    {view.checking
+                      ? '正在检查最新版本…'
+                      : view.release
+                        ? `${view.checkError ? '上次成功检查' : '检查时间'}：${new Date(view.release.checkedAt).toLocaleString()}`
+                        : '尚未取得最新版本信息'}
+                  </p>
                 </div>
-                <Button
-                  variant="outline"
-                  disabled={busy || !status?.activationConfigured}
-                  aria-describedby="latest-kernel-description"
-                  onClick={view.download}
-                >
-                  <Download data-icon="inline-start" />
-                  下载最新内核
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={busy || view.checking}
+                    onClick={view.check}
+                  >
+                    <RefreshCw data-icon="inline-start" />
+                    {view.checking ? '正在检查…' : '检查更新'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy || view.checking || !status?.activationConfigured}
+                    aria-describedby="latest-kernel-description"
+                    onClick={view.download}
+                  >
+                    <Download data-icon="inline-start" />
+                    下载最新内核
+                  </Button>
+                </div>
               </div>
+              {view.checkError ? (
+                <Alert variant="destructive">
+                  <AlertTitle>检查更新失败</AlertTitle>
+                  <AlertDescription>{view.checkError.message}</AlertDescription>
+                </Alert>
+              ) : null}
               <div role="status" aria-live="polite" aria-atomic="true">
                 <p className="m-0">
                   {(isActive(download?.phase) ? null : view.completed) ??
@@ -297,7 +376,7 @@ export function KernelSettingsPage() {
                     {failed.retryable ? (
                       <Button
                         variant="outline"
-                        disabled={busy || !status?.activationConfigured}
+                        disabled={busy || view.checking || !status?.activationConfigured}
                         onClick={view.download}
                       >
                         重试下载

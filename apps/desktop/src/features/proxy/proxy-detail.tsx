@@ -9,6 +9,7 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import {
+  addressOf,
   flagOf,
   formatDateTime,
   qualityScore,
@@ -31,6 +32,48 @@ export function DetailRows({ rows }: { rows: [string, ReactNode][] }) {
         </div>
       ))}
     </dl>
+  )
+}
+
+export function ProxyIdentityDetails({ row }: { row: ProxyRow }) {
+  return (
+    <DetailRows
+      rows={[
+        ['代理', `${row.name} · #${row.id}`],
+        ['支持协议', row.schemes.map((scheme) => scheme.toUpperCase()).join(' / ')],
+        ['主机地址', addressOf(row)],
+        [
+          '用户名',
+          <span className="select-text whitespace-normal break-all">
+            {row.username || '未设置'}
+          </span>,
+        ],
+        ['密码', row.hasPassword ? '已配置' : '未配置'],
+      ]}
+    />
+  )
+}
+
+export function ProxyUsernameCell({ row }: { row: ProxyRow }) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        type="button"
+        aria-label={`查看 ${row.name}（用户名：${row.username || '未设置'}）的连接详情`}
+        className="proxy-detail-trigger max-w-60 text-left"
+        title={row.username || '未设置用户名'}
+      >
+        <span className="block truncate underline decoration-dotted underline-offset-4">
+          {row.username || '未设置'}
+        </span>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(24rem,calc(100vw-2rem))]">
+        <PopoverHeader>
+          <PopoverTitle>代理连接详情</PopoverTitle>
+        </PopoverHeader>
+        <ProxyIdentityDetails row={row} />
+      </PopoverContent>
+    </Popover>
   )
 }
 

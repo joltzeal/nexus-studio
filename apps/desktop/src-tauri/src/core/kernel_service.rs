@@ -110,6 +110,14 @@ pub struct InstalledKernel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KernelRelease {
+    pub version: String,
+    pub platform: String,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct KernelInventory {
     cache_dir: String,
     platform: String,
@@ -252,8 +260,30 @@ impl KernelService {
         })
     }
 
+    pub fn check_latest(&self) -> Result<KernelRelease, KernelFailure> {
+        let mut command = self.command("latest").map_err(KernelFailure::operation)?;
+        let output = run_preparation(&mut command, Duration::from_secs(25), None)
+            .map_err(KernelFailure::operation)?;
+        if !output.status.success() {
+            return Err(structured_failure(&String::from_utf8_lossy(&output.stderr))
+                .unwrap_or_else(|| {
+                    KernelFailure::operation("无法检查最新内核，请检查应用代理或网络后重试")
+                }));
+        }
+        serde_json::from_slice(last_output_line(&output).map_err(KernelFailure::operation)?)
+            .map_err(|_| KernelFailure::operation("最新内核版本信息无效，请重新检查"))
+    }
+
     /// Settings downloads and window creation share the same SDK cache and lock.
     pub fn prepare(&self, version: Option<&str>) -> Result<PreparedBinary, String> {
+        self.run_prepare("prepare", version)
+    }
+
+    pub fn download_latest(&self) -> Result<PreparedBinary, String> {
+        self.run_prepare("download", None)
+    }
+
+    fn run_prepare(&self, action: &str, version: Option<&str>) -> Result<PreparedBinary, String> {
         let _operation = self
             .operation
             .try_lock()
@@ -262,7 +292,7 @@ impl KernelService {
             phase: KernelPhase::Preparing,
             ..KernelJob::default()
         };
-        let result = self.prepare_inner(version);
+        let result = self.prepare_inner(action, version);
         let mut job = self.job.lock().map_err(|_| "内核状态不可用")?;
         match &result {
             Ok(binary) => {
@@ -286,7 +316,7 @@ impl KernelService {
         result
     }
 
-    fn prepare_inner(&self, version: Option<&str>) -> Result<PreparedBinary, String> {
+    fn prepare_inner(&self, action: &str, version: Option<&str>) -> Result<PreparedBinary, String> {
         let key = self.license_store.require_key().inspect_err(|message| {
             if let Ok(mut job) = self.job.lock() {
                 job.error = Some(KernelFailure {
@@ -296,7 +326,7 @@ impl KernelService {
                 });
             }
         })?;
-        let mut command = self.command("prepare")?;
+        let mut command = self.command(action)?;
         command
             .env("CLOAKBROWSER_AUTO_UPDATE", "true")
             .env("CLOAKBROWSER_LICENSE_KEY", key);
@@ -560,6 +590,70 @@ process.stdout.write(JSON.stringify({cacheDir: process.env.CLOAKBROWSER_CACHE_DI
         assert!(!failure.retryable);
         assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Failed);
         assert!(!root.path().join("cloakbrowser").exists());
+    }
+
+    #[test]
+    fn latest_check_is_read_only_and_explicit_download_uses_the_fresh_update_action() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("runner.cjs");
+        std::fs::write(
+            &script,
+            r#"const action=process.argv[2];
+if(action==='latest') {
+  if(process.env.CLOAKBROWSER_LICENSE_KEY)process.exit(42);
+  process.stdout.write(JSON.stringify({version:'155.0.8059.39.2',platform:'darwin-arm64',checkedAt:'2026-10-25T10:00:00.000Z'}));
+} else if(action==='download' && process.env.CLOAKBROWSER_LICENSE_KEY) {
+  process.stdout.write(JSON.stringify({version:'155.0.8059.39',binary_path:'/synthetic/browser'}));
+} else process.exit(43);"#,
+        )
+        .unwrap();
+        let service = KernelService::new(
+            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "node".into(),
+                browser_script: script,
+                network_preload: root.path().join("unused.cjs"),
+            },
+        );
+        let release = service.check_latest().unwrap();
+        assert_eq!(release.version, "155.0.8059.39.2");
+        assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Idle);
+        assert!(!root.path().join("cloakbrowser").exists());
+        assert!(service.download_latest().unwrap_err().contains("激活码"));
+        service
+            .license_store
+            .save_validated("synthetic-update-key", "free", None)
+            .unwrap();
+        assert_eq!(service.download_latest().unwrap().version, "155.0.8059.39");
+        assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Ready);
+        service.check_latest().unwrap();
+        assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Ready);
+    }
+
+    #[test]
+    fn latest_check_failure_preserves_download_status_and_safe_error_details() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("runner.cjs");
+        std::fs::write(
+            &script,
+            r#"console.error('private upstream response');
+console.error('NEXUS_KERNEL_ERROR ' + JSON.stringify({code:'NETWORK',message:'暂时无法连接内核服务',retryable:true}));
+process.exitCode=1;"#,
+        )
+        .unwrap();
+        let service = KernelService::new(
+            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "node".into(),
+                browser_script: script,
+                network_preload: root.path().join("unused.cjs"),
+            },
+        );
+        let error = service.check_latest().unwrap_err();
+        assert_eq!(error.code, "NETWORK");
+        assert!(error.retryable);
+        assert!(!error.message.contains("private"));
+        assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Idle);
     }
 
     #[test]

@@ -1,12 +1,5 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from 'react'
-import { Check, Dices, Loader2, Search, ShieldCheck } from 'lucide-react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Dices, Loader2, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DialogContent,
@@ -34,14 +27,10 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toast'
 import { parseWindowConfig, type WindowConfig } from '@/demo/model'
-import { getConfig, listProxies } from '@/features/proxy/api'
+import { getConfig } from '@/features/proxy/api'
 import { ProxyCheckSummary } from '@/features/proxy/proxy-check-summary'
-import {
-  EMPTY_QUERY,
-  flagOf,
-  type CheckResult,
-  type ProxyRow,
-} from '@/features/proxy/types'
+import { ProxyPicker } from '@/features/proxy/proxy-picker'
+import { PROXY_PLUGIN_ID, type CheckResult } from '@/features/proxy/types'
 import type { WindowGroup } from '@/lib/platform/native-groups'
 import type { LicenseStatus } from '@/lib/platform/native-license'
 import { listProxyProviders, type PluginView } from '@/lib/platform/native-plugins'
@@ -111,10 +100,6 @@ export function WindowEditor({
     window?.proxyEndpoint ?? null,
   )
   const [providers, setProviders] = useState<PluginView[]>([])
-  const [proxies, setProxies] = useState<ProxyRow[] | null>(null)
-  const [defaultProxyId, setDefaultProxyId] = useState<string | null>(null)
-  const [proxyLoadError, setProxyLoadError] = useState<string | null>(null)
-  const [proxyQuery, setProxyQuery] = useState('')
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null)
   const [checkNote, setCheckNote] = useState<string | null>(null)
@@ -140,43 +125,10 @@ export function WindowEditor({
     }
   }, [])
 
-  // The picker reads the pool itself: a window pins one row, not the default.
-  useEffect(() => {
-    if (proxySource !== 'plugin' || providers.length === 0) return
-    let active = true
-    void Promise.all([listProxies({ ...EMPTY_QUERY, limit: 500 }), getConfig()]).then(
-      ([result, poolConfig]) => {
-        if (active) {
-          setProxies(result.items)
-          setDefaultProxyId(poolConfig.defaultEndpointId)
-          setProxyLoadError(null)
-        }
-      },
-      (cause: unknown) => {
-        if (active) {
-          setProxies([])
-          setProxyLoadError(message(cause))
-        }
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [proxySource, providers.length])
-
   function patch(changes: Partial<WindowConfig>) {
     setConfig((current) => ({ ...current, ...changes }))
     setError(null)
   }
-
-  const visibleProxies = useMemo(() => {
-    if (proxies === null) return []
-    const keyword = proxyQuery.trim().toLowerCase()
-    if (keyword === '') return proxies
-    return proxies.filter((row) =>
-      `${row.name} ${row.host}:${row.port}`.toLowerCase().includes(keyword),
-    )
-  }, [proxies, proxyQuery])
 
   async function runCheck() {
     setChecking(true)
@@ -534,93 +486,22 @@ export function WindowEditor({
             ) : null}
           </div>
 
-          {proxySource === 'plugin' && providers.length > 0 ? (
-            <div className="proxy-picker">
-              <div className="proxy-picker-head">
-                <span>从代理池选择</span>
-                <small>{proxies === null ? '加载中…' : `${proxies.length} 条`}</small>
-              </div>
-              <div className="search-field">
-                <Search aria-hidden="true" />
-                <Input
-                  aria-label="搜索代理"
-                  placeholder="搜索名称、主机或端口"
-                  value={proxyQuery}
-                  onChange={(event) => setProxyQuery(event.target.value)}
-                />
-              </div>
-              <div className="account-picker" role="listbox" aria-label="代理池代理">
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={endpointId === null && defaultProxyId !== null}
-                  className="account-option"
-                  data-selected={
-                    endpointId === null && defaultProxyId !== null ? 'true' : undefined
-                  }
-                  disabled={pending || proxies === null || defaultProxyId === null}
-                  onClick={() => {
-                    setEndpointId(null)
-                    setCheckResult(null)
-                    setError(null)
-                  }}
-                >
-                  <span>
-                    <strong>{batch ? '使用当前默认代理' : '使用插件默认代理'}</strong>
-                    <small>
-                      {proxies === null
-                        ? '正在读取默认项…'
-                        : defaultProxyId === null
-                          ? '尚未设置，请选择下方的具体代理'
-                          : batch
-                            ? `本批次固定使用默认代理 #${defaultProxyId}`
-                            : `跟随默认代理 #${defaultProxyId}`}
-                    </small>
-                  </span>
-                  {endpointId === null && defaultProxyId !== null ? (
-                    <Check aria-hidden="true" />
-                  ) : null}
-                </button>
-                {visibleProxies.map((row) => (
-                  <button
-                    key={row.id}
-                    type="button"
-                    role="option"
-                    aria-selected={endpointId === Number(row.id)}
-                    className="account-option"
-                    data-selected={endpointId === Number(row.id) ? 'true' : undefined}
-                    disabled={pending || !row.enabled}
-                    onClick={() => {
-                      setEndpointId(Number(row.id))
-                      setCheckResult(null)
-                      setError(null)
-                    }}
-                  >
-                    <span>
-                      <strong>
-                        {flagOf(row.geo?.countryCode ?? null)} {row.name}
-                      </strong>
-                      <small>
-                        {row.schemes.map((scheme) => scheme.toUpperCase()).join(' / ')} ·{' '}
-                        {row.host}:{row.port}
-                        {!row.enabled ? ' · 已停用' : ''}
-                        {row.checkStatus === 'ok' ? ' · 上次检测通过' : ''}
-                      </small>
-                    </span>
-                    {endpointId === Number(row.id) ? <Check aria-hidden="true" /> : null}
-                  </button>
-                ))}
-                {proxies !== null && visibleProxies.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    {proxyLoadError
-                      ? `代理池读取失败：${proxyLoadError}`
-                      : proxyQuery.trim()
-                        ? '没有匹配的代理。'
-                        : '代理池还没有代理。'}
-                  </p>
-                ) : null}
-              </div>
-            </div>
+          {proxySource === 'plugin' &&
+          proxyPlugin === PROXY_PLUGIN_ID &&
+          providers.some((provider) => provider.id === proxyPlugin) ? (
+            <ProxyPicker
+              key={window?.id ?? 'new'}
+              endpointId={endpointId}
+              currentWindowId={window?.id ?? null}
+              batch={batch !== undefined}
+              disabled={pending}
+              onChange={(next) => {
+                setEndpointId(next)
+                setCheckResult(null)
+                setCheckNote(null)
+                setError(null)
+              }}
+            />
           ) : null}
 
           {proxySource !== 'direct' ? (

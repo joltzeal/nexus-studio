@@ -1,5 +1,6 @@
 import { callPlugin } from '@/lib/platform/native-plugins'
 import {
+  EMPTY_QUERY,
   PROXY_CAPABILITY,
   PROXY_PLUGIN_ID,
   type BatchResult,
@@ -33,6 +34,30 @@ export interface ProxyInput {
 
 export function listProxies(query: ProxyListQuery): Promise<ListResult> {
   return call<ListResult>('proxy.list', { ...query })
+}
+
+/** The window picker searches the entire inventory, including an off-page default. */
+export async function listPickerProxies(): Promise<ProxyRow[]> {
+  const rows: ProxyRow[] = []
+  let offset = 0
+  while (true) {
+    const page = await listProxies({ ...EMPTY_QUERY, limit: 500, offset })
+    if (
+      !page ||
+      !Number.isSafeInteger(page.total) ||
+      page.total < 0 ||
+      page.offset !== offset ||
+      !Array.isArray(page.items) ||
+      page.items.length > 500 ||
+      offset + page.items.length > page.total ||
+      (page.items.length === 0 && offset < page.total)
+    ) {
+      throw new Error('代理池列表未完整读取，请刷新重试。')
+    }
+    rows.push(...page.items)
+    offset += page.items.length
+    if (offset >= page.total) return rows
+  }
 }
 
 export function listGroups(): Promise<{ items: ProxyGroup[] }> {

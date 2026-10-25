@@ -32,15 +32,26 @@ function cacheReadError(): Error {
   return new Error('Unable to inspect the local browser kernel cache.')
 }
 
-function compareVersions(left: InstalledKernel, right: InstalledKernel): number {
-  const leftParts = left.version.split('.').map(BigInt)
-  const rightParts = right.version.split('.').map(BigInt)
+export function kernelPlatform(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  const tag = `${platform === 'win32' ? 'windows' : platform}-${arch}`
+  if (!SUPPORTED_PLATFORMS.has(tag)) {
+    throw new Error('The browser kernel platform is unsupported.')
+  }
+  return tag
+}
+
+export function compareKernelVersions(left: string, right: string): number {
+  const leftParts = left.split('.').map(BigInt)
+  const rightParts = right.split('.').map(BigInt)
   for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
     const leftPart = leftParts[index] ?? 0n
     const rightPart = rightParts[index] ?? 0n
-    if (leftPart !== rightPart) return leftPart > rightPart ? -1 : 1
+    if (leftPart !== rightPart) return leftPart > rightPart ? 1 : -1
   }
-  return left.version.localeCompare(right.version)
+  return 0
 }
 
 export async function inspectKernelCache(
@@ -48,10 +59,7 @@ export async function inspectKernelCache(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
 ): Promise<KernelCache> {
-  const platformTag = `${platform === 'win32' ? 'windows' : platform}-${arch}`
-  if (!SUPPORTED_PLATFORMS.has(platformTag)) {
-    throw new Error('The browser kernel platform is unsupported.')
-  }
+  const platformTag = kernelPlatform(platform, arch)
   const inventory: KernelCache = { cacheDir, platform: platformTag, installed: [] }
   let entries: Dirent[]
   try {
@@ -90,6 +98,10 @@ export async function inspectKernelCache(
       binaryPath,
     })
   }
-  inventory.installed.sort(compareVersions)
+  inventory.installed.sort(
+    (left, right) =>
+      compareKernelVersions(right.version, left.version) ||
+      left.version.localeCompare(right.version),
+  )
   return inventory
 }

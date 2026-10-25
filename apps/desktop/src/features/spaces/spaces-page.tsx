@@ -72,6 +72,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { listPlugins, type PluginView } from '@/lib/platform/native-plugins'
+import { AccountEditor } from '@/features/accounts/account-editor'
 import {
   bindAccount,
   listAccounts,
@@ -137,6 +138,7 @@ export function SpacesPage() {
   const [accountPlugin, setAccountPlugin] = useState<PluginView | null>(null)
   const [bindings, setBindings] = useState<BindingView[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [binding, setBinding] = useState<NativeProfile | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [conflict, setConflict] = useState<{
@@ -243,7 +245,7 @@ export function SpacesPage() {
   }, [])
 
   const accountsInstalled = accountPlugin !== null && accountPlugin.state !== 'available'
-  const accountsRunning = accountsInstalled && accountPlugin.state === 'running'
+  const accountsRunning = native && accountsInstalled && accountPlugin.state === 'running'
 
   useEffect(() => {
     if (!native) return
@@ -287,6 +289,28 @@ export function SpacesPage() {
     setBindings(bound.items)
     setAccounts(catalog.items)
   }, [accountsRunning])
+
+  function applySavedAccount(saved: Account) {
+    setAccounts((current) =>
+      current.map((account) => (account.id === saved.id ? saved : account)),
+    )
+    setBindings((current) =>
+      current.map((binding) =>
+        binding.accountId === saved.id
+          ? {
+              ...binding,
+              account: {
+                id: saved.id,
+                account: saved.account,
+                loginMethod: saved.loginMethod,
+                status: saved.status,
+                note: saved.note,
+              },
+            }
+          : binding,
+      ),
+    )
+  }
 
   async function refreshAfterImport() {
     const [records, currentGroups] = await withDeadline(
@@ -622,7 +646,23 @@ export function SpacesPage() {
                       ) : (
                         <span className="account-cell-row">
                           <span className="account-cell">
-                            <strong>{account.account?.account ?? '账号已删除'}</strong>
+                            {linked === null ? (
+                              <strong>{account.account?.account ?? '账号已删除'}</strong>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="link"
+                                size="xs"
+                                className="h-auto max-w-full justify-start p-0 text-left"
+                                aria-label={`编辑 ${linked.account} 的账号资料`}
+                                title="编辑账号资料"
+                                disabled={!accountsRunning}
+                                onClick={() => setEditingAccount(linked)}
+                              >
+                                <strong>{linked.account}</strong>
+                                <Pencil data-icon="inline-end" />
+                              </Button>
+                            )}
                             <span className="account-cell-meta">
                               <small>
                                 {account.account
@@ -639,13 +679,7 @@ export function SpacesPage() {
                               key={linked.id}
                               account={linked}
                               ready={accountsRunning}
-                              onSaved={(saved) =>
-                                setAccounts((current) =>
-                                  current.map((item) =>
-                                    item.id === saved.id ? saved : item,
-                                  ),
-                                )
-                              }
+                              onSaved={applySavedAccount}
                             />
                           )}
                         </span>
@@ -761,6 +795,15 @@ export function SpacesPage() {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
+                            {linked === null ? null : (
+                              <DropdownMenuItem
+                                disabled={!accountsRunning}
+                                onSelect={() => setEditingAccount(linked)}
+                              >
+                                <Pencil />
+                                编辑账号资料
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem
                               onSelect={() => {
                                 setBindingError(null)
@@ -1016,6 +1059,29 @@ export function SpacesPage() {
             onCancel={closeGate}
             onProceed={() => void open(gate.window)}
             onRefresh={() => void refreshGate(gate.window)}
+          />
+        )}
+      </Dialog>
+
+      <Dialog
+        open={editingAccount !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditingAccount(null)
+        }}
+      >
+        {editingAccount === null ? null : (
+          <AccountEditor
+            key={editingAccount.id}
+            account={editingAccount}
+            ready={accountsRunning}
+            description={`修改会同步到关联此账号的 ${bindings.filter((item) => item.accountId === editingAccount.id).length} 个窗口，不改变关联关系。`}
+            onSave={async (input) => {
+              const { item } = await saveAccount(input)
+              applySavedAccount(item)
+              toast.success('账号已保存')
+              setEditingAccount(null)
+            }}
+            onCancel={() => setEditingAccount(null)}
           />
         )}
       </Dialog>

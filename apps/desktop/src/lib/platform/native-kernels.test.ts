@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import {
+  checkLatestKernel,
   downloadKernel,
   getKernelStatus,
   KernelOperationError,
@@ -41,6 +42,44 @@ beforeEach(() => {
 })
 
 describe('native kernel adapter', () => {
+  it('checks the server separately from local inventory without sending an activation code', async () => {
+    const release = {
+      version: '155.0.8059.39.2',
+      platform: 'darwin-arm64',
+      checkedAt: '2026-10-25T10:00:00.000Z',
+    }
+    vi.mocked(invoke).mockResolvedValue({
+      ...release,
+      downloadUrl: 'private upstream data',
+    })
+    await expect(checkLatestKernel()).resolves.toEqual(release)
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('kernel_check_latest')
+  })
+
+  it.each([
+    null,
+    {},
+    { version: 'latest', platform: 'darwin-arm64', checkedAt: '2026-10-25T10:00:00Z' },
+    {
+      version: '155.0.1.2\n',
+      platform: 'darwin-arm64',
+      checkedAt: '2026-10-25T10:00:00Z',
+    },
+    { version: '155.0.1.2', platform: 'unknown', checkedAt: '2026-10-25T10:00:00Z' },
+    { version: '155.0.1.2', platform: 'darwin-arm64', checkedAt: 'yesterday' },
+  ])('rejects malformed latest release metadata %#', async (value) => {
+    vi.mocked(invoke).mockResolvedValue(value)
+    await expect(checkLatestKernel()).rejects.toMatchObject({ code: 'invalid_response' })
+  })
+
+  it('keeps latest-check failures actionable without leaking raw native diagnostics', async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error('private server diagnostics'))
+    await expect(checkLatestKernel()).rejects.toMatchObject({
+      message: '无法检查最新内核，请检查应用代理或网络后重试。',
+      retryable: true,
+    })
+  })
+
   it('refuses native calls in the browser without returning simulated status', async () => {
     vi.mocked(isTauri).mockReturnValue(false)
 
@@ -53,6 +92,7 @@ describe('native kernel adapter', () => {
       code: 'desktop_only',
       retryable: false,
     })
+    await expect(checkLatestKernel()).rejects.toMatchObject({ code: 'desktop_only' })
     expect(invoke).not.toHaveBeenCalled()
   })
 

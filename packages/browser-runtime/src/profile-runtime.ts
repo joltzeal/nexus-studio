@@ -3,8 +3,13 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolve } from 'node:path'
 import type { BrowserContext } from 'playwright-core'
-import { inspectKernelCache, type InstalledKernel } from './kernel-cache.js'
+import {
+  compareKernelVersions,
+  inspectKernelCache,
+  type InstalledKernel,
+} from './kernel-cache.js'
 import { retryKernelPreparation, type KernelProgress } from './kernel-install.js'
+import { checkLatestKernel, refreshKernelLookup } from './kernel-release.js'
 import {
   parsePortableState,
   restorePortableState,
@@ -119,6 +124,23 @@ export async function prepareBinary(
     }
     return { binary_path, version: await binaryVersion(binary_path) }
   }, report)
+}
+
+export async function downloadLatestBinary(
+  licenseKey: string | undefined,
+  report?: (progress: KernelProgress) => void,
+): ReturnType<typeof prepareBinary> {
+  const key = requireActivation(licenseKey)
+  const cacheDir = process.env.CLOAKBROWSER_CACHE_DIR
+  if (!cacheDir) throw new Error('KERNEL_CACHE_UNCONFIGURED')
+  const latest = await checkLatestKernel()
+  await refreshKernelLookup(cacheDir)
+  const binary = await prepareBinary(key, undefined, report)
+  const installed = await installedKernel(binary.binary_path)
+  if (compareKernelVersions(installed.version, latest.version) < 0) {
+    throw new Error('KERNEL_LATEST_UNAVAILABLE')
+  }
+  return binary
 }
 
 export async function validateBrowserLicense(licenseKey: string): Promise<{

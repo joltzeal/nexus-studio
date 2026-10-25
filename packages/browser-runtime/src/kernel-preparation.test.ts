@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { ensureBinary } from 'cloakbrowser'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { prepareBinary } from './profile-runtime.js'
+import { downloadLatestBinary, prepareBinary } from './profile-runtime.js'
+import { kernelPlatform } from './kernel-cache.js'
 
 vi.mock('cloakbrowser', () => ({
   ensureBinary: vi.fn(),
@@ -37,10 +38,57 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   await rm(root, { recursive: true, force: true })
 })
 
 describe('activated kernel preparation', () => {
+  it('does not check or download without activation', async () => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    await expect(downloadLatestBinary('')).rejects.toThrow('ACTIVATION_REQUIRED')
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(ensureBinary).not.toHaveBeenCalled()
+  })
+
+  it('refreshes stale SDK lookups before an explicit download and keeps the normal stable request', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(Response.json({ version: '155.0.8059.39.2' })),
+    )
+    const marker = `.last_pro_version_check_${kernelPlatform()}`
+    await writeFile(join(root, marker), '154.0.1.2')
+    vi.mocked(ensureBinary).mockImplementation(async () => {
+      expect(await readdir(root)).not.toContain(marker)
+      return binary
+    })
+    expect(await downloadLatestBinary('synthetic-key')).toMatchObject({
+      binary_path: binary,
+      version: '155.0.8059.39',
+    })
+    expect(ensureBinary).toHaveBeenCalledExactlyOnceWith(
+      'synthetic-key',
+      undefined,
+      'stable',
+    )
+  })
+
+  it('does not report a cached older revision as a successful latest download', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(Response.json({ version: '155.0.8059.39.3' })),
+    )
+    await expect(downloadLatestBinary('synthetic-key')).rejects.toThrow(
+      'KERNEL_LATEST_UNAVAILABLE',
+    )
+  })
+
+  it('stops before SDK download when current release metadata cannot be fetched', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fetch failed')))
+    await expect(downloadLatestBinary('synthetic-key')).rejects.toThrow('fetch failed')
+    expect(ensureBinary).not.toHaveBeenCalled()
+  })
+
   it.each([undefined, '', '   '])(
     'rejects missing activation before invoking the SDK (%j)',
     async (key) => {

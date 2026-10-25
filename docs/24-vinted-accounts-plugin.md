@@ -8,7 +8,7 @@
 插件包位于 `plugins/vinted-accounts`，实现 `account.pool` 能力的方法、
 私有 JSON 存储与逐行 JSON RPC 服务端。页面位于
 `apps/desktop/src/features/accounts`，在主导航里叫「Vinted 账号」。
-账号与浏览器窗口的关联也在这里维护，窗口页只负责发起关联。
+账号与浏览器窗口的关联由插件维护，窗口页可发起关联并直接编辑已关联账号。
 
 - 一条账号记录有九个业务字段：登录方式、账号、密码、手机号、邮箱接码地址、
   手机接码地址、状态、主页链接与备注。
@@ -176,9 +176,16 @@ bindings: [{ windowId, accountId, boundAt }]
 
 窗口页（`spaces-page.tsx`）在插件运行中读取 `vinted.accounts.bindings` 与
 `vinted.accounts.list`，在表格里显示已关联账号；已有手机号以语义强调色显示，
-点击号码即可复制，手机图标也标记已有手机号。在每行 `…` 菜单里提供
-“关联账号 / 更换账号 / 解除关联”。插件没就绪时关联操作不可用，
-弹窗里会说明插件尚未就绪。
+点击号码即可复制，手机图标也标记已有手机号。点击账号名称旁带铅笔图标的入口，
+或在每行 `…` 菜单选择「编辑账号资料」，可打开与账号池共用的完整编辑弹窗；
+登录方式、账号、密码、状态、手机号、两种接码地址、主页链接与备注均可修改，
+密码默认隐藏，未修改的字段原样保留。
+
+编辑沿用 `vinted.accounts.save`，不重新关联、不改变账号 ID 或窗口绑定。
+弹窗提示共用此账号的窗口数，保存成功后直接使用插件返回的账号更新全部关联行、
+手机号与短信弹层及绑定摘要，不需要刷新页面。失败时保留弹窗、草稿和错误，
+保存过程中阻止重复提交和关闭；插件未就绪时不能保存。
+行菜单仍提供“关联账号 / 更换账号 / 解除关联”，未就绪的关联弹窗会说明原因。
 
 未关联行的「添加账号」使用 shadcn Tabs，在「选择已有 / 新建账号」之间切换，
 搜索列表与创建表单不同时展开；弹层和内容区限制高度，长列表可滚动。
@@ -216,7 +223,10 @@ bindings: [{ windowId, accountId, boundAt }]
 rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run apps/desktop/src/features/accounts/accounts-page.test.ts apps/desktop/src/features/sim8/accounts-bridge.test.ts apps/desktop/src/features/sim8/number-picker.test.ts apps/desktop/src/features/spaces/spaces-page.test.ts --maxWorkers=4
 ```
 
-前端回归覆盖账号字段保留、保存结果回传、写入失败、号码规范化与占用提醒。
+前端回归覆盖窗口内账号编辑的两种入口、完整字段提交、凭据保留、共享账号行与
+绑定摘要同步、保存失败后的草稿与重试、插件未就绪及重复提交拦截，
+以及号码规范化与占用提醒。组件状态与事件处理在 Node 测试环境验证，
+不替代桌面 WebView 中的布局、键盘和焦点检查。
 传输测试启动实际构建的 Node.js 入口，经握手和逐行 RPC 验证选中范围、完整凭据、
 共享账号的窗口重映射、调用方事务 UUID、重启后的回滚/提交、同 ID 替换恢复、
 真实文件写入失败与重试。另有取消、幂等重试与账号上限的原子性测试。

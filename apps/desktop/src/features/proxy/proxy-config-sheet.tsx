@@ -90,7 +90,7 @@ export function ProxyConfigSheet({
                 { value: NONE, label: '不指定（窗口启动会被阻断）' },
                 ...rows.map((row) => ({
                   value: row.id,
-                  label: `${row.name} · ${addressOf(row)}`,
+                  label: `${row.name} · ${addressOf(row)} · 用户名：${row.username || '未设置'}`,
                 })),
               ]}
             />

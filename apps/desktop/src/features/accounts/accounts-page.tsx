@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Copy,
   Download,
-  Eye,
-  EyeOff,
   Loader2,
   Mail,
   PanelsTopLeft,
@@ -40,13 +38,6 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/u
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
   Table,
   TableBody,
   TableCell,
@@ -62,11 +53,11 @@ import {
   type PluginView,
 } from '@/lib/platform/native-plugins'
 import { PluginGate } from '@/features/plugins/plugin-gate'
-import { NumberPoolPicker } from '@/features/sim8/number-picker'
 import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-batch'
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { nativeProfilesAvailable } from '@/lib/platform/native-profiles'
+import { AccountEditor } from './account-editor'
 import {
   downloadTemplate,
   importAccounts,
@@ -76,20 +67,15 @@ import {
   saveAccount,
 } from './api'
 import {
-  ACCOUNT_STATUSES,
   ACCOUNTS_PLUGIN_ID,
-  EMPTY_ACCOUNT,
-  LOGIN_METHODS,
   LOGIN_METHOD_LABELS,
   STATUS_LABELS,
   message,
   statusVariant,
   windowCountText,
   type Account,
-  type AccountInput,
   type AccountList,
   type ImportReport,
-  type LoginMethod,
   type OtpResult,
 } from './types'
 
@@ -102,7 +88,7 @@ export interface AccountsPageProps {
 }
 
 export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
-  const running = plugin !== null && plugin.state === 'running'
+  const running = hostAvailable && plugin !== null && plugin.state === 'running'
   const [data, setData] = useState<AccountList | null>(null)
   const [query, setQuery] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
@@ -452,6 +438,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           <AccountEditor
             key={editing.account?.id ?? 'new'}
             account={editing.account}
+            ready={running}
             onSave={async (input) => {
               await saveAccount(input)
               await load()
@@ -712,238 +699,6 @@ function OtpCell({
         })}
       </div>
     </div>
-  )
-}
-
-function AccountEditor({
-  account,
-  onSave,
-  onCancel,
-}: {
-  account: Account | null
-  onSave: (input: AccountInput) => Promise<void>
-  onCancel: () => void
-}) {
-  const [input, setInput] = useState<AccountInput>(() =>
-    account === null
-      ? { ...EMPTY_ACCOUNT }
-      : {
-          id: account.id,
-          loginMethod: account.loginMethod,
-          account: account.account,
-          password: account.password,
-          phone: account.phone,
-          emailOtpUrl: account.emailOtpUrl,
-          smsOtpUrl: account.smsOtpUrl,
-          note: account.note,
-          status: account.status,
-          homepageUrl: account.homepageUrl,
-        },
-  )
-  const [revealed, setRevealed] = useState(false)
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  function patch(changes: Partial<AccountInput>) {
-    setInput((current) => ({ ...current, ...changes }))
-    setError(null)
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (input.account.trim() === '') {
-      setError('请填写账号。')
-      return
-    }
-    if (input.password === '') {
-      setError('请填写密码。')
-      return
-    }
-    setPending(true)
-    setError(null)
-    try {
-      await onSave({ ...input, account: input.account.trim() })
-    } catch (cause) {
-      setError(message(cause))
-    } finally {
-      setPending(false)
-    }
-  }
-
-  return (
-    <DialogContent className="window-editor">
-      <DialogHeader>
-        <DialogTitle>{account ? '编辑账号' : '新增账号'}</DialogTitle>
-        <DialogDescription>
-          {account
-            ? '登录方式与账密是必填项。'
-            : '登录方式与账密是必填项，其余可以留空。'}
-        </DialogDescription>
-      </DialogHeader>
-      <form
-        id="account-form"
-        className="window-form"
-        onSubmit={(event) => void submit(event)}
-      >
-        <div className="grid gap-3">
-          <div className="window-form-grid">
-            <Field>
-              <FieldLabel htmlFor="account-method">登录方式</FieldLabel>
-              <Select
-                value={input.loginMethod}
-                disabled={pending}
-                onValueChange={(value) => {
-                  if (LOGIN_METHODS.includes(value as LoginMethod)) {
-                    patch({ loginMethod: value as LoginMethod })
-                  }
-                }}
-              >
-                <SelectTrigger id="account-method">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LOGIN_METHODS.map((method) => (
-                    <SelectItem key={method} value={method}>
-                      {LOGIN_METHOD_LABELS[method]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="account-status">账号状态</FieldLabel>
-              <Select
-                value={input.status}
-                disabled={pending}
-                onValueChange={(value) => {
-                  if (ACCOUNT_STATUSES.includes(value as Account['status'])) {
-                    patch({ status: value as Account['status'] })
-                  }
-                }}
-              >
-                <SelectTrigger id="account-status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ACCOUNT_STATUSES.map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {STATUS_LABELS[status]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          <Field>
-            <FieldLabel htmlFor="account-name">账号</FieldLabel>
-            <Input
-              id="account-name"
-              autoFocus
-              maxLength={190}
-              disabled={pending}
-              placeholder="邮箱或用户名"
-              value={input.account}
-              onChange={(event) => patch({ account: event.target.value })}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="account-password">密码</FieldLabel>
-            <div className="flex items-center gap-2">
-              <Input
-                id="account-password"
-                type={revealed ? 'text' : 'password'}
-                maxLength={190}
-                autoComplete="off"
-                disabled={pending}
-                value={input.password}
-                onChange={(event) => patch({ password: event.target.value })}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={revealed ? '隐藏密码' : '显示密码'}
-                onClick={() => setRevealed((current) => !current)}
-              >
-                {revealed ? <EyeOff /> : <Eye />}
-              </Button>
-            </div>
-          </Field>
-          <div className="window-form-grid">
-            <Field>
-              <FieldLabel htmlFor="account-phone">手机号</FieldLabel>
-              <div className="sim8-phone-field">
-                <Input
-                  id="account-phone"
-                  maxLength={40}
-                  disabled={pending}
-                  value={input.phone}
-                  onChange={(event) => patch({ phone: event.target.value })}
-                />
-                <NumberPoolPicker
-                  disabled={pending}
-                  currentAccountId={account?.id}
-                  ariaLabel="从号码池选择手机号和接码链接"
-                  onPick={(number) => patch({ phone: number.tel, smsOtpUrl: number.api })}
-                />
-              </div>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="account-homepage">主页链接</FieldLabel>
-              <Input
-                id="account-homepage"
-                maxLength={2048}
-                disabled={pending}
-                placeholder="https://www.vinted.fr/member/…"
-                value={input.homepageUrl}
-                onChange={(event) => patch({ homepageUrl: event.target.value })}
-              />
-            </Field>
-          </div>
-          <Field>
-            <FieldLabel htmlFor="account-email-otp">邮箱接码地址</FieldLabel>
-            <Input
-              id="account-email-otp"
-              maxLength={2048}
-              disabled={pending}
-              placeholder="接收邮箱验证码的接口地址"
-              value={input.emailOtpUrl}
-              onChange={(event) => patch({ emailOtpUrl: event.target.value })}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="account-sms-otp">手机接码地址</FieldLabel>
-            <Input
-              id="account-sms-otp"
-              maxLength={2048}
-              disabled={pending}
-              placeholder="接收短信验证码的接口地址"
-              value={input.smsOtpUrl}
-              onChange={(event) => patch({ smsOtpUrl: event.target.value })}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="account-note">备注</FieldLabel>
-            <Input
-              id="account-note"
-              maxLength={200}
-              disabled={pending}
-              value={input.note}
-              onChange={(event) => patch({ note: event.target.value })}
-            />
-          </Field>
-          {error ? <FieldError role="alert">{error}</FieldError> : null}
-        </div>
-      </form>
-      <DialogFooter>
-        <Button variant="ghost" disabled={pending} onClick={onCancel}>
-          取消
-        </Button>
-        <Button type="submit" form="account-form" disabled={pending}>
-          {pending ? '正在保存…' : '保存账号'}
-        </Button>
-      </DialogFooter>
-    </DialogContent>
   )
 }
 

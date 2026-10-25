@@ -50,6 +50,13 @@ describe('vinted accounts page', () => {
     expect(html).not.toContain('aria-label="账号列表"')
   })
 
+  it('does not allow editing with a stale running plugin but no desktop host', () => {
+    const html = render({ hostAvailable: false, plugin: plugin() })
+    expect(html).toContain('Vinted 账号需要桌面应用')
+    expect(html).not.toContain('aria-label="账号列表"')
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*?新增账号<\/button>/s)
+  })
+
   it('points to the plugin center when the plugin is missing', () => {
     expect(render({ plugin: null })).toContain('Vinted 账号插件尚未安装')
   })

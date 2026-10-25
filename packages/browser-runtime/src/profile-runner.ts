@@ -15,8 +15,8 @@ const reportProgress = (progress: KernelProgress): void => {
   process.stderr.write(`NEXUS_KERNEL_PROGRESS ${JSON.stringify(progress)}\n`)
 }
 
-async function prepare(): Promise<void> {
-  const { prepareBinary } = await import('./profile-runtime.js')
+async function prepare(latest: boolean): Promise<void> {
+  const { prepareBinary, downloadLatestBinary } = await import('./profile-runtime.js')
   // The SDK reports observed bytes and stages on stderr, rather than a progress API.
   const log = console.error
   console.error = (...args: unknown[]) => {
@@ -27,11 +27,13 @@ async function prepare(): Promise<void> {
     }
   }
   try {
-    const binary = await prepareBinary(
-      process.env.CLOAKBROWSER_LICENSE_KEY,
-      process.env.CLOAKBROWSER_VERSION,
-      reportProgress,
-    )
+    const binary = latest
+      ? await downloadLatestBinary(process.env.CLOAKBROWSER_LICENSE_KEY, reportProgress)
+      : await prepareBinary(
+          process.env.CLOAKBROWSER_LICENSE_KEY,
+          process.env.CLOAKBROWSER_VERSION,
+          reportProgress,
+        )
     process.stdout.write(`${JSON.stringify(binary)}\n`)
   } finally {
     console.error = log
@@ -43,8 +45,11 @@ async function main(): Promise<void> {
   if (action === 'validate-state') {
     await validatePortableStateFiles(process.argv.slice(3))
     process.stdout.write('{"valid":true}\n')
-  } else if (action === 'prepare') {
-    await prepare()
+  } else if (action === 'prepare' || action === 'download') {
+    await prepare(action === 'download')
+  } else if (action === 'latest') {
+    const { checkLatestKernel } = await import('./kernel-release.js')
+    process.stdout.write(`${JSON.stringify(await checkLatestKernel())}\n`)
   } else if (action === 'version' && userDataDir) {
     const { binaryVersion } = await import('./profile-runtime.js')
     process.stdout.write(
@@ -91,7 +96,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  if (process.argv[2] === 'prepare') {
+  if (['prepare', 'download', 'latest'].includes(process.argv[2] ?? '')) {
     process.stderr.write(`NEXUS_KERNEL_ERROR ${JSON.stringify(kernelFailure(error))}\n`)
   } else {
     console.error(error instanceof Error ? error.message : 'Profile runtime failed')

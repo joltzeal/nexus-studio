@@ -120,6 +120,16 @@ export function kernelFailure(error: unknown): KernelFailure {
   if (messages.includes('PROFILE_ENGINE_UNSUPPORTED')) {
     return failure('VERSION', '此内核不受支持，请下载最新内核并重新创建窗口。')
   }
+  if (messages.includes('KERNEL_RELEASE_INVALID')) {
+    return failure('VERSION', '最新内核版本信息无效，请稍后重新检查。', true)
+  }
+  if (messages.includes('KERNEL_LATEST_UNAVAILABLE')) {
+    return failure(
+      'DOWNLOAD',
+      '最新内核未能下载完成，本机原内核仍保留，请检查应用代理或网络后重试。',
+      true,
+    )
+  }
   // Permanent failures take precedence over transient errors anywhere in the cause chain.
   if (
     codes.some((code) => ['EACCES', 'EPERM', 'EROFS'].includes(code)) ||

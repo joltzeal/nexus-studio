@@ -184,6 +184,14 @@ export function addressOf(row: Pick<ProxyRow, 'host' | 'port'>): string {
   return row.host.includes(':') ? `[${row.host}]:${row.port}` : `${row.host}:${row.port}`
 }
 
+export function matchesProxyQuery(
+  row: Pick<ProxyRow, 'name' | 'host' | 'port' | 'username'>,
+  query: string,
+): boolean {
+  const keyword = query.trim().toLowerCase()
+  return `${row.name} ${addressOf(row)} ${row.username}`.toLowerCase().includes(keyword)
+}
+
 export function schemeLabel(scheme: Scheme): string {
   return scheme.toUpperCase()
 }
