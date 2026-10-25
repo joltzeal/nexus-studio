@@ -47,6 +47,7 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [29 · 窗口同步插件](29-window-sync-plugin.md)            | 设备配对、直连传输、完整性校验与手动快照同步            |
 | [30 · SIM8 接码插件](30-sim8-plugin.md)                  | 仓库内 `studio.sim8` 的买号、取码、筛选与账号联动       |
 | [31 · 智能场景规划](31-ai-scene-planning.md)             | AI 识图、场景推荐、可编辑多视角方案与部分失败重试       |
+| [32 · 批量创建窗口](32-batch-window-creation.md)         | 窗口与账号池批量入口、统一代理、独立种子及部分失败重试  |
 
 ## 阅读与维护
 

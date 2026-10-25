@@ -10,6 +10,11 @@ describe('window management', () => {
     expect(html).not.toContain('配置保存在本地')
     expect(html).toContain('请在 Nexus 桌面应用中创建和打开窗口')
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*?创建窗口<\/button>/s)
+    const buttons =
+      html.match(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<\/button>/g) ?? []
+    expect(buttons.find((button) => button.endsWith('批量创建</button>'))).toMatch(
+      /\bdisabled=""/,
+    )
   })
 
   it('keeps migration controls disabled and renders no fabricated windows in a preview', () => {

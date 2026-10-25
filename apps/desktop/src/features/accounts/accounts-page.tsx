@@ -6,6 +6,7 @@ import {
   EyeOff,
   Loader2,
   Mail,
+  PanelsTopLeft,
   Pencil,
   Plus,
   RefreshCw,
@@ -26,6 +27,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -61,6 +63,10 @@ import {
 } from '@/lib/platform/native-plugins'
 import { PluginGate } from '@/features/plugins/plugin-gate'
 import { NumberPoolPicker } from '@/features/sim8/number-picker'
+import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
+import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-batch'
+import { toggleSelection } from '@/features/spaces/transfer-state'
+import { nativeProfilesAvailable } from '@/lib/platform/native-profiles'
 import {
   downloadTemplate,
   importAccounts,
@@ -99,6 +105,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const running = plugin !== null && plugin.state === 'running'
   const [data, setData] = useState<AccountList | null>(null)
   const [query, setQuery] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [batchAccounts, setBatchAccounts] = useState<BatchAccount[] | null>(null)
   const [editing, setEditing] = useState<{ account: Account | null } | null>(null)
   const [importing, setImporting] = useState(false)
   const [removing, setRemoving] = useState<Account | null>(null)
@@ -116,6 +124,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const load = useCallback(async () => {
     const result = await listAccounts()
     setData(result)
+    const available = new Set(result.items.map((account) => account.id))
+    setSelectedIds((current) => new Set([...current].filter((id) => available.has(id))))
   }, [])
 
   useEffect(() => {
@@ -157,6 +167,10 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       .toLowerCase()
       .includes(query.toLowerCase()),
   )
+  const selected = accounts.filter((account) => selectedIds.has(account.id))
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((account) => selectedIds.has(account.id))
+  const someVisibleSelected = visible.some((account) => selectedIds.has(account.id))
   // The column only exists when at least one account can actually fetch a code.
   const hasOtpLinks = accounts.some(
     (account) => account.emailOtpUrl !== '' || account.smsOtpUrl !== '',
@@ -225,6 +239,32 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
         <>
           <div className="collection-toolbar">
             <span className="result-count">{visible.length} 个账号</span>
+            <span className="result-count">已选 {selected.length}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!nativeProfilesAvailable() || !selected.length}
+              onClick={() => {
+                if (selected.length > MAX_BATCH_WINDOWS) {
+                  toast.error(`每批最多选择 ${MAX_BATCH_WINDOWS} 个账号。`)
+                  return
+                }
+                setBatchAccounts(
+                  selected.map((account) => ({
+                    id: account.id,
+                    label: account.account,
+                  })),
+                )
+              }}
+            >
+              <PanelsTopLeft data-icon="inline-start" />
+              批量创建窗口
+            </Button>
+            {selected.length ? (
+              <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
+                清空选择
+              </Button>
+            ) : null}
             <div className="search-field">
               <Search aria-hidden="true" />
               <Input
@@ -244,6 +284,28 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
             <Table aria-label="账号列表">
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="全选当前筛选的账号"
+                      disabled={!visible.length}
+                      checked={
+                        allVisibleSelected
+                          ? true
+                          : someVisibleSelected
+                            ? 'indeterminate'
+                            : false
+                      }
+                      onCheckedChange={(checked) =>
+                        setSelectedIds((current) =>
+                          toggleSelection(
+                            current,
+                            visible.map((account) => account.id),
+                            checked === true,
+                          ),
+                        )
+                      }
+                    />
+                  </TableHead>
                   <TableHead>账号</TableHead>
                   <TableHead>登录方式</TableHead>
                   <TableHead>手机号</TableHead>
@@ -255,7 +317,21 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
               </TableHeader>
               <TableBody>
                 {visible.map((account) => (
-                  <TableRow key={account.id}>
+                  <TableRow
+                    key={account.id}
+                    data-state={selectedIds.has(account.id) ? 'selected' : undefined}
+                  >
+                    <TableCell>
+                      <Checkbox
+                        aria-label={`选择账号 ${account.account}`}
+                        checked={selectedIds.has(account.id)}
+                        onCheckedChange={(checked) =>
+                          setSelectedIds((current) =>
+                            toggleSelection(current, [account.id], checked === true),
+                          )
+                        }
+                      />
+                    </TableCell>
                     <TableCell>
                       <span className="account-identity">
                         <strong>{account.account}</strong>
@@ -347,6 +423,24 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           </div>
         </>
       )}
+
+      {batchAccounts ? (
+        <BatchWindowDialog
+          accounts={batchAccounts}
+          onClose={() => setBatchAccounts(null)}
+          onSettled={async (items) => {
+            const completedIds = new Set(
+              items.flatMap((item) =>
+                item.status === 'complete' && item.account ? [item.account.id] : [],
+              ),
+            )
+            setSelectedIds(
+              (current) => new Set([...current].filter((id) => !completedIds.has(id))),
+            )
+            await load()
+          }}
+        />
+      ) : null}
 
       <Dialog
         open={editing !== null}

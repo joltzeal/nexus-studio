@@ -67,6 +67,12 @@ describe('vinted accounts page', () => {
     expect(html).toContain('还没有账号')
     expect(html).toContain('新增账号')
     expect(html).toContain('导入')
+    expect(html).toContain('全选当前筛选的账号')
+    const buttons =
+      html.match(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<\/button>/g) ?? []
+    expect(buttons.find((button) => button.endsWith('批量创建窗口</button>'))).toMatch(
+      /\bdisabled=""/,
+    )
     // No explanatory paragraph: the page is a table, not a tour.
     expect(html).not.toContain('page-description')
     expect(html).not.toContain('演示占位')
