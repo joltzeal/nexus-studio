@@ -43,11 +43,6 @@ import {
   type ProxyRow,
 } from '@/features/proxy/types'
 import type { WindowGroup } from '@/lib/platform/native-groups'
-import {
-  getKernelStatus,
-  type InstalledKernel,
-  type KernelSelection,
-} from '@/lib/platform/native-kernels'
 import type { LicenseStatus } from '@/lib/platform/native-license'
 import { listProxyProviders, type PluginView } from '@/lib/platform/native-plugins'
 import {
@@ -57,7 +52,6 @@ import {
 } from '@/lib/platform/native-profiles'
 import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
 import { configOf } from './window-config'
-import { WindowKernelPicker } from './window-kernel-picker'
 import { checkWindowProxy } from './window-proxy'
 import { MAX_BATCH_WINDOWS } from './window-batch'
 
@@ -67,7 +61,6 @@ export type SaveWindow = (
   proxyPlugin: string | null,
   proxyEndpoint: number | null,
   settings: WindowSettings,
-  kernel: KernelSelection,
   groupId?: string | null,
 ) => Promise<void>
 
@@ -102,10 +95,6 @@ export function WindowEditor({
   onCancel: () => void
 }) {
   const [name, setName] = useState(window?.name ?? '')
-  const [kernel, setKernel] = useState<KernelSelection>({ kind: 'base' })
-  const [installedKernels, setInstalledKernels] = useState<InstalledKernel[]>([])
-  const [kernelsLoading, setKernelsLoading] = useState(window === null)
-  const [kernelsError, setKernelsError] = useState<string | null>(null)
   const [platform, setPlatform] = useState<WindowSettings['platform']>(
     window?.settings.platform ?? 'Vinted',
   )
@@ -132,26 +121,6 @@ export function WindowEditor({
   const [pending, setPending] = useState(false)
   const submitting = useRef(false)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (window !== null || !nativeProfilesAvailable()) return
-    let active = true
-    void getKernelStatus(true).then(
-      (status) => {
-        if (!active) return
-        setInstalledKernels(status.installed)
-        setKernelsLoading(false)
-      },
-      () => {
-        if (!active) return
-        setKernelsError('本地版本暂时无法读取')
-        setKernelsLoading(false)
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [window])
 
   useEffect(() => {
     if (!nativeProfilesAvailable()) return
@@ -245,9 +214,8 @@ export function WindowEditor({
       setError(`每批可创建 1–${MAX_BATCH_WINDOWS} 个窗口。`)
       return
     }
-    const browserVersion = kernel.version?.trim() ?? ''
-    if (browserVersion && !/^\d+(?:\.\d+){3,4}$/.test(browserVersion)) {
-      setError('内核版本需要是完整的数字版本号，例如 155.0.1.2。')
+    if (!window && !licenseStatus?.configured) {
+      setError('请先在「应用设置 → 激活码」中保存激活码。')
       return
     }
     submitting.current = true
@@ -309,7 +277,6 @@ export function WindowEditor({
         proxySource === 'plugin' ? proxyPlugin : null,
         proxySource === 'plugin' ? selectedEndpoint : null,
         settings,
-        { kind: kernel.kind, ...(browserVersion ? { version: browserVersion } : {}) },
         groupId === 'ungrouped' ? null : groupId,
       )
     } catch (cause) {
@@ -391,19 +358,12 @@ export function WindowEditor({
             />
           </Field>
           {batch?.fields ? <fieldset disabled={pending}>{batch.fields}</fieldset> : null}
-          {!window ? (
-            <WindowKernelPicker
-              value={kernel}
-              onChange={(selection) => {
-                setKernel(selection)
-                setError(null)
-              }}
-              license={licenseStatus}
-              installed={installedKernels}
-              loading={kernelsLoading}
-              error={kernelsError}
-              disabled={pending}
-            />
+          {!window && !licenseStatus?.configured ? (
+            <FieldError role="alert">
+              {licenseStatus
+                ? '请先在「应用设置 → 激活码」中保存激活码。'
+                : '尚未确认激活码状态，请刷新窗口列表后重试。'}
+            </FieldError>
           ) : null}
           <div className="window-form-grid">
             <Field>
@@ -821,7 +781,11 @@ export function WindowEditor({
         <Button variant="ghost" disabled={pending} onClick={onCancel}>
           取消
         </Button>
-        <Button type="submit" form="window-form" disabled={pending}>
+        <Button
+          type="submit"
+          form="window-form"
+          disabled={pending || (!window && !licenseStatus?.configured)}
+        >
           {pending
             ? batch
               ? '正在检查配置…'

@@ -37,7 +37,7 @@ describe('window timestamps', () => {
 describe('kernel version', () => {
   it('keeps only the major channel number', () => {
     expect(majorVersion('155.0.7632.109')).toBe('155')
-    expect(majorVersion('145.0.7632.109.5')).toBe('145')
+    expect(majorVersion('155.0.8059.39.5')).toBe('155')
     expect(majorVersion('155')).toBe('155')
     expect(majorVersion('')).toBe('')
   })

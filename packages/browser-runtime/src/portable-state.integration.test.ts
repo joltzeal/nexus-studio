@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { launchPersistentContext } from 'cloakbrowser'
 import type { BrowserContext } from 'playwright-core'
-import { expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { restorePortableState } from './portable-state.js'
 import {
   parseBrowserVersion,
@@ -17,8 +17,19 @@ import {
 } from './profile-runtime.js'
 
 const binary = process.env.NEXUS_TEST_BROWSER_BINARY
+const cache = process.env.NEXUS_TEST_BROWSER_CACHE
+const licenseKey = process.env.NEXUS_TEST_LICENSE_KEY
+const enabled = Boolean(binary && cache && licenseKey)
 
-it.skipIf(!binary)(
+beforeEach(() => {
+  if (!enabled) return
+  vi.stubEnv('CLOAKBROWSER_CACHE_DIR', cache)
+  vi.stubEnv('CLOAKBROWSER_LICENSE_KEY', licenseKey)
+  vi.stubEnv('CLOAKBROWSER_AUTO_UPDATE', 'false')
+})
+afterEach(() => vi.unstubAllEnvs())
+
+it.skipIf(!enabled)(
   'keeps a copied profile offline until normal CLI launch replaces its stale cookies',
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'nexus-offline-restore-'))
@@ -155,7 +166,7 @@ it.skipIf(!binary)(
   30_000,
 )
 
-it.skipIf(!binary).each(['empty', 'copied'])(
+it.skipIf(!enabled).each(['empty', 'copied'])(
   'snapshots a closed persistent profile through the CLI and restores into %s user data without HTTP traffic',
   async (mode) => {
     const directory = await mkdtemp(join(tmpdir(), 'nexus-portable-browser-'))

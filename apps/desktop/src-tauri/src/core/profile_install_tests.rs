@@ -12,7 +12,7 @@ fn fixture() -> (tempfile::TempDir, Arc<ProfileService>, ProfileRecord) {
             ProxySource::direct(),
             WindowSettings::default(),
             PreparedBinary {
-                version: "145.0.7632.109".into(),
+                version: "155.0.8059.39".into(),
                 binary_path,
             },
             None,

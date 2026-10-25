@@ -1,7 +1,9 @@
 import { ensureBinary, launchPersistentContext, validateLicense } from 'cloakbrowser'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { resolve } from 'node:path'
 import type { BrowserContext } from 'playwright-core'
+import { inspectKernelCache, type InstalledKernel } from './kernel-cache.js'
 import { retryKernelPreparation, type KernelProgress } from './kernel-install.js'
 import {
   parsePortableState,
@@ -83,16 +85,38 @@ export async function binaryVersion(binaryPath: string): Promise<string> {
   return parseBrowserVersion(stdout)
 }
 
+function requireActivation(licenseKey: string | undefined): string {
+  const key = licenseKey?.trim()
+  if (!key) throw new Error('ACTIVATION_REQUIRED')
+  return key
+}
+
+async function installedKernel(binaryPath: string): Promise<InstalledKernel> {
+  const cacheDir = process.env.CLOAKBROWSER_CACHE_DIR
+  if (!cacheDir) throw new Error('KERNEL_CACHE_UNCONFIGURED')
+  const inventory = await inspectKernelCache(cacheDir)
+  const kernel = inventory.installed.find(
+    (entry) => resolve(entry.binaryPath) === resolve(binaryPath),
+  )
+  if (!kernel) throw new Error('PROFILE_ENGINE_UNSUPPORTED')
+  return kernel
+}
+
 export async function prepareBinary(
-  licenseKey?: string,
+  licenseKey: string | undefined,
   browserVersion?: string,
   report?: (progress: KernelProgress) => void,
 ): Promise<{
   version: string
   binary_path: string
 }> {
+  const key = requireActivation(licenseKey)
   return retryKernelPreparation(async () => {
-    const binary_path = await ensureBinary(licenseKey, browserVersion)
+    const binary_path = await ensureBinary(key, browserVersion, 'stable')
+    const kernel = await installedKernel(binary_path)
+    if (browserVersion && kernel.version !== browserVersion) {
+      throw new Error('PROFILE_ENGINE_MISMATCH')
+    }
     return { binary_path, version: await binaryVersion(binary_path) }
   }, report)
 }
@@ -119,6 +143,8 @@ async function launchProfileContext(
   ) {
     throw new Error('PROFILE_RECORD_INVALID')
   }
+  const licenseKey = requireActivation(process.env.CLOAKBROWSER_LICENSE_KEY)
+  await installedKernel(record.binary_path)
   assertBinaryVersion(
     record.binding.channel_version,
     await binaryVersion(record.binary_path),
@@ -146,6 +172,7 @@ async function launchProfileContext(
         userDataDir,
         snapshot ? { ...record, proxy: null, proxy_plugin: null } : record,
       ),
+      licenseKey,
       browserVersion: record.binding.channel_version,
       launchOptions: { timeout: 60_000 },
       contextOptions: {

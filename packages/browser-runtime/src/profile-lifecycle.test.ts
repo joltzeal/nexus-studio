@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { BrowserContext } from 'playwright-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -104,17 +104,28 @@ async function* commands() {
 beforeEach(async () => {
   vi.stubEnv('CLOAKBROWSER_BINARY_PATH', process.env.CLOAKBROWSER_BINARY_PATH)
   directory = await mkdtemp(join(tmpdir(), 'nexus-profile-lifecycle-'))
-  const binary = join(directory, 'test-browser')
+  vi.stubEnv('CLOAKBROWSER_CACHE_DIR', directory)
+  vi.stubEnv('CLOAKBROWSER_LICENSE_KEY', 'synthetic-lifecycle-key')
+  const binary = join(
+    directory,
+    'chromium-155.0.8059.39.2-pro',
+    process.platform === 'darwin'
+      ? 'Chromium.app/Contents/MacOS/Chromium'
+      : process.platform === 'win32'
+        ? 'chrome.exe'
+        : 'chrome',
+  )
+  await mkdir(dirname(binary), { recursive: true })
   await writeFile(
     binary,
-    `#!${process.execPath}\nprocess.stdout.write('CloakBrowser 145.0.7632.109.2\\n')\n`,
+    `#!${process.execPath}\nprocess.stdout.write('CloakBrowser 155.0.8059.39.2\\n')\n`,
     { mode: 0o700 },
   )
   profile = {
     schema_version: 1,
     id: 'profile',
     binary_path: binary,
-    binding: { profile_id: 'profile', channel_version: '145.0.7632.109.2' },
+    binding: { profile_id: 'profile', channel_version: '155.0.8059.39.2' },
     proxy: 'http://account:p%40ss@proxy.example:8080',
     settings: {
       platform: '',
@@ -231,7 +242,8 @@ describe('profile context lifecycle', () => {
     expect(options.proxy).toBe('http://account:p%40ss@proxy.example:8080')
     expect(resolveOnlineProxyGeo).toHaveBeenCalled()
     expect(options.geoip).toBe(false)
-    expect(options.browserVersion).toBe('145.0.7632.109.2')
+    expect(options.browserVersion).toBe('155.0.8059.39.2')
+    expect(options.licenseKey).toBe('synthetic-lifecycle-key')
   })
 
   it('keeps a healthy context usable after start-page timeout and redacts navigation secrets', async () => {
@@ -325,13 +337,47 @@ describe('profile context lifecycle', () => {
   })
 
   it('does not launch a different binary version or claim readiness', async () => {
-    profile.binding.channel_version = '145.0.7632.109.3'
+    profile.binding.channel_version = '155.0.8059.39.3'
     await expect(
       runtime.openProfile(join(directory, 'user-data'), profile, commands()),
     ).rejects.toThrow('PROFILE_ENGINE_MISMATCH')
     expect(launchPersistentContext).not.toHaveBeenCalled()
     expect(output).toBe('')
   })
+
+  it.each(['launch', 'snapshot'])(
+    'requires activation before %s even with a cached binary',
+    async (action) => {
+      vi.stubEnv('CLOAKBROWSER_LICENSE_KEY', '')
+      await expect(
+        action === 'launch'
+          ? runtime.openProfile(join(directory, 'user-data'), profile, commands())
+          : runtime.snapshotProfile(join(directory, 'user-data'), profile),
+      ).rejects.toThrow('ACTIVATION_REQUIRED')
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(resolveOnlineProxyGeo).not.toHaveBeenCalled()
+      expect(output).toBe('')
+    },
+  )
+
+  it.each(['launch', 'snapshot'])(
+    'rejects an unmanaged binary before %s without rebinding the profile',
+    async (action) => {
+      const binary = profile.binary_path.replace('-pro', '')
+      await mkdir(dirname(binary), { recursive: true })
+      await writeFile(binary, '#!/bin/sh\nexit 42\n', { mode: 0o700 })
+      profile.binary_path = binary
+      const original = structuredClone(profile)
+      await expect(
+        action === 'launch'
+          ? runtime.openProfile(join(directory, 'user-data'), profile, commands())
+          : runtime.snapshotProfile(join(directory, 'user-data'), profile),
+      ).rejects.toThrow('PROFILE_ENGINE_UNSUPPORTED')
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(profile).toEqual(original)
+      expect(output).toBe('')
+    },
+  )
 })
 
 describe('portable snapshot lifecycle', () => {
@@ -360,7 +406,7 @@ describe('portable snapshot lifecycle', () => {
     expect(vi.mocked(launchPersistentContext).mock.calls[0]![0]).toMatchObject({
       headless: true,
       geoip: false,
-      browserVersion: '145.0.7632.109.2',
+      browserVersion: '155.0.8059.39.2',
       contextOptions: { serviceWorkers: 'block' },
     })
     expect(output).toBe('')

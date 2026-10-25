@@ -10,7 +10,7 @@ fn windows_are_newest_first_with_persistent_insertion_order_for_ties() {
     fs::write(&binary_path, b"binary").unwrap();
     let store = ProfileStore::new(root.path().join("profiles"));
     let binary = PreparedBinary {
-        version: "145.0.7632.109.2".into(),
+        version: "155.0.8059.39.2".into(),
         binary_path,
     };
     let db = super::group_store::open_database(&root.path().join("nexus.sqlite")).unwrap();
@@ -57,7 +57,7 @@ fn note_updates_preserve_all_other_fields_and_persist_after_reopen() {
                 ..WindowSettings::default()
             },
             PreparedBinary {
-                version: "145.0.7632.109.2".into(),
+                version: "155.0.8059.39.2".into(),
                 binary_path,
             },
             None,
@@ -94,7 +94,7 @@ fn profile_binding_survives_a_new_store_instance() {
             "Vinted 01",
             None,
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -102,8 +102,8 @@ fn profile_binding_survives_a_new_store_instance() {
     let reopened = ProfileStore::new(root.path().join("profiles"));
     let record = reopened.get(&created.id).unwrap();
     assert_eq!(record.name, "Vinted 01");
-    assert_eq!(record.binding.channel_version, "146.0.7680.177.5");
-    assert_eq!(record.binding.channel_id, "cloak:146.0.7680.177.5");
+    assert_eq!(record.binding.channel_version, "155.0.8059.39.5");
+    assert_eq!(record.binding.channel_id, "cloak:155.0.8059.39.5");
     assert_eq!(reopened.list().unwrap(), vec![record]);
 }
 
@@ -118,7 +118,7 @@ fn profile_fields_are_plain_text_in_sqlite_and_legacy_records_migrate() {
             "Shop in database",
             None,
             PreparedBinary {
-                version: "145.0.7632.109".into(),
+                version: "155.0.8059.39".into(),
                 binary_path: binary.clone(),
             },
         )
@@ -171,7 +171,7 @@ fn tampered_profile_binding_does_not_get_silently_rewritten() {
             "Vinted",
             None,
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -201,7 +201,7 @@ fn proxy_validation_requires_explicit_port_and_refuses_credentials() {
     fs::write(&binary, b"binary").unwrap();
     let store = ProfileStore::new(root.path().join("profiles"));
     let prepared = PreparedBinary {
-        version: "146.0.7680.177.5".into(),
+        version: "155.0.8059.39.5".into(),
         binary_path: binary,
     };
     assert!(
@@ -259,7 +259,7 @@ fn window_settings_survive_edit_without_changing_the_browser_binding() {
             None,
             initial_settings,
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -299,7 +299,7 @@ fn deleting_a_window_removes_its_own_browser_data() {
             "Delete me",
             None,
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -328,7 +328,7 @@ fn existing_window_cannot_change_its_fingerprint_seed() {
                 ..WindowSettings::default()
             },
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -360,7 +360,7 @@ fn a_new_window_records_when_it_was_created_and_when_it_last_opened() {
             "Timestamps",
             None,
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -385,7 +385,7 @@ fn a_record_written_before_the_timestamp_fields_still_loads() {
             "Legacy",
             None,
             PreparedBinary {
-                version: "146.0.7680.177.5".into(),
+                version: "155.0.8059.39.5".into(),
                 binary_path: binary,
             },
         )
@@ -410,7 +410,7 @@ fn a_pinned_proxy_endpoint_requires_the_plugin_that_owns_it() {
     fs::write(&binary, b"binary").unwrap();
     let store = ProfileStore::new(root.path().join("profiles"));
     let prepared = PreparedBinary {
-        version: "146.0.7680.177.5".into(),
+        version: "155.0.8059.39.5".into(),
         binary_path: binary,
     };
     let rejected = store

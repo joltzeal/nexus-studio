@@ -4,7 +4,9 @@
 
 桌面窗口页的“创建窗口”直接创建真实 CloakBrowser Profile；“打开”才启动持久上下文。
 Rust 保存绑定和调度，Node.js 适配器
-调用官方 JS 包装层。窗口的代理来源可以是手动地址或代理插件；
+调用官方 JS 包装层。新建只请求最新稳定内核，下载、启动和浏览器快照均需激活码，
+受管缓存路径和原版本绑定在启动前校验；内核策略见[浏览器内核](27-browser-kernels.md)。
+窗口的代理来源可以是手动地址或代理插件；
 代理插件由插件宿主解析，失败时阻断启动，见[插件宿主](17-plugin-host.md)。
 原有 localStorage 演示窗口不会自动迁移或出现在原生列表。
 `packages/browser-runtime` 包含独立健康协议与真实 Profile 适配器；
@@ -70,15 +72,9 @@ encoded-value 格式补全索引、键和值。覆盖 `0`、`false`、`null`、�
 非有限数字、Date、BigInt、ArrayBuffer/TypedArray、Map、Set 与循环引用；
 Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败，不退化成空对象。
 
-真实 macOS 临时 Profile 测试使用本机缓存构建 `145.0.7632.109.2`
-（其 `--version` 实际返回 `145.0.7632.109`），
-验证关闭源 Profile 后经 CLI 导出，再分别恢复到空目录与复制的原始 `user-data`，
-核对 Cookie、localStorage、IndexedDB 版本/索引/结构化值与 OPFS 字节，
-并验证旧目标 Cookie 被清除、状态文件成功后删除，初始化不访问测试 HTTP 服务。
-另一个真实 CLI 测试在复制含旧 Cookie 的 Profile 后，于运行时取得上下文之前主动发起
-页面请求，验证初始离线设置阻止该请求；恢复后的起始页面只发送导入 Cookie。
-这证明本机 API 的解密读写与恢复行为，不代表已完成跨机器 OSCrypt 故障、
-跨 macOS/Windows、真实站点登录、外部代理或授权内核的集成验证。
+历史临时 Profile 的 Cookie、localStorage、IndexedDB 和 OPFS 实测保留在
+[质量与验证](09-quality-and-testing.md)。这些旧内核结果不作为当前最新内核的验收证据；
+本次重构未执行真实内核、跨机器或跨 macOS/Windows 的登录恢复验证。
 
 ## 配置来源与映射
 
@@ -140,16 +136,8 @@ SDK 启动阶段保留 60 秒上限及网络取消信号，迟到的上下文也
 时区与语言经 SDK 的 `--fingerprint-timezone`、`--lang`、
 `--fingerprint-locale` 传递，出口 IP 由适配器追加
 `--fingerprint-webrtc-ip=<exitIp>`。
-本机固定 macOS 145 内核仅有 `--lang`/`--fingerprint-locale` 时仍返回系统语言；
-对 macOS 148 之前的绑定版本，适配器补充 Chromium 支持的
-`--accept-lang=<locale>`，已用页面 `navigator.language` 和实际请求头验证。
+不再为旧 macOS 内核追加语言兼容参数。
 
-SDK `dist/proxy.js` 对所有 SOCKS5 配置都使用原生
-`--proxy-server=socks5://...`，没有按内核版本判断是否支持内联认证。
-本机固定 145 macOS 内核配合临时本地 SOCKS5 服务，已验证无认证时页面请求确实
-经过代理；简单账号密码与含 `:`、`@`、`=` 的编码密码均在页面导航时返回
-`ERR_NO_SUPPORTED_PROXIES`，代理端未收到认证或目标 HTTP 请求。
-因此不能把 SDK 0.6.3 产生该参数当作此内核已支持 SOCKS5 认证的证据。
 认证 SOCKS5 现使用仅监听 `127.0.0.1` 临时端口的 SOCKS5 relay，
 每条上游连接由既有 `socks@2.8.7` 携带原始完整账号密码，
 浏览器与在线查询均走该路径，不自动直连。查询通过 SOCKS5 relay，
@@ -158,14 +146,12 @@ SDK `dist/proxy.js` 对所有 SOCKS5 配置都使用原生
 启动失败、启动超时与浏览器关闭均回收监听端口和连接；
 启动 relay 失败报 `PROFILE_PROXY_BRIDGE_FAILED`。
 
-真实 CLI/macOS 145 浏览器测试使用本地 SOCKS5 fixture：
-无认证、简单认证、特殊字符密码、在线自动匹配、手工时区/语言加自动匹配、
-主接口限流后备用接口成功。在线用例从空缓存启动，并强制拒绝 SDK 的数据库下载；
-本地 HTTPS API 只在子进程信任测试证书，核对 API 与页面请求都穿过认证上游、
-页面时区和语言符合设置，实际 Chromium 携带在线返回的 WebRTC IP，
-且测试结束后仍不存在数据库文件。实际执行结果见[质量记录](09-quality-and-testing.md)。
-这不是外部代理、真实 STUN/TURN 泄漏、Windows 或新版授权内核的验证；
-测试证书不安装到系统信任库。
+代理集成测试使用临时本地 SOCKS5 与 HTTPS 服务，测试证书仅在子进程中信任。
+显式运行需要 `NEXUS_TEST_BROWSER_BINARY`、`NEXUS_TEST_BROWSER_CACHE` 和
+`NEXUS_TEST_LICENSE_KEY`：二进制必须属于测试缓存内的受支持安装目录，
+缓存应是预先下载最新内核的独立测试目录，不使用用户 Profile。
+没有这三个参数时跳过真实浏览器测试。历史执行结果见[质量记录](09-quality-and-testing.md)，
+不能作为当前授权内核或 Windows 的验证结论。
 
 `NEXUS_READY` 表示真实持久浏览器上下文已创建，且待导入便携状态已成功恢复。
 正常启动也从创建上下文时设置 `offline:true`，恢复成功后才 `setOffline(false)`，
@@ -198,12 +184,7 @@ CloakBrowser 二进制版本、并发配额及再分发许可由所选版本和�
 macOS、Windows 分别进行启动、隔离、持久化、代理阻断及崩溃恢复验证。
 本地表单、协议健康检查、前端构建均不能代替这些运行验证。
 
-# 145 内核启动警告
+## 浏览器沙箱
 
-当前 CloakBrowser SDK `0.6.3` 的默认启动参数包含 `--no-sandbox`；
-Playwright 在未显式启用 Chromium 沙箱时也会添加这一参数。
-145 内核显示“不受支持的命令行标记”是 Chromium 的启动提醒，
-不等同于 Profile 隔离失败，但浏览器进程的沙箱保护确实被关闭。
-不能只隐藏提醒后宣称没有安全影响；若要改变启动行为，须先在
-145 内核与新版内核、macOS 和 Windows 的临时 Profile 上验证 SDK
-是否允许覆盖默认参数及兼容性。
+本次移除的是旧内核接入和兼容代码，未调整 SDK 与 Playwright 的沙箱参数。
+若修改默认启动参数，需在受支持内核的 macOS 和 Windows 临时 Profile 上单独验证。

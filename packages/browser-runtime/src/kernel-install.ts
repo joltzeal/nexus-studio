@@ -114,6 +114,12 @@ export function kernelFailure(error: unknown): KernelFailure {
     retryable = false,
   ): KernelFailure => ({ code, message, retryable })
 
+  if (messages.includes('ACTIVATION_REQUIRED')) {
+    return failure('ACTIVATION', '请先在设置中填写激活码。')
+  }
+  if (messages.includes('PROFILE_ENGINE_UNSUPPORTED')) {
+    return failure('VERSION', '此内核不受支持，请下载最新内核并重新创建窗口。')
+  }
   // Permanent failures take precedence over transient errors anywhere in the cause chain.
   if (
     codes.some((code) => ['EACCES', 'EPERM', 'EROFS'].includes(code)) ||

@@ -11,9 +11,11 @@ import { expect, it } from 'vitest'
 import { parseBrowserVersion } from './profile-runtime.js'
 
 const binary = process.env.NEXUS_TEST_BROWSER_BINARY
+const cache = process.env.NEXUS_TEST_BROWSER_CACHE
+const licenseKey = process.env.NEXUS_TEST_LICENSE_KEY
 
 it
-  .skipIf(!binary)
+  .skipIf(!binary || !cache || !licenseKey)
   .each(['none', 'simple', 'special', 'geoip', 'geoip-manual', 'geoip-fallback'])(
   'opens a real profile through SOCKS5 with complete upstream credentials (authentication=%s)',
   async (authentication) => {
@@ -182,7 +184,6 @@ it
         (await promisify(execFile)(binary!, ['--version'])).stdout,
       )
       const userData = join(directory, 'user-data')
-      const cache = join(directory, 'cache')
       const preload = join(directory, 'no-database.mjs')
       await writeFile(
         preload,
@@ -204,7 +205,9 @@ it
             NODE_PATH: '',
             NODE_OPTIONS: '',
             NODE_EXTRA_CA_CERTS: certificate,
-            CLOAKBROWSER_CACHE_DIR: cache,
+            CLOAKBROWSER_CACHE_DIR: cache!,
+            CLOAKBROWSER_LICENSE_KEY: licenseKey!,
+            CLOAKBROWSER_AUTO_UPDATE: 'false',
           },
         },
       )
@@ -243,7 +246,7 @@ it
       if (matching) {
         expect(echoes).toBeGreaterThan(0)
         await expect(
-          readFile(join(cache, 'geoip/GeoLite2-City.mmdb')),
+          readFile(join(cache!, 'geoip/GeoLite2-City.mmdb')),
         ).rejects.toMatchObject({
           code: 'ENOENT',
         })

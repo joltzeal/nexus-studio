@@ -18,14 +18,12 @@ function status() {
     platform: 'darwin-arm64',
     installed: [
       {
-        version: '145.0.1',
-        kind: 'base',
-        binaryPath: '/local/kernels/145.0.1/browser',
+        version: '155.0.1.2',
+        binaryPath: '/local/kernels/155.0.1.2/browser',
       },
     ],
     activationConfigured: false,
     download: {
-      kind: null,
       phase: 'idle',
       percent: null,
       downloadedMb: null,
@@ -51,7 +49,7 @@ describe('native kernel adapter', () => {
       code: 'desktop_only',
       retryable: false,
     })
-    await expect(downloadKernel('base')).rejects.toMatchObject({
+    await expect(downloadKernel()).rejects.toMatchObject({
       code: 'desktop_only',
       retryable: false,
     })
@@ -73,13 +71,12 @@ describe('native kernel adapter', () => {
       ...status(),
       activationConfigured: true,
       download: {
-        kind: 'latest',
         phase: 'retrying',
         percent: 12.5,
         downloadedMb: 18.75,
         totalMb: 150,
         attempt: 2,
-        version: '146.0.2',
+        version: '155.0.2.3',
         error: {
           code: 'network_unavailable',
           message: '下载连接中断，请重试。',
@@ -116,8 +113,8 @@ describe('native kernel adapter', () => {
 
   it.each([
     { ...status(), activationConfigured: 'true' },
-    { ...status(), installed: [{ version: '145', kind: 'preview', binaryPath: '/bin' }] },
-    { ...status(), installed: [{ version: '145', kind: 'base' }] },
+    { ...status(), installed: [{ version: null, binaryPath: '/bin' }] },
+    { ...status(), installed: [{ version: '155.0.1.2' }] },
     { ...status(), download: { ...status().download, phase: 'complete' } },
     { ...status(), download: { ...status().download, percent: 101 } },
     { ...status(), download: { ...status().download, percent: -1 } },
@@ -158,7 +155,6 @@ describe('native kernel adapter', () => {
         ...status(),
         download: {
           ...status().download,
-          kind: 'base',
           phase: 'downloading',
           percent: 0,
           downloadedMb: 0,
@@ -177,35 +173,32 @@ describe('native kernel adapter', () => {
     },
   )
 
-  it.each(['base', 'latest'] as const)(
-    'keeps a %s download pending until the native operation returns its version',
-    async (kind) => {
-      let complete!: (version: string) => void
-      const pending = new Promise<string>((resolve) => {
-        complete = resolve
-      })
-      vi.mocked(invoke).mockReturnValue(pending)
-      let settled = false
-      const download = downloadKernel(kind).then((version) => {
-        settled = true
-        return version
-      })
+  it('keeps the download pending until the native operation returns its version', async () => {
+    let complete!: (version: string) => void
+    const pending = new Promise<string>((resolve) => {
+      complete = resolve
+    })
+    vi.mocked(invoke).mockReturnValue(pending)
+    let settled = false
+    const download = downloadKernel().then((version) => {
+      settled = true
+      return version
+    })
 
-      await Promise.resolve()
-      expect(settled).toBe(false)
-      expect(invoke).toHaveBeenCalledExactlyOnceWith('kernel_download', { kind })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('kernel_download')
 
-      complete('146.0.2')
-      await expect(download).resolves.toBe('146.0.2')
-    },
-  )
+    complete('155.0.2.3')
+    await expect(download).resolves.toBe('155.0.2.3')
+  })
 
-  it.each([null, '', '   ', 146, { version: '146.0.2' }])(
+  it.each([null, '', '   ', 155, { version: '155.0.2.3' }])(
     'rejects an invalid download result %# rather than announcing success',
     async (result) => {
       vi.mocked(invoke).mockResolvedValue(result)
 
-      await expect(downloadKernel('base')).rejects.toMatchObject({
+      await expect(downloadKernel()).rejects.toMatchObject({
         code: 'invalid_response',
       })
     },
@@ -219,7 +212,7 @@ describe('native kernel adapter', () => {
       diagnostics: 'private native details',
     })
 
-    await expect(downloadKernel('latest')).rejects.toMatchObject({
+    await expect(downloadKernel()).rejects.toMatchObject({
       code: 'activation_required',
       message: '请先保存激活码。',
       retryable: false,
@@ -233,7 +226,7 @@ describe('native kernel adapter', () => {
       retryable: true,
     })
 
-    await expect(downloadKernel('base')).rejects.toMatchObject({
+    await expect(downloadKernel()).rejects.toMatchObject({
       code: 'NETWORK',
       message: '下载连接中断，请检查网络或应用代理后重试。',
       retryable: true,
@@ -249,7 +242,7 @@ describe('native kernel adapter', () => {
       }),
     )
 
-    await expect(downloadKernel('base')).rejects.toMatchObject({
+    await expect(downloadKernel()).rejects.toMatchObject({
       code: 'download_failed',
       message: '下载失败，请重试。',
       retryable: true,

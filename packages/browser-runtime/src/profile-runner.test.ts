@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -11,10 +11,19 @@ let binary: string
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'nexus-profile-runner-'))
-  binary = join(directory, 'test-browser')
+  binary = join(
+    directory,
+    'chromium-155.0.8059.39.2-pro',
+    process.platform === 'darwin'
+      ? 'Chromium.app/Contents/MacOS/Chromium'
+      : process.platform === 'win32'
+        ? 'chrome.exe'
+        : 'chrome',
+  )
+  await mkdir(dirname(binary), { recursive: true })
   await writeFile(
     binary,
-    `#!${process.execPath}\nconsole.log('CloakBrowser 145.0.7632.109.2')\n`,
+    `#!${process.execPath}\nconsole.log('CloakBrowser 155.0.8059.39.2')\n`,
     {
       mode: 0o700,
     },
@@ -75,6 +84,10 @@ beforeEach(async () => {
         if(specifier==='cloakbrowser')return{
           url:${JSON.stringify(pathToFileURL(sdk).href)},shortCircuit:true
         };
+        if(specifier.startsWith('.') && specifier.endsWith('.js') &&
+          context.parentURL?.startsWith(${JSON.stringify(new URL('./', import.meta.url).href)})) {
+          return nextResolve(specifier.slice(0,-3)+'.ts',context);
+        }
         return nextResolve(specifier,context);
       }
     });
@@ -92,11 +105,14 @@ async function run(
   closeStdin: boolean,
   sdkFailure = false,
   target = join(directory, 'user-data'),
+  activated = true,
 ) {
-  const runner = fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url))
+  const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
   const child = spawn(process.execPath, ['--import', preload, runner, action, target], {
     env: {
       ...process.env,
+      CLOAKBROWSER_CACHE_DIR: directory,
+      CLOAKBROWSER_LICENSE_KEY: activated ? 'synthetic-runner-key' : '',
       ...(sdkFailure ? { NEXUS_TEST_SDK_FAILURE: '1' } : {}),
     },
   })
@@ -114,7 +130,7 @@ async function run(
       schema_version: 1,
       id: 'profile',
       binary_path: binary,
-      binding: { profile_id: 'profile', channel_version: '145.0.7632.109.2' },
+      binding: { profile_id: 'profile', channel_version: '155.0.8059.39.2' },
       proxy: null,
       settings: {
         geoip: true,
@@ -145,15 +161,22 @@ async function run(
 }
 
 describe('profile runner subprocess', () => {
+  it('returns an actionable preparation failure without an activation code', async () => {
+    const result = await run('prepare', '', false, false, directory, false)
+    expect(result).toMatchObject({ exit: 1, timedOut: false, stdout: '' })
+    expect(result.stderr).toContain('"code":"ACTIVATION"')
+    expect(result.stderr).not.toContain('synthetic-runner-key')
+  })
+
   it('probes the actual binary display version without launching a context or waiting for stdin', async () => {
     await writeFile(
       binary,
-      `#!${process.execPath}\nconsole.log('Chromium 145.0.7632.109')\n`,
+      `#!${process.execPath}\nconsole.log('Chromium 155.0.8059.39')\n`,
     )
     const result = await run('version', '', false, true, binary)
     expect(result).toMatchObject({ exit: 0, timedOut: false, stderr: '' })
     expect(JSON.parse(result.stdout)).toEqual({
-      version: '145.0.7632.109',
+      version: '155.0.8059.39',
       binary_path: binary,
     })
   })

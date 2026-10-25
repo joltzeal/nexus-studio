@@ -49,7 +49,7 @@ fn unbound_profile_cannot_be_launched() {
 fn profile_stays_on_its_original_engine_after_stop() {
     let mut scheduler = Scheduler::default();
     scheduler
-        .register_channel(channel("old", "146", limited(1)))
+        .register_channel(channel("old", "155.0.1.1", limited(1)))
         .unwrap();
     scheduler
         .register_channel(channel("current", "155", limited(1)))
@@ -58,7 +58,7 @@ fn profile_stays_on_its_original_engine_after_stop() {
         .propose_profile_binding("profile-a", "old")
         .unwrap();
     scheduler.restore_profile(binding.clone()).unwrap();
-    assert_eq!(binding.channel_version, "146");
+    assert_eq!(binding.channel_version, "155.0.1.1");
     let first = scheduler.reserve(request("a", "profile-a", "old")).unwrap();
     scheduler.mark_running(&first).unwrap();
     scheduler.begin_stop(&first).unwrap();
@@ -169,7 +169,7 @@ fn provider_enforced_capacity_allows_distinct_profiles_to_reach_the_browser() {
 fn profile_ownership_is_global_even_across_engine_versions() {
     let mut scheduler = Scheduler::default();
     scheduler
-        .register_channel(channel("old", "146", limited(2)))
+        .register_channel(channel("old", "155.0.1.1", limited(2)))
         .unwrap();
     scheduler
         .register_channel(channel("current", "155", limited(2)))
@@ -214,7 +214,7 @@ fn failed_start_releases_only_its_own_generation() {
 fn no_automatic_engine_fallback_when_current_is_full() {
     let mut scheduler = Scheduler::default();
     scheduler
-        .register_channel(channel("old", "146", limited(3)))
+        .register_channel(channel("old", "155.0.1.1", limited(3)))
         .unwrap();
     scheduler
         .register_channel(channel("current", "155", limited(1)))

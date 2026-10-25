@@ -4,7 +4,6 @@ import { join } from 'node:path'
 
 export interface InstalledKernel {
   version: string
-  kind: 'base' | 'latest'
   binaryPath: string
 }
 
@@ -21,7 +20,7 @@ const SUPPORTED_PLATFORMS = new Set([
   'linux-arm64',
   'linux-x64',
 ])
-const INSTALL_DIRECTORY = /^chromium-([0-9]+(?:\.[0-9]+){3,4})(-pro)?$/
+const INSTALL_DIRECTORY = /^chromium-([0-9]+(?:\.[0-9]+){3,4})-pro$/
 
 function fileSystemCode(error: unknown): unknown {
   return typeof error === 'object' && error !== null && 'code' in error
@@ -41,7 +40,6 @@ function compareVersions(left: InstalledKernel, right: InstalledKernel): number 
     const rightPart = rightParts[index] ?? 0n
     if (leftPart !== rightPart) return leftPart > rightPart ? -1 : 1
   }
-  if (left.kind !== right.kind) return left.kind === 'latest' ? -1 : 1
   return left.version.localeCompare(right.version)
 }
 
@@ -89,7 +87,6 @@ export async function inspectKernelCache(
     }
     inventory.installed.push({
       version,
-      kind: match?.[2] ? 'latest' : 'base',
       binaryPath,
     })
   }

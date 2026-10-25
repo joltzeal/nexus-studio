@@ -20,6 +20,9 @@ beforeEach(async () => {
     `import {registerHooks} from 'node:module';
      registerHooks({resolve(specifier,context,next){
        if(specifier==='cloakbrowser') throw new Error('SDK imported during validation');
+       if(specifier.startsWith('.') && specifier.endsWith('.js') &&
+         context.parentURL?.startsWith(${JSON.stringify(new URL('./', import.meta.url).href)}))
+         return next(specifier.slice(0,-3)+'.ts',context);
        return next(specifier,context);
      }});`,
   )
@@ -30,7 +33,7 @@ afterEach(async () => {
 })
 
 async function validate(paths: string[]) {
-  const runner = fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url))
+  const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
   const child = spawn(process.execPath, [
     '--import',
     guard,

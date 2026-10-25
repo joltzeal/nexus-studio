@@ -1,11 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 
-export type KernelKind = 'base' | 'latest'
-export interface KernelSelection {
-  kind: KernelKind
-  version?: string
-}
-
 export type KernelPhase =
   | 'idle'
   | 'preparing'
@@ -24,12 +18,10 @@ export interface KernelFailure {
 
 export interface InstalledKernel {
   version: string
-  kind: KernelKind
   binaryPath: string
 }
 
 export interface KernelDownload {
-  kind: KernelKind | null
   phase: KernelPhase
   percent: number | null
   downloadedMb: number | null
@@ -53,10 +45,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function isKind(value: unknown): value is KernelKind {
-  return value === 'base' || value === 'latest'
 }
 
 function isPhase(value: unknown): value is KernelPhase {
@@ -107,23 +95,16 @@ function parseStatus(value: unknown): KernelStatus | null {
   }
   const installed: InstalledKernel[] = []
   for (const entry of value.installed) {
-    if (
-      !isRecord(entry) ||
-      !isText(entry.version) ||
-      !isKind(entry.kind) ||
-      !isText(entry.binaryPath)
-    ) {
+    if (!isRecord(entry) || !isText(entry.version) || !isText(entry.binaryPath)) {
       return null
     }
     installed.push({
       version: entry.version.trim(),
-      kind: entry.kind,
       binaryPath: entry.binaryPath,
     })
   }
   const download = value.download
   if (
-    (download.kind !== null && !isKind(download.kind)) ||
     !isPhase(download.phase) ||
     !isMeasurement(download.percent) ||
     (download.percent !== null && download.percent > 100) ||
@@ -146,7 +127,6 @@ function parseStatus(value: unknown): KernelStatus | null {
     installed,
     activationConfigured: value.activationConfigured,
     download: {
-      kind: download.kind,
       phase: download.phase,
       percent: download.percent,
       downloadedMb: download.downloadedMb,
@@ -218,10 +198,10 @@ export async function getKernelStatus(refresh = false): Promise<KernelStatus> {
   }
 }
 
-export async function downloadKernel(kind: KernelKind): Promise<string> {
+export async function downloadKernel(): Promise<string> {
   requireDesktop()
   try {
-    const result = await invoke<unknown>('kernel_download', { kind })
+    const result = await invoke<unknown>('kernel_download')
     if (!isText(result)) throw invalidResponse()
     return result.trim()
   } catch (cause) {

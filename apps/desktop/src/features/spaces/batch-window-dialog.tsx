@@ -172,7 +172,6 @@ export function BatchWindowDialog({
     proxyPlugin,
     proxyEndpoint,
     settings,
-    kernel,
     groupId,
   ) => {
     if (running.current || job.current) return
@@ -201,7 +200,6 @@ export function BatchWindowDialog({
         ...(accounts ? { accounts } : {}),
         proxy: { proxy, proxyPlugin, proxyEndpoint },
         settings,
-        kernel,
         groupId: groupId ?? null,
       },
       profiles,

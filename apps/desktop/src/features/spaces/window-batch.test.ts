@@ -26,7 +26,6 @@ function config(overrides: Partial<WindowBatchConfig> = {}): WindowBatchConfig {
     namePrefix: 'shop',
     proxy: { proxy: null, proxyPlugin: 'studio.proxy-pool', proxyEndpoint: 42 },
     settings: { ...settings },
-    kernel: { kind: 'base', version: '145.0.7632.109.2' },
     groupId: 'group-one',
     ...overrides,
   }
@@ -40,7 +39,7 @@ function profile(
   return {
     id: `profile-${name}`,
     name,
-    version: '145.0.7632.109',
+    version: '155.0.8059.39',
     proxy: null,
     proxyPlugin: 'studio.proxy-pool',
     proxyEndpoint: 42,
@@ -56,7 +55,7 @@ function profile(
 function fixture(overrides: Partial<WindowBatchPorts> = {}) {
   const saved: NativeProfile[] = []
   const createProfile = vi.fn<WindowBatchPorts['createProfile']>(
-    async (name, proxy, proxyPlugin, proxyEndpoint, values, _kernel, groupId) => {
+    async (name, proxy, proxyPlugin, proxyEndpoint, values, groupId) => {
       const result = profile(name, values, { proxy, proxyPlugin, proxyEndpoint, groupId })
       saved.push(result)
       return result
@@ -180,8 +179,7 @@ describe('batch native creation', () => {
     for (const call of deps.createProfile.mock.calls) {
       expect(call.slice(1, 4)).toEqual([null, 'studio.proxy-pool', 42])
       expect(call[4]).toEqual({ ...settings, fingerprintSeed: expect.any(Number) })
-      expect(call[5]).toEqual({ kind: 'base', version: '145.0.7632.109.2' })
-      expect(call[6]).toBe('group-one')
+      expect(call[5]).toBe('group-one')
     }
     await job.run(change)
     expect(deps.createProfile).toHaveBeenCalledTimes(3)

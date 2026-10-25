@@ -11,7 +11,6 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
-import { Separator } from '@/components/ui/separator'
 import {
   Table,
   TableBody,
@@ -26,15 +25,10 @@ import {
   KernelOperationError,
   nativeKernelsAvailable,
   type KernelFailure,
-  type KernelKind,
   type KernelPhase,
   type KernelStatus,
 } from '@/lib/platform/native-kernels'
 
-const kindLabels: Record<KernelKind, string> = {
-  base: '基础内核',
-  latest: '新版内核',
-}
 const phaseLabels: Record<KernelPhase, string> = {
   idle: '暂无下载任务',
   preparing: '正在准备',
@@ -66,16 +60,13 @@ function useKernelSettings(native: boolean) {
   const [status, setStatus] = useState<KernelStatus | null>(null)
   const [loading, setLoading] = useState(native)
   const [refreshing, setRefreshing] = useState(false)
-  const [pendingKind, setPendingKind] = useState<KernelKind | null>(null)
+  const [pending, setPending] = useState(false)
   const [statusError, setStatusError] = useState<KernelFailure | null>(null)
-  const [downloadError, setDownloadError] = useState<{
-    kind: KernelKind
-    error: KernelFailure
-  } | null>(null)
+  const [downloadError, setDownloadError] = useState<KernelFailure | null>(null)
   const [completed, setCompleted] = useState<string | null>(null)
   const actions = useRef<{
     refresh: () => void
-    download: (kind: KernelKind) => void
+    download: () => void
   } | null>(null)
 
   useEffect(() => {
@@ -84,7 +75,7 @@ function useKernelSettings(native: boolean) {
     let reading = false
     let queued = false
     let queuedRefresh = false
-    let pending: KernelKind | null = null
+    let downloading = false
     let latest: KernelStatus | null = null
     let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -123,38 +114,38 @@ function useKernelSettings(native: boolean) {
           } else {
             setRefreshing(false)
             // The command can still be pending while the first status is idle.
-            if (pending !== null || isActive(latest?.download.phase)) {
+            if (downloading || isActive(latest?.download.phase)) {
               timer = setTimeout(() => read(), 900)
             }
           }
         })
     }
 
-    async function download(kind: KernelKind) {
+    async function download() {
       if (
         !mounted ||
-        pending !== null ||
+        downloading ||
         !latest ||
         isActive(latest.download.phase) ||
-        (kind === 'latest' && !latest.activationConfigured)
+        !latest.activationConfigured
       ) {
         return
       }
-      pending = kind
-      setPendingKind(kind)
+      downloading = true
+      setPending(true)
       setDownloadError(null)
       setCompleted(null)
-      const command = downloadKernel(kind)
+      const command = downloadKernel()
       read()
       try {
         const version = await command
-        if (mounted) setCompleted(`${kindLabels[kind]} ${version} 已下载。`)
+        if (mounted) setCompleted(`内核 ${version} 已下载。`)
       } catch (cause) {
-        if (mounted) setDownloadError({ kind, error: failure(cause) })
+        if (mounted) setDownloadError(failure(cause))
       } finally {
         if (mounted) {
-          pending = null
-          setPendingKind(null)
+          downloading = false
+          setPending(false)
           read(true)
         }
       }
@@ -162,7 +153,7 @@ function useKernelSettings(native: boolean) {
 
     actions.current = {
       refresh: () => read(true),
-      download: (kind) => void download(kind),
+      download: () => void download(),
     }
     read()
     return () => {
@@ -176,38 +167,32 @@ function useKernelSettings(native: boolean) {
     status,
     loading,
     refreshing,
-    pendingKind,
+    pending,
     statusError,
     downloadError,
     completed,
     refresh: () => actions.current?.refresh(),
-    download: (kind: KernelKind) => actions.current?.download(kind),
+    download: () => actions.current?.download(),
   }
 }
 
 export function KernelSettingsPage() {
   const native = nativeKernelsAvailable()
   const view = useKernelSettings(native)
-  const { status, pendingKind } = view
+  const { status, pending } = view
   const download = status?.download
-  const busy =
-    view.loading || view.refreshing || pendingKind !== null || isActive(download?.phase)
+  const busy = view.loading || view.refreshing || pending || isActive(download?.phase)
   const failed =
     view.downloadError ??
-    (!pendingKind && download?.phase === 'failed'
-      ? {
-          kind: download.kind,
-          error: download.error ?? {
-            code: 'download_failed',
-            message: '内核下载失败，请重试。',
-            retryable: true,
-          },
-        }
+    (!pending && download?.phase === 'failed'
+      ? (download.error ?? {
+          code: 'download_failed',
+          message: '内核下载失败，请重试。',
+          retryable: true,
+        })
       : null)
   const showProgress =
-    download &&
-    !view.downloadError &&
-    (!pendingKind || (download.kind === pendingKind && isActive(download.phase)))
+    download && !view.downloadError && (!pending || isActive(download.phase))
   const progress = showProgress
     ? [
         download.percent !== null ? `${download.percent}%` : null,
@@ -225,13 +210,13 @@ export function KernelSettingsPage() {
         .join(' · ')
     : ''
   const phase = view.downloadError
-    ? `${kindLabels[view.downloadError.kind]}：下载失败`
-    : pendingKind
-      ? `${kindLabels[pendingKind]}：${
-          showProgress ? phaseLabels[download.phase] : '正在等待下载结果…'
-        }`
+    ? '下载失败'
+    : pending
+      ? showProgress
+        ? phaseLabels[download.phase]
+        : '正在等待下载结果…'
       : download
-        ? `${download.kind ? `${kindLabels[download.kind]}：` : ''}${phaseLabels[download.phase]}`
+        ? phaseLabels[download.phase]
         : null
 
   return (
@@ -273,22 +258,7 @@ export function KernelSettingsPage() {
             <CardContent className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="m-0 font-medium">基础内核</p>
-                  <p className="m-0 text-xs text-muted-foreground">无需激活码。</p>
-                </div>
-                <Button
-                  variant="outline"
-                  disabled={busy || !status}
-                  onClick={() => view.download('base')}
-                >
-                  <Download data-icon="inline-start" />
-                  下载基础内核
-                </Button>
-              </div>
-              <Separator />
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="m-0 font-medium">新版内核</p>
+                  <p className="m-0 font-medium">最新内核</p>
                   <p
                     id="latest-kernel-description"
                     className="m-0 text-xs text-muted-foreground"
@@ -304,10 +274,10 @@ export function KernelSettingsPage() {
                   variant="outline"
                   disabled={busy || !status?.activationConfigured}
                   aria-describedby="latest-kernel-description"
-                  onClick={() => view.download('latest')}
+                  onClick={view.download}
                 >
                   <Download data-icon="inline-start" />
-                  下载新版内核
+                  下载最新内核
                 </Button>
               </div>
               <div role="status" aria-live="polite" aria-atomic="true">
@@ -323,18 +293,12 @@ export function KernelSettingsPage() {
                 <Alert variant="destructive">
                   <AlertTitle>下载失败</AlertTitle>
                   <AlertDescription className="flex flex-col items-start gap-2">
-                    <span>{failed.error.message}</span>
-                    {failed.kind && failed.error.retryable ? (
+                    <span>{failed.message}</span>
+                    {failed.retryable ? (
                       <Button
                         variant="outline"
-                        disabled={
-                          busy ||
-                          !status ||
-                          (failed.kind === 'latest' && !status.activationConfigured)
-                        }
-                        onClick={() => {
-                          if (failed.kind) view.download(failed.kind)
-                        }}
+                        disabled={busy || !status?.activationConfigured}
+                        onClick={view.download}
                       >
                         重试下载
                       </Button>
@@ -373,15 +337,13 @@ export function KernelSettingsPage() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>版本</TableHead>
-                          <TableHead>类型</TableHead>
                           <TableHead>路径</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {status.installed.map((kernel) => (
-                          <TableRow key={`${kernel.kind}:${kernel.binaryPath}`}>
+                          <TableRow key={kernel.binaryPath}>
                             <TableCell>{kernel.version}</TableCell>
-                            <TableCell>{kindLabels[kernel.kind]}</TableCell>
                             <TableCell>
                               <span className="block max-w-80 font-mono text-xs whitespace-normal break-all">
                                 {kernel.binaryPath}
@@ -396,7 +358,7 @@ export function KernelSettingsPage() {
                       <EmptyHeader>
                         <EmptyTitle>尚未安装内核</EmptyTitle>
                         <EmptyDescription>
-                          可先下载无需激活码的基础内核。
+                          保存激活码后即可下载最新内核。
                         </EmptyDescription>
                       </EmptyHeader>
                     </Empty>

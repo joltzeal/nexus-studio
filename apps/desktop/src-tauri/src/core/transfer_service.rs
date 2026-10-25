@@ -1,5 +1,4 @@
 use super::group_store::{GroupStore, open_database};
-use super::kernel_service::KernelKind;
 use super::plugin_host::{PluginHost, manifest::Capability};
 use super::profile_service::{AppOperationGuard, ProfileService};
 use super::profile_store::ProfileRecord;
@@ -22,6 +21,7 @@ const SYNC_PLUGIN: &str = "studio.window-sync";
 const MAX_WINDOWS: usize = 100;
 const MAX_MANIFEST: u64 = 16 * 1024 * 1024;
 const MAX_STATE: u64 = 128 * 1024 * 1024;
+const MANIFEST_VERSION: u8 = 2;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -37,7 +37,6 @@ struct PortableWindow {
     record: ProfileRecord,
     group: Option<PortableGroup>,
     kernel_version: String,
-    kernel_kind: KernelKind,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -306,6 +305,7 @@ impl TransferService {
                 &json!({"schemaVersion":1,"storageState":{"cookies":[],"origins":[]}}),
             );
         }
+        let license_key = self.profiles.license_store.require_key()?;
         let mut command = Command::new(&self.profiles.runtime.node);
         if let Some(network) = &self.profiles.network {
             network
@@ -320,7 +320,8 @@ impl TransferService {
                 "CLOAKBROWSER_CACHE_DIR",
                 self.profiles.license_store.browser_cache_dir(),
             )
-            .env_remove("CLOAKBROWSER_LICENSE_KEY")
+            .env("CLOAKBROWSER_LICENSE_KEY", license_key)
+            .env("CLOAKBROWSER_AUTO_UPDATE", "false")
             .env_remove("CLOAKBROWSER_VERSION")
             .env_remove("CLOAKBROWSER_BINARY_PATH")
             .env_remove("CLOAKBROWSER_DOWNLOAD_URL")
@@ -328,9 +329,6 @@ impl TransferService {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(key) = self.profiles.license_store.license_key()? {
-            command.env("CLOAKBROWSER_LICENSE_KEY", key);
-        }
         let mut child = command.spawn().map_err(|_| "无法启动浏览器数据读取进程")?;
         let record = serde_json::to_vec(record).map_err(|_| "无法编码窗口配置")?;
         let write = child
@@ -493,7 +491,6 @@ impl TransferService {
                 record,
                 group,
                 kernel_version: kernel.version.clone(),
-                kernel_kind: kernel.kind,
             });
         }
         let catalog = self.host.catalog().map_err(|error| error.message())?;
@@ -539,7 +536,7 @@ impl TransferService {
             });
         }
         let manifest = Manifest {
-            schema_version: 1,
+            schema_version: MANIFEST_VERSION,
             source_platform: std::env::consts::OS.into(),
             source_arch: std::env::consts::ARCH.into(),
             created_at: now(),
@@ -559,12 +556,13 @@ impl TransferService {
     }
 
     fn manifest(&self, extracted: &Path) -> Result<Manifest, String> {
-        let manifest: Manifest = json_file(&extracted.join("manifest.json"), MAX_MANIFEST)?;
-        if manifest.schema_version != 1
-            || manifest.windows.is_empty()
-            || manifest.windows.len() > MAX_WINDOWS
-        {
-            return Err("窗口文件版本或窗口数量不受支持".into());
+        let value: Value = json_file(&extracted.join("manifest.json"), MAX_MANIFEST)?;
+        if value.get("schemaVersion") != Some(&json!(MANIFEST_VERSION)) {
+            return Err("窗口文件版本不受支持，请在新版应用中重新导出".into());
+        }
+        let manifest: Manifest = serde_json::from_value(value).map_err(|_| "窗口文件内容无效")?;
+        if manifest.windows.is_empty() || manifest.windows.len() > MAX_WINDOWS {
+            return Err("窗口文件数量不受支持".into());
         }
         let mut ids = HashSet::new();
         let mut plugins = HashSet::new();
@@ -735,18 +733,15 @@ impl TransferService {
                     || !installed.iter().any(|kernel| {
                         Path::new(&kernel.binary_path) == old.binary_path
                             && kernel.version == window.kernel_version
-                            && kernel.kind == window.kernel_kind
                     }))
             {
                 return Err("已有窗口的内核版本与指纹种子不可更改，请选择导入副本".into());
             }
-            let package = (window.kernel_version.clone(), window.kernel_kind);
+            let package = window.kernel_version.clone();
             if !binaries.contains_key(&package) {
                 binaries.insert(
                     package.clone(),
-                    self.profiles
-                        .kernels
-                        .exact_binary(&window.kernel_version, window.kernel_kind)?,
+                    self.profiles.kernels.exact_binary(&window.kernel_version)?,
                 );
             }
             let binary = &binaries[&package];
@@ -1544,11 +1539,11 @@ mod tests {
         let inventory = root.join("inventory.json");
         write_json(
             &inventory,
-            &json!([{"version":"145.0.7632.109","kind":"base","binaryPath":binary}]),
+            &json!([{"version":"155.0.8059.39","binaryPath":binary}]),
         )
         .unwrap();
         fs::write(&runner, format!(
-            "const fs=require('node:fs'); const inventory={}; const prepared={}; const action = process.argv[2]; if(action==='validate-state') process.stdout.write(JSON.stringify({{valid:true}})); else if(action==='version') process.stdout.write(JSON.stringify({{version:'145.0.7632.109',binary_path:process.argv[3]}})); else if(action==='inventory') process.stdout.write(JSON.stringify({{cacheDir:'.',platform:'darwin-arm64',installed:JSON.parse(fs.readFileSync(inventory,'utf8'))}})); else if(action==='prepare'){{if(!fs.existsSync(prepared))process.exit(42);const entry=JSON.parse(fs.readFileSync(prepared,'utf8'));fs.writeFileSync(inventory,JSON.stringify([entry]));process.stdout.write(JSON.stringify({{version:'145.0.7632.109',binary_path:entry.binaryPath}}));}} else if(action==='snapshot'){{process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({{schemaVersion:1,storageState:{{cookies:[{{name:'session',value:'portable-session',domain:'example.test',path:'/',expires:-1,httpOnly:true,secure:true,sameSite:'Lax'}}],origins:[]}}}})));}}",
+            "const fs=require('node:fs'); const inventory={}; const prepared={}; const action = process.argv[2]; if(action==='validate-state') process.stdout.write(JSON.stringify({{valid:true}})); else if(action==='version') process.stdout.write(JSON.stringify({{version:'155.0.8059.39',binary_path:process.argv[3]}})); else if(action==='inventory') process.stdout.write(JSON.stringify({{cacheDir:'.',platform:'darwin-arm64',installed:JSON.parse(fs.readFileSync(inventory,'utf8'))}})); else if(action==='prepare'){{if(!fs.existsSync(prepared))process.exit(42);const entry=JSON.parse(fs.readFileSync(prepared,'utf8'));fs.writeFileSync(inventory,JSON.stringify([entry]));process.stdout.write(JSON.stringify({{version:'155.0.8059.39',binary_path:entry.binaryPath}}));}} else if(action==='snapshot'){{process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({{schemaVersion:1,storageState:{{cookies:[{{name:'session',value:'portable-session',domain:'example.test',path:'/',expires:-1,httpOnly:true,secure:true,sameSite:'Lax'}}],origins:[]}}}})));}}",
             serde_json::to_string(&inventory).unwrap(),
             serde_json::to_string(&root.join("prepared-kernel.json")).unwrap()
         )).unwrap();
@@ -1557,27 +1552,25 @@ mod tests {
             browser_script: runner,
             network_preload: root.join("preload.js"),
         };
+        let licenses = LicenseStore::new(root.join("nexus.sqlite")).unwrap();
+        licenses
+            .save_validated("synthetic-transfer-key", "pro", None)
+            .unwrap();
         let profiles = Arc::new(
-            ProfileService::with_runtime(
-                root.join("profiles"),
-                None,
-                LicenseStore::new(root.join("nexus.sqlite")).unwrap(),
-                runtime,
-            )
-            .unwrap(),
+            ProfileService::with_runtime(root.join("profiles"), None, licenses, runtime).unwrap(),
         );
         let host = Arc::new(PluginHost::open(root.join("plugins"), Vec::new()).unwrap());
         TransferService::new(profiles, host, root.join("transfers")).unwrap()
     }
 
-    fn kernel_package(service: &TransferService, version: &str, kind: &str) -> Value {
-        json!({"version":version,"kind":kind,"binaryPath":service.root.parent().unwrap().join("browser")})
+    fn kernel_package(service: &TransferService, version: &str) -> Value {
+        json!({"version":version,"binaryPath":service.root.parent().unwrap().join("browser")})
     }
 
-    fn set_kernel_package(service: &TransferService, version: &str, kind: &str) {
+    fn set_kernel_package(service: &TransferService, version: &str) {
         write_json(
             &service.root.parent().unwrap().join("inventory.json"),
-            &json!([kernel_package(service, version, kind)]),
+            &json!([kernel_package(service, version)]),
         )
         .unwrap();
     }
@@ -1596,7 +1589,7 @@ mod tests {
                     ..WindowSettings::default()
                 },
                 PreparedBinary {
-                    version: "145.0.7632.109".into(),
+                    version: "155.0.8059.39".into(),
                     binary_path: binary,
                 },
             )
@@ -2011,8 +2004,8 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
         let target = service(&root.path().join("target"));
-        set_kernel_package(&source, "145.0.7632.109.2", "base");
-        set_kernel_package(&target, "145.0.7632.109.2", "base");
+        set_kernel_package(&source, "155.0.8059.39.2");
+        set_kernel_package(&target, "155.0.8059.39.2");
         let record = window(&source);
         let path = root.path().join("revision.nexuswindow");
         source
@@ -2020,16 +2013,68 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             .unwrap();
         assert_eq!(
             source.inspect(&path, "transfer-password").unwrap()["windows"][0]["version"],
-            "145.0.7632.109.2"
+            "155.0.8059.39.2"
         );
         let imported = target
             .import(&path, "transfer-password", ImportMode::Copy)
             .unwrap();
         let imported = target.profiles.store.get(&imported.ids[0]).unwrap();
-        assert_eq!(imported.binding.channel_version, "145.0.7632.109");
+        assert_eq!(imported.binding.channel_version, "155.0.8059.39");
         assert_eq!(
             imported.binary_path,
             target.root.parent().unwrap().join("browser")
+        );
+    }
+
+    #[test]
+    fn outdated_manifests_are_rejected_before_any_runtime_or_profile_write() {
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let contents = root.path().join("contents");
+        fs::create_dir(&contents).unwrap();
+        write_json(
+            &contents.join("manifest.json"),
+            &json!({"schemaVersion": 1, "windows": []}),
+        )
+        .unwrap();
+        let marker = root.path().join("runtime-started");
+        fs::write(
+            &service.profiles.runtime.browser_script,
+            format!(
+                "require('node:fs').writeFileSync({}, 'unexpected invocation');",
+                serde_json::to_string(&marker).unwrap(),
+            ),
+        )
+        .unwrap();
+        let error = service.manifest(&contents).err().unwrap();
+        assert!(error.contains("重新导出"));
+        assert!(!marker.exists());
+        assert!(service.profiles.store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_requires_activation_even_when_the_exact_kernel_is_cached() {
+        let root = tempfile::tempdir().unwrap();
+        let source = service(&root.path().join("source"));
+        let target = service(&root.path().join("target"));
+        let record = window(&source);
+        let archive = root.path().join("window.nexuswindow");
+        source
+            .export(
+                std::slice::from_ref(&record.id),
+                "transfer-password",
+                &archive,
+            )
+            .unwrap();
+        target.profiles.license_store.remove().unwrap();
+        let error = target
+            .import(&archive, "transfer-password", ImportMode::Copy)
+            .unwrap_err();
+        assert!(error.contains("激活码"));
+        assert!(target.profiles.store.list().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(target.root.join("pending")).unwrap().count(),
+            0
         );
     }
 
@@ -2038,11 +2083,11 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
         let target = service(&root.path().join("target"));
-        set_kernel_package(&source, "145.0.7632.109.2", "base");
-        set_kernel_package(&target, "145.0.7632.109.3", "base");
+        set_kernel_package(&source, "155.0.8059.39.2");
+        set_kernel_package(&target, "155.0.8059.39.3");
         write_json(
             &target.root.parent().unwrap().join("prepared-kernel.json"),
-            &kernel_package(&target, "145.0.7632.109.3", "base"),
+            &kernel_package(&target, "155.0.8059.39.3"),
         )
         .unwrap();
         let record = window(&source);
@@ -2064,7 +2109,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
         let target = service(&root.path().join("target"));
-        set_kernel_package(&source, "145.0.7632.109.2", "base");
+        set_kernel_package(&source, "155.0.8059.39.2");
         write_json(
             &target.root.parent().unwrap().join("inventory.json"),
             &json!([]),
@@ -2072,7 +2117,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         .unwrap();
         write_json(
             &target.root.parent().unwrap().join("prepared-kernel.json"),
-            &kernel_package(&target, "145.0.7632.109.2", "base"),
+            &kernel_package(&target, "155.0.8059.39.2"),
         )
         .unwrap();
         let record = window(&source);
@@ -2091,7 +2136,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 .unwrap()
                 .binding
                 .channel_version,
-            "145.0.7632.109"
+            "155.0.8059.39"
         );
     }
 
@@ -2099,7 +2144,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     fn import_rejects_a_binding_that_disagrees_with_the_actual_binary_display_version() {
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
-        set_kernel_package(&source, "145.0.7632.109.2", "base");
+        set_kernel_package(&source, "155.0.8059.39.2");
         let record = window(&source);
         let original = root.path().join("original.nexuswindow");
         source
@@ -2114,15 +2159,15 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let manifest_path = extracted.join("manifest.json");
         let mut manifest: Value = json_file(&manifest_path, MAX_MANIFEST).unwrap();
         let binding = &mut manifest["windows"][0]["record"]["binding"];
-        binding["channel_version"] = json!("145.0.7632.109.2");
-        binding["channel_id"] = json!("cloak:145.0.7632.109.2");
+        binding["channel_version"] = json!("155.0.8059.39.2");
+        binding["channel_id"] = json!("cloak:155.0.8059.39.2");
         write_json(&manifest_path, &manifest).unwrap();
         let malformed = root.path().join("wrong-display.nexuswindow");
         transfer_archive::pack(&extracted, &malformed, "transfer-password").unwrap();
         for cached in [true, false] {
             let target = service(&root.path().join(if cached { "cached" } else { "prepared" }));
             if cached {
-                set_kernel_package(&target, "145.0.7632.109.2", "base");
+                set_kernel_package(&target, "155.0.8059.39.2");
             } else {
                 write_json(
                     &target.root.parent().unwrap().join("inventory.json"),
@@ -2131,7 +2176,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 .unwrap();
                 write_json(
                     &target.root.parent().unwrap().join("prepared-kernel.json"),
-                    &kernel_package(&target, "145.0.7632.109.2", "base"),
+                    &kernel_package(&target, "155.0.8059.39.2"),
                 )
                 .unwrap();
             }
@@ -2148,7 +2193,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     }
 
     #[test]
-    fn replace_cannot_change_package_revision_or_kind_with_the_same_chrome_version() {
+    fn replace_cannot_change_package_revision_with_the_same_chrome_version() {
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
         let target = service(&root.path().join("target"));
@@ -2160,17 +2205,17 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         target
             .import(&path, "transfer-password", ImportMode::Replace)
             .unwrap();
-        set_kernel_package(&target, "145.0.7632.109.2", "base");
+        set_kernel_package(&target, "155.0.8059.39.2");
         write_json(
             &target.root.parent().unwrap().join("prepared-kernel.json"),
-            &kernel_package(&target, "145.0.7632.109.2", "base"),
+            &kernel_package(&target, "155.0.8059.39.2"),
         )
         .unwrap();
         let data = target.profiles.store.user_data_dir(&record.id).unwrap();
         fs::write(data.join("Default/Cookies"), b"keep-local-session").unwrap();
-        for (version, kind) in [("145.0.7632.109.3", "base"), ("145.0.7632.109.2", "latest")] {
-            set_kernel_package(&source, version, kind);
-            let changed = root.path().join(format!("{kind}.nexuswindow"));
+        for version in ["155.0.8059.39.3", "155.0.8059.39.4"] {
+            set_kernel_package(&source, version);
+            let changed = root.path().join(format!("{version}.nexuswindow"));
             source
                 .export(
                     std::slice::from_ref(&record.id),
@@ -2463,15 +2508,14 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         write_json(
             &contents.join("manifest.json"),
             &Manifest {
-                schema_version: 1,
+                schema_version: MANIFEST_VERSION,
                 source_platform: std::env::consts::OS.into(),
                 source_arch: std::env::consts::ARCH.into(),
                 created_at: now(),
                 windows: vec![PortableWindow {
                     record,
                     group: None,
-                    kernel_version: "145.0.7632.109".into(),
-                    kernel_kind: KernelKind::Base,
+                    kernel_version: "155.0.8059.39".into(),
                 }],
                 plugins: Vec::new(),
                 warnings: Vec::new(),

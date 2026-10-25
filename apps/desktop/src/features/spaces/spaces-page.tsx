@@ -172,13 +172,14 @@ export function SpacesPage() {
     recovery.retry()
     setRefreshing(true)
     try {
-      const [records, currentGroups] = await withDeadline(
-        Promise.all([listNativeProfiles(), listGroups()]),
+      const [records, currentGroups, license] = await withDeadline(
+        Promise.all([listNativeProfiles(), listGroups(), getLicenseStatus()]),
         10_000,
         '刷新窗口和分组超时，请重试。',
       )
       setWindows(records)
       setGroups(currentGroups)
+      setLicenseStatus(license)
       setError(null)
     } catch (cause) {
       setError(message(cause))
@@ -838,7 +839,6 @@ export function SpacesPage() {
               proxyPlugin,
               proxyEndpoint,
               settings,
-              kernel,
               groupId,
             ) => {
               if (editing === 'new') {
@@ -848,7 +848,6 @@ export function SpacesPage() {
                   proxyPlugin,
                   proxyEndpoint,
                   settings,
-                  kernel,
                   groupId,
                 )
                 setWindows((current) => [created, ...current])

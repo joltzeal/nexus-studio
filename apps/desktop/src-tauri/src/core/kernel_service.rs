@@ -13,13 +13,6 @@ const PREPARATION_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 const PROGRESS_PREFIX: &str = "NEXUS_KERNEL_PROGRESS ";
 const ERROR_PREFIX: &str = "NEXUS_KERNEL_ERROR ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KernelKind {
-    Base,
-    Latest,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KernelPhase {
@@ -78,7 +71,6 @@ struct KernelProgress {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KernelJob {
-    kind: Option<KernelKind>,
     phase: KernelPhase,
     percent: Option<f64>,
     downloaded_mb: Option<f64>,
@@ -113,7 +105,6 @@ impl KernelJob {
 #[serde(rename_all = "camelCase")]
 pub struct InstalledKernel {
     pub(crate) version: String,
-    pub(crate) kind: KernelKind,
     pub(crate) binary_path: String,
 }
 
@@ -163,24 +154,19 @@ impl KernelService {
         Ok(binary)
     }
 
-    pub(crate) fn exact_binary(
-        &self,
-        version: &str,
-        kind: KernelKind,
-    ) -> Result<PreparedBinary, String> {
+    pub(crate) fn exact_binary(&self, version: &str) -> Result<PreparedBinary, String> {
+        self.license_store.require_key()?;
         if let Some(binary) = self
             .installed()?
             .iter()
-            .find(|entry| entry.version == version && entry.kind == kind)
+            .find(|entry| entry.version == version)
         {
             return self.probe_binary(&binary.binary_path);
         }
-        let binary = self.prepare(kind, Some(version))?;
+        let binary = self.prepare(Some(version))?;
         // Chrome's --version can omit the SDK package revision.
         if !self.installed()?.iter().any(|entry| {
-            entry.version == version
-                && entry.kind == kind
-                && Path::new(&entry.binary_path) == binary.binary_path
+            entry.version == version && Path::new(&entry.binary_path) == binary.binary_path
         }) {
             return Err(
                 "无法取得窗口原有的精确内核版本，导入已停止；请检查激活码和版本可用性".into(),
@@ -267,21 +253,16 @@ impl KernelService {
     }
 
     /// Settings downloads and window creation share the same SDK cache and lock.
-    pub fn prepare(
-        &self,
-        kind: KernelKind,
-        version: Option<&str>,
-    ) -> Result<PreparedBinary, String> {
+    pub fn prepare(&self, version: Option<&str>) -> Result<PreparedBinary, String> {
         let _operation = self
             .operation
             .try_lock()
             .map_err(|_| "正在准备浏览器内核，请等待完成后重试")?;
         *self.job.lock().map_err(|_| "内核状态不可用")? = KernelJob {
-            kind: Some(kind),
             phase: KernelPhase::Preparing,
             ..KernelJob::default()
         };
-        let result = self.prepare_inner(kind, version);
+        let result = self.prepare_inner(version);
         let mut job = self.job.lock().map_err(|_| "内核状态不可用")?;
         match &result {
             Ok(binary) => {
@@ -305,27 +286,20 @@ impl KernelService {
         result
     }
 
-    fn prepare_inner(
-        &self,
-        kind: KernelKind,
-        version: Option<&str>,
-    ) -> Result<PreparedBinary, String> {
+    fn prepare_inner(&self, version: Option<&str>) -> Result<PreparedBinary, String> {
+        let key = self.license_store.require_key().inspect_err(|message| {
+            if let Ok(mut job) = self.job.lock() {
+                job.error = Some(KernelFailure {
+                    code: "ACTIVATION".into(),
+                    message: message.clone(),
+                    retryable: false,
+                });
+            }
+        })?;
         let mut command = self.command("prepare")?;
-        command.env(
-            "CLOAKBROWSER_AUTO_UPDATE",
-            if kind == KernelKind::Latest {
-                "true"
-            } else {
-                "false"
-            },
-        );
-        if kind == KernelKind::Latest {
-            let key = self
-                .license_store
-                .license_key()?
-                .ok_or("请先在设置中填写激活码，再下载新版内核")?;
-            command.env("CLOAKBROWSER_LICENSE_KEY", key);
-        }
+        command
+            .env("CLOAKBROWSER_AUTO_UPDATE", "true")
+            .env("CLOAKBROWSER_LICENSE_KEY", key);
         if let Some(version) = version {
             command.env("CLOAKBROWSER_VERSION", version);
         }
@@ -448,7 +422,11 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
         return failure.message;
     }
     let lower = detail.to_ascii_lowercase();
-    if lower.contains("license key is invalid, expired, or missing") {
+    if lower.contains("activation_required") {
+        "请先在设置中填写激活码".into()
+    } else if lower.contains("profile_engine_unsupported") {
+        "窗口绑定的内核已不受支持，请使用最新内核重新创建窗口".into()
+    } else if lower.contains("license key is invalid, expired, or missing") {
         "浏览器未接受当前激活码（错误 77），请在设置中重新校验".into()
     } else if lower.contains("license key is invalid") {
         "激活服务未接受此激活码，请在设置中重新校验".into()
@@ -576,6 +554,12 @@ process.stdout.write(JSON.stringify({cacheDir: process.env.CLOAKBROWSER_CACHE_DI
         assert!(!status.activation_configured);
         assert_eq!(status.download.phase, KernelPhase::Idle);
         assert!(!root.path().join("cloakbrowser").exists());
+        let error = service.prepare(None).unwrap_err();
+        let failure = service.failure(error);
+        assert_eq!(failure.code, "ACTIVATION");
+        assert!(!failure.retryable);
+        assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Failed);
+        assert!(!root.path().join("cloakbrowser").exists());
     }
 
     #[test]
@@ -597,7 +581,11 @@ process.exitCode = 1;"#,
                 network_preload: root.path().join("unused.cjs"),
             },
         );
-        let error = service.prepare(KernelKind::Base, None).unwrap_err();
+        service
+            .license_store
+            .save_validated("synthetic-download-key", "free", None)
+            .unwrap();
+        let error = service.prepare(None).unwrap_err();
         assert_eq!(error, "下载连接被中断（ECONNRESET），请重试。");
         let job = service.job.lock().unwrap().clone();
         assert_eq!(job.phase, KernelPhase::Failed);

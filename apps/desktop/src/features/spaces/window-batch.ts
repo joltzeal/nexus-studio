@@ -1,4 +1,3 @@
-import type { KernelSelection } from '@/lib/platform/native-kernels'
 import {
   orderProfilesNewestFirst,
   type NativeProfile,
@@ -21,7 +20,6 @@ export interface WindowBatchConfig {
   accounts?: readonly BatchAccount[]
   proxy: WindowProxyRef
   settings: WindowSettings
-  kernel: KernelSelection
   groupId: string | null
 }
 
@@ -47,7 +45,6 @@ export interface WindowBatchPorts {
     proxyPlugin: string | null,
     proxyEndpoint: number | null,
     settings: WindowSettings,
-    kernel: KernelSelection,
     groupId: string | null,
   ) => Promise<NativeProfile>
   bindAccount: (
@@ -158,7 +155,6 @@ export class WindowBatchJob {
       ...config,
       proxy: { ...config.proxy },
       settings: { ...config.settings },
-      kernel: { ...config.kernel },
       ...(config.accounts
         ? { accounts: config.accounts.map((account) => ({ ...account })) }
         : {}),
@@ -239,14 +235,13 @@ export class WindowBatchJob {
           item = this.patch(item.key, { attempted: true }, onChange)
           let profile: NativeProfile
           try {
-            const { proxy, settings, kernel, groupId } = this.config
+            const { proxy, settings, groupId } = this.config
             profile = await this.ports.createProfile(
               item.name,
               proxy.proxy,
               proxy.proxyPlugin,
               proxy.proxyEndpoint,
               { ...settings, fingerprintSeed: item.seed },
-              { ...kernel },
               groupId,
             )
           } catch (cause) {

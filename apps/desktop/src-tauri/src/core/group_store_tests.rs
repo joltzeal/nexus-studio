@@ -15,7 +15,7 @@ fn groups_persist_and_track_real_windows() {
             "Store 1",
             None,
             PreparedBinary {
-                version: "145.0.7632.109".into(),
+                version: "155.0.8059.39".into(),
                 binary_path: binary,
             },
         )
@@ -49,7 +49,7 @@ fn assigning_an_unknown_group_preserves_existing_membership() {
             "One",
             None,
             PreparedBinary {
-                version: "145.0.7632.109".into(),
+                version: "155.0.8059.39".into(),
                 binary_path: binary,
             },
         )

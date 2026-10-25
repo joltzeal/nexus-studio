@@ -3,7 +3,7 @@ import { assertBinaryVersion, parseBrowserVersion } from './profile-runtime.js'
 
 describe('persistent profile binary binding', () => {
   it('reads the exact build from Chromium output', () => {
-    expect(parseBrowserVersion('CloakBrowser 146.0.7680.177.5')).toBe('146.0.7680.177.5')
+    expect(parseBrowserVersion('CloakBrowser 155.0.8059.39.5')).toBe('155.0.8059.39.5')
   })
 
   it('rejects an updated binary for the same profile', () => {

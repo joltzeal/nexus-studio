@@ -1,6 +1,5 @@
 use super::kernel_service::{
-    KernelFailure, KernelKind, KernelService, KernelStatus,
-    sanitize_kernel_error as sanitize_license_error,
+    KernelFailure, KernelService, KernelStatus, sanitize_kernel_error as sanitize_license_error,
 };
 use super::license_store::LicenseStore;
 use super::network_proxy::NetworkProxyStore;
@@ -191,24 +190,9 @@ impl ProfileService {
         name: String,
         proxy: ProxySource,
         settings: WindowSettings,
-        kernel_kind: KernelKind,
-        browser_version: Option<String>,
         group_id: Option<String>,
     ) -> Result<ProfileSummary, String> {
-        if kernel_kind == KernelKind::Latest
-            && browser_version.is_some()
-            && !can_pin_browser_version(self.license_store.status()?.plan.as_deref())
-        {
-            return Err("固定内核版本需要支持此功能的激活码".into());
-        }
-        if let Some(version) = browser_version.as_deref()
-            && !valid_browser_version(version)
-        {
-            return Err("内核版本需要是完整的数字版本号".into());
-        }
-        let binary = self
-            .kernels
-            .prepare(kernel_kind, browser_version.as_deref())?;
+        let binary = self.kernels.prepare(None)?;
         self.create_prepared(&name, proxy, settings, binary, group_id.as_deref())
     }
 
@@ -398,7 +382,7 @@ impl ProfileService {
             .store
             .user_data_dir(&record.id)
             .map_err(error_message)?;
-        let license_key = self.license_store.license_key()?;
+        let license_key = self.license_store.require_key()?;
         let mut command = Command::new(&self.runtime.node);
         if let Some(network) = &self.network {
             network
@@ -413,7 +397,8 @@ impl ProfileService {
                 "CLOAKBROWSER_CACHE_DIR",
                 self.license_store.browser_cache_dir(),
             )
-            .env_remove("CLOAKBROWSER_LICENSE_KEY")
+            .env("CLOAKBROWSER_LICENSE_KEY", license_key)
+            .env("CLOAKBROWSER_AUTO_UPDATE", "false")
             .env_remove("CLOAKBROWSER_VERSION")
             .env_remove("CLOAKBROWSER_BINARY_PATH")
             .env_remove("CLOAKBROWSER_DOWNLOAD_URL")
@@ -421,9 +406,6 @@ impl ProfileService {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(key) = license_key.as_deref() {
-            command.env("CLOAKBROWSER_LICENSE_KEY", key);
-        }
         let mut child = command.spawn().map_err(|_| "无法启动浏览器适配进程")?;
         // Runtime credentials travel over stdin only; the saved record stays opaque.
         let config = serde_json::to_vec(&launch_record).map_err(|_| "窗口配置无法编码")?;
@@ -663,20 +645,6 @@ impl Drop for TransferGuard<'_> {
     }
 }
 
-fn valid_browser_version(version: &str) -> bool {
-    let parts: Vec<_> = version.split('.').collect();
-    version.len() <= 48
-        && (4..=5).contains(&parts.len())
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-}
-
-/// CloakBrowser ignores version pins for free plans; other validated plans can pin.
-fn can_pin_browser_version(plan: Option<&str>) -> bool {
-    plan.is_some_and(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("free"))
-}
-
 fn browser_launch_record(
     record: &ProfileRecord,
     connection_url: Option<&str>,
@@ -708,13 +676,12 @@ pub async fn kernel_status(
 #[tauri::command]
 pub async fn kernel_download(
     state: State<'_, Arc<ProfileService>>,
-    kind: KernelKind,
 ) -> Result<String, KernelFailure> {
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
         state
             .kernels
-            .prepare(kind, None)
+            .prepare(None)
             .map(|binary| binary.version)
             .map_err(|message| state.kernels.failure(message))
     })
@@ -729,7 +696,6 @@ pub fn profile_list(state: State<'_, Arc<ProfileService>>) -> Result<Vec<Profile
 
 /// A Tauri command receives flat arguments; the three proxy fields are folded
 /// into one `ProxySource` before they reach the store.
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn profile_create(
     state: State<'_, Arc<ProfileService>>,
@@ -738,8 +704,6 @@ pub async fn profile_create(
     proxy_plugin: Option<String>,
     proxy_endpoint: Option<i64>,
     settings: WindowSettings,
-    kernel_kind: Option<KernelKind>,
-    browser_version: Option<String>,
     group_id: Option<String>,
 ) -> Result<ProfileSummary, String> {
     let state = Arc::clone(&state);
@@ -752,8 +716,6 @@ pub async fn profile_create(
                 endpoint: proxy_endpoint,
             },
             settings,
-            kernel_kind.unwrap_or(KernelKind::Base),
-            browser_version,
             group_id,
         )
     })
@@ -839,30 +801,30 @@ mod install_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{KernelKind, ProfileService};
+    use super::ProfileService;
     use crate::core::license_store::LicenseStore;
     use crate::core::profile_store::{PreparedBinary, ProxySource, WindowSettings};
     use crate::core::runtime_paths::RuntimePaths;
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    fn kernel_selection_fixture(
+    fn kernel_fixture(
         plan: Option<&str>,
     ) -> (tempfile::TempDir, ProfileService, std::path::PathBuf) {
         let root = tempfile::tempdir().unwrap();
         let capture = root.path().join("preparation.json");
         let runner = root.path().join("runner.cjs");
+        std::fs::write(root.path().join("latest-version"), "155.0.8059.39").unwrap();
         std::fs::write(
             &runner,
             format!(
                 r#"const fs = require('node:fs');
 const path = require('node:path');
 if (process.argv[2] !== 'prepare') process.exit(42);
-const hasKey = Boolean(process.env.CLOAKBROWSER_LICENSE_KEY);
-const version = process.env.CLOAKBROWSER_VERSION || (hasKey ? '155.0.8059.39' : '145.0.7632.109');
-const binary = path.join(__dirname, hasKey ? 'latest-browser' : 'base-browser');
+const version = fs.readFileSync(path.join(__dirname, 'latest-version'), 'utf8');
+const binary = path.join(__dirname, 'browser-' + version);
 fs.writeFileSync(binary, 'fixture');
-fs.writeFileSync({}, JSON.stringify({{hasKey, version, autoUpdate: process.env.CLOAKBROWSER_AUTO_UPDATE}}));
+fs.writeFileSync({}, JSON.stringify({{hasKey: Boolean(process.env.CLOAKBROWSER_LICENSE_KEY), requestedVersion: process.env.CLOAKBROWSER_VERSION ?? null, autoUpdate: process.env.CLOAKBROWSER_AUTO_UPDATE}}));
 process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 serde_json::to_string(&capture).unwrap(),
             ),
@@ -871,7 +833,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
         let licenses = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
         if let Some(plan) = plan {
             licenses
-                .save_validated("synthetic-selection-key", plan, None)
+                .save_validated("synthetic-kernel-key", plan, None)
                 .unwrap();
         }
         let service = ProfileService::with_runtime(
@@ -889,140 +851,89 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
     }
 
     #[test]
-    fn a_saved_free_activation_does_not_force_new_windows_onto_the_latest_kernel() {
-        let (_root, service, capture) = kernel_selection_fixture(Some("free"));
-        let window = service
-            .create(
-                "Base window".into(),
-                ProxySource::direct(),
-                WindowSettings::default(),
-                KernelKind::Base,
-                None,
-                None,
-            )
-            .unwrap();
-        assert_eq!(window.version, "145.0.7632.109");
-        let preparation: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
-        assert_eq!(preparation["hasKey"], false);
-        assert_eq!(preparation["autoUpdate"], "false");
-        assert!(service.license_store.status().unwrap().configured);
-    }
-
-    #[test]
-    fn base_versions_can_be_selected_with_or_without_a_free_activation() {
-        for plan in [None, Some("free")] {
-            let (_root, service, capture) = kernel_selection_fixture(plan);
+    fn new_windows_always_request_latest_with_the_saved_activation() {
+        for plan in ["free", "pro"] {
+            let (_root, service, capture) = kernel_fixture(Some(plan));
             let window = service
                 .create(
-                    "Pinned base window".into(),
+                    "New window".into(),
                     ProxySource::direct(),
                     WindowSettings::default(),
-                    KernelKind::Base,
-                    Some("145.0.7632.109.2".into()),
                     None,
                 )
                 .unwrap();
+            assert_eq!(window.version, "155.0.8059.39");
             let preparation: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
-            assert_eq!(preparation["hasKey"], false);
-            assert_eq!(preparation["version"], "145.0.7632.109.2");
-            assert_eq!(window.version, "145.0.7632.109.2");
+            assert_eq!(preparation["hasKey"], true);
+            assert_eq!(preparation["autoUpdate"], "true");
+            assert!(preparation["requestedVersion"].is_null());
         }
     }
 
     #[test]
-    fn choosing_latest_uses_activation_without_rebinding_existing_base_windows() {
-        let (root, service, capture) = kernel_selection_fixture(Some("free"));
-        let base = service
+    fn missing_activation_blocks_creation_before_starting_the_adapter() {
+        let (_root, service, capture) = kernel_fixture(None);
+        let error = service
             .create(
-                "Base window".into(),
+                "Unavailable window".into(),
                 ProxySource::direct(),
                 WindowSettings::default(),
-                KernelKind::Base,
-                None,
                 None,
             )
+            .err()
             .unwrap();
-        let original = service.store.get(&base.id).unwrap();
-        let latest = service
-            .create(
-                "Latest window".into(),
-                ProxySource::direct(),
-                WindowSettings::default(),
-                KernelKind::Latest,
-                None,
-                None,
-            )
-            .unwrap();
-        assert_eq!(latest.version, "155.0.8059.39");
-        let preparation: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
-        assert_eq!(preparation["hasKey"], true);
-        assert_eq!(preparation["autoUpdate"], "true");
-        service.license_store.remove().unwrap();
-        let reopened = ProfileService::new(root.path().join("profiles")).unwrap();
-        assert_eq!(reopened.store.get(&base.id).unwrap(), original);
-        assert_eq!(reopened.list().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn latest_requires_activation_and_free_cannot_pin_latest_builds() {
-        for (plan, version) in [(None, None), (Some("free"), Some("155.0.8059.39.1"))] {
-            let (_root, service, capture) = kernel_selection_fixture(plan);
-            let error = service
-                .create(
-                    "Unavailable window".into(),
-                    ProxySource::direct(),
-                    WindowSettings::default(),
-                    KernelKind::Latest,
-                    version.map(str::to_owned),
-                    None,
-                )
-                .err()
-                .unwrap();
-            assert!(error.contains("激活码"));
-            assert!(!capture.exists());
-            assert!(service.list().unwrap().is_empty());
-        }
-    }
-
-    #[test]
-    fn paid_latest_version_pinning_still_uses_the_requested_version() {
-        let (_root, service, capture) = kernel_selection_fixture(Some("pro"));
-        service
-            .create(
-                "Pinned latest window".into(),
-                ProxySource::direct(),
-                WindowSettings::default(),
-                KernelKind::Latest,
-                Some("154.0.1.2.3".into()),
-                None,
-            )
-            .unwrap();
-        let preparation: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
-        assert_eq!(preparation["hasKey"], true);
-        assert_eq!(preparation["version"], "154.0.1.2.3");
-    }
-
-    #[test]
-    fn invalid_base_versions_fail_before_kernel_preparation() {
-        let (_root, service, capture) = kernel_selection_fixture(Some("free"));
-        assert!(
-            service
-                .create(
-                    "Invalid version".into(),
-                    ProxySource::direct(),
-                    WindowSettings::default(),
-                    KernelKind::Base,
-                    Some("145".into()),
-                    None,
-                )
-                .is_err()
-        );
+        assert!(error.contains("激活码"));
         assert!(!capture.exists());
         assert!(service.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn removing_activation_blocks_launch_and_releases_the_reservation() {
+        let (_root, service, capture) = kernel_fixture(Some("free"));
+        let window = service
+            .create(
+                "Window".into(),
+                ProxySource::direct(),
+                WindowSettings::default(),
+                None,
+            )
+            .unwrap();
+        std::fs::remove_file(&capture).unwrap();
+        service.license_store.remove().unwrap();
+        assert!(service.launch(&window.id).unwrap_err().contains("激活码"));
+        assert!(!capture.exists());
+        assert!(!service.list().unwrap()[0].running);
+        let state = service.state.lock().unwrap();
+        assert!(state.scheduler.status(&window.id).is_none());
+        assert!(!state.transfers.contains(&window.id));
+    }
+
+    #[test]
+    fn a_new_release_does_not_rebind_existing_windows_after_restart() {
+        let (root, service, _capture) = kernel_fixture(Some("free"));
+        let first = service
+            .create(
+                "First window".into(),
+                ProxySource::direct(),
+                WindowSettings::default(),
+                None,
+            )
+            .unwrap();
+        let original = service.store.get(&first.id).unwrap();
+        std::fs::write(root.path().join("latest-version"), "156.0.1.2").unwrap();
+        let next = service
+            .create(
+                "Next window".into(),
+                ProxySource::direct(),
+                WindowSettings::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(next.version, "156.0.1.2");
+        let reopened = ProfileService::new(root.path().join("profiles")).unwrap();
+        assert_eq!(reopened.store.get(&first.id).unwrap(), original);
+        assert_eq!(reopened.list().unwrap().len(), 2);
     }
 
     #[test]
@@ -1051,14 +962,14 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 ProxySource::direct(),
                 WindowSettings::default(),
                 PreparedBinary {
-                    version: "145.0.7632.109".into(),
+                    version: "155.0.8059.39".into(),
                     binary_path,
                 },
                 None,
             )
             .unwrap();
         assert_eq!(created.name, "New window");
-        assert_eq!(created.version, "145.0.7632.109");
+        assert_eq!(created.version, "155.0.8059.39");
         assert!(!created.running);
         assert!(created.settings.geoip);
         assert!(
@@ -1082,7 +993,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 ProxySource::plugin("studio.proxy-pool".into(), Some(7)),
                 WindowSettings::default(),
                 PreparedBinary {
-                    version: "145.0.7632.109".into(),
+                    version: "155.0.8059.39".into(),
                     binary_path,
                 },
                 None,
@@ -1135,13 +1046,17 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
             },
         )
         .unwrap();
+        service
+            .license_store
+            .save_validated("synthetic-startup-key", "free", None)
+            .unwrap();
         let created = service
             .create_prepared(
                 "Proxy startup",
                 ProxySource::server("http://127.0.0.1:8080".into()),
                 WindowSettings::default(),
                 PreparedBinary {
-                    version: "145.0.7632.109".into(),
+                    version: "155.0.8059.39".into(),
                     binary_path,
                 },
                 None,
@@ -1166,13 +1081,19 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
     fn creates_launches_stops_and_reloads_a_profile() {
         let root = tempfile::tempdir().unwrap();
         let service = ProfileService::new(root.path().join("profiles")).unwrap();
+        let key = std::env::var("NEXUS_TEST_LICENSE_KEY")
+            .expect("set NEXUS_TEST_LICENSE_KEY for this opt-in integration test");
+        crate::core::license_service::LicenseService::new(
+            service.license_store.clone(),
+            service.license_store.browser_cache_dir(),
+        )
+        .set_key(key)
+        .unwrap();
         service
             .create(
                 "Smoke Profile".into(),
                 ProxySource::direct(),
                 WindowSettings::default(),
-                KernelKind::Base,
-                None,
                 None,
             )
             .unwrap();
@@ -1186,24 +1107,6 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
         assert!(!service.list().unwrap()[0].running);
         let restarted = ProfileService::new(root.path().join("profiles")).unwrap();
         assert_eq!(restarted.list().unwrap()[0].version, version);
-    }
-
-    #[test]
-    fn browser_version_selection_requires_a_full_numeric_version() {
-        assert!(super::valid_browser_version("155.0.1.2"));
-        assert!(super::valid_browser_version("155.0.1.2.3"));
-        assert!(!super::valid_browser_version("latest"));
-        assert!(!super::valid_browser_version("155.0"));
-        assert!(!super::valid_browser_version("155.0.x.2"));
-    }
-
-    #[test]
-    fn exact_browser_version_pinning_requires_a_pro_license() {
-        assert!(super::can_pin_browser_version(Some("pro")));
-        assert!(super::can_pin_browser_version(Some("Pro")));
-        assert!(!super::can_pin_browser_version(Some("free")));
-        assert!(super::can_pin_browser_version(Some("team")));
-        assert!(!super::can_pin_browser_version(None));
     }
 
     #[test]

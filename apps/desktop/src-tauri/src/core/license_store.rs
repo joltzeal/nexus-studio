@@ -92,6 +92,12 @@ impl LicenseStore {
             .map_err(|_| "无法读取 CloakBrowser 授权".to_string())
     }
 
+    pub fn require_key(&self) -> Result<String, String> {
+        self.license_key()?
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| "请先在设置中填写激活码".into())
+    }
+
     pub fn save_validated(
         &self,
         license_key: &str,

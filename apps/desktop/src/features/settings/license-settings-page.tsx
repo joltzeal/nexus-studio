@@ -96,7 +96,7 @@ export function LicenseSettingsPage() {
       <h1 className="page-heading" id="license-heading">
         激活码
       </h1>
-      <p className="page-description">填写激活码后，可在新窗口使用新版内核。</p>
+      <p className="page-description">保存激活码后即可下载内核、创建和打开窗口。</p>
       {!native ? (
         <Alert>
           <AlertTitle>桌面应用专属</AlertTitle>
@@ -116,9 +116,7 @@ export function LicenseSettingsPage() {
                 <p className="text-sm text-muted-foreground">暂时无法读取状态。</p>
               ) : null}
               {!loading && !status?.configured && !statusLoadFailed ? (
-                <p className="mb-3 text-sm text-muted-foreground">
-                  不填写也可使用基础内核；新版内核需要激活码。
-                </p>
+                <p className="mb-3 text-sm text-muted-foreground">请先填写激活码。</p>
               ) : null}
               <form
                 id="cloakbrowser-license-form"

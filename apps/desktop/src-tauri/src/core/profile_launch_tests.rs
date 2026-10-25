@@ -205,7 +205,7 @@ fn pending_proxy_resolution_excludes_install_transfer_edit_and_delete_before_lau
                 ..WindowSettings::default()
             },
             PreparedBinary {
-                version: "145.0.7632.109".into(),
+                version: "155.0.8059.39".into(),
                 binary_path,
             },
             None,
@@ -231,6 +231,10 @@ fn pending_proxy_resolution_excludes_install_transfer_edit_and_delete_before_lau
         )
         .unwrap(),
     );
+    service
+        .license_store
+        .save_validated("synthetic-launch-key", "free", None)
+        .unwrap();
     let user_data = service.store.user_data_dir(&original.id).unwrap();
     fs::create_dir_all(&user_data).unwrap();
     let marker = user_data.join("browser-state");
