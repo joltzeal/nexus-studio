@@ -43,6 +43,8 @@ export interface KernelDownload {
   totalMb: number | null
   attempt: number | null
   version: string | null
+  /** Missing only on older hosts; null requests latest, a string pins a package. */
+  requestedVersion?: string | null
   error: KernelFailure | null
 }
 
@@ -110,7 +112,11 @@ function parseStatus(value: unknown): KernelStatus | null {
   }
   const installed: InstalledKernel[] = []
   for (const entry of value.installed) {
-    if (!isRecord(entry) || !isText(entry.version) || !isText(entry.binaryPath)) {
+    if (
+      !isRecord(entry) ||
+      !isKernelVersion(entry.version) ||
+      !isText(entry.binaryPath)
+    ) {
       return null
     }
     installed.push({
@@ -130,7 +136,8 @@ function parseStatus(value: unknown): KernelStatus | null {
       (!Number.isInteger(download.attempt) ||
         download.attempt < 1 ||
         download.attempt > 3)) ||
-    (download.version !== null && !isText(download.version))
+    (download.version !== null && !isText(download.version)) ||
+    (download.requestedVersion != null && !isKernelVersion(download.requestedVersion))
   ) {
     return null
   }
@@ -148,6 +155,9 @@ function parseStatus(value: unknown): KernelStatus | null {
       totalMb: download.totalMb,
       attempt: download.attempt,
       version: download.version === null ? null : download.version.trim(),
+      ...(download.requestedVersion === undefined
+        ? {}
+        : { requestedVersion: download.requestedVersion as string | null }),
       error,
     },
   }
@@ -213,10 +223,20 @@ export async function getKernelStatus(refresh = false): Promise<KernelStatus> {
   }
 }
 
-export async function downloadKernel(): Promise<string> {
+export async function downloadKernel(version?: string | null): Promise<string> {
   requireDesktop()
+  if (version != null && !isKernelVersion(version)) {
+    throw new KernelOperationError({
+      code: 'invalid_version',
+      message: '请输入由 4–5 段数字组成的完整包版本，最多 48 个字符。',
+      retryable: false,
+    })
+  }
   try {
-    const result = await invoke<unknown>('kernel_download')
+    const result =
+      version == null
+        ? await invoke<unknown>('kernel_download')
+        : await invoke<unknown>('kernel_download', { version })
     if (!isText(result)) throw invalidResponse()
     return result.trim()
   } catch (cause) {

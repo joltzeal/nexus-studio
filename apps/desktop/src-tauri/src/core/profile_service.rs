@@ -57,6 +57,7 @@ pub struct ProfileSummary {
     id: String,
     name: String,
     version: String,
+    kernel_version: Option<String>,
     proxy: Option<String>,
     proxy_plugin: Option<String>,
     proxy_endpoint: Option<i64>,
@@ -168,6 +169,7 @@ impl ProfileService {
             .into_iter()
             .map(|record| {
                 Ok(ProfileSummary {
+                    kernel_version: self.kernels.package_version(&record.binary_path),
                     group_id: self.store.group_id(&record.id).map_err(error_message)?,
                     running: state.scheduler.status(&record.id).is_some_and(|status| {
                         status.phase == Phase::Running || status.phase == Phase::Stopping
@@ -192,8 +194,12 @@ impl ProfileService {
         proxy: ProxySource,
         settings: WindowSettings,
         group_id: Option<String>,
+        kernel_version: Option<String>,
     ) -> Result<ProfileSummary, String> {
-        let binary = self.kernels.prepare(None)?;
+        let binary = match kernel_version {
+            Some(version) => self.kernels.exact_binary(&version)?,
+            None => self.kernels.prepare(None)?,
+        };
         self.create_prepared(&name, proxy, settings, binary, group_id.as_deref())
     }
 
@@ -223,6 +229,7 @@ impl ProfileService {
             .restore_profile(record.binding.clone())
             .map_err(|_| "Profile 绑定记录冲突".to_string())?;
         Ok(ProfileSummary {
+            kernel_version: self.kernels.package_version(&record.binary_path),
             id: record.id,
             name: record.name,
             version: record.binding.channel_version,
@@ -687,12 +694,13 @@ pub async fn kernel_check_latest(
 #[tauri::command]
 pub async fn kernel_download(
     state: State<'_, Arc<ProfileService>>,
+    version: Option<String>,
 ) -> Result<String, KernelFailure> {
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
         state
             .kernels
-            .download_latest()
+            .download(version.as_deref())
             .map(|binary| binary.version)
             .map_err(|message| state.kernels.failure(message))
     })
@@ -707,6 +715,7 @@ pub fn profile_list(state: State<'_, Arc<ProfileService>>) -> Result<Vec<Profile
 
 /// A Tauri command receives flat arguments; the three proxy fields are folded
 /// into one `ProxySource` before they reach the store.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn profile_create(
     state: State<'_, Arc<ProfileService>>,
@@ -716,6 +725,7 @@ pub async fn profile_create(
     proxy_endpoint: Option<i64>,
     settings: WindowSettings,
     group_id: Option<String>,
+    kernel_version: Option<String>,
 ) -> Result<ProfileSummary, String> {
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
@@ -728,6 +738,7 @@ pub async fn profile_create(
             },
             settings,
             group_id,
+            kernel_version,
         )
     })
     .await
@@ -825,18 +836,33 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let capture = root.path().join("preparation.json");
         let runner = root.path().join("runner.cjs");
-        std::fs::write(root.path().join("latest-version"), "155.0.8059.39").unwrap();
+        std::fs::write(root.path().join("latest-version"), "155.0.8059.39.2").unwrap();
         std::fs::write(
             &runner,
             format!(
                 r#"const fs = require('node:fs');
 const path = require('node:path');
-if (process.argv[2] !== 'prepare') process.exit(42);
-const version = fs.readFileSync(path.join(__dirname, 'latest-version'), 'utf8');
-const binary = path.join(__dirname, 'browser-' + version);
-fs.writeFileSync(binary, 'fixture');
+const action = process.argv[2];
+const cache = process.env.CLOAKBROWSER_CACHE_DIR;
+const describe = full => ({{version:full.split('.').slice(0,4).join('.'),binary_path:path.join(cache,'chromium-'+full+'-pro','browser')}});
+if (action === 'inventory') {{
+  const installed = fs.existsSync(cache) ? fs.readdirSync(cache).map(name=>{{const full=name.slice(9,-4);return {{version:full,binaryPath:describe(full).binary_path}}}}) : [];
+  process.stdout.write(JSON.stringify({{cacheDir:cache,platform:'test-platform',installed}}));
+  process.exit(0);
+}}
+if (action === 'version') {{
+  const full=path.basename(path.dirname(process.argv[3])).slice(9,-4);
+  process.stdout.write(JSON.stringify(describe(full)));
+  process.exit(0);
+}}
+if (action !== 'prepare') process.exit(42);
+const override=path.join(__dirname,'substitute-version');
+const full = fs.existsSync(override) ? fs.readFileSync(override,'utf8') : (process.env.CLOAKBROWSER_VERSION ?? fs.readFileSync(path.join(__dirname, 'latest-version'), 'utf8'));
+const binary = describe(full);
+fs.mkdirSync(path.dirname(binary.binary_path),{{recursive:true}});
+fs.writeFileSync(binary.binary_path, 'fixture');
 fs.writeFileSync({}, JSON.stringify({{hasKey: Boolean(process.env.CLOAKBROWSER_LICENSE_KEY), requestedVersion: process.env.CLOAKBROWSER_VERSION ?? null, autoUpdate: process.env.CLOAKBROWSER_AUTO_UPDATE}}));
-process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
+process.stdout.write(JSON.stringify(binary));"#,
                 serde_json::to_string(&capture).unwrap(),
             ),
         )
@@ -862,7 +888,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
     }
 
     #[test]
-    fn new_windows_always_request_latest_with_the_saved_activation() {
+    fn new_windows_default_to_latest_with_the_saved_activation() {
         for plan in ["free", "pro"] {
             let (_root, service, capture) = kernel_fixture(Some(plan));
             let window = service
@@ -871,9 +897,11 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                     ProxySource::direct(),
                     WindowSettings::default(),
                     None,
+                    None,
                 )
                 .unwrap();
             assert_eq!(window.version, "155.0.8059.39");
+            assert_eq!(window.kernel_version.as_deref(), Some("155.0.8059.39.2"));
             let preparation: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
             assert_eq!(preparation["hasKey"], true);
@@ -891,11 +919,113 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 ProxySource::direct(),
                 WindowSettings::default(),
                 None,
+                None,
             )
             .err()
             .unwrap();
         assert!(error.contains("激活码"));
         assert!(!capture.exists());
+        assert!(service.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_selected_cached_revision_stays_bound_through_edit_and_restart() {
+        let (root, service, capture) = kernel_fixture(Some("pro"));
+        let selected = "154.0.8000.10.4";
+        service.kernels.prepare(Some(selected)).unwrap();
+        std::fs::remove_file(&capture).unwrap();
+        let window = service
+            .create(
+                "Pinned window".into(),
+                ProxySource::direct(),
+                WindowSettings::default(),
+                None,
+                Some(selected.into()),
+            )
+            .unwrap();
+        assert!(!capture.exists());
+        assert_eq!(window.kernel_version.as_deref(), Some(selected));
+        assert_eq!(window.version, "154.0.8000.10");
+        let original = service.store.get(&window.id).unwrap();
+        let mut settings = original.settings.clone();
+        settings.note = "Changed note".into();
+        service
+            .update(
+                &window.id,
+                window.name,
+                ProxySource::direct(),
+                settings,
+                None,
+            )
+            .unwrap();
+        std::fs::write(root.path().join("latest-version"), "156.0.1.2.1").unwrap();
+        let reopened = ProfileService::new(root.path().join("profiles")).unwrap();
+        let saved = reopened.store.get(&window.id).unwrap();
+        assert_eq!(saved.binary_path, original.binary_path);
+        assert_eq!(saved.binding, original.binding);
+        assert_eq!(
+            saved.settings.fingerprint_seed,
+            original.settings.fingerprint_seed
+        );
+        assert_eq!(
+            reopened.list().unwrap()[0].kernel_version.as_deref(),
+            Some(selected)
+        );
+    }
+
+    #[test]
+    fn missing_selected_revision_is_prepared_exactly_before_creating_the_profile() {
+        let (_root, service, capture) = kernel_fixture(Some("pro"));
+        let window = service
+            .create(
+                "Selected window".into(),
+                ProxySource::direct(),
+                WindowSettings::default(),
+                None,
+                Some("154.0.8000.10.4".into()),
+            )
+            .unwrap();
+        let preparation: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(capture).unwrap()).unwrap();
+        assert_eq!(preparation["requestedVersion"], "154.0.8000.10.4");
+        assert_eq!(preparation["hasKey"], true);
+        assert_eq!(window.kernel_version.as_deref(), Some("154.0.8000.10.4"));
+        assert_eq!(service.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invalid_or_substituted_versions_never_create_a_profile() {
+        let (root, service, capture) = kernel_fixture(Some("pro"));
+        for version in ["", "latest", "155", "155.0.1.2 ", "../155.0.1.2"] {
+            assert!(
+                service
+                    .create(
+                        "Invalid window".into(),
+                        ProxySource::direct(),
+                        WindowSettings::default(),
+                        None,
+                        Some(version.into()),
+                    )
+                    .err()
+                    .unwrap()
+                    .contains("完整")
+            );
+        }
+        assert!(!capture.exists());
+        std::fs::write(root.path().join("substitute-version"), "155.0.8059.39.2").unwrap();
+        assert!(
+            service
+                .create(
+                    "Wrong revision".into(),
+                    ProxySource::direct(),
+                    WindowSettings::default(),
+                    None,
+                    Some("155.0.8059.39.1".into()),
+                )
+                .err()
+                .unwrap()
+                .contains("精确内核版本")
+        );
         assert!(service.list().unwrap().is_empty());
     }
 
@@ -907,6 +1037,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 "Window".into(),
                 ProxySource::direct(),
                 WindowSettings::default(),
+                None,
                 None,
             )
             .unwrap();
@@ -929,6 +1060,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 ProxySource::direct(),
                 WindowSettings::default(),
                 None,
+                None,
             )
             .unwrap();
         let original = service.store.get(&first.id).unwrap();
@@ -938,6 +1070,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 "Next window".into(),
                 ProxySource::direct(),
                 WindowSettings::default(),
+                None,
                 None,
             )
             .unwrap();
@@ -1105,6 +1238,7 @@ process.stdout.write(JSON.stringify({{version, binary_path: binary}}));"#,
                 "Smoke Profile".into(),
                 ProxySource::direct(),
                 WindowSettings::default(),
+                None,
                 None,
             )
             .unwrap();

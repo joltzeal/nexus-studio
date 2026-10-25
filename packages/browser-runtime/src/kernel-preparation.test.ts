@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { ensureBinary } from 'cloakbrowser'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { downloadLatestBinary, prepareBinary } from './profile-runtime.js'
+import { downloadBinary, downloadLatestBinary, prepareBinary } from './profile-runtime.js'
 import { kernelPlatform } from './kernel-cache.js'
+import { kernelFailure } from './kernel-install.js'
 
 vi.mock('cloakbrowser', () => ({
   ensureBinary: vi.fn(),
@@ -43,6 +44,78 @@ afterEach(async () => {
 })
 
 describe('activated kernel preparation', () => {
+  it.each([
+    '',
+    '155',
+    'latest',
+    '155.0.1',
+    '155.0.1.2 ',
+    '../155.0.1.2',
+    '9'.repeat(49) + '.0.1.2',
+  ])('rejects an invalid explicit version before any download (%j)', async (version) => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    const error = await downloadBinary('synthetic-key', version).catch(
+      (cause: unknown) => cause,
+    )
+    expect(kernelFailure(error)).toMatchObject({ code: 'VERSION', retryable: false })
+    expect(ensureBinary).not.toHaveBeenCalled()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('downloads an exact revision without querying latest or replacing another installed version', async () => {
+    const older = binary.replace('155.0.8059.39.2', '154.0.8000.10.4')
+    await mkdir(dirname(older), { recursive: true })
+    await writeFile(
+      older,
+      `#!${process.execPath}\nconsole.log('Chromium 154.0.8000.10')\n`,
+      {
+        mode: 0o700,
+      },
+    )
+    vi.mocked(ensureBinary).mockResolvedValue(older)
+    const fetcher = vi.fn().mockRejectedValue(new Error('Latest endpoint unavailable'))
+    vi.stubGlobal('fetch', fetcher)
+    await expect(
+      downloadBinary('synthetic-paid-key', '154.0.8000.10.4'),
+    ).resolves.toEqual({
+      binary_path: older,
+      version: '154.0.8000.10',
+    })
+    expect(ensureBinary).toHaveBeenCalledExactlyOnceWith(
+      'synthetic-paid-key',
+      '154.0.8000.10.4',
+      'stable',
+    )
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(await readdir(root)).toContain('chromium-155.0.8059.39.2-pro')
+    expect(await readdir(root)).toContain('chromium-154.0.8000.10.4-pro')
+  })
+
+  it('does not fall back to latest when an exact revision is unavailable', async () => {
+    vi.mocked(ensureBinary).mockRejectedValue(new Error('Download failed: HTTP 404'))
+    const error = await downloadBinary('synthetic-paid-key', '154.0.8000.10.4').catch(
+      (cause: unknown) => cause,
+    )
+    expect(kernelFailure(error)).toMatchObject({ code: 'NOT_FOUND', retryable: false })
+    expect(ensureBinary).toHaveBeenCalledExactlyOnceWith(
+      'synthetic-paid-key',
+      '154.0.8000.10.4',
+      'stable',
+    )
+  })
+
+  it('rejects a binary whose display version does not belong to its package', async () => {
+    await writeFile(
+      binary,
+      `#!${process.execPath}\nconsole.log('Chromium 154.0.8000.10')\n`,
+    )
+    await expect(downloadBinary('synthetic-key', '155.0.8059.39.2')).rejects.toThrow(
+      'PROFILE_ENGINE_MISMATCH',
+    )
+    expect(ensureBinary).toHaveBeenCalledTimes(1)
+  })
+
   it('does not check or download without activation', async () => {
     const fetcher = vi.fn()
     vi.stubGlobal('fetch', fetcher)

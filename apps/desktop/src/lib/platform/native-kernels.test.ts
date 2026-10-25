@@ -5,6 +5,7 @@ import {
   downloadKernel,
   getKernelStatus,
   KernelOperationError,
+  isKernelVersion,
   nativeKernelsAvailable,
 } from './native-kernels'
 
@@ -42,6 +43,70 @@ beforeEach(() => {
 })
 
 describe('native kernel adapter', () => {
+  it.each(['155.0.8059.39', '155.0.8059.39.2', `${'1'.repeat(42)}.0.0.0`])(
+    'downloads the exact full package %s and keeps its display version distinct',
+    async (version) => {
+      vi.mocked(invoke).mockResolvedValue('155.0.8059.39')
+      await expect(downloadKernel(version)).resolves.toBe('155.0.8059.39')
+      expect(invoke).toHaveBeenCalledExactlyOnceWith('kernel_download', { version })
+      expect(isKernelVersion(version)).toBe(true)
+    },
+  )
+
+  it.each([
+    '',
+    'latest',
+    '155.0.8059',
+    '155.0.8059.39.2.1',
+    ' 155.0.8059.39',
+    '155.0.8059.39\n',
+    '155.0.8059.39-beta',
+    '/local/browser',
+    `${'1'.repeat(43)}.0.0.0`,
+  ])('refuses malformed pins before invoking native code: %j', async (version) => {
+    expect(isKernelVersion(version)).toBe(false)
+    await expect(downloadKernel(version)).rejects.toMatchObject({
+      code: 'invalid_version',
+      retryable: false,
+    })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('keeps null equivalent to an omitted latest download target', async () => {
+    vi.mocked(invoke).mockResolvedValue('155.0.8059.39')
+    await downloadKernel(null)
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('kernel_download')
+  })
+
+  it.each([null, '155.0.8059.39.2'])(
+    'preserves requestedVersion %j separately from display version on failed jobs',
+    async (requestedVersion) => {
+      const response = {
+        ...status(),
+        download: {
+          ...status().download,
+          phase: 'failed',
+          version: '155.0.8059.39',
+          requestedVersion,
+        },
+      }
+      vi.mocked(invoke).mockResolvedValue(response)
+      await expect(getKernelStatus()).resolves.toEqual(response)
+    },
+  )
+
+  it.each(['latest', '155.0', '/private/browser', 123, '155.0.8059.39\n'])(
+    'rejects an invalid requested package target %j',
+    async (requestedVersion) => {
+      vi.mocked(invoke).mockResolvedValue({
+        ...status(),
+        download: { ...status().download, requestedVersion },
+      })
+      await expect(getKernelStatus()).rejects.toMatchObject({
+        code: 'invalid_response',
+      })
+    },
+  )
   it('checks the server separately from local inventory without sending an activation code', async () => {
     const release = {
       version: '155.0.8059.39.2',
@@ -155,6 +220,7 @@ describe('native kernel adapter', () => {
     { ...status(), activationConfigured: 'true' },
     { ...status(), installed: [{ version: null, binaryPath: '/bin' }] },
     { ...status(), installed: [{ version: '155.0.1.2' }] },
+    { ...status(), installed: [{ version: 'latest', binaryPath: '/bin' }] },
     { ...status(), download: { ...status().download, phase: 'complete' } },
     { ...status(), download: { ...status().download, percent: 101 } },
     { ...status(), download: { ...status().download, percent: -1 } },

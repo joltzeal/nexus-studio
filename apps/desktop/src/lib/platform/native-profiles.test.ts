@@ -5,6 +5,7 @@ import {
   listNativeProfiles,
   orderProfilesNewestFirst,
   updateNativeProfileNote,
+  updateNativeProfile,
   type NativeProfile,
   type WindowSettings,
 } from './native-profiles'
@@ -124,6 +125,53 @@ describe('inline window notes', () => {
 })
 
 describe('window creation contract', () => {
+  it('forwards an exact package after groupId without replacing the display version', async () => {
+    const created = {
+      ...profile('bound', 30),
+      version: '155.0.8059.39',
+      kernelVersion: '155.0.8059.39.2',
+    }
+    vi.mocked(invoke).mockResolvedValue(created)
+    await expect(
+      createNativeProfile(
+        'Window',
+        null,
+        null,
+        null,
+        settings,
+        'group-1',
+        created.kernelVersion,
+      ),
+    ).resolves.toEqual(created)
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('profile_create', {
+      name: 'Window',
+      proxy: null,
+      proxyPlugin: null,
+      proxyEndpoint: null,
+      settings,
+      groupId: 'group-1',
+      kernelVersion: '155.0.8059.39.2',
+    })
+  })
+
+  it.each(['latest', '155.0', '/local/browser', '155.0.8059.39\n'])(
+    'rejects malformed create pins %j before native invocation',
+    async (version) => {
+      await expect(
+        createNativeProfile('Window', null, null, null, settings, null, version),
+      ).rejects.toThrow('完整内核包版本')
+      expect(invoke).not.toHaveBeenCalled()
+    },
+  )
+
+  it('does not add a kernel version to updates or explicit latest creation', async () => {
+    await createNativeProfile('Window', null, null, null, settings, null, null)
+    await updateNativeProfile('bound', 'Window', null, null, null, settings, null)
+    for (const [, payload] of vi.mocked(invoke).mock.calls) {
+      expect(payload).not.toHaveProperty('kernelVersion')
+    }
+    expect(vi.mocked(invoke).mock.calls[1]![0]).toBe('profile_update')
+  })
   it('leaves kernel resolution to the backend', async () => {
     await createNativeProfile('Window', null, null, null, settings)
     expect(invoke).toHaveBeenCalledExactlyOnceWith('profile_create', {

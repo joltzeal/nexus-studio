@@ -91,10 +91,27 @@ export interface ContactPatch {
   smsOtpUrl?: string
 }
 
+const contactUpdates = new Map<string, Promise<Account>>()
+
 export async function updateContact(
   accountId: string,
   patch: ContactPatch,
 ): Promise<Account> {
+  // Several window rows can edit one account. Read after its earlier contact
+  // write settles so an in-flight number assignment cannot undo a later unlink.
+  const previous = contactUpdates.get(accountId)
+  const next = previous
+    ? previous.catch(() => undefined).then(() => writeContact(accountId, patch))
+    : writeContact(accountId, patch)
+  contactUpdates.set(accountId, next)
+  try {
+    return await next
+  } finally {
+    if (contactUpdates.get(accountId) === next) contactUpdates.delete(accountId)
+  }
+}
+
+async function writeContact(accountId: string, patch: ContactPatch): Promise<Account> {
   const result = await call<AccountList>('vinted.accounts.list')
   const target = result.items.find((account) => account.id === accountId)
   if (target === undefined) throw new Error('账号不存在或已被删除')

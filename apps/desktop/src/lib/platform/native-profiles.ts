@@ -1,9 +1,12 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
+import { isKernelVersion } from './native-kernels'
 
 export interface NativeProfile {
   id: string
   name: string
   version: string
+  /** Full package version from the bound path, distinct from Chrome's display version. */
+  kernelVersion?: string | null
   proxy: string | null
   proxyPlugin: string | null
   /** One row of the proxy plugin's inventory; null follows its default. */
@@ -43,14 +46,18 @@ export async function listNativeProfiles(): Promise<NativeProfile[]> {
   return orderProfilesNewestFirst(await invoke<NativeProfile[]>('profile_list'))
 }
 
-export function createNativeProfile(
+export async function createNativeProfile(
   name: string,
   proxy: string | null,
   proxyPlugin: string | null,
   proxyEndpoint: number | null,
   settings: WindowSettings,
   groupId?: string | null,
+  kernelVersion?: string | null,
 ): Promise<NativeProfile> {
+  if (kernelVersion != null && !isKernelVersion(kernelVersion)) {
+    throw new Error('请选择有效的完整内核包版本。')
+  }
   return invoke<NativeProfile>('profile_create', {
     name,
     proxy,
@@ -58,6 +65,7 @@ export function createNativeProfile(
     proxyEndpoint,
     settings,
     groupId: groupId ?? null,
+    ...(kernelVersion == null ? {} : { kernelVersion }),
   })
 }
 

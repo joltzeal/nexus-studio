@@ -4,6 +4,7 @@ import {
   type WindowSettings,
 } from '@/lib/platform/native-profiles'
 import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
+import { isKernelVersion } from '@/lib/platform/native-kernels'
 import type { WindowProxyRef } from './window-proxy'
 
 export const MAX_BATCH_WINDOWS = 100
@@ -21,6 +22,7 @@ export interface WindowBatchConfig {
   proxy: WindowProxyRef
   settings: WindowSettings
   groupId: string | null
+  kernelVersion?: string | null
 }
 
 export type BatchItemStatus = 'pending' | 'creating' | 'binding' | 'complete' | 'failed'
@@ -46,6 +48,7 @@ export interface WindowBatchPorts {
     proxyEndpoint: number | null,
     settings: WindowSettings,
     groupId: string | null,
+    kernelVersion?: string | null,
   ) => Promise<NativeProfile>
   bindAccount: (
     accountId: string,
@@ -101,6 +104,9 @@ export function planWindowBatch(
   }
   const prefix = config.namePrefix.trim()
   if (Array.from(prefix).length > 36) throw new Error('名称前缀最多 36 个字符。')
+  if (config.kernelVersion != null && !isKernelVersion(config.kernelVersion)) {
+    throw new Error('请选择有效的完整内核包版本。')
+  }
   const names = new Set(existing.map((profile) => profile.name.trim().toLowerCase()))
   const seeds = new Set(existing.map((profile) => profile.settings.fingerprintSeed))
   return Array.from({ length: config.count }, (_, index) => {
@@ -144,6 +150,7 @@ export class WindowBatchJob {
   private rows: WindowBatchItem[]
   private active: Promise<void> | null = null
   private stopRequested = false
+  private resolvedKernelVersion: string | null
 
   constructor(
     config: WindowBatchConfig,
@@ -160,6 +167,7 @@ export class WindowBatchJob {
         : {}),
     }
     this.rows = planWindowBatch(this.config, existing, randomSeed)
+    this.resolvedKernelVersion = this.config.kernelVersion ?? null
   }
 
   get items(): readonly WindowBatchItem[] {
@@ -243,6 +251,9 @@ export class WindowBatchJob {
               proxy.proxyEndpoint,
               { ...settings, fingerprintSeed: item.seed },
               groupId,
+              ...(this.resolvedKernelVersion === null
+                ? []
+                : [this.resolvedKernelVersion]),
             )
           } catch (cause) {
             let recovered: NativeProfile | null
@@ -258,6 +269,14 @@ export class WindowBatchJob {
         }
         const profile = item.profile
         if (!profile) throw new Error('窗口创建结果缺失，请重试核对。')
+        // Freeze only the package version reported by the bound profile. Chrome's
+        // display version can omit a revision and must never be used for pinning.
+        if (
+          this.resolvedKernelVersion === null &&
+          isKernelVersion(profile.kernelVersion)
+        ) {
+          this.resolvedKernelVersion = profile.kernelVersion
+        }
         const account = item.account
         if (account) {
           item = this.patch(item.key, { status: 'binding' }, onChange)

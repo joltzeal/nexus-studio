@@ -15,8 +15,8 @@ const reportProgress = (progress: KernelProgress): void => {
   process.stderr.write(`NEXUS_KERNEL_PROGRESS ${JSON.stringify(progress)}\n`)
 }
 
-async function prepare(latest: boolean): Promise<void> {
-  const { prepareBinary, downloadLatestBinary } = await import('./profile-runtime.js')
+async function prepare(download: boolean): Promise<void> {
+  const { prepareBinary, downloadBinary } = await import('./profile-runtime.js')
   // The SDK reports observed bytes and stages on stderr, rather than a progress API.
   const log = console.error
   console.error = (...args: unknown[]) => {
@@ -27,8 +27,12 @@ async function prepare(latest: boolean): Promise<void> {
     }
   }
   try {
-    const binary = latest
-      ? await downloadLatestBinary(process.env.CLOAKBROWSER_LICENSE_KEY, reportProgress)
+    const binary = download
+      ? await downloadBinary(
+          process.env.CLOAKBROWSER_LICENSE_KEY,
+          process.env.CLOAKBROWSER_VERSION,
+          reportProgress,
+        )
       : await prepareBinary(
           process.env.CLOAKBROWSER_LICENSE_KEY,
           process.env.CLOAKBROWSER_VERSION,

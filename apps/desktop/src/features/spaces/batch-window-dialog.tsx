@@ -173,6 +173,7 @@ export function BatchWindowDialog({
     proxyEndpoint,
     settings,
     groupId,
+    kernelVersion,
   ) => {
     if (running.current || job.current) return
     const confirmed = new Set(
@@ -201,6 +202,7 @@ export function BatchWindowDialog({
         proxy: { proxy, proxyPlugin, proxyEndpoint },
         settings,
         groupId: groupId ?? null,
+        kernelVersion: kernelVersion ?? null,
       },
       profiles,
       {

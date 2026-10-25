@@ -13,6 +13,14 @@ import {
 } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
   Table,
   TableBody,
   TableCell,
@@ -24,6 +32,7 @@ import {
   downloadKernel,
   checkLatestKernel,
   getKernelStatus,
+  isKernelVersion,
   KernelOperationError,
   nativeKernelsAvailable,
   type KernelFailure,
@@ -67,13 +76,14 @@ function useKernelSettings(native: boolean) {
   const [pending, setPending] = useState(false)
   const [statusError, setStatusError] = useState<KernelFailure | null>(null)
   const [downloadError, setDownloadError] = useState<KernelFailure | null>(null)
+  const [downloadTarget, setDownloadTarget] = useState<string | null | undefined>()
   const [completed, setCompleted] = useState<string | null>(null)
   const [release, setRelease] = useState<KernelRelease | null>(null)
   const [checking, setChecking] = useState(native)
   const [checkError, setCheckError] = useState<KernelFailure | null>(null)
   const actions = useRef<{
     refresh: () => void
-    download: () => void
+    download: (version: string | null) => void
     check: () => void
   } | null>(null)
 
@@ -115,6 +125,7 @@ function useKernelSettings(native: boolean) {
         return
       }
       reading = true
+      const readingOwnDownload = downloading
       void getKernelStatus(refresh)
         .then(
           (result) => {
@@ -122,6 +133,12 @@ function useKernelSettings(native: boolean) {
             latest = result
             setStatus(result)
             setStatusError(null)
+            if (!readingOwnDownload && !downloading && isActive(result.download.phase)) {
+              // A job started elsewhere supersedes the previous local result.
+              setDownloadError(null)
+              setDownloadTarget(undefined)
+              setCompleted(null)
+            }
           },
           (cause: unknown) => {
             if (mounted) setStatusError(failure(cause))
@@ -146,7 +163,7 @@ function useKernelSettings(native: boolean) {
         })
     }
 
-    async function download() {
+    async function download(target: string | null) {
       if (
         !mounted ||
         downloading ||
@@ -160,12 +177,19 @@ function useKernelSettings(native: boolean) {
       downloading = true
       setPending(true)
       setDownloadError(null)
+      setDownloadTarget(target)
       setCompleted(null)
-      const command = downloadKernel()
+      const command = target === null ? downloadKernel() : downloadKernel(target)
       read()
       try {
         const version = await command
-        if (mounted) setCompleted(`内核 ${version} 已下载。`)
+        if (mounted) {
+          setCompleted(
+            target === null
+              ? `内核 ${version} 已下载。`
+              : `内核包 ${target} 已下载（Chrome ${version}）。`,
+          )
+        }
       } catch (cause) {
         if (mounted) setDownloadError(failure(cause))
       } finally {
@@ -180,7 +204,7 @@ function useKernelSettings(native: boolean) {
 
     actions.current = {
       refresh: () => read(true),
-      download: () => void download(),
+      download: (version) => void download(version),
       check: () => void check(),
     }
     read()
@@ -199,12 +223,13 @@ function useKernelSettings(native: boolean) {
     pending,
     statusError,
     downloadError,
+    downloadTarget,
     completed,
     release,
     checking,
     checkError,
     refresh: () => actions.current?.refresh(),
-    download: () => actions.current?.download(),
+    download: (version: string | null = null) => actions.current?.download(version),
     check: () => actions.current?.check(),
   }
 }
@@ -212,6 +237,8 @@ function useKernelSettings(native: boolean) {
 export function KernelSettingsPage() {
   const native = nativeKernelsAvailable()
   const view = useKernelSettings(native)
+  const [targetVersion, setTargetVersion] = useState('')
+  const [versionError, setVersionError] = useState<string | null>(null)
   const { status, pending } = view
   const download = status?.download
   const busy = view.loading || view.refreshing || pending || isActive(download?.phase)
@@ -221,13 +248,16 @@ export function KernelSettingsPage() {
       : kernelAvailability(view.release, status)
   const failed =
     view.downloadError ??
-    (!pending && download?.phase === 'failed'
+    (!pending && !view.completed && download?.phase === 'failed'
       ? (download.error ?? {
           code: 'download_failed',
           message: '内核下载失败，请重试。',
           retryable: true,
         })
       : null)
+  const retryTarget = view.downloadError
+    ? view.downloadTarget
+    : download?.requestedVersion
   const showProgress =
     download && !view.downloadError && (!pending || isActive(download.phase))
   const progress = showProgress
@@ -346,13 +376,65 @@ export function KernelSettingsPage() {
                     variant="outline"
                     disabled={busy || view.checking || !status?.activationConfigured}
                     aria-describedby="latest-kernel-description"
-                    onClick={view.download}
+                    onClick={() => view.download()}
                   >
                     <Download data-icon="inline-start" />
                     下载最新内核
                   </Button>
                 </div>
               </div>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  const target = targetVersion.trim()
+                  setTargetVersion(target)
+                  if (!isKernelVersion(target)) {
+                    setVersionError(
+                      '请输入由 4–5 段数字组成的完整包版本，最多 48 个字符。',
+                    )
+                    return
+                  }
+                  setVersionError(null)
+                  view.download(target)
+                }}
+              >
+                <FieldGroup>
+                  <Field data-invalid={!!versionError}>
+                    <FieldLabel htmlFor="kernel-download-version">
+                      下载指定版本
+                    </FieldLabel>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        id="kernel-download-version"
+                        className="min-w-0 flex-1"
+                        value={targetVersion}
+                        disabled={busy || view.checking}
+                        placeholder="输入完整包版本"
+                        aria-invalid={!!versionError}
+                        aria-describedby="kernel-download-version-description"
+                        onChange={(event) => {
+                          setTargetVersion(event.target.value)
+                          setVersionError(null)
+                        }}
+                      />
+                      <Button
+                        type="submit"
+                        variant="outline"
+                        disabled={busy || view.checking || !status?.activationConfigured}
+                      >
+                        <Download data-icon="inline-start" />
+                        下载指定版本
+                      </Button>
+                    </div>
+                    <FieldDescription id="kernel-download-version-description">
+                      输入完整包版本；需要相应付费计划，且该版本仍可下载。
+                    </FieldDescription>
+                    {versionError ? (
+                      <FieldError role="alert">{versionError}</FieldError>
+                    ) : null}
+                  </Field>
+                </FieldGroup>
+              </form>
               {view.checkError ? (
                 <Alert variant="destructive">
                   <AlertTitle>检查更新失败</AlertTitle>
@@ -360,6 +442,11 @@ export function KernelSettingsPage() {
                 </Alert>
               ) : null}
               <div role="status" aria-live="polite" aria-atomic="true">
+                {pending && view.downloadTarget !== undefined ? (
+                  <p className="m-0 text-xs text-muted-foreground">
+                    下载目标：{view.downloadTarget ?? '最新稳定版'}
+                  </p>
+                ) : null}
                 <p className="m-0">
                   {(isActive(download?.phase) ? null : view.completed) ??
                     (view.loading ? '正在读取内核状态…' : phase)}
@@ -370,17 +457,27 @@ export function KernelSettingsPage() {
               </div>
               {failed ? (
                 <Alert variant="destructive">
-                  <AlertTitle>下载失败</AlertTitle>
+                  <AlertTitle>
+                    {retryTarget ? `内核包 ${retryTarget} 下载失败` : '下载失败'}
+                  </AlertTitle>
                   <AlertDescription className="flex flex-col items-start gap-2">
                     <span>{failed.message}</span>
-                    {failed.retryable ? (
+                    {failed.retryable && retryTarget !== undefined ? (
                       <Button
                         variant="outline"
                         disabled={busy || view.checking || !status?.activationConfigured}
-                        onClick={view.download}
+                        onClick={() => {
+                          if (retryTarget !== null) {
+                            setTargetVersion(retryTarget)
+                            setVersionError(null)
+                          }
+                          view.download(retryTarget)
+                        }}
                       >
                         重试下载
                       </Button>
+                    ) : !view.downloadError ? (
+                      <span>请重新选择下载最新内核，或填写指定的完整包版本后下载。</span>
                     ) : null}
                   </AlertDescription>
                 </Alert>

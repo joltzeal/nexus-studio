@@ -12,6 +12,33 @@ use std::time::{Duration, Instant};
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 const PROGRESS_PREFIX: &str = "NEXUS_KERNEL_PROGRESS ";
 const ERROR_PREFIX: &str = "NEXUS_KERNEL_ERROR ";
+const INVALID_KERNEL_VERSION: &str = "请填写完整的内核版本号，包含 4 至 5 段数字";
+
+fn valid_kernel_version(version: &str) -> bool {
+    version.len() <= 48
+        && (4..=5).contains(&version.split('.').count())
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn validate_kernel_version(version: &str) -> Result<(), String> {
+    if valid_kernel_version(version) {
+        Ok(())
+    } else {
+        Err(INVALID_KERNEL_VERSION.into())
+    }
+}
+
+fn display_matches_package(package: &str, display: &str) -> bool {
+    valid_kernel_version(package)
+        && valid_kernel_version(display)
+        && (package == display
+            || (display.split('.').count() == 4
+                && package
+                    .strip_prefix(display)
+                    .is_some_and(|tail| tail.starts_with('.'))))
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +104,7 @@ pub struct KernelJob {
     total_mb: Option<f64>,
     attempt: Option<u8>,
     version: Option<String>,
+    requested_version: Option<String>,
     error: Option<KernelFailure>,
 }
 
@@ -143,6 +171,16 @@ pub struct KernelService {
 }
 
 impl KernelService {
+    pub(crate) fn package_version(&self, binary_path: &Path) -> Option<String> {
+        let relative = binary_path
+            .strip_prefix(self.license_store.browser_cache_dir())
+            .ok()?;
+        let directory = relative.components().next()?;
+        let name = directory.as_os_str().to_str()?;
+        let version = name.strip_prefix("chromium-")?.strip_suffix("-pro")?;
+        valid_kernel_version(version).then(|| version.to_owned())
+    }
+
     pub(crate) fn installed(&self) -> Result<Vec<InstalledKernel>, String> {
         Ok(self.status(true)?.inventory.installed)
     }
@@ -152,33 +190,38 @@ impl KernelService {
         command.arg(binary_path);
         let output = run_preparation(&mut command, Duration::from_secs(20), None)?;
         if !output.status.success() {
-            return Err("无法验证本机内核版本，导入已停止".into());
+            return Err("无法验证本机内核版本，请重新下载该版本后重试".into());
         }
         let binary: PreparedBinary = serde_json::from_slice(last_output_line(&output)?)
             .map_err(|_| "无法识别本机内核版本")?;
         if binary.binary_path != Path::new(binary_path) {
-            return Err("本机内核路径校验失败，导入已停止".into());
+            return Err("本机内核路径校验失败，请重新下载该版本后重试".into());
         }
         Ok(binary)
     }
 
     pub(crate) fn exact_binary(&self, version: &str) -> Result<PreparedBinary, String> {
+        validate_kernel_version(version)?;
         self.license_store.require_key()?;
         if let Some(binary) = self
             .installed()?
             .iter()
             .find(|entry| entry.version == version)
         {
-            return self.probe_binary(&binary.binary_path);
+            let prepared = self.probe_binary(&binary.binary_path)?;
+            if !display_matches_package(version, &prepared.version) {
+                return Err("本机内核与指定版本不一致，请重新下载该版本后重试".into());
+            }
+            return Ok(prepared);
         }
         let binary = self.prepare(Some(version))?;
         // Chrome's --version can omit the SDK package revision.
-        if !self.installed()?.iter().any(|entry| {
-            entry.version == version && Path::new(&entry.binary_path) == binary.binary_path
-        }) {
-            return Err(
-                "无法取得窗口原有的精确内核版本，导入已停止；请检查激活码和版本可用性".into(),
-            );
+        if !display_matches_package(version, &binary.version)
+            || !self.installed()?.iter().any(|entry| {
+                entry.version == version && Path::new(&entry.binary_path) == binary.binary_path
+            })
+        {
+            return Err("无法取得指定的精确内核版本，请检查激活码和该版本的可用性".into());
         }
         Ok(binary)
     }
@@ -200,6 +243,13 @@ impl KernelService {
     }
 
     pub fn failure(&self, message: String) -> KernelFailure {
+        if message == INVALID_KERNEL_VERSION {
+            return KernelFailure {
+                code: "VERSION".into(),
+                message,
+                retryable: false,
+            };
+        }
         self.job
             .lock()
             .ok()
@@ -279,17 +329,21 @@ impl KernelService {
         self.run_prepare("prepare", version)
     }
 
-    pub fn download_latest(&self) -> Result<PreparedBinary, String> {
-        self.run_prepare("download", None)
+    pub fn download(&self, version: Option<&str>) -> Result<PreparedBinary, String> {
+        self.run_prepare("download", version)
     }
 
     fn run_prepare(&self, action: &str, version: Option<&str>) -> Result<PreparedBinary, String> {
+        if let Some(version) = version {
+            validate_kernel_version(version)?;
+        }
         let _operation = self
             .operation
             .try_lock()
             .map_err(|_| "正在准备浏览器内核，请等待完成后重试")?;
         *self.job.lock().map_err(|_| "内核状态不可用")? = KernelJob {
             phase: KernelPhase::Preparing,
+            requested_version: version.map(str::to_owned),
             ..KernelJob::default()
         };
         let result = self.prepare_inner(action, version);
@@ -619,12 +673,12 @@ if(action==='latest') {
         assert_eq!(release.version, "155.0.8059.39.2");
         assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Idle);
         assert!(!root.path().join("cloakbrowser").exists());
-        assert!(service.download_latest().unwrap_err().contains("激活码"));
+        assert!(service.download(None).unwrap_err().contains("激活码"));
         service
             .license_store
             .save_validated("synthetic-update-key", "free", None)
             .unwrap();
-        assert_eq!(service.download_latest().unwrap().version, "155.0.8059.39");
+        assert_eq!(service.download(None).unwrap().version, "155.0.8059.39");
         assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Ready);
         service.check_latest().unwrap();
         assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Ready);
@@ -654,6 +708,101 @@ process.exitCode=1;"#,
         assert!(error.retryable);
         assert!(!error.message.contains("private"));
         assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Idle);
+    }
+
+    #[test]
+    fn explicit_download_preserves_the_requested_revision_when_it_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("runner.cjs");
+        std::fs::write(
+            &script,
+            r#"if (process.argv[2] !== 'download' || process.env.CLOAKBROWSER_VERSION !== '154.0.8000.10.4' || !process.env.CLOAKBROWSER_LICENSE_KEY) process.exit(42);
+console.error('NEXUS_KERNEL_ERROR ' + JSON.stringify({code:'NETWORK',message:'暂时无法下载该版本，请重试',retryable:true}));
+process.exitCode=1;"#,
+        )
+        .unwrap();
+        let service = KernelService::new(
+            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "node".into(),
+                browser_script: script,
+                network_preload: root.path().join("unused.cjs"),
+            },
+        );
+        service
+            .license_store
+            .save_validated("synthetic-paid-key", "pro", None)
+            .unwrap();
+        let error = service.download(Some("154.0.8000.10.4")).unwrap_err();
+        assert_eq!(service.failure(error).code, "NETWORK");
+        let job = service.job.lock().unwrap();
+        assert_eq!(job.requested_version.as_deref(), Some("154.0.8000.10.4"));
+        assert_eq!(job.phase, KernelPhase::Failed);
+    }
+
+    #[test]
+    fn invalid_version_is_rejected_before_starting_the_adapter() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KernelService::new(
+            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "missing-node".into(),
+                browser_script: root.path().join("missing.cjs"),
+                network_preload: root.path().join("unused.cjs"),
+            },
+        );
+        for version in [
+            "",
+            "155",
+            "155.0.1.2\n",
+            "../155.0.1.2",
+            "155..1.2",
+            "155.0.1.2.3.4",
+        ] {
+            let error = service.download(Some(version)).unwrap_err();
+            let failure = service.failure(error);
+            assert_eq!(failure.code, "VERSION");
+            assert!(!failure.retryable);
+        }
+        assert_eq!(service.job.lock().unwrap().phase, KernelPhase::Idle);
+    }
+
+    #[test]
+    fn package_metadata_uses_only_a_managed_versioned_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KernelService::new(
+            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            RuntimePaths {
+                node: "node".into(),
+                browser_script: root.path().join("unused.cjs"),
+                network_preload: root.path().join("unused-preload.cjs"),
+            },
+        );
+        let cache = service.license_store.browser_cache_dir();
+        assert_eq!(
+            service.package_version(&cache.join("chromium-154.0.8000.10.4-pro/browser")),
+            Some("154.0.8000.10.4".into())
+        );
+        assert_eq!(
+            service.package_version(&cache.join("chromium-154.0.8000.10/browser")),
+            None
+        );
+        assert_eq!(
+            service.package_version(&cache.join("chromium-unknown-pro/browser")),
+            None
+        );
+        assert_eq!(
+            service.package_version(&root.path().join("chromium-154.0.8000.10.4-pro/browser")),
+            None
+        );
+        assert!(super::display_matches_package(
+            "154.0.8000.10.4",
+            "154.0.8000.10"
+        ));
+        assert!(!super::display_matches_package(
+            "154.0.8000.10.4",
+            "154.0.8000.11"
+        ));
     }
 
     #[test]

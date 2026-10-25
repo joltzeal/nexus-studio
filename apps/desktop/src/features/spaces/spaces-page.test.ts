@@ -19,12 +19,18 @@ import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { FieldError } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { toast } from '@/components/ui/toast'
 import { AccountEditor } from '@/features/accounts/account-editor'
 import type { Account, AccountInput, BindingView } from '@/features/accounts/types'
-import type { NativeProfile } from '@/lib/platform/native-profiles'
+import {
+  createNativeProfile,
+  updateNativeProfile,
+  type NativeProfile,
+} from '@/lib/platform/native-profiles'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { SpacesPage } from './spaces-page'
+import { WindowEditor } from './window-editor'
 
 const state = vi.hoisted(() => ({
   hooks: null as HookHarness | null,
@@ -35,6 +41,7 @@ const state = vi.hoisted(() => ({
   windows: [] as NativeProfile[],
   calls: [] as { method: string; input: unknown }[],
   saved: null as Account | null,
+  listError: null as Error | null,
   saveError: null as Error | null,
   saveResponse: null as Promise<{ item: Account; created: boolean }> | null,
 }))
@@ -48,6 +55,7 @@ vi.mock('react', async (importOriginal) => {
     useRef: realRef,
     useEffect: realEffect,
     useCallback: realCallback,
+    useId: realId,
   } = react
   return {
     ...react,
@@ -55,6 +63,7 @@ vi.mock('react', async (importOriginal) => {
       state.hooks ? state.hooks.state(initial) : realState(initial),
     useRef: (initial: unknown) =>
       state.hooks ? state.hooks.state(() => ({ current: initial }))[0] : realRef(initial),
+    useId: () => (state.hooks ? state.hooks.state('test-contact-id')[0] : realId()),
     useEffect: (effect: EffectCallback, deps?: DependencyList) =>
       state.hooks ? state.hooks.effect(effect, deps) : realEffect(effect, deps),
     useCallback: <T extends (...args: never[]) => unknown>(
@@ -76,6 +85,7 @@ vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
   ) => {
     state.calls.push({ method, input })
     if (method === 'vinted.accounts.list') {
+      if (state.listError) throw state.listError
       return {
         items: state.accounts,
         bindings: state.bindings,
@@ -96,6 +106,12 @@ vi.mock('@/lib/platform/native-profiles', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/platform/native-profiles')>()),
   nativeProfilesAvailable: () => state.native,
   listNativeProfiles: async () => state.windows,
+  createNativeProfile: vi.fn(async () => ({
+    ...state.windows[0]!,
+    id: 'created',
+    name: 'created',
+  })),
+  updateNativeProfile: vi.fn(async () => undefined),
 }))
 vi.mock('@/lib/platform/native-groups', () => ({ listGroups: async () => [] }))
 vi.mock('@/lib/platform/native-license', () => ({
@@ -261,6 +277,7 @@ function bind(windowId: string, item: Account): BindingView {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   state.native = false
   state.plugin = {
     id: 'studio.vinted-accounts',
@@ -275,6 +292,7 @@ beforeEach(() => {
     bind('third', state.accounts[1]!),
   ]
   state.saved = account({ status: 'blocked' })
+  state.listError = null
   state.saveError = null
   state.saveResponse = null
   state.calls = []
@@ -311,6 +329,12 @@ function editFromCell(tree: ReactNode) {
   )
   expect(trigger?.props.disabled).toBe(false)
   trigger?.props.onClick?.({} as never)
+}
+
+function unlinkButtons(tree: ReactNode, login = 'shared@example.com') {
+  return components(tree, Button).filter(
+    (node) => node.props['aria-label'] === `解绑 ${login} 的手机号`,
+  )
 }
 
 function editorSession(props: ComponentProps<typeof AccountEditor>) {
@@ -365,6 +389,235 @@ describe('window management', () => {
     expect(html).toContain('全选当前筛选下的已关闭窗口')
     expect(html).toContain('已选 0')
     expect(html).toContain('还没有窗口')
+  })
+
+  it('forwards the selected kernel only when creating a new window', async () => {
+    const page = await mountedPage()
+    const create = components(page.render(), Button).find((node) =>
+      Children.toArray(node.props.children).includes('创建窗口'),
+    )
+    expect(create).toBeDefined()
+    create?.props.onClick?.({} as never)
+    const settings = profile('new').settings
+    await components(page.render(), WindowEditor)[0]!.props.onSave(
+      'new',
+      null,
+      null,
+      null,
+      settings,
+      'group-1',
+      '155.0.1.2.7',
+    )
+    expect(createNativeProfile).toHaveBeenCalledExactlyOnceWith(
+      'new',
+      null,
+      null,
+      null,
+      settings,
+      'group-1',
+      '155.0.1.2.7',
+    )
+    expect(updateNativeProfile).not.toHaveBeenCalled()
+
+    const edit = components(page.render(), Button).find(
+      (node) => node.props['aria-label'] === '编辑 first',
+    )
+    expect(edit).toBeDefined()
+    edit?.props.onClick?.({} as never)
+    await components(page.render(), WindowEditor)[0]!.props.onSave(
+      'renamed',
+      null,
+      null,
+      null,
+      settings,
+      'group-2',
+      '155.0.1.2.8',
+    )
+    expect(updateNativeProfile).toHaveBeenCalledExactlyOnceWith(
+      'first',
+      'renamed',
+      null,
+      null,
+      null,
+      settings,
+      'group-2',
+    )
+    expect(createNativeProfile).toHaveBeenCalledOnce()
+  })
+})
+
+describe('quick account phone unlinking', () => {
+  it('clears both contact fields from every linked row using the latest account', async () => {
+    const page = await mountedPage()
+    const buttons = unlinkButtons(page.render())
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]!.props.title).toContain('所有关联窗口')
+    expect(buttons[0]!.props.title).toContain('保留 SIM8 号码池')
+    const latest = account({
+      password: ' newer example password ',
+      loginMethod: 'google',
+      status: 'pending',
+      note: 'updated elsewhere',
+      emailOtpUrl: 'https://mail.example.com/latest',
+    })
+    state.accounts = [latest, state.accounts[1]!]
+    state.saved = {
+      ...latest,
+      phone: '',
+      smsOtpUrl: '',
+      updatedAt: '2026-10-26T00:00:00.000Z',
+    }
+    buttons[0]!.props.onClick?.({} as never)
+
+    await vi.waitFor(() => expect(unlinkButtons(page.render())).toHaveLength(0))
+    const popovers = components(page.render(), AccountSmsPopover)
+    expect(popovers.map((node) => node.props.account)).toEqual([
+      state.saved,
+      state.saved,
+      state.accounts[1],
+    ])
+    expect(
+      components(page.render(), AccountPhoneCopy).map((node) => node.props.account.phone),
+    ).toEqual(['', '', state.accounts[1]!.phone])
+    expect(unlinkButtons(page.render(), 'other@example.com')).toHaveLength(1)
+    expect(state.calls.map((call) => call.method)).toEqual([
+      'vinted.accounts.bindings',
+      'vinted.accounts.list',
+      'vinted.accounts.list',
+      'vinted.accounts.save',
+    ])
+    expect(
+      state.calls.find((call) => call.method === 'vinted.accounts.save')?.input,
+    ).toEqual({
+      id: latest.id,
+      account: latest.account,
+      loginMethod: latest.loginMethod,
+      password: latest.password,
+      status: latest.status,
+      note: latest.note,
+      homepageUrl: latest.homepageUrl,
+      emailOtpUrl: latest.emailOtpUrl,
+      phone: '',
+      smsOtpUrl: '',
+    })
+    expect(
+      elements(page.render()).filter(
+        (node) => node.type === 'small' && node.props.children === '待验证',
+      ),
+    ).toHaveLength(2)
+    editFromCell(page.render())
+    const editor = components(page.render(), AccountEditor)[0]!
+    expect(editor.props.description).toContain('2 个窗口')
+    expect(editor.props.account).toEqual(state.saved)
+    expect(toast.success).toHaveBeenCalledExactlyOnceWith('手机号与短信接码链接已解绑')
+
+    const sms = harness()
+    const smsTree = sms.render(() => AccountSmsPopover(popovers[0]!.props))
+    sms.flushEffects()
+    const read = components(smsTree, Button).find((node) =>
+      Children.toArray(node.props.children).includes('读取短信验证码'),
+    )
+    expect(read?.props.disabled).toBe(true)
+    read?.props.onClick?.({} as never)
+    expect(state.calls.some((call) => call.method === 'vinted.accounts.otp')).toBe(false)
+  })
+
+  it('shares pending state across linked rows, blocks duplicate clicks, and keeps phone copying', async () => {
+    const page = await mountedPage()
+    let resolveSave!: (value: { item: Account; created: boolean }) => void
+    state.saveResponse = new Promise((resolve) => {
+      resolveSave = resolve
+    })
+    const buttons = unlinkButtons(page.render())
+    buttons[0]!.props.onClick?.({} as never)
+    buttons[0]!.props.onClick?.({} as never)
+    buttons[1]!.props.onClick?.({} as never)
+    await vi.waitFor(() => {
+      expect(
+        state.calls.filter((call) => call.method === 'vinted.accounts.save'),
+      ).toHaveLength(1)
+    })
+    const pending = page.render()
+    expect(unlinkButtons(pending).map((node) => node.props.disabled)).toEqual([
+      true,
+      true,
+    ])
+    expect(unlinkButtons(pending).map((node) => node.props['aria-busy'])).toEqual([
+      true,
+      true,
+    ])
+    expect(unlinkButtons(pending, 'other@example.com')[0]!.props.disabled).toBe(false)
+    expect(
+      components(pending, AccountSmsPopover).map((node) => node.props.ready),
+    ).toEqual([false, false, true])
+    const accountEdits = components(pending, Button).filter(
+      (node) => node.props['aria-label'] === '编辑 shared@example.com 的账号资料',
+    )
+    expect(accountEdits.map((node) => node.props.disabled)).toEqual([true, true])
+    const menuEdits = components(pending, DropdownMenuItem).filter((node) =>
+      Children.toArray(node.props.children).includes('编辑账号资料'),
+    )
+    expect(menuEdits.map((node) => node.props.disabled)).toEqual([true, true, false])
+    const copies = components(pending, AccountPhoneCopy)
+    expect(copies[0]!.props.account).toEqual(account())
+    const copyMarkup = renderToStaticMarkup(
+      createElement(AccountPhoneCopy, copies[0]!.props),
+    )
+    expect(copyMarkup).toContain('复制 shared@example.com 的手机号 +14155550100')
+    expect(copyMarkup).not.toContain('disabled=""')
+    expect(toast.success).not.toHaveBeenCalled()
+
+    resolveSave({ item: account({ phone: '', smsOtpUrl: '' }), created: false })
+    await vi.waitFor(() => expect(unlinkButtons(page.render())).toHaveLength(0))
+    expect(
+      components(page.render(), AccountSmsPopover).map((node) => node.props.ready),
+    ).toEqual([true, true, true])
+  })
+
+  it.each(['lookup', 'save'] as const)(
+    'keeps the previous phone and link after a failed %s and allows retry',
+    async (stage) => {
+      const page = await mountedPage()
+      if (stage === 'lookup') state.listError = new Error('账号读取失败')
+      else state.saveError = new Error('账号写入失败')
+      unlinkButtons(page.render())[0]!.props.onClick?.({} as never)
+      await vi.waitFor(() => {
+        expect(toast.error).toHaveBeenCalledExactlyOnceWith(
+          `解绑手机号失败：${stage === 'lookup' ? '账号读取失败' : '账号写入失败'}`,
+        )
+        expect(unlinkButtons(page.render()).every((node) => !node.props.disabled)).toBe(
+          true,
+        )
+      })
+      expect(
+        components(page.render(), AccountSmsPopover).map((node) => node.props.account),
+      ).toEqual([account(), account(), state.accounts[1]])
+      expect(toast.success).not.toHaveBeenCalled()
+      if (stage === 'lookup') {
+        expect(state.calls.some((call) => call.method === 'vinted.accounts.save')).toBe(
+          false,
+        )
+      }
+      state.listError = null
+      state.saveError = null
+      state.saved = account({ phone: '', smsOtpUrl: '' })
+      unlinkButtons(page.render())[1]!.props.onClick?.({} as never)
+      await vi.waitFor(() => expect(unlinkButtons(page.render())).toHaveLength(0))
+      expect(toast.success).toHaveBeenCalledExactlyOnceWith('手机号与短信接码链接已解绑')
+    },
+  )
+
+  it('offers no unlink action without a phone or a ready plugin', async () => {
+    state.accounts = state.accounts.map((item) => ({ ...item, phone: '' }))
+    const page = await mountedPage()
+    expect(unlinkButtons(page.render())).toHaveLength(0)
+    expect(unlinkButtons(page.render(), 'other@example.com')).toHaveLength(0)
+    state.accounts = [account(), account({ id: 'other', account: 'other@example.com' })]
+    state.plugin = { ...state.plugin!, state: 'retrying' }
+    state.calls = []
+    const unavailable = await mountedPage()
+    expect(unlinkButtons(unavailable.render())).toHaveLength(0)
+    expect(state.calls).toHaveLength(0)
   })
 })
 

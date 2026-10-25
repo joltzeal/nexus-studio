@@ -43,6 +43,7 @@ import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
 import { configOf } from './window-config'
 import { checkWindowProxy } from './window-proxy'
 import { MAX_BATCH_WINDOWS } from './window-batch'
+import { WindowKernelField } from './window-kernel-field'
 
 export type SaveWindow = (
   name: string,
@@ -51,6 +52,7 @@ export type SaveWindow = (
   proxyEndpoint: number | null,
   settings: WindowSettings,
   groupId?: string | null,
+  kernelVersion?: string | null,
 ) => Promise<void>
 
 function message(error: unknown): string {
@@ -89,6 +91,7 @@ export function WindowEditor({
   )
   const [note, setNote] = useState(window?.settings.note ?? '')
   const [groupId, setGroupId] = useState(window?.groupId ?? 'ungrouped')
+  const [kernelVersion, setKernelVersion] = useState<string | null>(null)
   const [config, setConfig] = useState<WindowConfig>(() => configOf(window))
   const [proxySource, setProxySource] = useState<'direct' | 'manual' | 'plugin'>(
     window?.proxyPlugin ? 'plugin' : window?.proxy ? 'manual' : 'direct',
@@ -230,6 +233,7 @@ export function WindowEditor({
         proxySource === 'plugin' ? selectedEndpoint : null,
         settings,
         groupId === 'ungrouped' ? null : groupId,
+        ...(!window && kernelVersion !== null ? [kernelVersion] : []),
       )
     } catch (cause) {
       setError(message(cause))
@@ -316,6 +320,13 @@ export function WindowEditor({
                 ? '请先在「应用设置 → 激活码」中保存激活码。'
                 : '尚未确认激活码状态，请刷新窗口列表后重试。'}
             </FieldError>
+          ) : null}
+          {!window ? (
+            <WindowKernelField
+              value={kernelVersion}
+              disabled={pending}
+              onChange={setKernelVersion}
+            />
           ) : null}
           <div className="window-form-grid">
             <Field>

@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { kernelPlatform } from './kernel-cache.js'
+import { isKernelVersion, kernelPlatform } from './kernel-cache.js'
 
 const VERSION_URL = 'https://cloakbrowser.dev/api/download/version'
 const MAX_RESPONSE_BYTES = 16 * 1024
@@ -56,10 +56,7 @@ export async function checkLatestKernel(
     typeof value !== 'object' ||
     value === null ||
     !('version' in value) ||
-    typeof value.version !== 'string' ||
-    value.version.length > 48 ||
-    value.version.trim() !== value.version ||
-    !/^[0-9]+(?:\.[0-9]+){3,4}$/.test(value.version) ||
+    !isKernelVersion(value.version) ||
     ('resolved_channel' in value && value.resolved_channel !== 'stable') ||
     ('requested_channel' in value && value.requested_channel !== 'stable')
   ) {

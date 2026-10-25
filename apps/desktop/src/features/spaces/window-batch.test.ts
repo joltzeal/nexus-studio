@@ -156,6 +156,88 @@ describe('batch window planning', () => {
 })
 
 describe('batch native creation', () => {
+  it('preserves an explicit package across partial failure and retries without mutating the config', async () => {
+    const deps = fixture()
+    deps.createProfile.mockRejectedValueOnce(new Error('下载失败'))
+    const input = config({ kernelVersion: '155.0.8059.39.1' })
+    const snapshot = structuredClone(input)
+    const job = new WindowBatchJob(input, [], deps.ports, () => 31)
+    await job.run(() => {})
+    await job.run(() => {})
+    expect(deps.createProfile.mock.calls.map((call) => call[6])).toEqual(
+      Array(4).fill('155.0.8059.39.1'),
+    )
+    expect(input).toEqual(snapshot)
+    expect(deps.createProfile.mock.calls[3]![4].fingerprintSeed).toBe(31)
+  })
+
+  it('freezes latest to the first successful package before binding, then reuses it for failed rows', async () => {
+    const deps = fixture()
+    deps.createProfile.mockRejectedValueOnce(new Error('temporary failure'))
+    deps.createProfile.mockImplementationOnce(
+      async (name, _proxy, _plugin, _endpoint, values) =>
+        profile(name, values, { kernelVersion: '155.0.8059.39.2' }),
+    )
+    deps.bindAccount.mockRejectedValueOnce(new Error('binding failed'))
+    const input = config({ accounts, kernelVersion: null })
+    const snapshot = structuredClone(input)
+    const job = new WindowBatchJob(input, [], deps.ports, () => 71)
+    await job.run(() => {})
+    await job.run(() => {})
+    expect(deps.createProfile.mock.calls.map((call) => call[6])).toEqual([
+      undefined,
+      undefined,
+      '155.0.8059.39.2',
+      '155.0.8059.39.2',
+    ])
+    expect(input).toEqual(snapshot)
+    expect(job.items.every((item) => item.status === 'complete')).toBe(true)
+    expect(deps.createProfile.mock.calls[3]![4].fingerprintSeed).toBe(71)
+  })
+
+  it('freezes a reconciled package after a lost response and preserves it after stop/resume', async () => {
+    const deps = fixture()
+    const job = new WindowBatchJob(config(), [], deps.ports, () => 61)
+    deps.createProfile.mockImplementationOnce(
+      async (name, _proxy, _plugin, _endpoint, values) => {
+        deps.saved.push(profile(name, values, { kernelVersion: '155.0.8059.39.3' }))
+        job.stopAfterCurrent()
+        throw new Error('response lost')
+      },
+    )
+    await job.run(() => {})
+    expect(deps.createProfile).toHaveBeenCalledTimes(1)
+    await job.run(() => {})
+    expect(deps.createProfile.mock.calls.map((call) => call[6])).toEqual([
+      undefined,
+      '155.0.8059.39.3',
+      '155.0.8059.39.3',
+    ])
+    expect(job.items.map((item) => item.seed)).toEqual([61, 62, 63])
+  })
+
+  it.each([undefined, null, 'latest', '155.0'])(
+    'does not pin Chrome display versions when package metadata is %j',
+    async (kernelVersion) => {
+      const deps = fixture()
+      deps.createProfile.mockImplementation(
+        async (name, _proxy, _plugin, _endpoint, values) =>
+          profile(name, values, kernelVersion === undefined ? {} : { kernelVersion }),
+      )
+      const job = new WindowBatchJob(config(), [], deps.ports)
+      await job.run(() => {})
+      expect(deps.createProfile.mock.calls.every((call) => call.length === 6)).toBe(true)
+    },
+  )
+
+  it('rejects invalid configured pins before creating a batch', () => {
+    const deps = fixture()
+    expect(
+      () =>
+        new WindowBatchJob(config({ kernelVersion: '/local/browser' }), [], deps.ports),
+    ).toThrow('完整内核包版本')
+    expect(deps.createProfile).not.toHaveBeenCalled()
+  })
   it('serializes creation, prevents overlapping runs and passes the shared settings unchanged', async () => {
     const first = deferred<NativeProfile>()
     const deps = fixture()

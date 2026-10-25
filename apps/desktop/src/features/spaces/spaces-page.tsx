@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowUpRight,
   Check,
@@ -73,6 +73,7 @@ import {
 } from '@/components/ui/table'
 import { listPlugins, type PluginView } from '@/lib/platform/native-plugins'
 import { AccountEditor } from '@/features/accounts/account-editor'
+import { updateContact } from '@/features/sim8/accounts-bridge'
 import {
   bindAccount,
   listAccounts,
@@ -139,6 +140,8 @@ export function SpacesPage() {
   const [bindings, setBindings] = useState<BindingView[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
+  const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
+  const phoneUnlinkRequests = useRef(new Set<string>())
   const [binding, setBinding] = useState<NativeProfile | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [conflict, setConflict] = useState<{
@@ -310,6 +313,22 @@ export function SpacesPage() {
           : binding,
       ),
     )
+  }
+
+  async function unlinkPhone(accountId: string) {
+    if (!accountsRunning || phoneUnlinkRequests.current.has(accountId)) return
+    phoneUnlinkRequests.current.add(accountId)
+    setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    try {
+      const saved = await updateContact(accountId, { phone: '', smsOtpUrl: '' })
+      applySavedAccount(saved)
+      toast.success('手机号与短信接码链接已解绑')
+    } catch (cause) {
+      toast.error(`解绑手机号失败：${message(cause)}`)
+    } finally {
+      phoneUnlinkRequests.current.delete(accountId)
+      setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    }
   }
 
   async function refreshAfterImport() {
@@ -583,6 +602,7 @@ export function SpacesPage() {
                 account === null
                   ? null
                   : (accounts.find((item) => item.id === account.accountId) ?? null)
+              const phoneUnlinkPending = linked !== null && unlinkingPhones.has(linked.id)
               const busy = operatingWindows.has(window.id)
               const unconfirmed = unconfirmedWindows.has(window.id)
               return (
@@ -656,7 +676,7 @@ export function SpacesPage() {
                                 className="h-auto max-w-full justify-start p-0 text-left"
                                 aria-label={`编辑 ${linked.account} 的账号资料`}
                                 title="编辑账号资料"
-                                disabled={!accountsRunning}
+                                disabled={!accountsRunning || phoneUnlinkPending}
                                 onClick={() => setEditingAccount(linked)}
                               >
                                 <strong>{linked.account}</strong>
@@ -672,13 +692,35 @@ export function SpacesPage() {
                               {linked === null ? null : (
                                 <AccountPhoneCopy account={linked} />
                               )}
+                              {linked === null || linked.phone.trim() === '' ? null : (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-xs"
+                                  className="size-[22px]"
+                                  aria-label={`解绑 ${linked.account} 的手机号`}
+                                  aria-busy={phoneUnlinkPending}
+                                  title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
+                                  disabled={!accountsRunning || phoneUnlinkPending}
+                                  onClick={() => void unlinkPhone(linked.id)}
+                                >
+                                  {phoneUnlinkPending ? (
+                                    <Loader2
+                                      className="animate-spin"
+                                      aria-hidden="true"
+                                    />
+                                  ) : (
+                                    <Unlink aria-hidden="true" />
+                                  )}
+                                </Button>
+                              )}
                             </span>
                           </span>
                           {linked === null ? null : (
                             <AccountSmsPopover
                               key={linked.id}
                               account={linked}
-                              ready={accountsRunning}
+                              ready={accountsRunning && !phoneUnlinkPending}
                               onSaved={applySavedAccount}
                             />
                           )}
@@ -797,7 +839,7 @@ export function SpacesPage() {
                             <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
                             {linked === null ? null : (
                               <DropdownMenuItem
-                                disabled={!accountsRunning}
+                                disabled={!accountsRunning || phoneUnlinkPending}
                                 onSelect={() => setEditingAccount(linked)}
                               >
                                 <Pencil />
@@ -883,6 +925,7 @@ export function SpacesPage() {
               proxyEndpoint,
               settings,
               groupId,
+              kernelVersion?: string | null,
             ) => {
               if (editing === 'new') {
                 const created = await createNativeProfile(
@@ -892,6 +935,7 @@ export function SpacesPage() {
                   proxyEndpoint,
                   settings,
                   groupId,
+                  kernelVersion,
                 )
                 setWindows((current) => [created, ...current])
               } else {

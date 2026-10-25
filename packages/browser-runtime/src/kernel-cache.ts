@@ -22,6 +22,15 @@ const SUPPORTED_PLATFORMS = new Set([
 ])
 const INSTALL_DIRECTORY = /^chromium-([0-9]+(?:\.[0-9]+){3,4})-pro$/
 
+export function isKernelVersion(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 48 &&
+    value.trim() === value &&
+    /^[0-9]+(?:\.[0-9]+){3,4}$/.test(value)
+  )
+}
+
 function fileSystemCode(error: unknown): unknown {
   return typeof error === 'object' && error !== null && 'code' in error
     ? error.code
@@ -73,7 +82,7 @@ export async function inspectKernelCache(
     if (!entry.isDirectory()) continue
     const match = INSTALL_DIRECTORY.exec(entry.name)
     const version = match?.[1]
-    if (!version) continue
+    if (!isKernelVersion(version)) continue
     const binaryPath = join(
       cacheDir,
       entry.name,

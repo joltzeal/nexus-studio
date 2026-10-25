@@ -6,6 +6,7 @@ import type { BrowserContext } from 'playwright-core'
 import {
   compareKernelVersions,
   inspectKernelCache,
+  isKernelVersion,
   type InstalledKernel,
 } from './kernel-cache.js'
 import { retryKernelPreparation, type KernelProgress } from './kernel-install.js'
@@ -115,6 +116,9 @@ export async function prepareBinary(
   version: string
   binary_path: string
 }> {
+  if (browserVersion !== undefined && !isKernelVersion(browserVersion)) {
+    throw new Error('KERNEL_VERSION_INVALID')
+  }
   const key = requireActivation(licenseKey)
   return retryKernelPreparation(async () => {
     const binary_path = await ensureBinary(key, browserVersion, 'stable')
@@ -122,8 +126,25 @@ export async function prepareBinary(
     if (browserVersion && kernel.version !== browserVersion) {
       throw new Error('PROFILE_ENGINE_MISMATCH')
     }
-    return { binary_path, version: await binaryVersion(binary_path) }
+    const version = await binaryVersion(binary_path)
+    if (
+      kernel.version !== version &&
+      !(version.split('.').length === 4 && kernel.version.startsWith(`${version}.`))
+    ) {
+      throw new Error('PROFILE_ENGINE_MISMATCH')
+    }
+    return { binary_path, version }
   }, report)
+}
+
+export async function downloadBinary(
+  licenseKey: string | undefined,
+  browserVersion?: string,
+  report?: (progress: KernelProgress) => void,
+): ReturnType<typeof prepareBinary> {
+  return browserVersion === undefined
+    ? downloadLatestBinary(licenseKey, report)
+    : prepareBinary(licenseKey, browserVersion, report)
 }
 
 export async function downloadLatestBinary(

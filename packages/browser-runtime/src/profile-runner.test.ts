@@ -33,7 +33,11 @@ beforeEach(async () => {
     sdk,
     `
     import {EventEmitter} from 'node:events';
-    export const ensureBinary=()=>{};
+    export const ensureBinary=(key,version,channel)=>{
+      if(key!=='synthetic-runner-key' || version!==process.env.CLOAKBROWSER_VERSION || channel!=='stable')
+        throw new Error('Unexpected preparation request');
+      return ${JSON.stringify(binary)};
+    };
     export const validateLicense=()=>{};
     export const buildLaunchOptions=async()=>({});
     export async function launchPersistentContext(options) {
@@ -106,15 +110,19 @@ async function run(
   sdkFailure = false,
   target = join(directory, 'user-data'),
   activated = true,
+  requestedVersion?: string,
 ) {
   const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CLOAKBROWSER_CACHE_DIR: directory,
+    CLOAKBROWSER_LICENSE_KEY: activated ? 'synthetic-runner-key' : '',
+    ...(sdkFailure ? { NEXUS_TEST_SDK_FAILURE: '1' } : {}),
+  }
+  delete env.CLOAKBROWSER_VERSION
+  if (requestedVersion !== undefined) env.CLOAKBROWSER_VERSION = requestedVersion
   const child = spawn(process.execPath, ['--import', preload, runner, action, target], {
-    env: {
-      ...process.env,
-      CLOAKBROWSER_CACHE_DIR: directory,
-      CLOAKBROWSER_LICENSE_KEY: activated ? 'synthetic-runner-key' : '',
-      ...(sdkFailure ? { NEXUS_TEST_SDK_FAILURE: '1' } : {}),
-    },
+    env,
   })
   let stdout = ''
   let stderr = ''
@@ -161,6 +169,30 @@ async function run(
 }
 
 describe('profile runner subprocess', () => {
+  it('routes a requested download revision to the exact SDK request and exits without stdin', async () => {
+    const result = await run(
+      'download',
+      '',
+      false,
+      false,
+      directory,
+      true,
+      '155.0.8059.39.2',
+    )
+    expect(result).toMatchObject({ exit: 0, timedOut: false, stderr: '' })
+    expect(JSON.parse(result.stdout)).toEqual({
+      binary_path: binary,
+      version: '155.0.8059.39.2',
+    })
+  })
+
+  it('rejects an explicitly empty download version instead of downloading latest', async () => {
+    const result = await run('download', '', false, false, directory, true, '')
+    expect(result).toMatchObject({ exit: 1, timedOut: false, stdout: '' })
+    expect(result.stderr).toContain('"code":"VERSION"')
+    expect(result.stderr).not.toContain('synthetic-runner-key')
+  })
+
   it('returns an actionable preparation failure without an activation code', async () => {
     const result = await run('prepare', '', false, false, directory, false)
     expect(result).toMatchObject({ exit: 1, timedOut: false, stdout: '' })
