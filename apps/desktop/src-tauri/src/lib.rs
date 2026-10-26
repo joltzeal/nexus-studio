@@ -10,6 +10,7 @@ pub fn run() {
     builder
         .setup(core::plugin_service::initialize)
         .invoke_handler(tauri::generate_handler![
+            core::external_url::external_url_open,
             core::profile_service::profile_list,
             core::profile_service::profile_create,
             core::profile_service::profile_update,

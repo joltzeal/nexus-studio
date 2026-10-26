@@ -39,15 +39,16 @@ import {
 } from '@/components/ui/table'
 import { toast } from '@/components/ui/toast'
 import { SourceImageHistoryDialog } from '@/features/ai-image/source-image-history-dialog'
-import { sendToAiImage, type GenerationSource } from '@/lib/page-handoff'
+import { sendToAiImage } from '@/lib/page-handoff'
 import { listItems, listMonitors, monitorSeller, removeItem, starItem } from './api'
+import { VintedExternalLink } from './external-link'
+import { itemAiHandoff, vintedItemSource } from './item-ai-handoff'
 import { AvailabilityBadge, ItemDetailSheet } from './item-detail-sheet'
 import {
   EMPTY_FILTERS,
   FAVOURITE_OPERATORS,
   itemFilterParams,
   nextFavouriteOrder,
-  safeExternalUrl,
   sourceCountry,
   type FilterDraft,
 } from './item-filters'
@@ -57,7 +58,6 @@ import { SellerPopover } from './seller-profile'
 import { ColumnMenu, TablePager } from './table-controls'
 import {
   AVAILABILITY_LABELS,
-  VINTED_PLUGIN_ID,
   formatTime,
   message,
   priceText,
@@ -84,14 +84,6 @@ const COLUMNS = [
   { id: 'url', label: '商品链接' },
 ]
 const ALL = '__all__'
-function source(item: ItemSummary): GenerationSource {
-  return {
-    pluginId: VINTED_PLUGIN_ID,
-    itemId: item.id,
-    title: item.title || '未命名商品',
-    url: item.url,
-  }
-}
 
 export function VintedItemsTable({
   initialMonitorId = '',
@@ -237,7 +229,7 @@ export function VintedItemsTable({
   }
   function generate(item: Item, images: string[]) {
     if (!aiImageReady || images.length === 0) return
-    sendToAiImage({ images, title: item.title, source: source(item) })
+    sendToAiImage(itemAiHandoff(item, images))
     setDetail(null)
   }
   const visible = COLUMNS.filter((column) => !hidden.includes(column.id))
@@ -487,7 +479,6 @@ export function VintedItemsTable({
             </TableHeader>
             <TableBody>
               {rows.map((item) => {
-                const url = safeExternalUrl(item.url)
                 const matching = monitors.filter(
                   (monitor) =>
                     monitor.host.replace(/^www\./, '') ===
@@ -576,17 +567,10 @@ export function VintedItemsTable({
                       {formatTime(item.collectedAt)}
                     </time>
                   ),
-                  url: url ? (
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="vinted-text-link"
-                    >
+                  url: (
+                    <VintedExternalLink href={item.url} fallback="—">
                       查看原商品
-                    </a>
-                  ) : (
-                    '—'
+                    </VintedExternalLink>
                   ),
                 }
                 return (
@@ -670,7 +654,7 @@ export function VintedItemsTable({
       ) : null}
       {history ? (
         <SourceImageHistoryDialog
-          source={source(history)}
+          source={vintedItemSource(history)}
           onClose={() => setHistory(null)}
         />
       ) : null}

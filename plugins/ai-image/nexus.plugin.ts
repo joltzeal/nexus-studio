@@ -5,7 +5,7 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.ai-image',
-  version: '1.1.0',
+  version: '1.1.1',
   name: 'AI 生图',
   minCoreVersion: '0.1.0',
   capabilities: ['image.provider'],

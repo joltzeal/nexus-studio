@@ -771,6 +771,42 @@
   align-items: center;
   gap: 2px;
 }
+.collection-toolbar.accounts-toolbar {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.accounts-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.accounts-filters .search-field {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+}
+.accounts-filters > [data-slot='select-trigger'] {
+  min-width: 120px;
+  max-width: 100%;
+}
+.accounts-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.accounts-pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .otp-code {
   display: inline-flex;
   align-items: center;
@@ -4314,6 +4350,10 @@ a.address-source:hover {
 }
 .space-table-panel [data-slot='table-row'][data-running='true'] {
   background: color-mix(in oklab, var(--success) 45%, transparent);
+}
+.space-table-panel [data-slot='table-row'].space-row-starting {
+  background: var(--accent);
+  box-shadow: inset 3px 0 0 var(--primary);
 }
 
 /* ------------------------------------------------------- proxy check UI */

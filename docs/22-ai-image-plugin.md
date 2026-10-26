@@ -2,6 +2,8 @@
 
 本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
 宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
+插件 `1.1.1` 增加上传格式校验；主程序 `0.1.15` 提供 Vinted 原图本机 JPEG 转换与
+商品资料预填，两者通过现有上传及生成接口衔接，不修改 RPC 或持久化结构。
 
 ## 当前能力
 
@@ -51,6 +53,8 @@ interface AiImageHandoff {
 
 `images` 仅包含用户在图库选择的 URL，按选择顺序传入；不重新抓取整组图库。
 `initialPrompt` 是可编辑的商品标题/描述，省略时为空，不自动添加方向性指令。
+Vinted 入口会将标题、品牌、尺寸、成色以及已归档的文字描述带入此草稿，
+不附带卖家资料、代理或原始详情对象；超长内容仍由生成表单提示用户自行精简。
 handoff 只打开现有 `GenerateDialog` 并传输参考图，不自动生成、识图或调用付费模型。
 手动提交时仍使用原有预设、提示词与模型选择流程。
 没有可用服务商时，“去配置”在原生成弹窗上覆盖打开 `ProvidersSheet`，不消费 handoff
@@ -65,6 +69,8 @@ handoff 只打开现有 `GenerateDialog` 并传输参考图，不自动生成、
 来源元数据不会拼接到提示词，也不会发送给生图、识图或文案模型。
 初始失败、记录读取、进程重启、生成重试均保留来源；旧记录缺少来源时仍无来源，
 不根据标题、图片或 URL 猜测关联。列表和详情显示来源标题与商品链接。
+“查看来源商品”在桌面端通过 `external_url_open` 打开系统默认浏览器，
+与 Vinted 商品/卖家外链共用适配器；打开失败显示提示，不导航当前 WebView。
 
 `image.records.list` 保留 `page/size/status`，新增一对可选字段：
 
@@ -111,8 +117,12 @@ import type { GenerationSource } from '@/lib/page-handoff'
 
 当 `source.pluginId === 'studio.vinted-monitor'` 时，参考图必须通过父页面导出的
 `loadVintedImage(itemId, url, signal)`（`@/features/vinted-monitor/api`）下载，
-再包为 `File` 传给 AI 插件现有 `uploadImage` 分块上传。此转运不调用 `prepareReference`，
-不解码、缩放或重新编码，原始字节与 MIME 保留。Vinted 参考图继续使用监控插件的采集代理；
+下载后的字节在本机通过 `prepareReference` 解码并转为 JPEG，
+再由 `uploadImage` 分块写入 AI 插件私有 `images/` 目录。
+WebP、PNG、JPEG 统一为真实 JPEG 字节与 `.jpg` 文件，最长边不超过 1536 像素，
+保持宽高比，不放大小图；透明区域合成白底，并应用原图方向。
+编码为空、输出类型不符或超过 8 MiB 时明确失败，不能仅修改 MIME 或扩展名伪装格式。
+Vinted 参考图继续使用监控插件的采集代理；
 AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后端互不调用，
 仅前端经 IPC 协调；WebView 不 fetch 远程 URL，也不直接用远程 URL 预览。
 其他来源保留 AI 插件原有远程下载流程，本地文件仍按既有规则预处理。
@@ -122,6 +132,8 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
 超量 handoff 会保留全部选择并阻止提交，第七张及之后先不传输，
 需明确移除多余选择后再重试剩余未传图片。稳定选择 key 在重试时不变，
 移除、卸载或新 handoff 会取消旧传输并忽略迟到结果。
+下载或本地编码完成后再次检查取消状态，已取消的选择不会继续上传；
+转码期间无论成功、失败或取消，均释放已解码位图及 canvas 像素缓冲。
 
 ## 模型配置与兼容性
 
@@ -321,8 +333,10 @@ outputVision?: {
 | `image.generate`          | 创建记录并后台执行                      |
 
 同时最多 6 个上传会话；单图最多 8 MiB，仅接受 PNG/JPEG/WebP。
-本地上传预处理会缩放到最长边 1536 像素，原图细节可能因此减少；
-远程下载与 Vinted 插件间参考图转运保持原字节。监控图库可展示 GIF，但 AI 参考图
+分块上传完成时检查文件签名与声明 MIME 一致后才落盘；格式不符时丢弃上传会话，
+不会把 WebP 直接保存成 JPEG 文件。此检查识别格式，不代替完整的图片解码验证。
+本地上传及 Vinted 选图预处理会缩放到最长边 1536 像素，原图细节可能因此减少；
+其他来源的远程下载保持原字节。监控图库可展示 GIF，但 AI 参考图
 仅接受 PNG/JPEG/WebP；GIF 转运明确失败，不能自动转码或忽略该选择。
 
 ## 上游请求与外部数据

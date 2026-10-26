@@ -42,7 +42,7 @@ import {
 } from '@/components/ui/table'
 import { toast } from '@/components/ui/toast'
 import { listMonitors, listProxies, removeMonitor, runMonitor } from './api'
-import { safeExternalUrl } from './item-filters'
+import { VintedExternalLink } from './external-link'
 import { MonitorFormSheet } from './monitor-form-sheet'
 import { RunsSheet } from './runs-sheet'
 import { ColumnMenu, TablePager } from './table-controls'
@@ -259,7 +259,6 @@ export function MonitorListView({
             </TableHeader>
             <TableBody>
               {rows.map((monitor) => {
-                const url = safeExternalUrl(monitor.searchUrl)
                 const cells: Record<string, ReactNode> = {
                   name: (
                     <button
@@ -274,18 +273,15 @@ export function MonitorListView({
                       {kindText(monitor.kind)}
                     </Badge>
                   ),
-                  url: url ? (
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
+                  url: (
+                    <VintedExternalLink
+                      href={monitor.searchUrl}
                       className="vinted-url"
                       title={monitor.searchUrl}
+                      fallback={monitor.searchUrl}
                     >
                       {monitor.searchUrl}
-                    </a>
-                  ) : (
-                    monitor.searchUrl
+                    </VintedExternalLink>
                   ),
                   proxy: proxyName(monitor),
                   interval: monitor.intervalMinutes,

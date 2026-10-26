@@ -59,6 +59,7 @@ import { toast } from '@/components/ui/toast'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -83,9 +84,11 @@ import {
 } from '@/features/accounts/api'
 import {
   ACCOUNTS_PLUGIN_ID,
+  ACCOUNT_STATUSES,
   EMPTY_ACCOUNT,
   LOGIN_METHOD_LABELS,
   STATUS_LABELS,
+  statusVariant,
   type Account,
   type BindingView,
 } from '@/features/accounts/types'
@@ -128,6 +131,7 @@ export function SpacesPage() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
   const [groups, setGroups] = useState<WindowGroup[]>([])
   const [groupFilter, setGroupFilter] = useState('all')
+  const [accountFilter, setAccountFilter] = useState('all')
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState<string | 'new' | null>(null)
   const [batchCreating, setBatchCreating] = useState(false)
@@ -139,6 +143,15 @@ export function SpacesPage() {
   const [accountPlugin, setAccountPlugin] = useState<PluginView | null>(null)
   const [bindings, setBindings] = useState<BindingView[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [accountDataReady, setAccountDataReady] = useState(false)
+  const [accountGeneration, setAccountGeneration] = useState(0)
+  const accountSync = useRef({
+    available: false,
+    ready: false,
+    generation: 0,
+    request: 0,
+    revision: 0,
+  })
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
   const phoneUnlinkRequests = useRef(new Set<string>())
@@ -156,6 +169,7 @@ export function SpacesPage() {
   const {
     gate,
     operatingWindows,
+    startingWindows,
     unconfirmedWindows,
     open,
     stop,
@@ -185,6 +199,7 @@ export function SpacesPage() {
       setWindows(records)
       setGroups(currentGroups)
       setLicenseStatus(license)
+      await refreshBindings()
       setError(null)
     } catch (cause) {
       setError(message(cause))
@@ -249,53 +264,86 @@ export function SpacesPage() {
 
   const accountsInstalled = accountPlugin !== null && accountPlugin.state !== 'available'
   const accountsRunning = native && accountsInstalled && accountPlugin.state === 'running'
+  const accountsReady = accountsRunning && accountDataReady
 
   useEffect(() => {
     if (!native) return
     let active = true
-    void listPlugins().then(
-      (catalog) => {
+    let pending = false
+    const sync = accountSync.current
+    function updatePlugin(plugin: PluginView | null) {
+      const available = plugin?.state === 'running'
+      if (sync.available !== available) {
+        sync.available = available
+        sync.generation += 1
+        setAccountGeneration(sync.generation)
+        sync.ready = false
+        setAccountDataReady(false)
+      }
+      setAccountPlugin(plugin)
+    }
+    async function refreshAccountPlugin() {
+      if (pending) return
+      pending = true
+      try {
+        const catalog = await listPlugins()
         if (active) {
-          setAccountPlugin(
-            catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null,
-          )
+          const plugin = catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null
+          updatePlugin(plugin)
         }
-      },
-      () => {
-        // Without a catalog the account column simply stays hidden.
-      },
-    )
+      } catch {
+        if (active) updatePlugin(null)
+      } finally {
+        pending = false
+      }
+    }
+    void refreshAccountPlugin()
+    // Keep observing availability so a stopped plugin cannot leave stale filters.
+    const timer = setInterval(() => void refreshAccountPlugin(), 3000)
     return () => {
       active = false
+      clearInterval(timer)
+      sync.available = false
+      sync.ready = false
+      sync.generation += 1
     }
   }, [native])
 
-  // The host has no push channel: look again while the plugin is coming up.
-  useEffect(() => {
-    if (!native || accountsRunning) return
-    const timer = setInterval(() => {
-      void listPlugins().then(
-        (catalog) => {
-          setAccountPlugin(
-            catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null,
-          )
-        },
-        () => undefined,
-      )
-    }, 3000)
-    return () => clearInterval(timer)
-  }, [native, accountsRunning])
-
   const refreshBindings = useCallback(async () => {
-    if (!accountsRunning) return
-    const [bound, catalog] = await Promise.all([listBindings(), listAccounts()])
-    setBindings(bound.items)
-    setAccounts(catalog.items)
+    const sync = accountSync.current
+    if (!accountsRunning || !sync.available) return
+    const generation = sync.generation
+    const request = ++sync.request
+    const current = () =>
+      sync.available && sync.generation === generation && sync.request === request
+    while (current()) {
+      const revision = sync.revision
+      try {
+        const [bound, catalog] = await Promise.all([listBindings(), listAccounts()])
+        if (!current()) return
+        // A completed write makes this snapshot stale; keep its local result and reread.
+        if (sync.revision !== revision) continue
+        setBindings(bound.items)
+        setAccounts(catalog.items)
+        sync.ready = true
+        setAccountDataReady(true)
+        return
+      } catch (cause) {
+        if (!current()) return
+        if (sync.revision !== revision) continue
+        sync.ready = false
+        setAccountDataReady(false)
+        throw cause
+      }
+    }
   }, [accountsRunning])
 
   function applySavedAccount(saved: Account) {
+    accountSync.current.revision += 1
     setAccounts((current) =>
-      current.map((account) => (account.id === saved.id ? saved : account)),
+      current.some((account) => account.id === saved.id)
+        ? current.map((account) => (account.id === saved.id ? saved : account))
+        : [...current, saved],
     )
     setBindings((current) =>
       current.map((binding) =>
@@ -315,8 +363,18 @@ export function SpacesPage() {
     )
   }
 
+  async function refreshAfterBinding() {
+    accountSync.current.revision += 1
+    await refreshBindings()
+  }
+
   async function unlinkPhone(accountId: string) {
-    if (!accountsRunning || phoneUnlinkRequests.current.has(accountId)) return
+    if (
+      !accountsReady ||
+      !accountSync.current.ready ||
+      phoneUnlinkRequests.current.has(accountId)
+    )
+      return
     phoneUnlinkRequests.current.add(accountId)
     setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
     try {
@@ -344,26 +402,12 @@ export function SpacesPage() {
   }
 
   useEffect(() => {
-    // While the plugin is down its data is not shown at all (see `bound`), so
-    // there is nothing to clear here: a stale list would only flash back.
     if (!accountsRunning) return
-    let active = true
-    void Promise.all([listBindings(), listAccounts()]).then(
-      ([bound, catalog]) => {
-        if (!active) return
-        setBindings(bound.items)
-        setAccounts(catalog.items)
-      },
-      () => {
-        if (active) setBindings([])
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [accountsRunning])
+    void refreshBindings().catch(() => undefined)
+  }, [accountGeneration, accountsRunning, refreshBindings])
 
   async function bind(window: NativeProfile, accountId: string | null) {
+    if (!accountsReady || !accountSync.current.ready || bindingPending) return
     setBindingPending(true)
     setBindingError(null)
     try {
@@ -379,7 +423,7 @@ export function SpacesPage() {
         }
         toast.success('已关联账号')
       }
-      await refreshBindings()
+      await refreshAfterBinding()
       setBinding(null)
     } catch (cause) {
       setBindingError(message(cause))
@@ -389,12 +433,18 @@ export function SpacesPage() {
   }
 
   async function confirmDuplicate() {
-    if (conflict === null) return
+    if (
+      conflict === null ||
+      !accountsReady ||
+      !accountSync.current.ready ||
+      bindingPending
+    )
+      return
     setBindingPending(true)
     setBindingError(null)
     try {
       await bindAccount(conflict.accountId, conflict.window.id, true)
-      await refreshBindings()
+      await refreshAfterBinding()
       toast.success('已关联账号')
       setConflict(null)
       setBinding(null)
@@ -407,9 +457,24 @@ export function SpacesPage() {
   }
 
   function bindingOf(windowId: string): BindingView | null {
-    // Bindings come from the plugin: without a running process they are stale.
-    if (!accountsRunning) return null
+    // An absent binding is meaningful only after both account lists have loaded.
+    if (!accountsReady) return null
     return bindings.find((entry) => entry.windowId === windowId) ?? null
+  }
+
+  function accountSummaryOf(binding: BindingView | null): BindingView['account'] {
+    if (binding === null) return null
+    return (
+      accounts.find((account) => account.id === binding.accountId) ??
+      (binding.account?.id === binding.accountId ? binding.account : null)
+    )
+  }
+
+  function matchesAccountFilter(windowId: string): boolean {
+    if (!accountsReady || accountFilter === 'all') return true
+    const binding = bindingOf(windowId)
+    if (accountFilter === 'unbound') return binding === null
+    return accountSummaryOf(binding)?.status === accountFilter
   }
 
   /** The plugin stores opaque window ids; only this page knows their names. */
@@ -429,7 +494,8 @@ export function SpacesPage() {
           : window.groupId === groupFilter)) &&
       `${window.name} ${window.settings.platform} ${window.settings.note} ${window.version} ${window.proxy ?? ''}`
         .toLowerCase()
-        .includes(query.toLowerCase()),
+        .includes(query.toLowerCase()) &&
+      matchesAccountFilter(window.id),
   )
   const selected = windows.find((window) => window.id === viewing)
   const transferWindows = windows.filter((window) => selectedIds.has(window.id))
@@ -515,7 +581,7 @@ export function SpacesPage() {
           {accountsInstalled ? (
             <div className="space-stat" data-tone="warning">
               <span>已关联账号</span>
-              <strong>{bound}</strong>
+              <strong>{accountsReady ? bound : '—'}</strong>
             </div>
           ) : null}
         </div>
@@ -533,20 +599,54 @@ export function SpacesPage() {
           />
         </div>
         {native ? (
-          <Select value={groupFilter} onValueChange={setGroupFilter}>
-            <SelectTrigger aria-label="筛选分组" className="w-36">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部分组</SelectItem>
-              <SelectItem value="ungrouped">未分组</SelectItem>
-              {groups.map((group) => (
-                <SelectItem key={group.id} value={group.id}>
-                  {group.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <>
+            <Select value={groupFilter} onValueChange={setGroupFilter}>
+              <SelectTrigger aria-label="筛选分组" className="w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部分组</SelectItem>
+                  <SelectItem value="ungrouped">未分组</SelectItem>
+                  {groups.map((group) => (
+                    <SelectItem key={group.id} value={group.id}>
+                      {group.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select
+              value={accountsReady ? accountFilter : 'all'}
+              onValueChange={setAccountFilter}
+              disabled={!accountsReady}
+            >
+              <SelectTrigger
+                aria-label="筛选账号状态"
+                className="w-36"
+                title={
+                  accountsReady
+                    ? undefined
+                    : accountsRunning
+                      ? '账号资料暂不可用，请刷新后筛选'
+                      : '账号插件不可用，暂不筛选账号状态'
+                }
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">全部账号状态</SelectItem>
+                  {ACCOUNT_STATUSES.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {STATUS_LABELS[status]}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="unbound">未关联账号</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </>
         ) : null}
         <TransferToolbar
           native={native}
@@ -602,12 +702,20 @@ export function SpacesPage() {
                 account === null
                   ? null
                   : (accounts.find((item) => item.id === account.accountId) ?? null)
+              const summary = accountSummaryOf(account)
+              const accountNameClass =
+                summary?.status === 'blocked' ? 'text-destructive' : undefined
               const phoneUnlinkPending = linked !== null && unlinkingPhones.has(linked.id)
-              const busy = operatingWindows.has(window.id)
+              const starting = !window.running && startingWindows.has(window.id)
+              const checkingProxy =
+                gate?.window.id === window.id && gate.stage.stage === 'checking'
+              const busy = operatingWindows.has(window.id) || starting
               const unconfirmed = unconfirmedWindows.has(window.id)
               return (
                 <TableRow
                   key={window.id}
+                  className={starting ? 'space-row-starting' : undefined}
+                  aria-busy={starting || undefined}
                   data-running={window.running ? 'true' : undefined}
                   data-state={selectedIds.has(window.id) ? 'selected' : undefined}
                 >
@@ -656,18 +764,22 @@ export function SpacesPage() {
                   </TableCell>
                   {accountsInstalled ? (
                     <TableCell>
-                      {account === null ? (
+                      {!accountsReady ? (
+                        <span className="table-muted">账号资料暂不可用</span>
+                      ) : account === null ? (
                         <AccountQuickAdd
                           window={window}
-                          ready={accountsRunning}
+                          ready={accountsReady}
                           accounts={accounts}
-                          onSaved={refreshBindings}
+                          onSaved={refreshAfterBinding}
                         />
                       ) : (
                         <span className="account-cell-row">
                           <span className="account-cell">
                             {linked === null ? (
-                              <strong>{account.account?.account ?? '账号已删除'}</strong>
+                              <strong className={accountNameClass}>
+                                {summary?.account ?? '账号已删除'}
+                              </strong>
                             ) : (
                               <Button
                                 type="button"
@@ -676,19 +788,21 @@ export function SpacesPage() {
                                 className="h-auto max-w-full justify-start p-0 text-left"
                                 aria-label={`编辑 ${linked.account} 的账号资料`}
                                 title="编辑账号资料"
-                                disabled={!accountsRunning || phoneUnlinkPending}
+                                disabled={!accountsReady || phoneUnlinkPending}
                                 onClick={() => setEditingAccount(linked)}
                               >
-                                <strong>{linked.account}</strong>
+                                <strong className={accountNameClass}>
+                                  {linked.account}
+                                </strong>
                                 <Pencil data-icon="inline-end" />
                               </Button>
                             )}
                             <span className="account-cell-meta">
-                              <small>
-                                {account.account
-                                  ? STATUS_LABELS[account.account.status]
-                                  : ''}
-                              </small>
+                              {summary === null ? null : (
+                                <Badge variant={statusVariant(summary.status)}>
+                                  {STATUS_LABELS[summary.status]}
+                                </Badge>
+                              )}
                               {linked === null ? null : (
                                 <AccountPhoneCopy account={linked} />
                               )}
@@ -701,7 +815,7 @@ export function SpacesPage() {
                                   aria-label={`解绑 ${linked.account} 的手机号`}
                                   aria-busy={phoneUnlinkPending}
                                   title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
-                                  disabled={!accountsRunning || phoneUnlinkPending}
+                                  disabled={!accountsReady || phoneUnlinkPending}
                                   onClick={() => void unlinkPhone(linked.id)}
                                 >
                                   {phoneUnlinkPending ? (
@@ -720,7 +834,7 @@ export function SpacesPage() {
                             <AccountSmsPopover
                               key={linked.id}
                               account={linked}
-                              ready={accountsRunning && !phoneUnlinkPending}
+                              ready={accountsReady && !phoneUnlinkPending}
                               onSaved={applySavedAccount}
                             />
                           )}
@@ -750,19 +864,27 @@ export function SpacesPage() {
                   </TableCell>
                   <TableCell>
                     <span
-                      className="status-badge"
+                      className="status-badge min-w-24 justify-center"
                       data-state={
-                        unconfirmed ? 'pending' : window.running ? 'running' : 'stopped'
+                        unconfirmed || starting
+                          ? 'pending'
+                          : window.running
+                            ? 'running'
+                            : 'stopped'
                       }
                     >
                       <span className="status-dot" aria-hidden="true" />
                       {unconfirmed
                         ? '状态待确认'
-                        : busy
-                          ? '操作中'
-                          : window.running
-                            ? '运行中'
-                            : '已停止'}
+                        : checkingProxy
+                          ? '检测代理中'
+                          : starting
+                            ? '启动中'
+                            : busy
+                              ? '操作中'
+                              : window.running
+                                ? '运行中'
+                                : '已停止'}
                     </span>
                   </TableCell>
                   <TableCell>
@@ -770,6 +892,7 @@ export function SpacesPage() {
                       <Button
                         variant={window.running ? 'outline' : 'default'}
                         size="sm"
+                        className="w-28"
                         disabled={busy && !unconfirmed}
                         onClick={() =>
                           void (unconfirmed
@@ -790,13 +913,15 @@ export function SpacesPage() {
                         )}
                         {unconfirmed
                           ? '确认状态'
-                          : busy
-                            ? window.running
-                              ? '正在停止…'
-                              : '正在打开…'
-                            : window.running
-                              ? '停止'
-                              : '打开'}
+                          : checkingProxy
+                            ? '正在检测…'
+                            : busy
+                              ? startingWindows.has(window.id)
+                                ? '正在打开…'
+                                : '正在停止…'
+                              : window.running
+                                ? '停止'
+                                : '打开'}
                       </Button>
                       <Button
                         variant="ghost"
@@ -831,6 +956,7 @@ export function SpacesPage() {
                               variant="ghost"
                               size="icon"
                               aria-label={`更多操作 ${window.name}`}
+                              disabled={!accountsReady}
                             >
                               <Ellipsis />
                             </Button>
@@ -839,7 +965,7 @@ export function SpacesPage() {
                             <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
                             {linked === null ? null : (
                               <DropdownMenuItem
-                                disabled={!accountsRunning || phoneUnlinkPending}
+                                disabled={!accountsReady || phoneUnlinkPending}
                                 onSelect={() => setEditingAccount(linked)}
                               >
                                 <Pencil />
@@ -847,7 +973,9 @@ export function SpacesPage() {
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuItem
+                              disabled={!accountsReady || bindingPending}
                               onSelect={() => {
+                                if (!accountsReady || !accountSync.current.ready) return
                                 setBindingError(null)
                                 setBinding(window)
                               }}
@@ -860,7 +988,7 @@ export function SpacesPage() {
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
                                   variant="destructive"
-                                  disabled={bindingPending}
+                                  disabled={!accountsReady || bindingPending}
                                   onSelect={() => void bind(window, null)}
                                 >
                                   <Unlink />
@@ -980,7 +1108,14 @@ export function SpacesPage() {
               {accountsInstalled ? (
                 <div className="about-row">
                   <dt>Vinted 账号</dt>
-                  <dd>{bindingOf(selected.id)?.account?.account ?? '未关联'}</dd>
+                  <dd>
+                    {!accountsReady
+                      ? '账号资料暂不可用'
+                      : bindingOf(selected.id) === null
+                        ? '未关联'
+                        : (accountSummaryOf(bindingOf(selected.id))?.account ??
+                          '账号已删除')}
+                  </dd>
                 </div>
               ) : null}
               <div className="about-row">
@@ -1117,9 +1252,12 @@ export function SpacesPage() {
           <AccountEditor
             key={editingAccount.id}
             account={editingAccount}
-            ready={accountsRunning}
+            ready={accountsReady}
             description={`修改会同步到关联此账号的 ${bindings.filter((item) => item.accountId === editingAccount.id).length} 个窗口，不改变关联关系。`}
             onSave={async (input) => {
+              if (!accountsReady || !accountSync.current.ready) {
+                throw new Error('账号资料暂不可用，请刷新后重试。')
+              }
               const { item } = await saveAccount(input)
               applySavedAccount(item)
               toast.success('账号已保存')
@@ -1140,8 +1278,8 @@ export function SpacesPage() {
           <AccountBindDialog
             key={binding.id}
             window={binding}
-            ready={accountsRunning}
-            accounts={accountsRunning ? accounts : []}
+            ready={accountsReady}
+            accounts={accountsReady ? accounts : []}
             current={bindingOf(binding.id)?.accountId ?? null}
             pending={bindingPending}
             error={bindingError}
@@ -1170,6 +1308,7 @@ export function SpacesPage() {
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
               <AlertDialogAction
+                disabled={!accountsReady || bindingPending}
                 onClick={(event) => {
                   event.preventDefault()
                   void confirmDuplicate()
@@ -1320,7 +1459,7 @@ function AccountQuickAdd({
     <Popover
       open={open}
       onOpenChange={(next) => {
-        if (pending) return
+        if (pending || (next && !ready)) return
         if (next) {
           setTab(
             accounts.length === 0 || account !== '' || password !== '' || note !== ''
@@ -1348,10 +1487,10 @@ function AccountQuickAdd({
         </PopoverHeader>
         <Tabs value={tab} onValueChange={setTab} className="account-popover-tabs">
           <TabsList aria-label="关联账号方式">
-            <TabsTrigger value="existing" disabled={pending}>
+            <TabsTrigger value="existing" disabled={pending || !ready}>
               选择已有
             </TabsTrigger>
-            <TabsTrigger value="create" disabled={pending}>
+            <TabsTrigger value="create" disabled={pending || !ready}>
               新建账号
             </TabsTrigger>
           </TabsList>
@@ -1365,7 +1504,7 @@ function AccountQuickAdd({
                   <Input
                     aria-label="搜索账号池"
                     placeholder="搜索账号，点选关联"
-                    disabled={pending}
+                    disabled={pending || !ready}
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                   />
@@ -1378,7 +1517,7 @@ function AccountQuickAdd({
                       role="option"
                       aria-selected={false}
                       className="account-option"
-                      disabled={pending}
+                      disabled={pending || !ready}
                       onClick={() => void link(item)}
                     >
                       <span>
@@ -1408,7 +1547,7 @@ function AccountQuickAdd({
                   autoComplete="off"
                   placeholder="登录邮箱或用户名"
                   maxLength={190}
-                  disabled={pending}
+                  disabled={pending || !ready}
                   value={account}
                   onChange={(event) => setAccount(event.target.value)}
                 />
@@ -1421,7 +1560,7 @@ function AccountQuickAdd({
                   autoComplete="off"
                   placeholder="登录密码"
                   maxLength={190}
-                  disabled={pending}
+                  disabled={pending || !ready}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                 />
@@ -1432,7 +1571,7 @@ function AccountQuickAdd({
                   id={`quick-note-${window.id}`}
                   placeholder="可选"
                   maxLength={200}
-                  disabled={pending}
+                  disabled={pending || !ready}
                   value={note}
                   onChange={(event) => setNote(event.target.value)}
                 />
@@ -1450,7 +1589,7 @@ function AccountQuickAdd({
                 >
                   取消
                 </Button>
-                <Button type="submit" size="sm" disabled={pending}>
+                <Button type="submit" size="sm" disabled={pending || !ready}>
                   {pending ? '保存中…' : '保存并关联'}
                 </Button>
               </div>
@@ -1500,13 +1639,14 @@ function AccountBindDialog({
           <Input
             aria-label="搜索可关联账号"
             placeholder="搜索账号或备注"
+            disabled={pending || !ready}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
         {!ready ? (
           <p className="text-sm text-muted-foreground">
-            Vinted 账号插件还没就绪，稍后再试。
+            账号资料暂不可用，请刷新后重试。
           </p>
         ) : accounts.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -1522,7 +1662,7 @@ function AccountBindDialog({
                 aria-selected={selected === account.id}
                 className="account-option"
                 data-selected={selected === account.id ? 'true' : undefined}
-                disabled={pending}
+                disabled={pending || !ready}
                 onClick={() => setSelected(account.id)}
               >
                 <span>
@@ -1547,9 +1687,9 @@ function AccountBindDialog({
           取消
         </Button>
         <Button
-          disabled={pending || selected === null}
+          disabled={!ready || pending || selected === null}
           onClick={() => {
-            if (selected !== null) onConfirm(selected)
+            if (ready && !pending && selected !== null) onConfirm(selected)
           }}
         >
           {pending ? '正在关联…' : '关联'}

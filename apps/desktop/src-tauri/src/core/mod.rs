@@ -1,3 +1,4 @@
+pub mod external_url;
 pub mod group_store;
 pub mod kernel_service;
 pub mod license_service;

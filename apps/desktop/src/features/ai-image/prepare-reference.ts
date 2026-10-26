@@ -58,46 +58,73 @@ export interface PreparedReference {
   bytes: number
 }
 
-export async function prepareReference(file: File): Promise<PreparedReference> {
+export async function prepareReference(
+  file: File,
+  signal?: AbortSignal,
+): Promise<PreparedReference> {
+  signal?.throwIfAborted()
   const invalid = checkReference(file)
   if (invalid !== null) throw new Error(invalid)
 
-  const source = await decode(file)
-  const size = targetSize(source.width, source.height)
+  let source: ImageBitmap | HTMLImageElement
+  try {
+    source = await decode(file)
+  } catch {
+    signal?.throwIfAborted()
+    throw new Error('无法解码参考图片，请重新下载或换一张图片。')
+  }
   const canvas = document.createElement('canvas')
-  canvas.width = size.width
-  canvas.height = size.height
-  const context = canvas.getContext('2d')
-  if (context === null) {
+  try {
+    signal?.throwIfAborted()
+    if (
+      !Number.isFinite(source.width) ||
+      !Number.isFinite(source.height) ||
+      source.width <= 0 ||
+      source.height <= 0
+    ) {
+      throw new Error('无法读取图片尺寸，请换一张图片。')
+    }
+    const size = targetSize(source.width, source.height)
+    canvas.width = size.width
+    canvas.height = size.height
+    const context = canvas.getContext('2d')
+    if (context === null) throw new Error('当前环境无法处理图片。')
+    // JPEG has no alpha: fill white so transparent photos do not turn black.
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, size.width, size.height)
+    context.drawImage(source, 0, 0, size.width, size.height)
+
+    let blob: Blob | null = null
+    for (const quality of QUALITIES) {
+      signal?.throwIfAborted()
+      blob = await encode(canvas, quality)
+      signal?.throwIfAborted()
+      if (blob !== null && blob.size <= 1.5 * 1024 * 1024) break
+    }
+    if (blob === null || blob.size === 0 || blob.type !== 'image/jpeg') {
+      throw new Error('图片转为 JPEG 失败，请重试或换一张图片。')
+    }
+    if (blob.size > MAX_REFERENCE_BYTES) throw new Error('转换后的图片超过 8 MB。')
+
+    const buffer = new Uint8Array(await blob.arrayBuffer())
+    signal?.throwIfAborted()
+    const chunk = 0x8000
+    let binary = ''
+    for (let offset = 0; offset < buffer.length; offset += chunk) {
+      binary += String.fromCharCode(...buffer.subarray(offset, offset + chunk))
+    }
+    const stem = file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'reference'
+    return {
+      base64: btoa(binary),
+      mime: 'image/jpeg',
+      name: `${stem}.jpg`,
+      width: size.width,
+      height: size.height,
+      bytes: buffer.byteLength,
+    }
+  } finally {
     if ('close' in source) source.close()
-    throw new Error('当前环境无法处理图片。')
-  }
-  // JPEG has no alpha: fill white so transparent PNGs do not turn black.
-  context.fillStyle = '#ffffff'
-  context.fillRect(0, 0, size.width, size.height)
-  context.drawImage(source, 0, 0, size.width, size.height)
-  if ('close' in source) source.close()
-
-  let blob: Blob | null = null
-  for (const quality of QUALITIES) {
-    blob = await encode(canvas, quality)
-    if (blob !== null && blob.size <= 1.5 * 1024 * 1024) break
-  }
-  if (blob === null) throw new Error('图片转码失败。')
-
-  const buffer = new Uint8Array(await blob.arrayBuffer())
-  const chunk = 0x8000
-  let binary = ''
-  for (let offset = 0; offset < buffer.length; offset += chunk) {
-    binary += String.fromCharCode(...buffer.subarray(offset, offset + chunk))
-  }
-  const stem = file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'reference'
-  return {
-    base64: btoa(binary),
-    mime: 'image/jpeg',
-    name: `${stem}.jpg`,
-    width: size.width,
-    height: size.height,
-    bytes: buffer.byteLength,
+    canvas.width = 0
+    canvas.height = 0
   }
 }

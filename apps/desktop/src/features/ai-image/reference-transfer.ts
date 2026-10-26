@@ -1,6 +1,7 @@
 import type { AiImageHandoff, GenerationSource } from '@/lib/page-handoff'
 import { loadVintedImage } from '@/features/vinted-monitor/api'
 import { uploadImage, uploadRemoteImage } from './api'
+import { prepareReference } from './prepare-reference'
 import { generationSource } from './source'
 import type { StoredFile } from './types'
 
@@ -32,9 +33,10 @@ export async function transferInitialImage(
   if (validSource?.pluginId === 'studio.vinted-monitor') {
     const blob = await loadVintedImage(validSource.itemId, image.url, signal)
     signal.throwIfAborted()
-    // File wraps the original bytes. Do not decode, resize or re-encode them.
     const file = new File([blob], image.name, { type: blob.type })
-    return uploadImage(file, signal)
+    const prepared = await prepareReference(file, signal)
+    signal.throwIfAborted()
+    return uploadImage(prepared, signal)
   }
   const stored = await uploadRemoteImage(image.url, image.name)
   signal.throwIfAborted()

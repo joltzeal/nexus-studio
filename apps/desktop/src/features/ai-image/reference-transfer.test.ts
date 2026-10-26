@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadVintedImage } from '@/features/vinted-monitor/api'
 import { uploadImage, uploadRemoteImage } from './api'
-import { prepareReference } from './prepare-reference'
+import { prepareReference, type PreparedReference } from './prepare-reference'
 import {
   handoffImages,
   MAX_REFERENCES,
@@ -27,6 +27,14 @@ const stored: StoredFile = {
   mime: 'image/png',
   bytes: 8,
 }
+const prepared: PreparedReference = {
+  base64: '/9j/2Q==',
+  mime: 'image/jpeg',
+  name: 'mug-1.jpg',
+  width: 1200,
+  height: 800,
+  bytes: 4,
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -42,33 +50,38 @@ beforeEach(() => {
   vi.mocked(loadVintedImage).mockReset()
   vi.mocked(uploadImage).mockReset().mockResolvedValue(stored)
   vi.mocked(uploadRemoteImage).mockReset().mockResolvedValue(stored)
+  vi.mocked(prepareReference).mockReset().mockResolvedValue(prepared)
 })
 afterEach(() => vi.unstubAllGlobals())
 
 describe('gallery references', () => {
-  it('downloads the canonical source item via monitor and uploads the original Blob as File', async () => {
-    const fetchMock = vi.fn(() => {
-      throw new Error('WebView must not fetch URLs')
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 255, 10, 13])
-    vi.mocked(loadVintedImage).mockResolvedValue(new Blob([bytes], { type: 'image/png' }))
-    const signal = new AbortController().signal
-    expect(await transferInitialImage(image, source, signal)).toEqual(stored)
-    expect(loadVintedImage).toHaveBeenCalledExactlyOnceWith(
-      source.itemId,
-      image.url,
-      signal,
-    )
-    const uploaded = vi.mocked(uploadImage).mock.calls[0]?.[0]
-    expect(uploaded).toBeInstanceOf(File)
-    if (!(uploaded instanceof File)) throw new Error('Expected original File')
-    expect(uploaded.type).toBe('image/png')
-    expect(new Uint8Array(await uploaded.arrayBuffer())).toEqual(bytes)
-    expect(prepareReference).not.toHaveBeenCalled()
-    expect(uploadRemoteImage).not.toHaveBeenCalled()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
+  it.each(['image/webp', 'image/png', 'image/jpeg'])(
+    'downloads %s with the monitor route and uploads the locally converted JPEG',
+    async (mime) => {
+      const fetchMock = vi.fn(() => {
+        throw new Error('WebView must not fetch URLs')
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 255, 10, 13])
+      vi.mocked(loadVintedImage).mockResolvedValue(new Blob([bytes], { type: mime }))
+      const signal = new AbortController().signal
+      expect(await transferInitialImage(image, source, signal)).toEqual(stored)
+      expect(loadVintedImage).toHaveBeenCalledExactlyOnceWith(
+        source.itemId,
+        image.url,
+        signal,
+      )
+      const downloaded = vi.mocked(prepareReference).mock.calls[0]?.[0]
+      expect(downloaded).toBeInstanceOf(File)
+      if (!(downloaded instanceof File)) throw new Error('Expected downloaded File')
+      expect(downloaded.type).toBe(mime)
+      expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes)
+      expect(prepareReference).toHaveBeenCalledExactlyOnceWith(downloaded, signal)
+      expect(uploadImage).toHaveBeenCalledExactlyOnceWith(prepared, signal)
+      expect(uploadRemoteImage).not.toHaveBeenCalled()
+      expect(fetchMock).not.toHaveBeenCalled()
+    },
+  )
 
   it('download failure is surfaced without trying AI remote download or generating', async () => {
     vi.mocked(loadVintedImage).mockRejectedValue(new Error('采集代理失败'))
@@ -102,6 +115,32 @@ describe('gallery references', () => {
     vi.mocked(loadVintedImage).mockImplementation(async () => {
       controller.abort()
       return new Blob(['bytes'], { type: 'image/png' })
+    })
+    await expect(transferInitialImage(image, source, controller.signal)).rejects.toThrow()
+    expect(uploadImage).not.toHaveBeenCalled()
+    expect(uploadRemoteImage).not.toHaveBeenCalled()
+  })
+
+  it('conversion failure does not upload the WebP or fall back to remote download', async () => {
+    vi.mocked(loadVintedImage).mockResolvedValue(
+      new Blob(['webp'], { type: 'image/webp' }),
+    )
+    vi.mocked(prepareReference).mockRejectedValue(new Error('图片转为 JPEG 失败'))
+    await expect(
+      transferInitialImage(image, source, new AbortController().signal),
+    ).rejects.toThrow('图片转为 JPEG 失败')
+    expect(uploadImage).not.toHaveBeenCalled()
+    expect(uploadRemoteImage).not.toHaveBeenCalled()
+  })
+
+  it('cancellation during conversion prevents any later plugin upload', async () => {
+    const controller = new AbortController()
+    vi.mocked(loadVintedImage).mockResolvedValue(
+      new Blob(['webp'], { type: 'image/webp' }),
+    )
+    vi.mocked(prepareReference).mockImplementation(async () => {
+      controller.abort()
+      return prepared
     })
     await expect(transferInitialImage(image, source, controller.signal)).rejects.toThrow()
     expect(uploadImage).not.toHaveBeenCalled()

@@ -21,6 +21,7 @@ export function useWindowLaunch(
   onError: (error: string | null) => void,
 ) {
   const [operating, setOperating] = useState<Set<string>>(() => new Set())
+  const [launching, setLaunching] = useState<Set<string>>(() => new Set())
   const [unconfirmedWindows, setUnconfirmed] = useState<Set<string>>(() => new Set())
   const [gate, setGate] = useState<GateState | null>(null)
   const pendingLaunches = useRef(new Set<string>())
@@ -38,6 +39,10 @@ export function useWindowLaunch(
     if (mounted.current) setOperating((current) => toggleSelection(current, [id], busy))
   }
 
+  function markLaunching(id: string, busy: boolean) {
+    if (mounted.current) setLaunching((current) => toggleSelection(current, [id], busy))
+  }
+
   async function readRecords() {
     const records = await withDeadline(
       listNativeProfiles(),
@@ -46,6 +51,13 @@ export function useWindowLaunch(
     )
     if (mounted.current) {
       onRecords(records)
+      setUnconfirmed((current) =>
+        toggleSelection(
+          current,
+          records.filter((record) => record.running).map((record) => record.id),
+          false,
+        ),
+      )
       setGate((current) =>
         current !== null &&
         records.some((record) => record.id === current.window.id && record.running)
@@ -67,12 +79,14 @@ export function useWindowLaunch(
 
   async function launch(window: NativeProfile) {
     const request = operateNativeProfile(window.id, false)
+    markLaunching(window.id, true)
     pendingLaunches.current.add(window.id)
     let waiting = true
     const settled = () => {
       pendingLaunches.current.delete(window.id)
       if (!waiting && mounted.current) {
         markOperating(window.id, false)
+        markLaunching(window.id, false)
         void readRecords().then(
           () => {
             if (mounted.current)
@@ -93,6 +107,7 @@ export function useWindowLaunch(
       throw cause
     } finally {
       waiting = false
+      if (!pendingLaunches.current.has(window.id)) markLaunching(window.id, false)
     }
   }
 
@@ -209,6 +224,11 @@ export function useWindowLaunch(
   return {
     gate,
     operatingWindows: new Set([...operating, ...unconfirmedWindows]),
+    startingWindows: new Set([
+      ...launching,
+      ...unconfirmedWindows,
+      ...(gate?.stage.stage === 'checking' ? [gate.window.id] : []),
+    ]),
     unconfirmedWindows,
     open,
     stop,

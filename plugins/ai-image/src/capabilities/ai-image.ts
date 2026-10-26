@@ -337,11 +337,11 @@ export class AiImage {
     }
     this.uploads.delete(input.uploadId)
     const bytes = Buffer.concat(upload.chunks)
-    const file = await this.images.write(
-      this.idFactory(),
-      upload.mime,
-      new Uint8Array(bytes),
-    )
+    const mime = sniffImageMime(bytes)
+    if (mime === null || mime !== upload.mime) {
+      throw invalidRequest('图片实际格式与上传类型不符，请重新转换并上传')
+    }
+    const file = await this.images.write(this.idFactory(), mime, new Uint8Array(bytes))
     return { file: { ...file, name: input.name } }
   }
 

@@ -23,6 +23,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from '@/components/ui/toast'
 import { getItem, reviewItem, starItem } from './api'
+import { VintedExternalLink } from './external-link'
 import { ItemImage } from './item-image'
 import { safeExternalUrl, sourceCountry } from './item-filters'
 import { SellerProfile } from './seller-profile'
@@ -163,7 +164,6 @@ function ItemDetail({
   const [note, setNote] = useState(item.statusNote ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const url = safeExternalUrl(item.url)
   async function review(status: ReviewStatus) {
     if (busy) return
     setBusy(true)
@@ -233,6 +233,7 @@ function ItemDetail({
           <Star data-icon="inline-start" fill={item.starred ? 'currentColor' : 'none'} />
           {item.starred ? '已加星标' : '添加星标'}
         </Button>
+        <VintedExternalLink href={item.url}>查看原商品</VintedExternalLink>
       </div>
       {!aiImageReady ? (
         <p className="text-xs text-muted-foreground">
@@ -371,11 +372,6 @@ function ItemDetail({
               </div>
             ))}
           </dl>
-          {url ? (
-            <a href={url} target="_blank" rel="noreferrer" className="vinted-text-link">
-              查看原商品
-            </a>
-          ) : null}
           <section className="flex flex-col gap-2" aria-label="卖家资料">
             <h3 className="text-sm font-medium">卖家资料</h3>
             {item.sellerProfile ? (

@@ -9,7 +9,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ItemImage } from './item-image'
-import { safeExternalUrl } from './item-filters'
+import { VintedExternalLink } from './external-link'
 import { formatTime, type SellerSummary } from './types'
 
 export function SellerProfile({
@@ -20,7 +20,6 @@ export function SellerProfile({
   itemId: string
 }) {
   const name = seller.name || seller.login || seller.externalId
-  const url = safeExternalUrl(seller.profileUrl)
   const values = [
     ['卖家 ID', seller.externalId],
     ['商品数', seller.itemCount],
@@ -50,11 +49,7 @@ export function SellerProfile({
         ) : null}
         <div>
           <p className="font-medium">{name}</p>
-          {url ? (
-            <a href={url} target="_blank" rel="noreferrer" className="vinted-text-link">
-              查看卖家主页
-            </a>
-          ) : null}
+          <VintedExternalLink href={seller.profileUrl}>查看卖家主页</VintedExternalLink>
         </div>
       </div>
       {seller.error ? (

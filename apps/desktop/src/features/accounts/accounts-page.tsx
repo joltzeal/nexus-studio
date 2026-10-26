@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Download,
   Loader2,
@@ -11,6 +13,7 @@ import {
   Search,
   Smartphone,
   Trash2,
+  Unlink,
   Upload,
 } from 'lucide-react'
 import {
@@ -37,6 +40,7 @@ import {
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { LabeledSelect } from '@/components/ui/labeled-select'
 import {
   Table,
   TableBody,
@@ -47,17 +51,28 @@ import {
 } from '@/components/ui/table'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
+import { cn } from '@/lib/utils'
 import {
   listPlugins,
   pluginHostAvailable,
   type PluginView,
 } from '@/lib/platform/native-plugins'
 import { PluginGate } from '@/features/plugins/plugin-gate'
+import { updateContact } from '@/features/sim8/accounts-bridge'
 import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-batch'
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { nativeProfilesAvailable } from '@/lib/platform/native-profiles'
 import { AccountEditor } from './account-editor'
+import {
+  ACCOUNT_PAGE_SIZES,
+  EMPTY_ACCOUNT_FILTERS,
+  filterAccounts,
+  formatAccountCreatedAt,
+  paginateAccounts,
+  type AccountFilters,
+  type AccountPageSize,
+} from './account-table'
 import {
   downloadTemplate,
   importAccounts,
@@ -68,6 +83,8 @@ import {
 } from './api'
 import {
   ACCOUNTS_PLUGIN_ID,
+  ACCOUNT_STATUSES,
+  LOGIN_METHODS,
   LOGIN_METHOD_LABELS,
   STATUS_LABELS,
   message,
@@ -90,7 +107,9 @@ export interface AccountsPageProps {
 export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const running = hostAvailable && plugin !== null && plugin.state === 'running'
   const [data, setData] = useState<AccountList | null>(null)
-  const [query, setQuery] = useState('')
+  const [filters, setFilters] = useState<AccountFilters>({ ...EMPTY_ACCOUNT_FILTERS })
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<AccountPageSize>(20)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [batchAccounts, setBatchAccounts] = useState<BatchAccount[] | null>(null)
   const [editing, setEditing] = useState<{ account: Account | null } | null>(null)
@@ -98,40 +117,65 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const [removing, setRemoving] = useState<Account | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
+  const phoneUnlinkRequests = useRef(new Set<string>())
+  const listReadSequence = useRef(0)
+  const contactRevision = useRef(0)
+  const contactSnapshots = useRef(
+    new Map<string, { revision: number; account: Account }>(),
+  )
   // Codes live for a few minutes; keeping the last read on screen beats a toast
   // that disappears before the user has typed the digits into Vinted.
   const [codes, setCodes] = useState<Record<string, OtpResult>>({})
   const [otpBusy, setOtpBusy] = useState<string | null>(null)
+  const otpRequest = useRef<{ key: string } | null>(null)
   const [otpView, setOtpView] = useState<{
     account: Account
     result: OtpResult
   } | null>(null)
 
-  const load = useCallback(async () => {
-    const result = await listAccounts()
-    setData(result)
-    const available = new Set(result.items.map((account) => account.id))
+  const applyList = useCallback((result: AccountList, contactsAtStart: number) => {
+    const items = result.items.map((account) => {
+      const saved = contactSnapshots.current.get(account.id)
+      return saved && saved.revision > contactsAtStart ? saved.account : account
+    })
+    // Preserve the full list's deletions, additions and bindings while applying
+    // contact saves that completed during this read. Never reinsert absent rows.
+    setData({ ...result, items })
+    const available = new Set(items.map((account) => account.id))
     setSelectedIds((current) => new Set([...current].filter((id) => available.has(id))))
+    // Older reads are superseded; future reads start after these successful saves.
+    contactSnapshots.current.clear()
   }, [])
+
+  const load = useCallback(async () => {
+    const sequence = ++listReadSequence.current
+    const contactsAtStart = contactRevision.current
+    const result = await listAccounts()
+    if (sequence !== listReadSequence.current) return
+    applyList(result, contactsAtStart)
+  }, [applyList])
 
   useEffect(() => {
     if (!running) return
     let active = true
+    const sequence = ++listReadSequence.current
+    const contactsAtStart = contactRevision.current
     void listAccounts().then(
       (result) => {
-        if (active) {
-          setData(result)
+        if (active && sequence === listReadSequence.current) {
+          applyList(result, contactsAtStart)
           setError(null)
         }
       },
       (cause: unknown) => {
-        if (active) setError(message(cause))
+        if (active && sequence === listReadSequence.current) setError(message(cause))
       },
     )
     return () => {
       active = false
     }
-  }, [running])
+  }, [running, applyList])
 
   async function refresh() {
     if (refreshing) return
@@ -148,33 +192,101 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
 
   const accounts = data?.items ?? []
   const bindings = data?.bindings ?? []
-  const visible = accounts.filter((account) =>
-    `${account.account} ${account.note} ${account.phone}`
-      .toLowerCase()
-      .includes(query.toLowerCase()),
-  )
+  const visible = filterAccounts(accounts, bindings, filters)
+  const pagination = paginateAccounts(visible, page, pageSize)
+  if (pagination.page !== page) setPage(pagination.page)
   const selected = accounts.filter((account) => selectedIds.has(account.id))
-  const allVisibleSelected =
-    visible.length > 0 && visible.every((account) => selectedIds.has(account.id))
-  const someVisibleSelected = visible.some((account) => selectedIds.has(account.id))
+  const allPageSelected =
+    pagination.items.length > 0 &&
+    pagination.items.every((account) => selectedIds.has(account.id))
+  const somePageSelected = pagination.items.some((account) => selectedIds.has(account.id))
   // The column only exists when at least one account can actually fetch a code.
   const hasOtpLinks = accounts.some(
     (account) => account.emailOtpUrl !== '' || account.smsOtpUrl !== '',
   )
 
+  function patchFilters(patch: Partial<AccountFilters>) {
+    setFilters((current) => ({ ...current, ...patch }))
+    setPage(1)
+  }
+
+  async function unlinkPhone(accountId: string) {
+    if (
+      !running ||
+      phoneUnlinkRequests.current.has(accountId) ||
+      editing?.account?.id === accountId ||
+      removing?.id === accountId
+    )
+      return
+    phoneUnlinkRequests.current.add(accountId)
+    setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    // Invalidate the request identity, so a late response or finally handler
+    // cannot restore the old SMS code/dialog or clear a newer request's busy state.
+    if (otpRequest.current?.key === `${accountId}:sms`) {
+      otpRequest.current = null
+      setOtpBusy(null)
+    }
+    setOtpView((current) =>
+      current?.account.id === accountId && current.result.channel === 'sms'
+        ? null
+        : current,
+    )
+    try {
+      const saved = await updateContact(accountId, { phone: '', smsOtpUrl: '' })
+      contactSnapshots.current.set(saved.id, {
+        revision: ++contactRevision.current,
+        account: saved,
+      })
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((account) =>
+                account.id === saved.id ? saved : account,
+              ),
+            }
+          : current,
+      )
+      setCodes((current) => {
+        if (current[accountId]?.channel !== 'sms') return current
+        const next = { ...current }
+        delete next[accountId]
+        return next
+      })
+      toast.success('手机号与短信接码链接已解绑')
+    } catch (cause) {
+      toast.error(`解绑手机号失败：${message(cause)}`)
+    } finally {
+      phoneUnlinkRequests.current.delete(accountId)
+      setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    }
+  }
+
   async function fetchCode(account: Account, channel: 'email' | 'sms') {
+    if (
+      !running ||
+      otpRequest.current ||
+      (channel === 'sms' && phoneUnlinkRequests.current.has(account.id))
+    )
+      return
     const key = `${account.id}:${channel}`
+    const request = { key }
+    otpRequest.current = request
     setOtpBusy(key)
     try {
       const result = await readOtp(account.id, channel)
+      if (otpRequest.current !== request) return
       setCodes((current) => ({ ...current, [account.id]: result }))
       // The dialog is the answer to the click, whether or not a code was found:
       // it shows the digits or the reason there are none, plus the raw body.
       setOtpView({ account, result })
     } catch (cause) {
-      toast.error(message(cause))
+      if (otpRequest.current === request) toast.error(message(cause))
     } finally {
-      setOtpBusy(null)
+      if (otpRequest.current === request) {
+        otpRequest.current = null
+        setOtpBusy(null)
+      }
     }
   }
 
@@ -223,7 +335,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
         <PluginGate label="Vinted 账号" hostAvailable={hostAvailable} plugin={plugin} />
       ) : (
         <>
-          <div className="collection-toolbar">
+          <div className="collection-toolbar accounts-toolbar">
             <span className="result-count">{visible.length} 个账号</span>
             <span className="result-count">已选 {selected.length}</span>
             <Button
@@ -251,15 +363,95 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                 清空选择
               </Button>
             ) : null}
+          </div>
+          <div className="accounts-filters">
             <div className="search-field">
               <Search aria-hidden="true" />
               <Input
                 aria-label="搜索账号"
                 placeholder="搜索账号、手机号或备注"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                value={filters.query}
+                onChange={(event) => patchFilters({ query: event.target.value })}
               />
             </div>
+            <LabeledSelect
+              ariaLabel="筛选账号状态"
+              value={filters.status}
+              options={[
+                { value: 'all', label: '全部状态' },
+                ...ACCOUNT_STATUSES.map((status) => ({
+                  value: status,
+                  label: STATUS_LABELS[status],
+                })),
+              ]}
+              onValueChange={(status) => {
+                if (
+                  status === 'all' ||
+                  ACCOUNT_STATUSES.some((value) => value === status)
+                ) {
+                  patchFilters({ status: status as AccountFilters['status'] })
+                }
+              }}
+            />
+            <LabeledSelect
+              ariaLabel="筛选登录方式"
+              value={filters.loginMethod}
+              options={[
+                { value: 'all', label: '全部登录方式' },
+                ...LOGIN_METHODS.map((loginMethod) => ({
+                  value: loginMethod,
+                  label: LOGIN_METHOD_LABELS[loginMethod],
+                })),
+              ]}
+              onValueChange={(loginMethod) => {
+                if (
+                  loginMethod === 'all' ||
+                  LOGIN_METHODS.some((value) => value === loginMethod)
+                ) {
+                  patchFilters({
+                    loginMethod: loginMethod as AccountFilters['loginMethod'],
+                  })
+                }
+              }}
+            />
+            <LabeledSelect
+              ariaLabel="筛选手机号"
+              value={filters.phone}
+              options={[
+                { value: 'all', label: '全部手机号' },
+                { value: 'with', label: '有手机号' },
+                { value: 'without', label: '无手机号' },
+              ]}
+              onValueChange={(phone) => {
+                if (phone === 'all' || phone === 'with' || phone === 'without') {
+                  patchFilters({ phone })
+                }
+              }}
+            />
+            <LabeledSelect
+              ariaLabel="筛选窗口关联"
+              value={filters.binding}
+              options={[
+                { value: 'all', label: '全部关联状态' },
+                { value: 'bound', label: '已关联窗口' },
+                { value: 'unbound', label: '未关联窗口' },
+              ]}
+              onValueChange={(binding) => {
+                if (binding === 'all' || binding === 'bound' || binding === 'unbound') {
+                  patchFilters({ binding })
+                }
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setFilters({ ...EMPTY_ACCOUNT_FILTERS })
+                setPage(1)
+              }}
+            >
+              重置筛选
+            </Button>
           </div>
           <div className="space-table-panel">
             <div className="panel-heading">
@@ -272,12 +464,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                 <TableRow>
                   <TableHead className="w-10">
                     <Checkbox
-                      aria-label="全选当前筛选的账号"
-                      disabled={!visible.length}
+                      aria-label="全选当前页账号"
+                      disabled={!pagination.items.length}
                       checked={
-                        allVisibleSelected
+                        allPageSelected
                           ? true
-                          : someVisibleSelected
+                          : somePageSelected
                             ? 'indeterminate'
                             : false
                       }
@@ -285,7 +477,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                         setSelectedIds((current) =>
                           toggleSelection(
                             current,
-                            visible.map((account) => account.id),
+                            pagination.items.map((account) => account.id),
                             checked === true,
                           ),
                         )
@@ -298,11 +490,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   {hasOtpLinks ? <TableHead>验证码</TableHead> : null}
                   <TableHead>状态</TableHead>
                   <TableHead>关联窗口</TableHead>
+                  <TableHead>创建时间</TableHead>
                   <TableHead className="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visible.map((account) => (
+                {pagination.items.map((account) => (
                   <TableRow
                     key={account.id}
                     data-state={selectedIds.has(account.id) ? 'selected' : undefined}
@@ -320,7 +513,13 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                     </TableCell>
                     <TableCell>
                       <span className="account-identity">
-                        <strong>{account.account}</strong>
+                        <strong
+                          className={cn(
+                            account.status === 'blocked' && 'text-destructive',
+                          )}
+                        >
+                          {account.account}
+                        </strong>
                         <CopyButton
                           value={account.account}
                           label={`复制 ${account.account}`}
@@ -333,7 +532,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                     </TableCell>
                     <TableCell>{LOGIN_METHOD_LABELS[account.loginMethod]}</TableCell>
                     <TableCell>
-                      {account.phone === '' ? (
+                      {account.phone.trim() === '' ? (
                         '—'
                       ) : (
                         <span className="account-identity">
@@ -343,6 +542,22 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                             label={`复制 ${account.account} 的手机号`}
                             done="手机号已复制"
                           />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label={`解绑 ${account.account} 的手机号`}
+                            aria-busy={unlinkingPhones.has(account.id)}
+                            title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
+                            disabled={!running || unlinkingPhones.has(account.id)}
+                            onClick={() => void unlinkPhone(account.id)}
+                          >
+                            {unlinkingPhones.has(account.id) ? (
+                              <Loader2 className="animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Unlink aria-hidden="true" />
+                            )}
+                          </Button>
                         </span>
                       )}
                     </TableCell>
@@ -352,6 +567,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           account={account}
                           state={codes[account.id] ?? null}
                           busy={otpBusy}
+                          smsDisabled={unlinkingPhones.has(account.id)}
                           onFetch={(channel) => void fetchCode(account, channel)}
                         />
                       </TableCell>
@@ -362,6 +578,9 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                       </Badge>
                     </TableCell>
                     <TableCell>{windowCountText(bindings, account.id)}</TableCell>
+                    <TableCell className="whitespace-nowrap tabular-nums">
+                      {formatAccountCreatedAt(account.createdAt)}
+                    </TableCell>
                     <TableCell>
                       <div className="table-actions">
                         <CopyButton
@@ -374,7 +593,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           variant="ghost"
                           size="icon"
                           aria-label={`编辑 ${account.account}`}
-                          onClick={() => setEditing({ account })}
+                          disabled={unlinkingPhones.has(account.id)}
+                          onClick={() => {
+                            if (!phoneUnlinkRequests.current.has(account.id)) {
+                              setEditing({ account })
+                            }
+                          }}
                         >
                           <Pencil />
                         </Button>
@@ -382,7 +606,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           variant="ghost"
                           size="icon"
                           aria-label={`删除 ${account.account}`}
-                          onClick={() => setRemoving(account)}
+                          disabled={unlinkingPhones.has(account.id)}
+                          onClick={() => {
+                            if (!phoneUnlinkRequests.current.has(account.id)) {
+                              setRemoving(account)
+                            }
+                          }}
                         >
                           <Trash2 />
                         </Button>
@@ -400,12 +629,56 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   </EmptyTitle>
                   <EmptyDescription>
                     {accounts.length
-                      ? '调整搜索条件。'
+                      ? '调整搜索或筛选条件。'
                       : '新增单个账号，或从表格文件导入。'}
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : null}
+            <div className="accounts-pagination">
+              <span className="result-count" role="status" aria-live="polite">
+                共 {pagination.total} 个账号 · 第 {pagination.page} /{' '}
+                {pagination.pageCount} 页
+              </span>
+              <div className="accounts-pagination-controls">
+                <LabeledSelect
+                  ariaLabel="每页账号数"
+                  value={String(pageSize)}
+                  options={ACCOUNT_PAGE_SIZES.map((size) => ({
+                    value: String(size),
+                    label: `每页 ${size}`,
+                  }))}
+                  onValueChange={(value) => {
+                    const size = ACCOUNT_PAGE_SIZES.find(
+                      (entry) => String(entry) === value,
+                    )
+                    if (size === undefined) return
+                    setPageSize(size)
+                    setPage(1)
+                  }}
+                />
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="上一页"
+                  disabled={pagination.page === 1}
+                  onClick={() => setPage(Math.max(1, pagination.page - 1))}
+                >
+                  <ChevronLeft aria-hidden="true" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="下一页"
+                  disabled={pagination.page === pagination.pageCount}
+                  onClick={() =>
+                    setPage(Math.min(pagination.pageCount, pagination.page + 1))
+                  }
+                >
+                  <ChevronRight aria-hidden="true" />
+                </Button>
+              </div>
+            </div>
           </div>
         </>
       )}
@@ -438,8 +711,11 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           <AccountEditor
             key={editing.account?.id ?? 'new'}
             account={editing.account}
-            ready={running}
+            ready={running && !unlinkingPhones.has(editing.account?.id ?? '')}
             onSave={async (input) => {
+              if (input.id && phoneUnlinkRequests.current.has(input.id)) {
+                throw new Error('正在解绑手机号，请稍后重试。')
+              }
               await saveAccount(input)
               await load()
               toast.success(editing.account ? '账号已保存' : '账号已添加')
@@ -484,9 +760,11 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
               <AlertDialogCancel>取消</AlertDialogCancel>
               <AlertDialogAction
                 variant="destructive"
+                disabled={unlinkingPhones.has(removing.id)}
                 onClick={(event) => {
                   event.preventDefault()
                   const target = removing
+                  if (phoneUnlinkRequests.current.has(target.id)) return
                   setRemoving(null)
                   void removeAccount(target.id)
                     .then(load)
@@ -635,11 +913,13 @@ function OtpCell({
   account,
   state,
   busy,
+  smsDisabled,
   onFetch,
 }: {
   account: Account
   state: OtpResult | null
   busy: string | null
+  smsDisabled: boolean
   onFetch: (channel: 'email' | 'sms') => void
 }) {
   const channels = [
@@ -653,6 +933,7 @@ function OtpCell({
 
   async function copy() {
     if (state === null || state.code === null) return
+    if (state.channel === 'sms' && smsDisabled) return
     if (await copyText(state.code)) toast.success('验证码已复制')
     else toast.error('复制失败，请检查剪贴板权限后重试。')
   }
@@ -670,6 +951,7 @@ function OtpCell({
             variant="ghost"
             size="icon-xs"
             aria-label="复制验证码"
+            disabled={state.channel === 'sms' && smsDisabled}
             onClick={() => void copy()}
           >
             <Copy />
@@ -684,7 +966,7 @@ function OtpCell({
               key={channel}
               variant="outline"
               size="xs"
-              disabled={busy !== null}
+              disabled={busy !== null || (channel === 'sms' && smsDisabled)}
               title={`从${channel === 'email' ? '邮箱' : '手机'}验证码链接读取最新验证码`}
               onClick={() => onFetch(channel)}
             >

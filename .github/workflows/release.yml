@@ -33,7 +33,7 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "AI scene planning, multi-view generation and source image history."
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "Validate reference image formats and accept locally converted JPEG photos from Vinted."
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "Archived item and seller management, private proxies and scoped image downloads."
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup

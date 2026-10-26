@@ -263,7 +263,7 @@ export function GenerateDialog({
         return transfers.start(
           entry.key,
           async (signal) => {
-            const prepared = await prepareReference(file)
+            const prepared = await prepareReference(file, signal)
             signal.throwIfAborted()
             return uploadImage(prepared, signal)
           },
@@ -474,7 +474,7 @@ export function GenerateDialog({
             />
             <FieldDescription>
               支持 JPEG、PNG、WebP，单张不超过 8 MB；本地选图会缩到最长边 1536 像素。
-              Vinted 选图由监控插件通过采集代理下载，传输保留原始字节。
+              Vinted 商品图会先下载到本机并转为 JPEG，再作为参考图改图。
               不上传图片时按文生图处理。
             </FieldDescription>
             {references.length > MAX_REFERENCES ? (
@@ -802,6 +802,9 @@ export function GenerateDialog({
             disabled={
               busy ||
               uploading ||
+              references.some(
+                (entry) => entry.state !== 'ready' || entry.file === null,
+              ) ||
               references.length > MAX_REFERENCES ||
               providerId === '' ||
               prompt.length > MAX_PROMPT_CHARACTERS ||

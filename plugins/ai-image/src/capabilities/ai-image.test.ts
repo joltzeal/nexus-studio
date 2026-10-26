@@ -436,6 +436,87 @@ describe('记录', () => {
     ).rejects.toThrow('图片上传未完成')
   })
 
+  it.each([
+    { bytes: Buffer.from('RIFF0000WEBPpayload'), mime: 'image/jpeg' },
+    { bytes: PNG, mime: 'image/jpeg' },
+    { bytes: Buffer.from('<html>not an image</html>'), mime: 'image/png' },
+  ])(
+    'rejects a mislabeled upload without saving it as an image',
+    async ({ bytes, mime }) => {
+      const { call, images } = setup()
+      const write = vi.spyOn(images, 'write')
+      const { uploadId } = await call<{ uploadId: string }>('image.upload.begin', {
+        mime,
+        size: bytes.length,
+      })
+      await call('image.upload.chunk', {
+        uploadId,
+        index: 0,
+        data: bytes.toString('base64'),
+      })
+      await expect(
+        call('image.upload.finish', { uploadId, name: 'reference.jpg' }),
+      ).rejects.toThrow('图片实际格式与上传类型不符')
+      expect(write).not.toHaveBeenCalled()
+      await expect(
+        call('image.upload.finish', { uploadId, name: 'reference.jpg' }),
+      ).rejects.toThrow('上传会话已失效')
+      expect(await call('image.upload.abort', { uploadId })).toEqual({ aborted: true })
+    },
+  )
+
+  it('persists converted JPEG bytes locally and sends the same JPEG to the edit provider', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-reference-jpeg-'))
+    try {
+      const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 1, 0xff, 0xd9])
+      const images = createFileImageStore(directory)
+      const { call } = setup(createMemoryStore(), images)
+      const provider = await addProvider(call)
+      const { uploadId } = await call<{ uploadId: string }>('image.upload.begin', {
+        mime: 'image/jpeg',
+        size: jpeg.byteLength,
+      })
+      await call('image.upload.chunk', {
+        uploadId,
+        index: 0,
+        data: Buffer.from(jpeg).toString('base64'),
+      })
+      const { file } = await call<{ file: { id: string; mime: string } }>(
+        'image.upload.finish',
+        {
+          uploadId,
+          name: 'vinted-product.jpg',
+        },
+      )
+      expect(file.mime).toBe('image/jpeg')
+      expect(new Uint8Array(await readFile(join(directory, `${file.id}.jpg`)))).toEqual(
+        jpeg,
+      )
+      stubFetch(async (url, init) => {
+        expect(url).toBe('https://api.openai.com/v1/images/edits')
+        expect(init?.body).toBeInstanceOf(FormData)
+        const form = init?.body as FormData
+        const input = form.get('image[]') as File
+        expect(input.name).toBe(`${file.id}.jpg`)
+        expect(input.type).toBe('image/jpeg')
+        expect(new Uint8Array(await input.arrayBuffer())).toEqual(jpeg)
+        return imageResponse()
+      })
+      const { record } = await call<{ record: GenerationRecord }>('image.generate', {
+        providerId: provider.id,
+        mode: 'edit',
+        presetId: null,
+        prompt: 'A natural room',
+        size: '1024x1024',
+        count: 1,
+        inputFileIds: [file.id],
+      })
+      expect((await settle(call, record.id)).status).toBe('success')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('导出会把输出复制到 exports 目录（内存存储拒绝）', async () => {
     const { call } = setup()
     const provider = await addProvider(call)
