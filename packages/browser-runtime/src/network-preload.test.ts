@@ -7,14 +7,22 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const servers: Server[] = []
 const sockets = new Set<Socket>()
+const socketErrors: Error[] = []
 const preload = fileURLToPath(new URL('./network-preload.ts', import.meta.url))
+
+function trackSocket(socket: Socket) {
+  sockets.add(socket)
+  socket.on('error', (error: NodeJS.ErrnoException) => {
+    // Timeout and cancellation tests intentionally reset their peer connections.
+    if (error.code !== 'ECONNRESET') socketErrors.push(error)
+  })
+  socket.once('close', () => sockets.delete(socket))
+  return socket
+}
 
 async function listen(server: Server): Promise<number> {
   servers.push(server)
-  server.on('connection', (socket: Socket) => {
-    sockets.add(socket)
-    socket.on('close', () => sockets.delete(socket))
-  })
+  server.on('connection', trackSocket)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('No listener')
@@ -22,12 +30,20 @@ async function listen(server: Server): Promise<number> {
 }
 
 afterEach(async () => {
-  for (const socket of sockets) socket.destroy()
-  await Promise.all(
-    servers
+  const closingSockets = [...sockets].map(
+    (socket) =>
+      new Promise<void>((resolve) => {
+        socket.once('close', () => resolve())
+        socket.destroy()
+      }),
+  )
+  await Promise.all([
+    ...closingSockets,
+    ...servers
       .splice(0)
       .map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
-  )
+  ])
+  expect(socketErrors.splice(0), 'Unexpected test server socket errors').toEqual([])
 })
 
 async function runChild(proxy: string, script: string) {
@@ -83,11 +99,13 @@ async function routeTo(origin: number, route: Route) {
   if (route === 'direct') return { proxy: '', connections: () => connections }
   const tunnel = (client: Duplex, ready: () => void) => {
     connections++
-    const remote = connect(origin, '127.0.0.1', () => {
-      ready()
-      client.pipe(remote)
-      remote.pipe(client)
-    })
+    const remote = trackSocket(
+      connect(origin, '127.0.0.1', () => {
+        ready()
+        client.pipe(remote)
+        remote.pipe(client)
+      }),
+    )
     client.on('close', () => remote.destroy())
     remote.on('error', () => client.destroy())
   }
@@ -113,6 +131,27 @@ async function routeTo(origin: number, route: Route) {
   )
   return { proxy: `socks5://127.0.0.1:${port}`, connections: () => connections }
 }
+
+it('cleans up a test server connection reset by a cancelled peer', async () => {
+  let onClose: (hadError: boolean) => void = () => {}
+  const closed = new Promise<boolean>((resolve) => {
+    onClose = resolve
+  })
+  const port = await listen(
+    createServer((socket) => {
+      socket.once('close', onClose)
+      socket.write('ready to cancel')
+    }),
+  )
+  const client = connect(port, '127.0.0.1')
+  client.once('data', () => client.resetAndDestroy())
+  try {
+    expect(await closed).toBe(true)
+    expect(sockets.size).toBe(0)
+  } finally {
+    client.destroy()
+  }
+})
 
 describe('application SOCKS5 proxy', () => {
   it.each([
@@ -153,11 +192,14 @@ describe('application SOCKS5 proxy', () => {
           client.once('data', (request) => {
             if (request[0] !== 5 || request[1] !== 1) return client.destroy()
             connections++
-            const remote = connect(origin, '127.0.0.1', () => {
-              client.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]))
-              client.pipe(remote)
-              remote.pipe(client)
-            })
+            const remote = trackSocket(
+              connect(origin, '127.0.0.1', () => {
+                client.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]))
+                client.pipe(remote)
+                remote.pipe(client)
+              }),
+            )
+            client.on('close', () => remote.destroy())
             remote.on('error', () => client.destroy())
           })
         })

@@ -1,5 +1,30 @@
 # 质量门禁与验证记录
 
+## 2026-10-28 GitHub Actions 网络测试连接重置修复
+
+Foundation quality 运行 `40552125699` 的 JavaScript 作业 `122358371753`
+在 `pnpm test` 失败：162 个测试文件、2229 项用例通过，但 Vitest 捕获一个
+未处理的 `read ECONNRESET`。日志定位到 `network-preload.test.ts` 的流式截止测试。
+同提交的 `main` 和 `v0.1.18` 质量检查成功，失败原因是测试服务器未处理
+客户端主动取消引发的 TCP reset，不是桌面编译或 AI 服务商调用失败。
+
+补充真实 TCP 连接的 `resetAndDestroy()` 回归，修复前稳定复现相同未捕获异常，
+Vitest 退出码为 1。测试服务器现在跟踪入站与代理上游连接，接受取消造成的
+`ECONNRESET`，其他套接字错误收集后仍使测试失败；清理等待所有连接真正关闭，
+避免异步错误泄漏到下一用例。生产代理、超时与生图实现不变。
+
+在 macOS、Node.js 24.18.0 下直接调用工具，网络测试 31 项通过；
+随后连续复跑三次，每次 31 项通过且没有未捕获异常。
+测试入口 `tsc --noEmit`、修改文件 ESLint、Prettier 和 `git diff --check` 通过。
+检查日志与退出码存于
+`/var/folders/xq/78x2bsq94x5__k5mc4vz02600000gn/T/nexus-ci-reset-7zxxlc/`。
+本地没有构建、打包或执行 Rust 编译、测试、Clippy。
+
+2026-10-28 本轮查询 `v0.1.18` 的 Desktop release
+运行 `40552125746`：插件、macOS arm64 与 Windows 打包成功，
+macOS Intel 作业仍在运行，Release 仍为草稿。此记录不将正在运行的作业写为成功。
+本次是测试修复，不需要更改已推送的发行标签或重复上传 AI 插件。
+
 ## 2026-10-28 生图慢请求与 0.1.18 发布准备
 
 生图默认等待由 180 秒改为 15 分钟，每服务商可保存 60–3600 秒与
