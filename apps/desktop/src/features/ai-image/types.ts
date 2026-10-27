@@ -4,11 +4,14 @@ export type { GenerationSource } from '@/lib/page-handoff'
 
 export const AI_IMAGE_PLUGIN_ID = 'studio.ai-image'
 export const AI_IMAGE_CAPABILITY = 'image.provider'
+export const PROVIDER_IMAGE_TEST_METHOD = 'image.providers.testImage'
+export const PROVIDER_IMAGE_TEST_UPDATE_HINT = '请更新 AI 生图插件后使用测试生图。'
 
 export type ProviderKind = 'openai' | 'openai_compatible'
 export type RecordStatus = 'running' | 'success' | 'failed'
 export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
 export type GenerationMode = 'generate' | 'edit'
+export type ImageSize = '1024x1024' | '1024x1536' | '1536x1024' | 'auto'
 
 export interface Provider {
   id: string
@@ -98,6 +101,7 @@ export function viewStatusText(status: SceneViewRecord['status']): string {
 
 export interface GenerationRecord {
   id: string
+  purpose?: 'provider-test'
   source?: GenerationSource
   createdAt: string
   updatedAt: string
@@ -157,6 +161,7 @@ export interface GenerationRecord {
 export interface GenerationSummary extends Pick<
   GenerationRecord,
   | 'id'
+  | 'purpose'
   | 'source'
   | 'createdAt'
   | 'updatedAt'
@@ -216,7 +221,7 @@ export const PROVIDER_KINDS: { value: ProviderKind; label: string; hint: string 
   },
 ]
 
-export const SIZES: { value: string; label: string }[] = [
+export const SIZES: { value: ImageSize; label: string }[] = [
   { value: '1024x1024', label: '方形 1024 × 1024' },
   { value: '1024x1536', label: '竖图 1024 × 1536' },
   { value: '1536x1024', label: '横图 1536 × 1024' },

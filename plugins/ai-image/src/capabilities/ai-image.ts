@@ -20,6 +20,7 @@ import {
   FileChunkInputSchema,
   GenerateInputSchema,
   ProviderIdInputSchema,
+  ProviderImageTestInputSchema,
   ProviderSaveInputSchema,
   RecordIdInputSchema,
   RecordRecognizeInputSchema,
@@ -73,6 +74,7 @@ export const AI_IMAGE_METHODS = [
   'image.providers.save',
   'image.providers.remove',
   'image.providers.test',
+  'image.providers.testImage',
   'image.presets',
   'image.upload.begin',
   'image.upload.chunk',
@@ -180,6 +182,8 @@ export class AiImage {
         return await this.removeProvider(context)
       case 'image.providers.test':
         return await this.testProvider(context)
+      case 'image.providers.testImage':
+        return await this.testProviderImage(context)
       case 'image.presets':
         context.assertAlive()
         return { presets: SCENE_PRESETS.map((preset) => ({ ...preset })) }
@@ -291,6 +295,29 @@ export class AiImage {
       return { ...result, durationMs: Date.now() - started }
     } catch (error) {
       throw this.mapUpstream(error)
+    }
+  }
+
+  private async testProviderImage(context: DispatchContext): Promise<unknown> {
+    context.assertAlive()
+    const input = parseOrThrow(ProviderImageTestInputSchema, context.payload)
+    const release = this.leaseFiles(input.inputFileIds)
+    try {
+      return await this.createGeneration(
+        {
+          providerId: input.id,
+          imageModel: input.model,
+          mode: input.mode,
+          prompt: input.prompt,
+          size: input.size,
+          inputFileIds: input.inputFileIds,
+          count: 1,
+          presetId: null,
+        },
+        'provider-test',
+      )
+    } finally {
+      release()
     }
   }
 
@@ -756,7 +783,10 @@ export class AiImage {
     }
   }
 
-  private async createGeneration(input: GenerateInput): Promise<unknown> {
+  private async createGeneration(
+    input: GenerateInput,
+    purpose?: 'provider-test',
+  ): Promise<unknown> {
     const provider = await this.provider(input.providerId)
     this.requireModel(provider, 'image', input.imageModel)
     if (input.mode === 'edit' && input.inputFileIds.length === 0) {
@@ -764,6 +794,7 @@ export class AiImage {
     }
     if (
       input.mode === 'edit' &&
+      purpose !== 'provider-test' &&
       input.scenePlan === undefined &&
       (input.visionProviderId == null || input.visionModel == null)
     ) {
@@ -859,6 +890,7 @@ export class AiImage {
     const timestamp = this.now().toISOString()
     const record: GenerationRecord = {
       id: this.idFactory(),
+      ...(purpose === undefined ? {} : { purpose }),
       ...(input.source === undefined ? {} : { source: input.source }),
       ...(scenePlan === undefined ? {} : { scenePlan }),
       createdAt: timestamp,
@@ -880,7 +912,12 @@ export class AiImage {
       outputVision: null,
       inputs: files,
       outputs: [],
-      title: scenePlan?.plan.result?.title ?? null,
+      title:
+        purpose === 'provider-test'
+          ? input.mode === 'edit'
+            ? '测试图生图'
+            : '测试生图'
+          : (scenePlan?.plan.result?.title ?? null),
       description: scenePlan?.plan.result?.description ?? null,
       error: null,
       durationMs: null,
@@ -889,6 +926,17 @@ export class AiImage {
     this.running.add(record.id)
     try {
       const pruned = await this.store.mutate((document) => {
+        if (
+          purpose === 'provider-test' &&
+          document.records.some(
+            (entry) =>
+              entry.purpose === 'provider-test' &&
+              entry.providerId === input.providerId &&
+              this.running.has(entry.id),
+          )
+        ) {
+          throw invalidRequest('该服务商已有生图测试正在进行，请在生成记录中查看')
+        }
         this.requireModel(
           this.providerIn(document, input.providerId),
           'image',
@@ -905,9 +953,11 @@ export class AiImage {
             model: vision.model,
           }
         }
-        document.selections.image = {
-          providerId: input.providerId,
-          model: input.imageModel,
+        if (purpose !== 'provider-test') {
+          document.selections.image = {
+            providerId: input.providerId,
+            model: input.imageModel,
+          }
         }
         document.records.unshift(record)
         return this.prune(document.records, MAX_RECORDS, this.running)
@@ -1006,6 +1056,9 @@ export class AiImage {
         inputs: snapshot.mode === 'edit' ? inputs : [],
         timeoutMs: IMAGE_TIMEOUT_MS,
       })
+      if (snapshot.purpose === 'provider-test' && outputs.length !== 1) {
+        throw new UpstreamError('invalid-response', '生图测试必须恰好返回一张图片')
+      }
       for (const output of outputs) {
         stored.push(await this.images.write(this.idFactory(), output.mime, output.bytes))
       }
@@ -1232,6 +1285,7 @@ export class AiImage {
     const interruptedRecord = (record: GenerationRecord) =>
       !this.running.has(record.id) &&
       (record.outputVision?.status === 'running' ||
+        (record.purpose === 'provider-test' && record.status === 'running') ||
         (record.scenePlan !== undefined && record.status === 'running') ||
         (this.sceneViewsSucceeded(record) &&
           (record.status !== 'success' ||
@@ -1256,6 +1310,11 @@ export class AiImage {
             status: 'failed',
             error: '上次成片识图已中断，请按原模型与原图片重试。',
           }
+        }
+        if (record.purpose === 'provider-test' && record.status === 'running') {
+          record.status = 'failed'
+          record.stage = 'done'
+          record.error = '上次生图测试已中断，请手动重试；不会自动重发请求。'
         }
         if (
           record.scenePlan !== undefined &&

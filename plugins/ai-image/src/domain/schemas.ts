@@ -48,6 +48,24 @@ export const ProviderIdInputSchema = z.strictObject({
   id: z.string().trim().min(1).max(64),
 })
 
+export const ProviderImageTestInputSchema = z
+  .strictObject({
+    id: z.string().trim().min(1).max(64),
+    model: z.string().trim().min(1).max(120),
+    mode: z.enum(['generate', 'edit']),
+    prompt: z
+      .string()
+      .min(1)
+      .max(12000)
+      .refine((value) => value.trim() !== ''),
+    size: z.enum(['1024x1024', '1024x1536', '1536x1024', 'auto']),
+    inputFileIds: z.array(z.string().trim().min(1).max(64)).max(1),
+  })
+  .refine((input) => input.inputFileIds.length === (input.mode === 'edit' ? 1 : 0), {
+    path: ['inputFileIds'],
+    message: '图生图测试需要一张参考图，文生图测试不使用参考图',
+  })
+
 export const UploadBeginInputSchema = z.strictObject({
   mime: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   size: z.number().int().min(1).max(MAX_INPUT_BYTES),

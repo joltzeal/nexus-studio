@@ -116,6 +116,8 @@ import { toggleSelection, withDeadline } from './transfer-state'
 import { useWindowLaunch } from './use-window-launch'
 import { WindowNote } from './window-note'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
+import { AccountSmsWaitButton } from './account-sms-wait-button'
+import { smsWaits } from '@/features/accounts/sms-wait-runtime'
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -339,6 +341,10 @@ export function SpacesPage() {
   }, [accountsRunning])
 
   function applySavedAccount(saved: Account) {
+    const previous = accounts.find((account) => account.id === saved.id)
+    if (previous?.phone !== saved.phone || previous.smsOtpUrl !== saved.smsOtpUrl) {
+      smsWaits.stop(saved.id)
+    }
     accountSync.current.revision += 1
     setAccounts((current) =>
       current.some((account) => account.id === saved.id)
@@ -376,6 +382,7 @@ export function SpacesPage() {
     )
       return
     phoneUnlinkRequests.current.add(accountId)
+    smsWaits.stop(accountId)
     setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
     try {
       const saved = await updateContact(accountId, { phone: '', smsOtpUrl: '' })
@@ -408,6 +415,8 @@ export function SpacesPage() {
 
   async function bind(window: NativeProfile, accountId: string | null) {
     if (!accountsReady || !accountSync.current.ready || bindingPending) return
+    const previous = bindings.find((entry) => entry.windowId === window.id)?.accountId
+    if (previous && previous !== accountId) smsWaits.stopWindow(window.id)
     setBindingPending(true)
     setBindingError(null)
     try {
@@ -805,6 +814,14 @@ export function SpacesPage() {
                               )}
                               {linked === null ? null : (
                                 <AccountPhoneCopy account={linked} />
+                              )}
+                              {linked === null ? null : (
+                                <AccountSmsWaitButton
+                                  account={linked}
+                                  windowId={window.id}
+                                  windowName={window.name}
+                                  ready={accountsReady && !phoneUnlinkPending}
+                                />
                               )}
                               {linked === null || linked.phone.trim() === '' ? null : (
                                 <Button
@@ -1212,6 +1229,7 @@ export function SpacesPage() {
                 variant="destructive"
                 onClick={(event) => {
                   event.preventDefault()
+                  smsWaits.stopWindow(target.id)
                   void deleteNativeProfile(target.id)
                     .then(load)
                     .then(() => setDeleting(null))

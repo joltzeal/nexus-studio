@@ -403,3 +403,77 @@ describe('provider catalog lifecycle', () => {
     },
   )
 })
+
+describe('provider image test lifecycle', () => {
+  it('passes declared methods and refreshes history even after configuration closes', async () => {
+    props.plugin = plugin({ methods: ['image.providers.testImage'] })
+    await settle()
+    generation().onConfigure()
+    const sheet = configuration()
+    expect(sheet.pluginMethods).toEqual(['image.providers.testImage'])
+    expect(sheet.onTestSubmitted).toBeTypeOf('function')
+
+    sheet.onOpenChange(false)
+    await sheet.onTestSubmitted()
+
+    expect(listRecords).toHaveBeenCalledTimes(2)
+    expect(listProviders).toHaveBeenCalledTimes(2)
+    expect(components(render(), ProvidersSheet)).toHaveLength(0)
+  })
+
+  it.each([
+    { label: 'process', next: plugin({ status: { pid: 200, running: 0 } }) },
+    { label: 'methods', next: plugin({ methods: ['image.providers.testImage'] }) },
+  ])(
+    'rekeys tests on $label replacement and ignores old submit callbacks',
+    async ({ next }) => {
+      await settle()
+      generation().onConfigure()
+      const before = components(render(), ProvidersSheet)[0]!
+      expect(before.props.onTestSubmitted).toBeTypeOf('function')
+
+      props.plugin = next
+      await settle()
+      const after = components(render(), ProvidersSheet)[0]!
+      expect(after.key).not.toEqual(before.key)
+      const reads = vi.mocked(listRecords).mock.calls.length
+      const catalogs = vi.mocked(listProviders).mock.calls.length
+      const writes = hooks.writes
+      await before.props.onTestSubmitted()
+
+      expect(listRecords).toHaveBeenCalledTimes(reads)
+      expect(listProviders).toHaveBeenCalledTimes(catalogs)
+      expect(hooks.writes).toBe(writes)
+    },
+  )
+
+  it.each(['success', 'failure'] as const)(
+    'ignores a history refresh %s from a replaced process',
+    async (outcome) => {
+      await settle()
+      generation().onConfigure()
+      const sheet = configuration()
+      expect(sheet.onTestSubmitted).toBeTypeOf('function')
+      const oldRead = deferred<Awaited<ReturnType<typeof listRecords>>>()
+      vi.mocked(listRecords).mockReturnValueOnce(oldRead.promise)
+      const submitted = sheet.onTestSubmitted()
+      props.plugin = plugin({ status: { pid: 200, running: 0 } })
+      await settle()
+      const writes = hooks.writes
+
+      if (outcome === 'failure') oldRead.reject(new Error('Old history error'))
+      else
+        oldRead.resolve({
+          items: [],
+          total: 999,
+          page: 0,
+          pageSize: 10,
+          storageDurable: false,
+        })
+      await submitted
+
+      expect(hooks.writes).toBe(writes)
+      expect(errors()).toEqual([])
+    },
+  )
+})

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { callPlugin } from '@/lib/platform/native-plugins'
-import { generate, listRecords, uploadImage, type GenerateInput } from './api'
+import {
+  generate,
+  listRecords,
+  testProviderImage,
+  uploadImage,
+  type GenerateInput,
+  type ProviderImageTestInput,
+} from './api'
 import { SOURCE_UPDATE_HINT } from './source'
 import type { GenerationRecord, GenerationSource, RecordPage } from './types'
 
@@ -157,6 +164,66 @@ describe('explicit model requests', () => {
     await generate(text)
     expect(vi.mocked(callPlugin).mock.calls[0]?.[3]).toEqual(text)
     expect(callPlugin).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('actual provider image tests', () => {
+  const testInput: ProviderImageTestInput = {
+    id: 'saved-provider',
+    model: 'saved-image-model',
+    mode: 'generate',
+    prompt: ' A blue ceramic cup on a table.\n',
+    size: '1024x1024',
+    inputFileIds: [],
+  }
+
+  it.each(['generate', 'edit'] as const)(
+    'submits exactly one %s test without generation preferences or vision fields',
+    async (mode) => {
+      const request = {
+        ...testInput,
+        mode,
+        inputFileIds: mode === 'edit' ? ['uploaded-jpeg'] : [],
+      }
+      const record = { id: 'test-record', purpose: 'provider-test' } as GenerationRecord
+      vi.mocked(callPlugin).mockResolvedValue({ record })
+
+      expect(await testProviderImage(request)).toEqual({ record })
+
+      expect(callPlugin).toHaveBeenCalledExactlyOnceWith(
+        'studio.ai-image',
+        'image.provider',
+        'image.providers.testImage',
+        request,
+        30000,
+      )
+    },
+  )
+
+  it.each<Partial<ProviderImageTestInput>>([
+    { id: ' ' },
+    { model: '' },
+    { prompt: ' \n ' },
+    { prompt: 'a'.repeat(12001) },
+    { inputFileIds: ['unexpected'] },
+    { mode: 'edit', inputFileIds: [] },
+    { mode: 'edit', inputFileIds: ['one', 'two'] },
+    { mode: 'edit', inputFileIds: [' '] },
+  ])('rejects invalid test input before RPC (case %#)', async (change) => {
+    await expect(testProviderImage({ ...testInput, ...change })).rejects.toThrow()
+    expect(callPlugin).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    '插件未声明该方法',
+    'No available channel for this image model; check the gateway model channel',
+  ])('preserves the actionable failure without a paid fallback: %s', async (error) => {
+    vi.mocked(callPlugin).mockRejectedValue(new Error(error))
+
+    await expect(testProviderImage(testInput)).rejects.toThrow(error)
+
+    expect(callPlugin).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(callPlugin).mock.calls[0]?.[2]).toBe('image.providers.testImage')
   })
 })
 

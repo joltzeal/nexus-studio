@@ -34,6 +34,10 @@ import {
   pluginPageValue,
 } from '@/features/plugins/plugin-navigation'
 import { watchPluginCatalog } from '@/features/plugins/watch-plugin-catalog'
+import {
+  disposeSmsWaits,
+  reconcileSmsWaitPlugin,
+} from '@/features/accounts/sms-wait-runtime'
 import { onAiImageHandoff, type AiImageHandoff } from '@/lib/page-handoff'
 import { APP_VERSION } from '@/lib/platform/app-info'
 import { notifyPluginCatalogChanged } from '@/lib/platform/plugin-catalog-events'
@@ -89,12 +93,16 @@ export function AppShell() {
 
   useEffect(() => {
     const stop = watchPluginCatalog(
-      (catalog) => navigate({ type: 'catalog', plugins: catalog }),
+      (catalog) => {
+        reconcileSmsWaitPlugin(catalog)
+        navigate({ type: 'catalog', plugins: catalog })
+      },
       () => navigate({ type: 'error' }),
     )
     window.addEventListener('focus', notifyPluginCatalogChanged)
     return () => {
       stop()
+      disposeSmsWaits()
       window.removeEventListener('focus', notifyPluginCatalogChanged)
     }
   }, [])

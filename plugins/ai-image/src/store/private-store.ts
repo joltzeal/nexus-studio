@@ -111,6 +111,7 @@ const scenePlanSnapshotSchema = z.looseObject({
 const recordSchema = z
   .looseObject({
     id: z.string(),
+    purpose: z.literal('provider-test').optional(),
     source: GenerationSourceSchema.optional(),
     scenePlan: scenePlanSnapshotSchema.optional(),
     createdAt: z.string(),

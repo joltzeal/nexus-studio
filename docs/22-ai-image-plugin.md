@@ -3,12 +3,16 @@
 本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
 宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
 当前工作区在已发布的上传格式校验、Vinted 原图本机 JPEG 转换及商品资料预填基础上，
-将模型配置收敛为识图、生图两项。插件版本为 `1.2.0`，要求主程序 `0.1.16` 或更高版本；
+将模型配置收敛为识图、生图两项。插件版本为 `1.3.0`，要求主程序 `0.1.17` 或更高版本；
 主程序与插件需配套更新，实际发布结果见[插件商店](25-plugin-market.md)。
+
+`1.3.0` 新增服务商实际生图测试与通道错误诊断。
+该入口需要新的主程序页面与包含 `image.providers.testImage` 的插件配套使用，
+旧插件只保留连通性检查。详细接口与参考项目核对见[生图测试](33-ai-provider-testing.md)。
 
 ## 当前能力
 
-插件提供 `image.provider` 的 20 个 RPC 方法，支持 `openai` 与 `openai_compatible`。
+插件提供 `image.provider` 的 21 个 RPC 方法，支持 `openai` 与 `openai_compatible`。
 生图只走 `/images/generations` 与 `/images/edits`；识图使用 `/chat/completions`。
 不支持网站自动化生图、chat 多模态出图或异步轮询型供应商通道。
 
@@ -344,28 +348,29 @@ outputVision?: {
 
 ## RPC 方法
 
-| 方法                      | 作用                                    |
-| ------------------------- | --------------------------------------- |
-| `image.providers.list`    | 提供方列表，不回传明文 Key              |
-| `image.providers.save`    | 保存配置；省略 Key/visionModel 保留原值 |
-| `image.providers.remove`  | 删除配置，保留生成记录                  |
-| `image.providers.test`    | GET /models 连通性检查                  |
-| `image.presets`           | 返回 100 个场景，含 category            |
-| `image.upload.begin`      | 开始分块上传                            |
-| `image.upload.chunk`      | 追加图片分块                            |
-| `image.upload.finish`     | 校验总大小并写入图片                    |
-| `image.upload.abort`      | 放弃上传会话                            |
-| `image.upload.remote`     | 插件下载远程图片，按实际字节校验格式    |
-| `image.file.chunk`        | 页面分块读取插件图片                    |
-| `image.plans.create`      | 后台识图并规划场景与多视角提示词        |
-| `image.plans.get`         | 读取规划进度、结果或错误                |
-| `image.records.list`      | 按状态与来源筛选，返回倒序分页摘要      |
-| `image.records.get`       | 读取记录，含两类识图状态                |
-| `image.records.remove`    | 删除记录及其图片文件                    |
-| `image.records.retry`     | 重试生成，沿用模型与选图快照            |
-| `image.records.recognize` | 识别单张成片，或按原选择重试            |
-| `image.records.export`    | 复制输出到私有 exports 目录             |
-| `image.generate`          | 创建记录并后台执行                      |
+| 方法                        | 作用                                     |
+| --------------------------- | ---------------------------------------- |
+| `image.providers.list`      | 提供方列表，不回传明文 Key               |
+| `image.providers.save`      | 保存配置；省略 Key/visionModel 保留原值  |
+| `image.providers.remove`    | 删除配置，保留生成记录                   |
+| `image.providers.test`      | GET /models 连通性检查                   |
+| `image.providers.testImage` | 实际生成一张测试图，返回可轮询的生成记录 |
+| `image.presets`             | 返回 100 个场景，含 category             |
+| `image.upload.begin`        | 开始分块上传                             |
+| `image.upload.chunk`        | 追加图片分块                             |
+| `image.upload.finish`       | 校验总大小并写入图片                     |
+| `image.upload.abort`        | 放弃上传会话                             |
+| `image.upload.remote`       | 插件下载远程图片，按实际字节校验格式     |
+| `image.file.chunk`          | 页面分块读取插件图片                     |
+| `image.plans.create`        | 后台识图并规划场景与多视角提示词         |
+| `image.plans.get`           | 读取规划进度、结果或错误                 |
+| `image.records.list`        | 按状态与来源筛选，返回倒序分页摘要       |
+| `image.records.get`         | 读取记录，含两类识图状态                 |
+| `image.records.remove`      | 删除记录及其图片文件                     |
+| `image.records.retry`       | 重试生成，沿用模型与选图快照             |
+| `image.records.recognize`   | 识别单张成片，或按原选择重试             |
+| `image.records.export`      | 复制输出到私有 exports 目录              |
+| `image.generate`            | 创建记录并后台执行                       |
 
 同时最多 6 个上传会话；单图最多 8 MiB，仅接受 PNG/JPEG/WebP。
 分块上传完成时检查文件签名与声明 MIME 一致后才落盘；格式不符时丢弃上传会话，
@@ -385,6 +390,9 @@ outputVision?: {
   预设 ID 和逐张视角提示词；生成使用单独的 `n=1` 改图请求，详见智能场景规划文档。
 - 超时：生图 180 秒、识图 60 秒、连通性/远程图片下载各 20 秒。
 - 保留既有尺寸映射与错误分类，供应商不支持模型/格式时显示真实错误。
+- `/models` 成功不表示生图或改图通道可用；需分别实际测试对应模式。
+  无可用通道错误提示检查当前 Key 分组、模型名称与服务商通道状态，保留 HTTP 状态和请求标识；
+  不自动改名、换模型、切换接口或重试付费请求。
 
 生图服务商收到提示词和改图参考图；独立识图服务商只收到所选的一张源图或成片。
 生成前识图的观察结果还会发送给生图服务商。详情成片识图的结构化结果仅保存与显示。

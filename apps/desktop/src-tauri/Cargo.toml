@@ -1,6 +1,6 @@
 [package]
 name = "nexus-desktop"
-version = "0.1.16"
+version = "0.1.17"
 description = "Nexus consumer desktop workspace"
 authors = ["Nexus Studio"]
 rust-version = "1.93"

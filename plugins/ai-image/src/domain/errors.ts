@@ -84,6 +84,7 @@ export function isPluginFailure(value: unknown): value is PluginFailure {
  */
 export type UpstreamReason =
   | 'auth'
+  | 'channel-unavailable'
   | 'rate-limit'
   | 'timeout'
   | 'not-found'
@@ -94,47 +95,59 @@ export type UpstreamReason =
 
 export class UpstreamError extends Error {
   readonly reason: UpstreamReason
-  /** Upstream message, kept for diagnostics only; never shown verbatim in logs. */
+  /** The adapter redacts upstream content before retaining this bounded excerpt. */
   readonly detail: string | null
+  readonly status: number | null
+  readonly requestId: string | null
 
-  constructor(reason: UpstreamReason, detail: string | null = null) {
+  constructor(
+    reason: UpstreamReason,
+    detail: string | null = null,
+    diagnostics: { status?: number; requestId?: string | null } = {},
+  ) {
     super(reason)
     this.name = 'UpstreamError'
     this.reason = reason
-    this.detail = detail
+    this.detail = detail?.slice(0, 220) ?? null
+    this.status = diagnostics.status ?? null
+    this.requestId = diagnostics.requestId?.slice(0, 128) ?? null
   }
 }
 
 /** Maps an upstream reason onto the RPC vocabulary the page already handles. */
 export function upstreamFailure(error: UpstreamError): PluginFailure {
+  const diagnostics = [
+    error.status === null ? null : `HTTP ${error.status}`,
+    error.detail,
+    error.requestId === null ? null : `request id: ${error.requestId}`,
+  ].filter((value) => value !== null && value !== '')
+  const message = (text: string) =>
+    diagnostics.length === 0 ? text : `${text}（${diagnostics.join('；')}）`
+
   switch (error.reason) {
     case 'auth':
-      return authFailed('API Key 无效或已过期，请在模型配置中重新填写')
+      return authFailed(message('API Key 无效或已过期，请在模型配置中重新填写'))
+    case 'channel-unavailable':
+      return new PluginFailure(
+        'UNAVAILABLE',
+        message(
+          '服务商 API Key 所属分组下，该模型没有可用通道。请在服务商后台检查分组权限、模型名称和通道状态，或联系服务商',
+        ),
+        { retryable: false },
+      )
     case 'rate-limit':
-      return rateLimited('服务商限流，请稍后重试')
+      return rateLimited(message('服务商限流，请稍后重试'))
     case 'timeout':
-      return timedOut('服务商响应超时，请重试')
+      return timedOut(message('服务商响应超时，请重试'))
     case 'not-found':
-      return notConfigured(
-        error.detail === null
-          ? '模型或接口地址不存在，请检查模型名与基础地址'
-          : `模型或接口地址不存在：${error.detail}`,
-      )
+      return notConfigured(message('模型或接口地址不存在，请检查模型名与基础地址'))
     case 'bad-request':
-      return invalidRequest(
-        error.detail === null
-          ? '服务商拒绝了本次请求参数'
-          : `服务商拒绝了本次请求：${error.detail}`,
-      )
+      return invalidRequest(message('服务商拒绝了本次请求参数'))
     case 'invalid-response':
-      return unavailable('服务商返回了无法解析的数据')
+      return unavailable(message('服务商返回了无法解析的数据'))
     case 'refused':
-      return unavailable(
-        error.detail === null
-          ? '服务商拒绝了本次请求'
-          : `服务商拒绝了本次请求：${error.detail}`,
-      )
+      return unavailable(message('服务商拒绝了本次请求'))
     default:
-      return unavailable('服务商暂时不可用')
+      return unavailable(message('服务商暂时不可用'))
   }
 }

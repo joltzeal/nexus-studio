@@ -65,14 +65,16 @@ export function AiImagePage({
   const pluginId = plugin?.id
   const pluginVersion = plugin?.version
   const pluginPid = plugin?.status?.pid
+  const pluginMethodsKey = JSON.stringify(plugin?.methods ?? [])
   const providerLifecycle = useMemo(
-    () => ({ running, pluginId, pluginVersion, pluginPid }),
-    [running, pluginId, pluginVersion, pluginPid],
+    () => ({ running, pluginId, pluginVersion, pluginPid, pluginMethodsKey }),
+    [running, pluginId, pluginVersion, pluginPid, pluginMethodsKey],
   )
   const providerRequest = useRef<{
     lifecycle: typeof providerLifecycle | null
     revision: number
   }>({ lifecycle: null, revision: 0 })
+  const recordsRequest = useRef(0)
   // Rows remember the query they belong to, so switching filter or page shows the
   // skeleton during the fetch without an effect that resets state by hand.
   const [rows, setRows] = useState<{ key: string; items: GenerationSummary[] } | null>(
@@ -111,6 +113,15 @@ export function AiImagePage({
   }, [providerLifecycle])
 
   const refreshRecords = useCallback(async () => {
+    if (
+      !providerLifecycle.running ||
+      providerRequest.current.lifecycle !== providerLifecycle
+    )
+      return
+    const revision = ++recordsRequest.current
+    const isCurrent = () =>
+      providerRequest.current.lifecycle === providerLifecycle &&
+      recordsRequest.current === revision
     const key = `${filter}:${String(page)}`
     try {
       const result = await listRecords(
@@ -118,16 +129,18 @@ export function AiImagePage({
         PAGE_SIZE,
         filter === 'all' ? undefined : filter,
       )
+      if (!isCurrent()) return
       setRows({ key, items: result.items })
       setTotal(result.total)
       setStorageDurable(result.storageDurable)
       setError(null)
     } catch (cause) {
+      if (!isCurrent()) return
       setRows({ key, items: [] })
       setTotal(0)
       setError(message(cause))
     }
-  }, [page, filter])
+  }, [page, filter, providerLifecycle])
 
   const refreshProviders = useCallback(async () => {
     const request = providerRequest.current
@@ -146,22 +159,26 @@ export function AiImagePage({
     }
   }, [providerLifecycle])
 
-  // First load for the current query. The promise chain lives in the effect so
-  // state is only written from the callbacks, never synchronously on mount.
+  // Keep state writes in promise callbacks and share ordering with explicit refreshes.
   useEffect(() => {
     if (!running) return
+    const revision = ++recordsRequest.current
     const key = `${filter}:${String(page)}`
     let active = true
+    const isCurrent = () =>
+      active &&
+      providerRequest.current.lifecycle === providerLifecycle &&
+      recordsRequest.current === revision
     void listRecords(page, PAGE_SIZE, filter === 'all' ? undefined : filter).then(
       (result) => {
-        if (!active) return
+        if (!isCurrent()) return
         setRows({ key, items: result.items })
         setTotal(result.total)
         setStorageDurable(result.storageDurable)
         setError(null)
       },
       (cause: unknown) => {
-        if (!active) return
+        if (!isCurrent()) return
         setRows({ key, items: [] })
         setTotal(0)
         setError(message(cause))
@@ -169,8 +186,9 @@ export function AiImagePage({
     )
     return () => {
       active = false
+      recordsRequest.current += 1
     }
-  }, [running, page, filter])
+  }, [running, page, filter, providerLifecycle])
 
   useEffect(() => {
     if (!running) return
@@ -502,11 +520,14 @@ export function AiImagePage({
 
       {configuring ? (
         <ProvidersSheet
+          key={JSON.stringify(providerLifecycle)}
           providers={providers}
           modelConfigReady={modelConfigReady}
+          pluginMethods={plugin?.methods}
           storageDurable={storageDurable}
           onOpenChange={setConfiguring}
           onChanged={refreshProviders}
+          onTestSubmitted={refreshGeneration}
         />
       ) : null}
 

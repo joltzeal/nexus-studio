@@ -26,8 +26,11 @@ import {
 } from '@/components/ui/sheet'
 import { toast } from '@/components/ui/toast'
 import { removeProvider, saveProvider, testProvider, type ProviderInput } from './api'
+import { ProviderImageTestDialog } from './provider-image-test-dialog'
 import {
   DEFAULT_OPENAI_BASE_URL,
+  PROVIDER_IMAGE_TEST_METHOD,
+  PROVIDER_IMAGE_TEST_UPDATE_HINT,
   PROVIDER_KINDS,
   message,
   type Provider,
@@ -72,22 +75,39 @@ export function ProvidersSheet({
   providers,
   storageDurable,
   modelConfigReady = true,
+  pluginMethods,
   onOpenChange,
   onChanged,
+  onTestSubmitted,
 }: {
   providers: Provider[]
   storageDurable: boolean
   modelConfigReady?: boolean
+  pluginMethods?: string[] | undefined
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<void>
+  onTestSubmitted: () => Promise<void>
 }) {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [pending, setPending] = useState(false)
   const [testing, setTesting] = useState<string | null>(null)
+  const [imageTestProvider, setImageTestProvider] = useState<Provider | null>(null)
   const [removing, setRemoving] = useState<Provider | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const disabled = pending || !modelConfigReady
+  const canTestImage = pluginMethods?.includes(PROVIDER_IMAGE_TEST_METHOD) === true
+  const editedProvider = providers.find((provider) => provider.id === form.id)
+  const unsavedProviderId =
+    editedProvider &&
+    (form.name !== editedProvider.name ||
+      form.kind !== editedProvider.kind ||
+      form.baseUrl !== editedProvider.baseUrl ||
+      form.apiKey !== '' ||
+      form.imageModel !== editedProvider.imageModel ||
+      form.visionModel !== (editedProvider.visionModel ?? ''))
+      ? editedProvider.id
+      : null
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
@@ -149,7 +169,7 @@ export function ProvidersSheet({
   }
 
   async function test(provider: Provider) {
-    if (disabled || testing !== null) return
+    if (disabled || testing !== null || provider.id === unsavedProviderId) return
     setTesting(provider.id)
     setError(null)
     setNotice(null)
@@ -202,6 +222,14 @@ export function ProvidersSheet({
               请先更新 AI 生图插件，再配置识图与生图模型。
             </FieldDescription>
           )}
+          <FieldDescription>
+            连接测试只读取模型列表，不代表生图通道可用。测试生图会实际生成一张图片，由服务商计费。
+          </FieldDescription>
+          {canTestImage ? null : (
+            <FieldDescription role="status">
+              {PROVIDER_IMAGE_TEST_UPDATE_HINT}
+            </FieldDescription>
+          )}
           <section className="ai-provider-list" aria-label="已保存的服务商">
             {providers.length === 0 ? (
               <p className="ai-muted">还没有保存服务商。填写下面的表单后可以开始生成。</p>
@@ -224,19 +252,51 @@ export function ProvidersSheet({
                     {provider.imageModel || '未配置'}
                     {provider.hasApiKey ? ` · Key ${provider.apiKeyHint}` : ''}
                   </p>
+                  {provider.id === unsavedProviderId ? (
+                    <FieldDescription role="status">
+                      请先保存修改后再测试。
+                    </FieldDescription>
+                  ) : null}
                 </div>
-                <div className="ai-provider-actions">
+                <div className="ai-provider-actions flex-wrap justify-end">
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={testing !== null || disabled}
+                    disabled={
+                      testing !== null || disabled || provider.id === unsavedProviderId
+                    }
                     onClick={() => void test(provider)}
                   >
                     {testing === provider.id ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
                     ) : null}
-                    测试
+                    测试连接
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      disabled ||
+                      provider.id === unsavedProviderId ||
+                      !canTestImage ||
+                      !provider.hasApiKey ||
+                      !provider.imageModel.trim()
+                    }
+                    onClick={() => {
+                      if (
+                        disabled ||
+                        provider.id === unsavedProviderId ||
+                        !canTestImage ||
+                        !provider.hasApiKey ||
+                        !provider.imageModel.trim()
+                      )
+                        return
+                      setImageTestProvider({ ...provider })
+                    }}
+                  >
+                    测试生图
                   </Button>
                   <Button
                     type="button"
@@ -363,7 +423,7 @@ export function ProvidersSheet({
                 <Input
                   id="ai-provider-image"
                   maxLength={120}
-                  placeholder="如 gpt-image-1"
+                  placeholder="填写服务商支持的生图模型标识"
                   value={form.imageModel}
                   disabled={disabled}
                   onChange={(event) => update('imageModel', event.target.value)}
@@ -428,6 +488,16 @@ export function ProvidersSheet({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {imageTestProvider === null ? null : (
+        <ProviderImageTestDialog
+          provider={imageTestProvider}
+          pluginMethods={pluginMethods}
+          modelConfigReady={modelConfigReady}
+          onClose={() => setImageTestProvider(null)}
+          onChanged={onTestSubmitted}
+        />
+      )}
     </Sheet>
   )
 }

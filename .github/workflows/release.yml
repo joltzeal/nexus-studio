@@ -33,7 +33,7 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "需要主程序 0.1.16：只保留识图、生图两种模型；识图返回商品标题、描述和生图提示词；每个服务商至少配置一种模型，任务明确选择并记住上次服务商与模型。"
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "需要主程序 0.1.17：新增服务商实际生图测试，支持文生图和单张参考图；显示模型通道不可用原因与请求标识；复用正式生成流程并保留测试记录。"
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "Archived item and seller management, private proxies and scoped image downloads."
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
@@ -56,6 +56,7 @@ jobs:
               'image.providers.save',
               'image.providers.remove',
               'image.providers.test',
+              'image.providers.testImage',
               'image.presets',
               'image.upload.begin',
               'image.upload.chunk',

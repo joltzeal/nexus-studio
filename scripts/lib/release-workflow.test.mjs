@@ -25,6 +25,7 @@ const requiredMethods = {
     'image.providers.save',
     'image.providers.remove',
     'image.providers.test',
+    'image.providers.testImage',
     'image.presets',
     'image.upload.begin',
     'image.upload.chunk',

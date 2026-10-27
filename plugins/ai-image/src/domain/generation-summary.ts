@@ -21,6 +21,7 @@ function preview(value: string, maxBytes: number): string {
 export function generationSummary(record: GenerationRecord): GenerationSummary {
   return {
     id: record.id,
+    ...(record.purpose === undefined ? {} : { purpose: record.purpose }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     status: record.status,

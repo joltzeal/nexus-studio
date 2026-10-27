@@ -144,6 +144,7 @@ export interface SceneViewRecord extends SceneView {
 
 export interface GenerationRecord {
   id: string
+  purpose?: 'provider-test'
   /** Absent on legacy records and generations started without a source. */
   source?: GenerationSource
   scenePlan?: {
@@ -194,6 +195,7 @@ export interface GenerationRecord {
 export interface GenerationSummary extends Pick<
   GenerationRecord,
   | 'id'
+  | 'purpose'
   | 'source'
   | 'createdAt'
   | 'updatedAt'

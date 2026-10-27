@@ -22,12 +22,12 @@ export interface ToastItem {
 }
 
 interface ToastOptions {
-  /** Zero keeps an actionable notice visible until dismissed. */
+  /** Zero retains a notice until dismissed, including while queued. */
   duration?: number
   action?: ToastItem['action']
 }
 
-/** Evict transient entries first, keeping the viewport bounded even if all persist. */
+/** Persistent overflow waits in order; only transient notices may be evicted. */
 export const MAX_TOASTS = 3
 
 const DURATION: Record<ToastTone, number> = {
@@ -36,6 +36,7 @@ const DURATION: Record<ToastTone, number> = {
   error: 5200,
 }
 
+// The first MAX_TOASTS are visible; the remaining persistent notices are queued.
 let items: (ToastItem & { persistent: boolean })[] = []
 let nextId = 1
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
@@ -70,8 +71,7 @@ export function pushToast(
   if (text === '') return 0
   const id = nextId++
   const duration = options.duration ?? DURATION[tone]
-  // The same message twice in a row would stack identical boxes, so the older
-  // one is replaced instead of duplicated.
+  // Replace duplicate messages across both visible and queued notices.
   for (const item of items) {
     if (item.message === text) clearTimer(item.id)
   }
@@ -86,7 +86,7 @@ export function pushToast(
     },
   ]
   while (items.length > MAX_TOASTS) {
-    const dropped = items.find((item) => !item.persistent) ?? items[0]
+    const dropped = items.find((item) => !item.persistent)
     if (dropped === undefined) break
     clearTimer(dropped.id)
     items = items.filter((item) => item.id !== dropped.id)
@@ -113,9 +113,9 @@ export function clearToasts() {
   emit()
 }
 
-/** Test seam: reads the current list without subscribing. */
+/** Test seam: reads the visible list without subscribing. */
 export function toastSnapshot(): readonly ToastItem[] {
-  return items
+  return items.slice(0, MAX_TOASTS)
 }
 
 function subscribe(listener: () => void) {
@@ -137,13 +137,14 @@ const TONE_ICON = {
 
 export function Toaster() {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  const pendingCount = Math.max(0, current.length - MAX_TOASTS)
 
   if (current.length === 0) return null
   if (typeof document === 'undefined') return null
 
   return createPortal(
     <div className="toast-viewport" role="region" aria-label="操作提示">
-      {current.map((item) => {
+      {current.slice(0, MAX_TOASTS).map((item) => {
         const Icon = TONE_ICON[item.tone]
         return (
           <div
@@ -177,6 +178,16 @@ export function Toaster() {
           </div>
         )
       })}
+      {pendingCount > 0 ? (
+        <p
+          className="rounded-md border bg-popover px-2 py-1 text-xs text-muted-foreground"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          还有 {pendingCount} 条提示待查看
+        </p>
+      ) : null}
     </div>,
     document.body,
   )

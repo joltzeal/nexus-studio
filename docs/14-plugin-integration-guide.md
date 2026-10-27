@@ -228,6 +228,11 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
   密钥不进入日志，也不作为响应字段返回。
 - 生成是“先落记录、再后台执行”：`image.generate` 立即返回 `running` 记录，
   慢任务不受 120 s 请求超时约束，页面按 2.5 s 轮询记录状态。
+- 工作区新增 `image.providers.testImage`，显式传入已保存服务商、准确模型、模式、
+  提示词、尺寸和参考图 ID，固定生成一张测试图，返回同类后台记录并标记
+  `purpose: 'provider-test'`。测试不请求识图、不改变正式任务的最近选择；
+  页面按方法清单启用，不将旧 `/models` 连通性检查当作生图成功。
+  新能力尚未发布，详见[生图测试](33-ai-provider-testing.md)。
 - 模型配置只包含 `visionModel/imageModel`，至少填写一项。
   `image.providers.list` 返回 `modelConfigVersion: 2` 与最近使用的两组服务商/模型选择；
   新调用必须明确提供模型名称，名称与当前配置不符时拒绝，不能默默替换。

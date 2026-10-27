@@ -17,7 +17,10 @@ import {
 import {
   AI_IMAGE_CAPABILITY,
   AI_IMAGE_PLUGIN_ID,
+  PROVIDER_IMAGE_TEST_METHOD,
+  SIZES,
   type GenerationRecord,
+  type ImageSize,
   type GenerationSource,
   type Provider,
   type ProviderCatalog,
@@ -73,6 +76,37 @@ export function testProvider(id: string): Promise<{
   durationMs: number
 }> {
   return call('image.providers.test', { id }, 25_000)
+}
+
+export interface ProviderImageTestInput {
+  id: string
+  model: string
+  mode: GenerationRecord['mode']
+  prompt: string
+  size: ImageSize
+  inputFileIds: string[]
+}
+
+export async function testProviderImage(
+  input: ProviderImageTestInput,
+): Promise<{ record: GenerationRecord }> {
+  if (!input.id.trim() || !input.model.trim()) {
+    throw new Error('请先保存服务商和生图模型。')
+  }
+  if (!input.prompt.trim() || input.prompt.length > 12000) {
+    throw new Error('请填写测试提示词，最多 12000 字符，不会自动截断。')
+  }
+  if (
+    !['generate', 'edit'].includes(input.mode) ||
+    !SIZES.some((size) => size.value === input.size) ||
+    input.inputFileIds.length !== (input.mode === 'edit' ? 1 : 0) ||
+    input.inputFileIds.some((id) => !id.trim())
+  ) {
+    throw new Error(
+      '请选择有效的测试方式与尺寸；文生图不带参考图，图生图需要一张参考图。',
+    )
+  }
+  return call(PROVIDER_IMAGE_TEST_METHOD, input)
 }
 
 export function listPresets(): Promise<{ presets: ScenePreset[] }> {
