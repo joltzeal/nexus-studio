@@ -24,7 +24,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
-import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toast'
 import { removeProvider, saveProvider, testProvider, type ProviderInput } from './api'
 import {
@@ -42,9 +41,7 @@ interface FormState {
   baseUrl: string
   apiKey: string
   imageModel: string
-  textModel: string
   visionModel: string
-  supportsVision: boolean
 }
 
 function emptyForm(): FormState {
@@ -54,10 +51,8 @@ function emptyForm(): FormState {
     kind: 'openai',
     baseUrl: DEFAULT_OPENAI_BASE_URL,
     apiKey: '',
-    imageModel: 'gpt-image-1',
-    textModel: 'gpt-4o-mini',
+    imageModel: '',
     visionModel: '',
-    supportsVision: true,
   }
 }
 
@@ -69,20 +64,20 @@ function formOf(provider: Provider): FormState {
     baseUrl: provider.baseUrl,
     apiKey: '',
     imageModel: provider.imageModel,
-    textModel: provider.textModel,
     visionModel: provider.visionModel ?? '',
-    supportsVision: provider.supportsVision,
   }
 }
 
 export function ProvidersSheet({
   providers,
   storageDurable,
+  modelConfigReady = true,
   onOpenChange,
   onChanged,
 }: {
   providers: Provider[]
   storageDurable: boolean
+  modelConfigReady?: boolean
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<void>
 }) {
@@ -92,6 +87,7 @@ export function ProvidersSheet({
   const [removing, setRemoving] = useState<Provider | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const disabled = pending || !modelConfigReady
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
@@ -110,15 +106,13 @@ export function ProvidersSheet({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (pending) return
+    if (disabled) return
     if (
       form.name.trim() === '' ||
       form.baseUrl.trim() === '' ||
-      (form.imageModel.trim() === '' &&
-        form.textModel.trim() === '' &&
-        form.visionModel.trim() === '')
+      (form.imageModel.trim() === '' && form.visionModel.trim() === '')
     ) {
-      setError('请填写名称、基础地址，以及至少一个生图、文案或识图模型。')
+      setError('请填写名称、基础地址，以及至少一个识图或生图模型。')
       return
     }
     if (form.id === null && form.apiKey.trim() === '') {
@@ -133,18 +127,20 @@ export function ProvidersSheet({
       kind: form.kind,
       baseUrl: form.baseUrl.trim(),
       imageModel: form.imageModel.trim(),
-      textModel: form.textModel.trim(),
       visionModel: form.visionModel.trim(),
-      supportsVision: form.supportsVision,
       ...(form.id === null ? {} : { id: form.id }),
       ...(form.apiKey.trim() === '' ? {} : { apiKey: form.apiKey.trim() }),
     }
     try {
       const saved = await saveProvider(input)
-      await onChanged()
       setForm(formOf(saved))
       setNotice(`已保存「${saved.name}」`)
       toast.success('模型配置已保存')
+      try {
+        await onChanged()
+      } catch (cause) {
+        setError(`模型配置已保存，但列表刷新失败：${message(cause)}`)
+      }
     } catch (cause) {
       setError(message(cause))
     } finally {
@@ -153,7 +149,7 @@ export function ProvidersSheet({
   }
 
   async function test(provider: Provider) {
-    if (testing !== null) return
+    if (disabled || testing !== null) return
     setTesting(provider.id)
     setError(null)
     setNotice(null)
@@ -170,15 +166,20 @@ export function ProvidersSheet({
   }
 
   async function confirmRemove() {
-    if (removing === null) return
+    if (disabled || removing === null) return
     setPending(true)
     setError(null)
+    setNotice(null)
     try {
       await removeProvider(removing.id)
-      await onChanged()
       if (form.id === removing.id) setForm(emptyForm())
       setRemoving(null)
       toast.success('已删除模型配置')
+      try {
+        await onChanged()
+      } catch (cause) {
+        setError(`模型配置已删除，但列表刷新失败：${message(cause)}`)
+      }
     } catch (cause) {
       setError(message(cause))
     } finally {
@@ -192,11 +193,15 @@ export function ProvidersSheet({
         <SheetHeader>
           <SheetTitle>模型配置</SheetTitle>
           <SheetDescription>
-            生图、识图与文案分别配置。识图可选另一服务商；只支持 OpenAI 官方与 OpenAI
-            兼容接口。
+            识图提取商品标题、描述与生图提示词；生图负责生成/改图。每个服务商至少填写一项，也可同时配置。
           </SheetDescription>
         </SheetHeader>
         <SheetBody className="ai-provider-body">
+          {modelConfigReady ? null : (
+            <FieldDescription role="status">
+              请先更新 AI 生图插件，再配置识图与生图模型。
+            </FieldDescription>
+          )}
           <section className="ai-provider-list" aria-label="已保存的服务商">
             {providers.length === 0 ? (
               <p className="ai-muted">还没有保存服务商。填写下面的表单后可以开始生成。</p>
@@ -215,13 +220,8 @@ export function ProvidersSheet({
                   </div>
                   <p className="ai-provider-meta">{provider.baseUrl}</p>
                   <p className="ai-provider-meta">
-                    生图 {provider.imageModel || '未配置'}
-                    {provider.textModel === ''
-                      ? ' · 未配置文案模型'
-                      : ` · 文案 ${provider.textModel}`}
-                    {provider.visionModel
-                      ? ` · 识图 ${provider.visionModel}`
-                      : ' · 未配置独立识图'}
+                    识图 {provider.visionModel || '未配置'} · 生图{' '}
+                    {provider.imageModel || '未配置'}
                     {provider.hasApiKey ? ` · Key ${provider.apiKeyHint}` : ''}
                   </p>
                 </div>
@@ -230,7 +230,7 @@ export function ProvidersSheet({
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={testing !== null || pending}
+                    disabled={testing !== null || disabled}
                     onClick={() => void test(provider)}
                   >
                     {testing === provider.id ? (
@@ -242,8 +242,9 @@ export function ProvidersSheet({
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={pending}
+                    disabled={disabled}
                     onClick={() => {
+                      if (disabled) return
                       setForm(formOf(provider))
                       setNotice(null)
                       setError(null)
@@ -256,8 +257,10 @@ export function ProvidersSheet({
                     size="icon"
                     variant="ghost"
                     aria-label={`删除 ${provider.name}`}
-                    disabled={pending}
-                    onClick={() => setRemoving(provider)}
+                    disabled={disabled}
+                    onClick={() => {
+                      if (!disabled) setRemoving(provider)
+                    }}
                   >
                     <Trash2 />
                   </Button>
@@ -274,7 +277,10 @@ export function ProvidersSheet({
                   type="button"
                   size="sm"
                   variant="ghost"
-                  onClick={() => setForm(emptyForm())}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (!disabled) setForm(emptyForm())
+                  }}
                 >
                   <Plus data-icon="inline-start" />
                   新建
@@ -288,7 +294,7 @@ export function ProvidersSheet({
                   id="ai-provider-name"
                   maxLength={60}
                   value={form.name}
-                  disabled={pending}
+                  disabled={disabled}
                   onChange={(event) => update('name', event.target.value)}
                 />
               </Field>
@@ -298,7 +304,7 @@ export function ProvidersSheet({
                   id="ai-provider-kind"
                   ariaLabel="接口类型"
                   value={form.kind}
-                  disabled={pending}
+                  disabled={disabled}
                   options={PROVIDER_KINDS.map((entry) => ({
                     value: entry.value,
                     label: entry.label,
@@ -307,9 +313,6 @@ export function ProvidersSheet({
                     switchKind(value === 'openai' ? 'openai' : 'openai_compatible')
                   }
                 />
-                <FieldDescription>
-                  {PROVIDER_KINDS.find((entry) => entry.value === form.kind)?.hint}
-                </FieldDescription>
               </Field>
             </div>
             <Field>
@@ -319,7 +322,7 @@ export function ProvidersSheet({
                 maxLength={300}
                 placeholder={DEFAULT_OPENAI_BASE_URL}
                 value={form.baseUrl}
-                disabled={pending}
+                disabled={disabled}
                 onChange={(event) => update('baseUrl', event.target.value)}
               />
               <FieldDescription>
@@ -335,7 +338,7 @@ export function ProvidersSheet({
                 maxLength={400}
                 placeholder={form.id === null ? 'sk-…' : '留空表示不修改已保存的 Key'}
                 value={form.apiKey}
-                disabled={pending}
+                disabled={disabled}
                 onChange={(event) => update('apiKey', event.target.value)}
               />
               <FieldDescription>
@@ -345,57 +348,27 @@ export function ProvidersSheet({
             </Field>
             <div className="ai-form-grid">
               <Field>
+                <FieldLabel htmlFor="ai-provider-vision-model">识图模型</FieldLabel>
+                <Input
+                  id="ai-provider-vision-model"
+                  maxLength={120}
+                  placeholder="如 gpt-4o-mini"
+                  value={form.visionModel}
+                  disabled={disabled}
+                  onChange={(event) => update('visionModel', event.target.value)}
+                />
+              </Field>
+              <Field>
                 <FieldLabel htmlFor="ai-provider-image">生图模型</FieldLabel>
                 <Input
                   id="ai-provider-image"
                   maxLength={120}
-                  placeholder="gpt-image-1"
+                  placeholder="如 gpt-image-1"
                   value={form.imageModel}
-                  disabled={pending}
+                  disabled={disabled}
                   onChange={(event) => update('imageModel', event.target.value)}
                 />
-                <FieldDescription>只用于识图的服务商可留空。</FieldDescription>
               </Field>
-              <Field>
-                <FieldLabel htmlFor="ai-provider-text">文案模型</FieldLabel>
-                <Input
-                  id="ai-provider-text"
-                  maxLength={120}
-                  placeholder="gpt-4o-mini"
-                  value={form.textModel}
-                  disabled={pending}
-                  onChange={(event) => update('textModel', event.target.value)}
-                />
-                <FieldDescription>留空则不生成标题与描述。</FieldDescription>
-              </Field>
-            </div>
-            <Field>
-              <FieldLabel htmlFor="ai-provider-vision-model">识图模型</FieldLabel>
-              <Input
-                id="ai-provider-vision-model"
-                maxLength={120}
-                placeholder="填写该服务商支持图片输入的模型 ID"
-                value={form.visionModel}
-                disabled={pending}
-                onChange={(event) => update('visionModel', event.target.value)}
-              />
-              <FieldDescription>
-                独立于生图和文案模型。生成前可识别一张参考图，也可在详情选择成片识图；留空不启用，不自动复用文案模型。
-              </FieldDescription>
-            </Field>
-            <div className="ai-switch-row">
-              <Switch
-                id="ai-provider-vision"
-                checked={form.supportsVision}
-                disabled={pending}
-                onCheckedChange={(checked) => update('supportsVision', checked)}
-              />
-              <div>
-                <label htmlFor="ai-provider-vision">文案模型可直接读取成片</label>
-                <p className="ai-muted">
-                  未启用独立识图时，开启后把成片发给文案模型。已启用独立识图时，文案只读取识图结果文字。
-                </p>
-              </div>
             </div>
             {storageDurable ? null : (
               <FieldDescription>
@@ -420,7 +393,7 @@ export function ProvidersSheet({
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          <Button type="submit" form="ai-provider-form" disabled={pending}>
+          <Button type="submit" form="ai-provider-form" disabled={disabled}>
             {pending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             ) : null}
@@ -444,7 +417,7 @@ export function ProvidersSheet({
           <AlertDialogFooter>
             <AlertDialogCancel disabled={pending}>取消</AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending}
+              disabled={disabled}
               onClick={(event) => {
                 event.preventDefault()
                 void confirmRemove()

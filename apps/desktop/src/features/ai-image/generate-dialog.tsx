@@ -49,10 +49,17 @@ import {
 } from './scene-plan'
 import { useScenePlanner } from './use-scene-planner'
 import {
+  MODEL_CONFIG_UPDATE_HINT,
+  modelOptions,
+  modelValue,
+  resolveModel,
+} from './model-selection'
+import {
   SIZES,
   message,
   type GenerationSource,
   type Provider,
+  type ModelSelections,
   type ScenePreset,
   type StoredFile,
 } from './types'
@@ -71,6 +78,8 @@ interface Reference {
 
 export function GenerateDialog({
   providers,
+  selections,
+  modelConfigReady,
   presets,
   initialImages,
   source,
@@ -79,8 +88,11 @@ export function GenerateDialog({
   onOpenChange,
   onSubmitted,
   onConfigure,
+  onModelsChanged,
 }: {
   providers: Provider[]
+  selections: ModelSelections
+  modelConfigReady: boolean
   presets: ScenePreset[]
   /** Uploaded as soon as the dialog opens, so the user only writes the prompt. */
   initialImages?: InitialImage[]
@@ -90,12 +102,10 @@ export function GenerateDialog({
   onOpenChange: (open: boolean) => void
   onSubmitted: () => Promise<void>
   onConfigure: () => void
+  onModelsChanged: () => Promise<void>
 }) {
   const usable = providers.filter(
     (provider) => provider.hasApiKey && provider.imageModel.trim() !== '',
-  )
-  const visionProviders = providers.filter(
-    (provider) => provider.hasApiKey && (provider.visionModel ?? '').trim() !== '',
   )
   const [origin] = useState(source)
   const [initialReferences] = useState<Reference[]>(() =>
@@ -120,8 +130,10 @@ export function GenerateDialog({
     revision: 0,
   })
   const [prompt, setPrompt] = useState(initialPrompt ?? '')
-  const [providerChoice, setProviderChoice] = useState('')
-  const [visionProviderId, setVisionProviderId] = useState('__none__')
+  const [providerChoice, setProviderChoice] = useState<string | undefined>(undefined)
+  const [visionModelChoice, setVisionModelChoice] = useState<string | undefined>(
+    undefined,
+  )
   const [visionChoice, setVisionChoice] = useState(FIRST_REFERENCE)
   const [size, setSize] = useState('1024x1024')
   const [count, setCount] = useState(1)
@@ -129,19 +141,15 @@ export function GenerateDialog({
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
 
-  /**
-   * A handoff can open this dialog before the provider list has arrived, so the
-   * first usable provider is a fallback rather than an initial value.
-   */
-  const providerId = providerChoice === '' ? (usable[0]?.id ?? '') : providerChoice
+  // Late-loaded preferences apply until the user makes an explicit choice.
+  const imageValue = providerChoice ?? modelValue(selections.image)
+  const visionValue = visionModelChoice ?? modelValue(selections.vision)
+  const imageSelection = resolveModel(providers, 'image', imageValue)
+  const visionSelection = resolveModel(providers, 'vision', visionValue)
 
   const uploading = references.some((entry) => entry.state === 'uploading')
   const mode = references.length > 0 ? 'edit' : 'generate'
-  const planningProviderId =
-    visionProviderId === '__none__' ? (visionProviders[0]?.id ?? '') : visionProviderId
-  const planningProvider = visionProviders.find(
-    (provider) => provider.id === planningProviderId,
-  )
+  const planningProvider = visionSelection?.provider
   let planningFileId = ''
   let planningFileError: string | null = null
   try {
@@ -150,15 +158,21 @@ export function GenerateDialog({
     planningFileError = message(cause)
   }
   const planContext = {
-    providerId: planningProviderId,
+    providerId: visionSelection?.providerId ?? '',
+    model: visionSelection?.model ?? '',
     providerKey: visionProviderKey(planningProvider),
     inputFileId: planningFileId,
     requirements: prompt,
     count,
   }
-  const planner = useScenePlanner(planContext, pluginMethods, (draft) => {
-    setPresetChoice((current) => applySceneRecommendation(current, draft))
-  })
+  const planner = useScenePlanner(
+    planContext,
+    modelConfigReady ? pluginMethods : undefined,
+    (draft) => {
+      setPresetChoice((current) => applySceneRecommendation(current, draft))
+    },
+    onModelsChanged,
+  )
   const presetId = presetChoice.id
   function setPresetId(id: string | null) {
     setPresetChoice((current) => ({
@@ -302,6 +316,10 @@ export function GenerateDialog({
 
   async function submit() {
     if (busy || uploading || planner.pending) return
+    if (!modelConfigReady) {
+      setError(MODEL_CONFIG_UPDATE_HINT)
+      return
+    }
     if (planner.smart && !planner.ready) {
       setError(planner.current?.error ?? planner.problem ?? '请等待场景方案完成。')
       return
@@ -310,11 +328,20 @@ export function GenerateDialog({
       setError('最多六张参考图片，请明确移除多余图片后再提交。')
       return
     }
-    if (!usable.some((provider) => provider.id === providerId)) {
-      setError('请先在模型配置中保存一个服务商。')
+    if (!imageSelection) {
+      setError('请选择可用的生图服务商和模型。')
       return
     }
-    if (!planner.smart && presetId === null && prompt.trim() === '') {
+    if (mode === 'edit' && !visionSelection) {
+      setError('请选择可用的识图服务商和模型。')
+      return
+    }
+    if (
+      mode === 'generate' &&
+      !planner.smart &&
+      presetId === null &&
+      prompt.trim() === ''
+    ) {
       setError('自由提示词不能为空；也可以选择一个场景预设。')
       return
     }
@@ -338,15 +365,10 @@ export function GenerateDialog({
     setBusy(true)
     setError(null)
     try {
-      const recognize = !planner.smart && visionProviderId !== '__none__'
-      if (
-        recognize &&
-        !visionProviders.some((provider) => provider.id === visionProviderId)
-      ) {
-        throw new Error('已选识图服务商不可用，请重新选择或明确关闭识图。')
-      }
+      const recognize = mode === 'edit' && !planner.smart && visionSelection
       await generate({
-        providerId,
+        providerId: imageSelection.providerId,
+        imageModel: imageSelection.model,
         mode,
         presetId,
         prompt,
@@ -363,7 +385,8 @@ export function GenerateDialog({
           : {}),
         ...(recognize
           ? {
-              visionProviderId,
+              visionProviderId: recognize.providerId,
+              visionModel: recognize.model,
               visionFileId: selectedVisionFile(references, visionChoice),
             }
           : {}),
@@ -398,6 +421,7 @@ export function GenerateDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {!modelConfigReady ? <FieldError>{MODEL_CONFIG_UPDATE_HINT}</FieldError> : null}
         {origin === undefined ? null : <SourceLink source={origin} />}
 
         <div className="ai-dialog-body">
@@ -511,35 +535,16 @@ export function GenerateDialog({
                 <LabeledSelect
                   id="ai-vision-provider"
                   ariaLabel="识图服务商 / 模型"
-                  value={planner.smart ? planningProviderId : visionProviderId}
-                  disabled={busy}
-                  options={[
-                    ...(planner.smart ? [] : [{ value: '__none__', label: '不识图' }]),
-                    ...visionProviders.map((provider) => ({
-                      value: provider.id,
-                      label: `${provider.name} · ${provider.visionModel ?? ''}`,
-                    })),
-                    ...(visionProviderId !== '__none__' &&
-                    !visionProviders.some((provider) => provider.id === visionProviderId)
-                      ? [
-                          {
-                            value: visionProviderId,
-                            label: '已选服务商不可用，请重新选择',
-                          },
-                        ]
-                      : []),
-                  ]}
+                  value={visionValue}
+                  disabled={busy || !modelConfigReady}
+                  options={modelOptions(providers, 'vision', visionValue)}
                   onValueChange={(value) => {
-                    const nextId =
-                      value === '__none__' ? (visionProviders[0]?.id ?? '') : value
-                    if (nextId !== planningProviderId) planner.cancel()
-                    setVisionProviderId(value)
+                    if (value !== visionValue) planner.cancel()
+                    setVisionModelChoice(value)
                   }}
                 />
                 <FieldDescription>
-                  {planner.smart
-                    ? '用于识别商品并推荐场景和视角，完成后可编辑方案。'
-                    : '手动模式可选择先识图再生成；也可点击智能识图，先编辑推荐的场景与视角。'}{' '}
+                  有参考图时必选，一次识图生成商品标题、描述和生图提示词。可先预览推荐场景与视角。{' '}
                   <button
                     type="button"
                     className="ai-link"
@@ -550,9 +555,7 @@ export function GenerateDialog({
                   </button>
                 </FieldDescription>
               </Field>
-              {references.length === 0 &&
-              visionProviderId === '__none__' &&
-              !planner.smart ? null : (
+              {references.length === 0 && !planner.smart ? null : (
                 <Field>
                   <FieldLabel htmlFor="ai-vision-file">用于识图的参考图</FieldLabel>
                   <LabeledSelect
@@ -620,6 +623,7 @@ export function GenerateDialog({
                   size="sm"
                   disabled={
                     busy ||
+                    !modelConfigReady ||
                     planner.pending ||
                     !planner.supported ||
                     !planningProvider ||
@@ -663,7 +667,7 @@ export function GenerateDialog({
                   : planningFileError
                     ? planningFileError
                     : !planningProvider
-                      ? '请先配置独立识图模型。'
+                      ? '请选择识图服务商和模型。'
                       : `智能识图使用 ${planningProvider.name} · ${planningProvider.visionModel ?? ''}；点击后请求一次识图模型。`}
               </FieldDescription>
               {planner.smart && planner.pending ? (
@@ -733,7 +737,7 @@ export function GenerateDialog({
               />
               <FieldDescription id="ai-prompt-description">
                 {preset === null
-                  ? '自由提示词不加预设；开启独立识图时会另附观察结果。'
+                  ? '自由提示词不加预设；有参考图时会合并识图生成的提示词。'
                   : `预设「${preset.label}」保留实际标识、瑕疵与成色，并完整追加你写的要求。`}{' '}
                 {prompt.length} / {MAX_PROMPT_CHARACTERS} 字符，不自动截断。
               </FieldDescription>
@@ -744,16 +748,13 @@ export function GenerateDialog({
 
             <div className="ai-form-grid">
               <Field>
-                <FieldLabel htmlFor="ai-provider">服务商</FieldLabel>
+                <FieldLabel htmlFor="ai-provider">生图服务商 / 模型</FieldLabel>
                 <LabeledSelect
                   id="ai-provider"
-                  ariaLabel="服务商"
-                  value={providerId}
-                  disabled={busy}
-                  options={usable.map((entry) => ({
-                    value: entry.id,
-                    label: `${entry.name} · ${entry.imageModel}`,
-                  }))}
+                  ariaLabel="生图服务商 / 模型"
+                  value={imageValue}
+                  disabled={busy || !modelConfigReady}
+                  options={modelOptions(providers, 'image', imageValue)}
                   onValueChange={setProviderChoice}
                 />
                 {usable.length === 0 ? (
@@ -801,12 +802,14 @@ export function GenerateDialog({
             type="button"
             disabled={
               busy ||
+              !modelConfigReady ||
               uploading ||
               references.some(
                 (entry) => entry.state !== 'ready' || entry.file === null,
               ) ||
               references.length > MAX_REFERENCES ||
-              providerId === '' ||
+              !imageSelection ||
+              (mode === 'edit' && !visionSelection) ||
               prompt.length > MAX_PROMPT_CHARACTERS ||
               (planner.smart && !planner.ready)
             }

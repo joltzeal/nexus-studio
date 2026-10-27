@@ -28,6 +28,7 @@ import { RecordDetailDialog } from './detail-dialog'
 import { RecordImage } from './record-image'
 import { sourceHistoryAvailability } from './source-history'
 import { SourceLink } from './source-link'
+import { EMPTY_SELECTIONS } from './model-selection'
 import {
   formatTime,
   message,
@@ -35,6 +36,7 @@ import {
   statusText,
   type GenerationSource,
   type Provider,
+  type ModelSelections,
   type RecordPage,
 } from './types'
 
@@ -73,6 +75,8 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
     key: string
     page: RecordPage | null
     providers: Provider[]
+    selections: ModelSelections
+    modelConfigReady: boolean
     error: string | null
   } | null>(null)
   const key = `${page}:${revision}`
@@ -105,7 +109,14 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           setPage(lastPage)
           return
         }
-        setResult({ key, page: records, providers: providers.items, error: null })
+        setResult({
+          key,
+          page: records,
+          providers: providers.items,
+          selections: providers.selections,
+          modelConfigReady: providers.modelConfigVersion === 2,
+          error: null,
+        })
         if (
           records.items.some(
             (record) =>
@@ -115,7 +126,15 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           timer = setTimeout(() => void read(), 2500)
         }
       } catch (error) {
-        if (active) setResult({ key, page: null, providers: [], error: message(error) })
+        if (active)
+          setResult({
+            key,
+            page: null,
+            providers: [],
+            selections: EMPTY_SELECTIONS,
+            modelConfigReady: false,
+            error: message(error),
+          })
       }
     }
     void read()
@@ -275,6 +294,8 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           key={detailId}
           recordId={detailId}
           providers={result?.providers ?? []}
+          selections={result?.selections ?? EMPTY_SELECTIONS}
+          modelConfigReady={result?.modelConfigReady ?? false}
           onClose={() => {
             setDetailId(null)
             void refresh()

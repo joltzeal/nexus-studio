@@ -74,14 +74,27 @@ describe('scene plan job lifecycle', () => {
   it('ignores a delayed create result after the dialog closes or its input changes', async () => {
     const { api, session, states, notify } = setup()
     const creation = deferred<ScenePlan>()
+    const accepted = vi.fn()
     api.create.mockReturnValue(creation.promise)
-    const task = session.start(planContext, notify)
+    const task = session.start(planContext, notify, accepted)
     session.cancel()
     creation.resolve(makePlan())
     await task
     await vi.advanceTimersByTimeAsync(60_000)
     expect(states.map((state) => state.status)).toEqual(['creating'])
+    expect(accepted).toHaveBeenCalledTimes(1)
     expect(api.get).not.toHaveBeenCalled()
+  })
+
+  it('refreshes preferences once on acceptance, not on polling or read recovery', async () => {
+    const { api, session, notify } = setup()
+    const accepted = vi.fn()
+    api.create.mockResolvedValue(running())
+    api.get.mockResolvedValueOnce(running()).mockResolvedValueOnce(makePlan())
+    await session.start(planContext, notify, accepted)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(accepted).toHaveBeenCalledTimes(1)
+    expect(api.get).toHaveBeenCalledTimes(2)
   })
 
   it('ignores a delayed read after cancellation and starts no further reads', async () => {
@@ -142,8 +155,9 @@ describe('scene plan job lifecycle', () => {
 
   it('never retries a failed paid creation automatically', async () => {
     const { api, session, states, notify } = setup()
+    const accepted = vi.fn()
     api.create.mockRejectedValue(new Error('Model rejected this input'))
-    await session.start(planContext, notify)
+    await session.start(planContext, notify, accepted)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(states[states.length - 1]).toEqual({
       status: 'failed',
@@ -152,6 +166,7 @@ describe('scene plan job lifecycle', () => {
     })
     expect(api.create).toHaveBeenCalledTimes(1)
     expect(api.get).not.toHaveBeenCalled()
+    expect(accepted).not.toHaveBeenCalled()
   })
 
   it('stops polling a failed job without submitting another paid creation', async () => {

@@ -14,6 +14,8 @@ function maximumRecord(): GenerationRecord {
   const time = '2026-10-25T12:00:00.000Z'
   const requirements = '保'.repeat(12000)
   const result: ScenePlanResult = {
+    title: 'Existing title',
+    description: 'Existing product description',
     product: '画'.repeat(500),
     material: '铁'.repeat(500),
     observations: '旧'.repeat(6000),

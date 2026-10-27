@@ -40,10 +40,8 @@ export const ProviderSaveInputSchema = z.strictObject({
   /** Omitted keeps the stored key, so editing other fields does not need it. */
   apiKey: z.string().trim().max(400).optional(),
   imageModel: z.string().trim().max(120),
-  textModel: z.string().trim().max(120),
   /** Omitted preserves the saved choice; an empty string explicitly clears it. */
   visionModel: z.string().trim().max(120).optional(),
-  supportsVision: z.boolean(),
 })
 
 export const ProviderIdInputSchema = z.strictObject({
@@ -126,6 +124,7 @@ export const RecordRecognizeInputSchema = z.union([
   z.strictObject({
     id: z.string().trim().min(1).max(64),
     providerId: z.string().trim().min(1).max(64),
+    model: z.string().trim().min(1).max(120),
     fileId: z.string().trim().min(1).max(64).nullable().optional(),
   }),
   z.strictObject({
@@ -137,6 +136,7 @@ export const RecordRecognizeInputSchema = z.union([
 export const GenerateInputSchema = z
   .strictObject({
     providerId: z.string().trim().min(1).max(64),
+    imageModel: z.string().trim().min(1).max(120),
     mode: z.enum(['generate', 'edit']),
     /** `null` means "send the prompt as typed", without a preset preamble. */
     presetId: z.string().trim().max(64).nullable(),
@@ -147,12 +147,20 @@ export const GenerateInputSchema = z
     inputFileIds: z.array(z.string().trim().min(1).max(64)).max(6),
     source: GenerationSourceSchema.optional(),
     scenePlan: ScenePlanSelectionSchema.optional(),
-    /** Omitted/null keeps the legacy generation/copy flow. */
+    /** Required together for an edit without a completed scene plan. */
     visionProviderId: z.string().trim().min(1).max(64).nullable().optional(),
+    visionModel: z.string().trim().min(1).max(120).nullable().optional(),
     /** Omitted/null selects the first input, only when recognition is enabled. */
     visionFileId: z.string().trim().min(1).max(64).nullable().optional(),
   })
   .superRefine((input, context) => {
+    if ((input.visionProviderId != null) !== (input.visionModel != null)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['visionModel'],
+        message: '识图服务商和模型必须同时选择',
+      })
+    }
     if (input.scenePlan === undefined) return
     if (input.mode !== 'edit') {
       context.addIssue({
@@ -168,7 +176,11 @@ export const GenerateInputSchema = z
         message: '张数必须与视角数一致',
       })
     }
-    if (input.visionProviderId !== undefined || input.visionFileId !== undefined) {
+    if (
+      input.visionProviderId !== undefined ||
+      input.visionModel !== undefined ||
+      input.visionFileId !== undefined
+    ) {
       context.addIssue({
         code: 'custom',
         path: ['scenePlan'],

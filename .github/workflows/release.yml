@@ -33,7 +33,7 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "Validate reference image formats and accept locally converted JPEG photos from Vinted."
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "需要主程序 0.1.16：只保留识图、生图两种模型；识图返回商品标题、描述和生图提示词；每个服务商至少配置一种模型，任务明确选择并记住上次服务商与模型。"
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "Archived item and seller management, private proxies and scoped image downloads."
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
@@ -49,7 +49,28 @@ jobs:
           import { join, resolve, sep } from 'node:path'
 
           const required = {
-            'ai-image': ['image.plans.create', 'image.plans.get'],
+            'ai-image': [
+              'image.plans.create',
+              'image.plans.get',
+              'image.providers.list',
+              'image.providers.save',
+              'image.providers.remove',
+              'image.providers.test',
+              'image.presets',
+              'image.upload.begin',
+              'image.upload.chunk',
+              'image.upload.finish',
+              'image.upload.abort',
+              'image.upload.remote',
+              'image.file.chunk',
+              'image.records.list',
+              'image.records.get',
+              'image.records.remove',
+              'image.records.retry',
+              'image.records.recognize',
+              'image.records.export',
+              'image.generate',
+            ],
             'vinted-monitor': [
               'vinted.monitors.list',
               'vinted.monitors.save',

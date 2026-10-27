@@ -20,13 +20,14 @@ afterEach(async () => {
   }
 })
 
-const provider: ProviderRecord = {
+const provider: ProviderRecord & { textModel: string; supportsVision: boolean } = {
   id: 'p1',
   name: 'OpenAI',
   kind: 'openai',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: 'sk-test',
   imageModel: 'gpt-image-1',
+  visionModel: '',
   textModel: 'gpt-4o-mini',
   supportsVision: true,
   createdAt: '2026-01-01T00:00:00.000Z',

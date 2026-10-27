@@ -28,6 +28,7 @@ export class ScenePlanSession {
   async start(
     input: ScenePlanInput,
     notify: (state: ScenePlanState) => void,
+    onAccepted?: () => void,
   ): Promise<void> {
     validateScenePlanInput(input)
     this.cancel()
@@ -35,6 +36,8 @@ export class ScenePlanSession {
     notify({ status: 'creating', plan: null, error: null })
     try {
       const plan = await this.api.create(input)
+      // Cancellation suppresses stale UI, not the persisted task or its preferences.
+      onAccepted?.()
       if (revision === this.revision) this.accept(plan, revision, notify)
     } catch (cause) {
       if (revision === this.revision)

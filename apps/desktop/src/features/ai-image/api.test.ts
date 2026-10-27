@@ -15,6 +15,9 @@ const source: GenerationSource = {
 const sourceFilter = { sourcePluginId: source.pluginId, sourceItemId: source.itemId }
 const input: GenerateInput = {
   providerId: 'provider',
+  imageModel: 'image-model',
+  visionProviderId: 'vision-provider',
+  visionModel: 'vision-model',
   mode: 'edit',
   presetId: null,
   prompt: 'An editable product description',
@@ -125,6 +128,35 @@ describe('source API', () => {
     )
     vi.mocked(callPlugin).mockRejectedValueOnce('插件进程不可用')
     await expect(listRecords(0, 10, undefined, source)).rejects.toThrow('插件进程不可用')
+  })
+})
+
+describe('explicit model requests', () => {
+  it.each([
+    { imageModel: '' },
+    { providerId: '' },
+    { visionProviderId: null },
+    { visionModel: null },
+  ])('rejects missing model choices before any plugin call: %j', async (change) => {
+    await expect(generate({ ...input, ...change })).rejects.toThrow('请选择')
+    expect(callPlugin).not.toHaveBeenCalled()
+  })
+
+  it('allows text generation with only the selected image model', async () => {
+    const text: GenerateInput = {
+      providerId: 'image-provider',
+      imageModel: 'image-model',
+      mode: 'generate',
+      presetId: null,
+      prompt: 'A lived-in living room.',
+      count: 1,
+      size: 'auto',
+      inputFileIds: [],
+    }
+    vi.mocked(callPlugin).mockResolvedValue({ record: { id: 'record' } })
+    await generate(text)
+    expect(vi.mocked(callPlugin).mock.calls[0]?.[3]).toEqual(text)
+    expect(callPlugin).toHaveBeenCalledTimes(1)
   })
 })
 

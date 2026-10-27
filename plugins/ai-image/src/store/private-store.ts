@@ -12,6 +12,7 @@ import {
 import {
   MAX_PLANS,
   type GenerationRecord,
+  type ModelSelections,
   type ProviderRecord,
   type ScenePlan,
 } from '../domain/types.js'
@@ -21,6 +22,7 @@ export interface StoreDocument {
   providers: ProviderRecord[]
   records: GenerationRecord[]
   plans: ScenePlan[]
+  selections: ModelSelections
 }
 
 export interface PrivateStore {
@@ -43,9 +45,9 @@ const providerSchema = z.looseObject({
   baseUrl: z.string(),
   apiKey: z.string(),
   imageModel: z.string(),
-  textModel: z.string(),
   visionModel: z.string().max(120).default(''),
-  supportsVision: z.boolean(),
+  textModel: z.string().optional(),
+  supportsVision: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -59,6 +61,8 @@ const storedFileSchema = z.looseObject({
 
 const scenePlanResultSchema = z.looseObject({
   ...scenePlanResultFields,
+  title: scenePlanResultFields.title.optional(),
+  description: scenePlanResultFields.description.optional(),
   views: z.array(z.looseObject(sceneViewFields)).min(1).max(4).refine(distinctViews),
 })
 
@@ -124,7 +128,7 @@ const recordSchema = z
     providerName: z.string(),
     providerKind: z.enum(['openai', 'openai_compatible']),
     imageModel: z.string(),
-    textModel: z.string(),
+    textModel: z.string().optional(),
     copySupportsVision: z.boolean().optional(),
     vision: z
       .looseObject({
@@ -134,6 +138,8 @@ const recordSchema = z
         model: z.string().trim().min(1).max(120),
         inputFileId: z.string().min(1),
         description: z.string().nullable(),
+        title: z.string().max(500).nullable().optional(),
+        prompt: z.string().max(6000).nullable().optional(),
       })
       .nullable()
       .default(null),
@@ -146,6 +152,8 @@ const recordSchema = z
         outputFileId: z.string().min(1),
         status: z.enum(['running', 'success', 'failed']),
         description: z.string().nullable(),
+        title: z.string().max(500).nullable().optional(),
+        prompt: z.string().max(6000).nullable().optional(),
         error: z.string().nullable(),
       })
       .nullable()
@@ -155,7 +163,7 @@ const recordSchema = z
     title: z.string().nullable(),
     description: z.string().nullable(),
     error: z.string().nullable(),
-    copyError: z.string().nullable(),
+    copyError: z.string().nullable().optional(),
     durationMs: z.number().nullable(),
   })
   .refine(
@@ -189,15 +197,32 @@ const recordSchema = z
     { message: '场景规划与参考图、视角或成片不一致' },
   )
 
+const selectionSchema = z.looseObject({
+  providerId: z.string().trim().min(1).max(64),
+  model: z.string().trim().min(1).max(120),
+})
+
 const documentSchema = z.looseObject({
   schemaVersion: z.literal(1),
   providers: z.array(providerSchema),
   records: z.array(recordSchema),
   plans: z.array(scenePlanSchema).max(MAX_PLANS).default([]),
+  selections: z
+    .looseObject({
+      image: selectionSchema.nullable().default(null),
+      vision: selectionSchema.nullable().default(null),
+    })
+    .default({ image: null, vision: null }),
 })
 
 export function emptyDocument(): StoreDocument {
-  return { schemaVersion: 1, providers: [], records: [], plans: [] }
+  return {
+    schemaVersion: 1,
+    providers: [],
+    records: [],
+    plans: [],
+    selections: { image: null, vision: null },
+  }
 }
 
 function parseDocument(text: string): StoreDocument {

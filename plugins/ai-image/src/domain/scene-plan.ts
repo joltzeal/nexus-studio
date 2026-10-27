@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 import { PRESERVE, composePrompt, presetById } from './presets.js'
-import type { ScenePlanResult, SceneView } from './types.js'
+import type { StoredScenePlanResult, SceneView } from './types.js'
 
 const nonempty = (max: number) =>
   z
@@ -33,6 +33,8 @@ export const SceneViewsSchema = z
   .refine(distinctViews, '视角标识、标签和提示词必须各不相同')
 
 export const scenePlanResultFields = {
+  title: nonempty(500),
+  description: nonempty(6000),
   product: nonempty(500),
   material: nonempty(500),
   observations: nonempty(6000),
@@ -52,6 +54,7 @@ export const ScenePlanResultSchema = z.strictObject(scenePlanResultFields)
 
 export const ScenePlanCreateInputSchema = z.strictObject({
   providerId: z.string().trim().min(1).max(64),
+  model: z.string().trim().min(1).max(120),
   inputFileId: z.string().trim().min(1).max(64),
   requirements: z.string().max(12000),
   count: z.number().int().min(1).max(4),
@@ -64,7 +67,7 @@ export const ScenePlanSelectionSchema = z.strictObject({
 })
 
 export function composeSceneViewPrompt(
-  result: ScenePlanResult,
+  result: StoredScenePlanResult,
   presetId: string | null,
   requirements: string,
   sharedPrompt: string,

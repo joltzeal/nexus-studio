@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ImageIcon, Loader2, RefreshCw, Settings2, Sparkles, Wand2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,7 @@ import { handoffImages } from './reference-transfer'
 import { SourceLink } from './source-link'
 import { ProvidersSheet } from './providers-sheet'
 import { RecordImage } from './record-image'
+import { EMPTY_SELECTIONS } from './model-selection'
 import type { AiImageHandoff } from '@/lib/page-handoff'
 import {
   AI_IMAGE_PLUGIN_ID,
@@ -32,7 +33,7 @@ import {
   recordTitle,
   statusText,
   type GenerationSummary,
-  type Provider,
+  type ProviderCatalog,
   type RecordStatus,
   type ScenePreset,
 } from './types'
@@ -61,6 +62,17 @@ export function AiImagePage({
   onHandoffConsumed,
 }: AiImagePageProps) {
   const running = hostAvailable && plugin?.enabled === true && plugin.state === 'running'
+  const pluginId = plugin?.id
+  const pluginVersion = plugin?.version
+  const pluginPid = plugin?.status?.pid
+  const providerLifecycle = useMemo(
+    () => ({ running, pluginId, pluginVersion, pluginPid }),
+    [running, pluginId, pluginVersion, pluginPid],
+  )
+  const providerRequest = useRef<{
+    lifecycle: typeof providerLifecycle | null
+    revision: number
+  }>({ lifecycle: null, revision: 0 })
   // Rows remember the query they belong to, so switching filter or page shows the
   // skeleton during the fetch without an effect that resets state by hand.
   const [rows, setRows] = useState<{ key: string; items: GenerationSummary[] } | null>(
@@ -69,7 +81,10 @@ export function AiImagePage({
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
   const [filter, setFilter] = useState<RecordStatus | 'all'>('all')
-  const [providers, setProviders] = useState<Provider[]>([])
+  const [providerState, setProviderState] = useState<{
+    lifecycle: typeof providerLifecycle
+    catalog: ProviderCatalog
+  } | null>(null)
   const [presets, setPresets] = useState<ScenePreset[]>([])
   const [storageDurable, setStorageDurable] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -79,6 +94,21 @@ export function AiImagePage({
 
   const queryKey = `${filter}:${String(page)}`
   const records = rows !== null && rows.key === queryKey ? rows.items : null
+  const catalog =
+    providerState?.lifecycle === providerLifecycle ? providerState.catalog : null
+  const providers = catalog?.items ?? []
+  const selections = catalog?.selections ?? EMPTY_SELECTIONS
+  const modelConfigReady = running && catalog?.modelConfigVersion === 2
+
+  // Invalidate requests at commit, including a replacement process seen as running.
+  useLayoutEffect(() => {
+    const request = providerRequest.current
+    request.lifecycle = providerLifecycle
+    return () => {
+      request.lifecycle = null
+      request.revision += 1
+    }
+  }, [providerLifecycle])
 
   const refreshRecords = useCallback(async () => {
     const key = `${filter}:${String(page)}`
@@ -100,14 +130,21 @@ export function AiImagePage({
   }, [page, filter])
 
   const refreshProviders = useCallback(async () => {
+    const request = providerRequest.current
+    if (!providerLifecycle.running || request.lifecycle !== providerLifecycle) return
+    const revision = ++request.revision
+    const isCurrent = () =>
+      request.lifecycle === providerLifecycle && request.revision === revision
     try {
       const result = await listProviders()
-      setProviders(result.items)
+      if (!isCurrent()) return
+      setProviderState({ lifecycle: providerLifecycle, catalog: result })
       setStorageDurable(result.storageDurable)
     } catch (cause) {
-      setError(message(cause))
+      if (isCurrent()) setError(message(cause))
+      throw cause
     }
-  }, [])
+  }, [providerLifecycle])
 
   // First load for the current query. The promise chain lives in the effect so
   // state is only written from the callbacks, never synchronously on mount.
@@ -138,14 +175,7 @@ export function AiImagePage({
   useEffect(() => {
     if (!running) return
     let active = true
-    void listProviders().then(
-      (result) => {
-        if (active) setProviders(result.items)
-      },
-      (cause: unknown) => {
-        if (active) setError(message(cause))
-      },
-    )
+    void refreshProviders().catch(() => undefined)
     void listPresets().then(
       (result) => {
         if (active) setPresets(result.presets)
@@ -157,7 +187,17 @@ export function AiImagePage({
     return () => {
       active = false
     }
-  }, [running])
+  }, [running, refreshProviders])
+
+  const refreshGeneration = useCallback(async () => {
+    if (
+      !providerLifecycle.running ||
+      providerRequest.current.lifecycle !== providerLifecycle
+    )
+      return
+    // The task already exists; a preference read failure must not invite resubmission.
+    await Promise.all([refreshRecords(), refreshProviders().catch(() => undefined)])
+  }, [providerLifecycle, refreshRecords, refreshProviders])
 
   const hasRunning = useMemo(
     () =>
@@ -200,8 +240,7 @@ export function AiImagePage({
               AI 生图
             </h1>
             <p className="page-description">
-              用 OpenAI
-              或兼容接口生成与改图，可单独配置识图模型，选择一张参考图或成片识别商品。每次生成都会留下记录。
+              识图提取商品标题、描述和提示词，生图生成或修改图片。两种模型可来自不同服务商。
             </p>
           </div>
           <div className="section-actions">
@@ -220,7 +259,7 @@ export function AiImagePage({
               disabled={!showHeader}
               onClick={() => {
                 void refreshRecords()
-                void refreshProviders()
+                void refreshProviders().catch(() => undefined)
               }}
             >
               <RefreshCw data-icon="inline-start" />
@@ -441,6 +480,8 @@ export function AiImagePage({
         <GenerateDialog
           key={handoff === null ? 'manual' : JSON.stringify(handoff)}
           providers={providers}
+          selections={selections}
+          modelConfigReady={modelConfigReady}
           presets={presets}
           pluginMethods={plugin?.methods}
           initialImages={initialImages}
@@ -453,7 +494,8 @@ export function AiImagePage({
             // Closing the dialog ends the handoff, otherwise it would reopen.
             if (!open) onHandoffConsumed?.()
           }}
-          onSubmitted={refreshRecords}
+          onSubmitted={refreshGeneration}
+          onModelsChanged={refreshProviders}
           onConfigure={() => setConfiguring(true)}
         />
       ) : null}
@@ -461,6 +503,7 @@ export function AiImagePage({
       {configuring ? (
         <ProvidersSheet
           providers={providers}
+          modelConfigReady={modelConfigReady}
           storageDurable={storageDurable}
           onOpenChange={setConfiguring}
           onChanged={refreshProviders}
@@ -472,8 +515,10 @@ export function AiImagePage({
           key={detailId}
           recordId={detailId}
           providers={providers}
+          selections={selections}
+          modelConfigReady={modelConfigReady}
           onClose={() => setDetailId(null)}
-          onChanged={refreshRecords}
+          onChanged={refreshGeneration}
         />
       )}
     </section>

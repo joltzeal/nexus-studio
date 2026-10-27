@@ -1,7 +1,9 @@
+import { z } from 'zod'
+
 import { UpstreamError } from '../domain/errors.js'
 import { PRESERVE, SCENE_PRESETS } from '../domain/presets.js'
 import { ScenePlanResultSchema } from '../domain/scene-plan.js'
-import type { ScenePlanResult } from '../domain/types.js'
+import type { ScenePlanResult, VisionResult } from '../domain/types.js'
 
 export interface ImageRequest {
   baseUrl: string
@@ -21,26 +23,13 @@ export interface ImageOutput {
   revisedPrompt: string | null
 }
 
-export interface CopyRequest {
-  baseUrl: string
-  apiKey: string
-  model: string
-  prompt: string
-  images: { mime: string; bytes: Uint8Array }[]
-  timeoutMs: number
-}
-
-export interface CopyOutput {
-  title: string
-  description: string
-}
-
 export interface VisionRequest {
   baseUrl: string
   apiKey: string
   model: string
   /** Deliberately singular: recognition never receives the entire image set. */
   image: { mime: string; bytes: Uint8Array }
+  requirements?: string
   timeoutMs: number
 }
 
@@ -266,7 +255,22 @@ function chatText(payload: unknown): string {
     .join('')
 }
 
-export async function requestVision(request: VisionRequest): Promise<string> {
+const visionResultSchema = z.strictObject({
+  title: z
+    .string()
+    .max(500)
+    .refine((value) => value.trim() !== ''),
+  description: z
+    .string()
+    .max(6000)
+    .refine((value) => value.trim() !== ''),
+  prompt: z
+    .string()
+    .max(6000)
+    .refine((value) => value.trim() !== ''),
+})
+
+export async function requestVision(request: VisionRequest): Promise<VisionResult> {
   const response = await send(
     join(request.baseUrl, '/chat/completions'),
     {
@@ -274,6 +278,7 @@ export async function requestVision(request: VisionRequest): Promise<string> {
       headers: { ...headers(request.apiKey), 'content-type': 'application/json' },
       body: JSON.stringify({
         model: request.model,
+        response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
@@ -287,13 +292,18 @@ export async function requestVision(request: VisionRequest): Promise<string> {
                 type: 'text',
                 text: [
                   'Inspect this single selected source photo for an honest secondhand listing.',
-                  'Reply with JSON only: {"description": "a factual description in English"}.',
+                  'Reply with JSON only, with exactly three fields: {"title":"factual product title","description":"observable product description","prompt":"automatic image generation prompt"}.',
+                  'Use Simplified Chinese for the title and description, and English for the image prompt.',
+                  'All fields must be nonempty: title at most 500 characters, description and prompt at most 6000 each.',
                   'Identify the visible item, shape, material, colour, readable markings and exact text.',
                   'Explicitly describe visible scratches, stains, chips, creases, wear, repairs and missing parts.',
                   'Preserve uncertainty: do not guess hidden details, brand, authenticity, size or working condition.',
                   'Do not clean up, beautify, reconstruct, advertise or recommend repairs.',
-                  'Keep the description under 3000 characters.',
-                ].join(' '),
+                  'Write a useful image prompt using the selected photo and user requirements. Keep the same product and actual condition.',
+                  PRESERVE,
+                  'User requirements (retain their scene and constraints without inventing product facts):',
+                  request.requirements ?? '',
+                ].join('\n\n'),
               },
               {
                 type: 'image_url',
@@ -313,18 +323,14 @@ export async function requestVision(request: VisionRequest): Promise<string> {
   } catch {
     throw new UpstreamError('invalid-response', '识图模型没有返回有效 JSON')
   }
-  const description =
-    typeof parsed === 'object' && parsed !== null && 'description' in parsed
-      ? parsed.description
-      : null
-  if (
-    typeof description !== 'string' ||
-    description.trim() === '' ||
-    description.length > 6000
-  ) {
-    throw new UpstreamError('invalid-response', '识图模型没有返回有效商品描述')
+  const result = visionResultSchema.safeParse(parsed)
+  if (!result.success) {
+    throw new UpstreamError(
+      'invalid-response',
+      '识图模型没有返回有效商品标题、描述和提示词',
+    )
   }
-  return description.trim()
+  return result.data
 }
 
 export async function requestScenePlan(
@@ -350,8 +356,9 @@ export async function requestScenePlan(
               PRESERVE,
               'Never fabricate an unseen back, side, frame, thickness, attachments or geometry from a single front photo.',
               'Create genuinely distinct views using evidenced framing, crop, distance, visible details and room context; do not rotate the object to reveal invented surfaces.',
-              'Return JSON only. Use Simplified Chinese for product, material, observations, uncertainties, reason and view labels. Write the shared prompt and all view prompts in English.',
-              'Required fields: product (1-500 characters), material (1-500), observations (1-6000), uncertainties (1-2000), presetId, reason (1-2000), prompt (1-6000), views.',
+              'Return JSON only. Use Simplified Chinese for title, description, product, material, observations, uncertainties, reason and view labels. Write the shared prompt and all view prompts in English.',
+              'Required fields: title (1-500 characters), description (1-6000), product (1-500), material (1-500), observations (1-6000), uncertainties (1-2000), presetId, reason (1-2000), prompt (1-6000), views.',
+              'The title and description are factual product listing text grounded in the original image, retaining visible wear and uncertainty.',
               'Every view must have id (1-64 characters), label (1-120) and prompt (1-4000). IDs, labels and prompts must each be distinct. No extra fields.',
               'Choose exactly one presetId from the supplied catalog. The shared prompt describes its consistent setting; individual prompts specify distinct views within that setting.',
             ].join('\n'),
@@ -399,81 +406,6 @@ export async function requestScenePlan(
     throw new UpstreamError('invalid-response', '场景规划的字段、场景或视角数量无效')
   }
   return parsed.data
-}
-
-/** Chat models sometimes wrap JSON in prose or fences; take the first object. */
-export function parseCopy(text: string): CopyOutput | null {
-  const cleaned = text.replace(/```(?:json)?/gi, '').trim()
-  const start = cleaned.indexOf('{')
-  const end = cleaned.lastIndexOf('}')
-  if (start === -1 || end <= start) return null
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(cleaned.slice(start, end + 1))
-  } catch {
-    return null
-  }
-  if (typeof parsed !== 'object' || parsed === null) return null
-  const title = (parsed as { title?: unknown }).title
-  const description = (parsed as { description?: unknown }).description
-  if (typeof title !== 'string' || typeof description !== 'string') return null
-  const trimmedTitle = title.trim()
-  const trimmedDescription = description.trim()
-  if (trimmedTitle === '' || trimmedDescription === '') return null
-  return {
-    title: trimmedTitle.slice(0, 120),
-    description: trimmedDescription.slice(0, 2000),
-  }
-}
-
-export async function requestCopy(request: CopyRequest): Promise<CopyOutput> {
-  const content: Record<string, unknown>[] = [
-    {
-      type: 'text',
-      text: [
-        request.images.length === 0
-          ? 'Write marketplace listing copy using only the supplied source-photo observations.'
-          : 'Write marketplace listing copy for the product in the reference image.',
-        'Reply with JSON only, no prose and no code fences:',
-        '{"title": "...", "description": "..."}',
-        'Rules: the title is at most 60 characters and names the product and its most visible feature;',
-        'the description is 2-3 sentences describing what is visible, without invented measurements,',
-        'brands or claims. Write in Simplified Chinese. If a detail is not visible, leave it out.',
-        'Keep all observed defects and wear explicit; do not claim unused, restored or fully working condition.',
-        request.prompt === ''
-          ? ''
-          : `Additional context from the user: ${request.prompt}`,
-      ]
-        .filter(Boolean)
-        .join(' '),
-    },
-  ]
-  for (const image of request.images) {
-    content.push({
-      type: 'image_url',
-      image_url: { url: dataUrl(image.mime, image.bytes) },
-    })
-  }
-  const response = await send(
-    join(request.baseUrl, '/chat/completions'),
-    {
-      method: 'POST',
-      headers: { ...headers(request.apiKey), 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: request.model,
-        messages: [
-          { role: 'system', content: 'You write concise, factual product listings.' },
-          { role: 'user', content },
-        ],
-        temperature: 0.4,
-      }),
-    },
-    request.timeoutMs,
-  )
-  const text = chatText(await response.json())
-  const copy = parseCopy(text)
-  if (copy === null) throw new UpstreamError('invalid-response', '文案模型没有返回 JSON')
-  return copy
 }
 
 /** A cheap `/models` call: it proves the key and the address without spending tokens. */

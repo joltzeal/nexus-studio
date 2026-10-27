@@ -95,6 +95,7 @@ describe('generation source boundary', () => {
   it('allows legacy input without source but rejects seven references', () => {
     const input = {
       providerId: 'p1',
+      imageModel: 'image-model',
       mode: 'edit',
       presetId: null,
       prompt: 'mug',

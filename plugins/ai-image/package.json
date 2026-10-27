@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-ai-image",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
-  "description": "Nexus AI image plugin: OpenAI and OpenAI-compatible image generation with copy and history",
+  "description": "Nexus AI image plugin: vision-guided product imagery with explicit vision and image model selection",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

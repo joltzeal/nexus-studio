@@ -45,6 +45,12 @@ import { ScenePlanRecord } from './scene-plan-record'
 import { selectedRecordMedia } from './selection'
 import { RecordSession } from './record-session'
 import {
+  MODEL_CONFIG_UPDATE_HINT,
+  modelOptions,
+  modelValue,
+  resolveModel,
+} from './model-selection'
+import {
   formatDuration,
   formatTime,
   message,
@@ -54,11 +60,14 @@ import {
   viewStatusText,
   type GenerationRecord,
   type Provider,
+  type ModelSelections,
 } from './types'
 
 interface RecordDetailDialogProps {
   recordId: string
   providers: Provider[]
+  selections: ModelSelections
+  modelConfigReady: boolean
   onClose: () => void
   onChanged: () => Promise<void>
 }
@@ -70,6 +79,8 @@ export function RecordDetailDialog(props: RecordDetailDialogProps) {
 function RecordDetailContent({
   recordId,
   providers,
+  selections,
+  modelConfigReady,
   onClose,
   onChanged,
 }: RecordDetailDialogProps) {
@@ -83,14 +94,14 @@ function RecordDetailContent({
   const [exported, setExported] = useState<string[]>([])
   const [selected, setSelected] = useState(0)
   const [selectedViewId, setSelectedViewId] = useState('')
-  const [visionChoice, setVisionChoice] = useState('')
+  const [visionChoice, setVisionChoice] = useState<string | undefined>(undefined)
   const running =
     record?.status === 'running' || record?.outputVision?.status === 'running'
   const visionProviders = providers.filter(
     (provider) => provider.hasApiKey && (provider.visionModel ?? '') !== '',
   )
-  const visionProviderId =
-    visionChoice || record?.outputVision?.providerId || visionProviders[0]?.id || ''
+  const visionValue = visionChoice ?? modelValue(selections.vision)
+  const visionSelection = resolveModel(providers, 'vision', visionValue)
 
   useLayoutEffect(() => {
     changed.current = onChanged
@@ -145,7 +156,6 @@ function RecordDetailContent({
             `${record.providerName}（${record.providerKind === 'openai' ? 'OpenAI 官方' : 'OpenAI 兼容'}）`,
           ],
           ['生图模型', record.imageModel],
-          ['文案模型', record.textModel === '' ? '未配置' : record.textModel],
           [
             '参考图识图',
             record.scenePlan
@@ -174,6 +184,10 @@ function RecordDetailContent({
 
   async function retry() {
     if (record === null || busy || running) return
+    if (!modelConfigReady) {
+      setError(MODEL_CONFIG_UPDATE_HINT)
+      return
+    }
     const revision = session.beginAction()
     setBusy(true)
     setError(null)
@@ -190,12 +204,12 @@ function RecordDetailContent({
 
   async function recognize(retry = false) {
     if (record === null || busy || running) return
-    if (
-      !retry &&
-      (output === null ||
-        !visionProviders.some((provider) => provider.id === visionProviderId))
-    ) {
-      setError('请选择可用的独立识图服务商和一张成片。')
+    if (!modelConfigReady) {
+      setError(MODEL_CONFIG_UPDATE_HINT)
+      return
+    }
+    if (!retry && (output === null || !visionSelection)) {
+      setError('请选择可用的识图服务商、模型和一张成片。')
       return
     }
     const revision = session.beginAction()
@@ -205,9 +219,15 @@ function RecordDetailContent({
       const result = await recognizeRecord(
         retry
           ? { id: record.id, retry: true }
-          : { id: record.id, providerId: visionProviderId, fileId: output?.id ?? null },
+          : {
+              id: record.id,
+              providerId: visionSelection!.providerId,
+              model: visionSelection!.model,
+              fileId: output?.id ?? null,
+            },
       )
-      if (!session.accept(revision, result.record)) return
+      session.accept(revision, result.record)
+      // The accepted task remembers this model even if the detail dialog was closed.
       await onChanged()
       if (session.isCurrent(revision)) toast.success('已提交单张成片识图')
     } catch (cause) {
@@ -266,6 +286,7 @@ function RecordDetailContent({
           </DialogDescription>
         </DialogHeader>
 
+        {!modelConfigReady ? <FieldError>{MODEL_CONFIG_UPDATE_HINT}</FieldError> : null}
         {loading && record === null ? <Skeleton className="h-72 w-full" /> : null}
 
         {record === null ? null : (
@@ -366,25 +387,9 @@ function RecordDetailContent({
                     <LabeledSelect
                       id="ai-output-vision-provider"
                       ariaLabel="成片识图服务商 / 模型"
-                      value={visionProviderId}
-                      disabled={busy || running}
-                      options={[
-                        ...visionProviders.map((provider) => ({
-                          value: provider.id,
-                          label: `${provider.name} · ${provider.visionModel ?? ''}`,
-                        })),
-                        ...(visionProviderId &&
-                        !visionProviders.some(
-                          (provider) => provider.id === visionProviderId,
-                        )
-                          ? [
-                              {
-                                value: visionProviderId,
-                                label: '已选服务商不可用，请重新选择',
-                              },
-                            ]
-                          : []),
-                      ]}
+                      value={visionValue}
+                      disabled={busy || running || !modelConfigReady}
+                      options={modelOptions(providers, 'vision', visionValue)}
                       onValueChange={setVisionChoice}
                     />
                     <FieldDescription>
@@ -394,9 +399,9 @@ function RecordDetailContent({
                       {record.scenePlan
                         ? '切换上方视角可换图；'
                         : '点击上方缩略图可换图；'}
-                      只发送这一张，不重新生图或改写已有文案。
+                      只识别这一张，生成标题、描述和建议提示词，结果单独保留。
                       {visionProviders.length === 0
-                        ? '请先在模型配置中填写独立识图模型。'
+                        ? '请先在模型配置中填写识图模型。'
                         : ''}
                     </FieldDescription>
                   </Field>
@@ -406,10 +411,9 @@ function RecordDetailContent({
                     disabled={
                       busy ||
                       running ||
+                      !modelConfigReady ||
                       output === null ||
-                      !visionProviders.some(
-                        (provider) => provider.id === visionProviderId,
-                      )
+                      !visionSelection
                     }
                     onClick={() => void recognize()}
                   >
@@ -428,9 +432,28 @@ function RecordDetailContent({
                         <p>正在识别成片…</p>
                       ) : null}
                       {record.outputVision.description ? (
-                        <p className="whitespace-pre-wrap break-words">
-                          {record.outputVision.description}
-                        </p>
+                        <dl className="space-y-2">
+                          {record.outputVision.title ? (
+                            <div>
+                              <dt className="text-muted-foreground">标题</dt>
+                              <dd>{record.outputVision.title}</dd>
+                            </div>
+                          ) : null}
+                          <div>
+                            <dt className="text-muted-foreground">描述</dt>
+                            <dd className="whitespace-pre-wrap break-words">
+                              {record.outputVision.description}
+                            </dd>
+                          </div>
+                          {record.outputVision.prompt ? (
+                            <div>
+                              <dt className="text-muted-foreground">建议提示词</dt>
+                              <dd className="whitespace-pre-wrap break-words">
+                                {record.outputVision.prompt}
+                              </dd>
+                            </div>
+                          ) : null}
+                        </dl>
                       ) : null}
                       {record.outputVision.error ? (
                         <FieldError>{record.outputVision.error}</FieldError>
@@ -439,7 +462,7 @@ function RecordDetailContent({
                         <Button
                           type="button"
                           variant="outline"
-                          disabled={busy || running}
+                          disabled={busy || running || !modelConfigReady}
                           onClick={() => void recognize(true)}
                         >
                           重试成片识图（原模型与原图片）
@@ -479,9 +502,9 @@ function RecordDetailContent({
                   {record.error}
                 </FieldError>
               )}
-              {record.copyError === null ? null : (
+              {!record.copyError ? null : (
                 <p className="ai-detail-warning" role="status">
-                  文案没有生成：{record.copyError}
+                  历史任务文案未完成：{record.copyError}
                 </p>
               )}
 
@@ -489,6 +512,12 @@ function RecordDetailContent({
                 <div className="ai-copy-block">
                   <h3>参考图识图结果</h3>
                   <p className="ai-copy-text">{record.vision.description}</p>
+                  {record.vision.prompt ? (
+                    <>
+                      <h3>识图生成的提示词</h3>
+                      <p className="ai-copy-text">{record.vision.prompt}</p>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -600,6 +629,7 @@ function RecordDetailContent({
             variant="outline"
             disabled={
               record === null ||
+              !modelConfigReady ||
               busy ||
               running ||
               record.status === 'success' ||

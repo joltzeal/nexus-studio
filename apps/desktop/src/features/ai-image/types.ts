@@ -16,13 +16,28 @@ export interface Provider {
   kind: ProviderKind
   baseUrl: string
   imageModel: string
-  textModel: string
   visionModel?: string
-  supportsVision: boolean
   hasApiKey: boolean
   apiKeyHint: string
   createdAt: string
   updatedAt: string
+}
+
+export interface ModelSelection {
+  providerId: string
+  model: string
+}
+
+export interface ModelSelections {
+  image: ModelSelection | null
+  vision: ModelSelection | null
+}
+
+export interface ProviderCatalog {
+  items: Provider[]
+  storageDurable: boolean
+  modelConfigVersion: number
+  selections: ModelSelections
 }
 
 export interface StoredFile {
@@ -39,6 +54,9 @@ export interface SceneView {
 }
 
 export interface ScenePlanResult {
+  /** Absent only in plans saved by older plugin versions. */
+  title?: string
+  description?: string
   product: string
   material: string
   observations: string
@@ -96,7 +114,8 @@ export interface GenerationRecord {
   providerName: string
   providerKind: ProviderKind
   imageModel: string
-  textModel: string
+  /** Retained only when reading historical records. */
+  textModel?: string
   copySupportsVision?: boolean
   scenePlan?: {
     plan: ScenePlan
@@ -109,7 +128,9 @@ export interface GenerationRecord {
     providerKind: ProviderKind
     model: string
     inputFileId: string
+    title?: string | null
     description: string | null
+    prompt?: string | null
   } | null
   outputVision?: {
     providerId: string
@@ -118,7 +139,9 @@ export interface GenerationRecord {
     model: string
     outputFileId: string
     status: RecordStatus
+    title?: string | null
     description: string | null
+    prompt?: string | null
     error: string | null
   } | null
   inputs: StoredFile[]
@@ -126,7 +149,7 @@ export interface GenerationRecord {
   title: string | null
   description: string | null
   error: string | null
-  copyError: string | null
+  copyError?: string | null
   durationMs: number | null
 }
 
@@ -184,7 +207,7 @@ export const PROVIDER_KINDS: { value: ProviderKind; label: string; hint: string 
   {
     value: 'openai',
     label: 'OpenAI 官方',
-    hint: 'api.openai.com，使用官方生图与文案模型',
+    hint: 'api.openai.com，配置识图或生图模型',
   },
   {
     value: 'openai_compatible',

@@ -18,7 +18,28 @@ const workflow = readFileSync(resolve(root, '.github/workflows/release.yml'), 'u
 const directories = []
 
 const requiredMethods = {
-  'ai-image': ['image.plans.create', 'image.plans.get'],
+  'ai-image': [
+    'image.plans.create',
+    'image.plans.get',
+    'image.providers.list',
+    'image.providers.save',
+    'image.providers.remove',
+    'image.providers.test',
+    'image.presets',
+    'image.upload.begin',
+    'image.upload.chunk',
+    'image.upload.finish',
+    'image.upload.abort',
+    'image.upload.remote',
+    'image.file.chunk',
+    'image.records.list',
+    'image.records.get',
+    'image.records.remove',
+    'image.records.retry',
+    'image.records.recognize',
+    'image.records.export',
+    'image.generate',
+  ],
   'vinted-monitor': [
     'vinted.monitors.list',
     'vinted.monitors.save',

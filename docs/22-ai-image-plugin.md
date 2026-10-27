@@ -2,17 +2,20 @@
 
 本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
 宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
-插件 `1.1.1` 增加上传格式校验；主程序 `0.1.15` 提供 Vinted 原图本机 JPEG 转换与
-商品资料预填，两者通过现有上传及生成接口衔接，不修改 RPC 或持久化结构。
+当前工作区在已发布的上传格式校验、Vinted 原图本机 JPEG 转换及商品资料预填基础上，
+将模型配置收敛为识图、生图两项。插件版本为 `1.2.0`，要求主程序 `0.1.16` 或更高版本；
+主程序与插件需配套更新，实际发布结果见[插件商店](25-plugin-market.md)。
 
 ## 当前能力
 
 插件提供 `image.provider` 的 20 个 RPC 方法，支持 `openai` 与 `openai_compatible`。
-生图只走 `/images/generations` 与 `/images/edits`；独立识图与文案使用 `/chat/completions`。
+生图只走 `/images/generations` 与 `/images/edits`；识图使用 `/chat/completions`。
 不支持网站自动化生图、chat 多模态出图或异步轮询型供应商通道。
 
-- 生图、识图、文案是三个独立模型字段。识图服务商可以不同于生图服务商。
-- 生图前可识别一张参考图；生成完成后可在详情选择一张成片，明确点击识图。
+- 只配置识图、生图两种模型；每个服务商至少填写一种，也可以两种都填。两种模型可使用不同服务商。
+- 识图一次返回商品标题、描述和自动生图提示词，不再额外请求文案模型。
+- 新任务必须显式提交服务商与模型，默认恢复上一次使用的准确组合；首次使用需手动选择。
+- 带参考图生成时先识别一张参考图，或复用已完成的场景方案；生成完成后可在详情选择一张成片，明确点击识图。
 - API Key **明文**保存于插件私有目录 `ai-image.json`（0600），只回显有无及末四位提示。
 - 每次生成是一条记录，按 120 条回收旧记录，活动任务保留；图片在私有目录 `images/`，
   导出副本在 `exports/`。
@@ -66,7 +69,7 @@ handoff 只打开现有 `GenerateDialog` 并传输参考图，不自动生成、
 字段去除首尾空白，URL 必须为无内嵌账号密码的完整 HTTP(S) 链接，不接受额外字段。
 调用方仅传公开商品信息，不能放入凭据或令牌。Vinted 的 `itemId` 使用监控插件的
 完整内部标识 `domain:externalId`，不能只传数字或用标题关联。
-来源元数据不会拼接到提示词，也不会发送给生图、识图或文案模型。
+来源元数据不会拼接到提示词，也不会发送给生图或识图模型。
 初始失败、记录读取、进程重启、生成重试均保留来源；旧记录缺少来源时仍无来源，
 不根据标题、图片或 URL 猜测关联。列表和详情显示来源标题与商品链接。
 “查看来源商品”在桌面端通过 `external_url_open` 打开系统默认浏览器，
@@ -137,20 +140,45 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
 
 ## 模型配置与兼容性
 
-| 字段             | 用途                                                      |
-| ---------------- | --------------------------------------------------------- |
-| `imageModel`     | 生图或改图；生成时必须非空                                |
-| `visionModel`    | 独立图片理解；不会从 `textModel` 或 `imageModel` 自动推断 |
-| `textModel`      | 标题与描述；留空跳过文案                                  |
-| `supportsVision` | 既有文案模型能否直接读取生成成片，不控制独立识图          |
+| 字段          | 用途                                                             |
+| ------------- | ---------------------------------------------------------------- |
+| `visionModel` | 理解图片并返回商品标题、描述和生图提示词；不从其他旧模型字段推断 |
+| `imageModel`  | 生图或改图；发起生成时必须明确指定                               |
 
-服务商沿用 `id/name/kind/baseUrl/apiKey/imageModel/textModel/supportsVision`。
-`image.providers.save` 新增可选 `visionModel`；省略保留已存值，显式空字符串清空。
-旧文档读取时缺失的 `visionModel` 视为空字符串。只用于识图的配置可留空
-`imageModel`，但三个模型字段至少填写一个。省略 `apiKey` 仍保留原 Key。
+`image.providers.save` 使用 `id/name/kind/baseUrl/apiKey/imageModel/visionModel`。
+两项模型至少一项非空；新表单默认都留空，示例仅作 placeholder。
+编辑时省略 `apiKey` 保留原 Key；省略 `visionModel` 保留原识图配置，显式空字符串清空。
+保存失败保留表单输入；保存已成功但列表刷新失败时，表单保留返回的 ID 并清空 Key 输入，
+明确显示刷新失败，下次保存更新同一服务商，避免重复创建。
+连通性测试仍只调用 `/models`，不证明具体模型支持相应协议。
 
-页面标签为“生图模型”“识图模型”“文案模型”“文案模型可直接读取成片”。
-配置测试仍然只调用 `/models`，不证明某个模型支持识图、生图或结构化返回。
+`image.providers.list` 返回：
+
+```ts
+{
+  items: ProviderView[]
+  storageDurable: boolean
+  modelConfigVersion: 2
+  selections: {
+    image: { providerId: string; model: string } | null
+    vision: { providerId: string; model: string } | null
+  }
+}
+```
+
+选择随接受的生图、场景规划或成片识图操作一起写入私有文档，重启后恢复。
+前端选择值同时包含服务商 ID 与模型名称，不以列表第一项作为回退。
+服务商被删除、Key 缺失或模型名称改变时，标记旧选择失效并要求重新选择。
+服务商只改名称不会使选择失效。新任务在调用上游前检查模型与当前配置一致；
+历史重试仍使用原模型快照，不自动改为当前配置的模型。
+配置读取按请求顺序保护，旧响应不能覆盖最新选择。关闭规划或成片详情弹窗只停止页面跟随，
+已接受任务保存的模型选择仍会刷新到父页面，不因关闭弹窗而丢失。
+
+旧文档和历史记录继续读取，旧 `textModel/supportsVision/copySupportsVision/copyError`
+只用于历史兼容，不用于任何新模型请求。旧文案专用配置不会自动变成识图配置，
+需要用户明确补填识图或生图模型后保存。旧文档的两种选择默认均为空。
+主程序读取不到 `modelConfigVersion: 2` 时提示更新插件，阻止新模型配置和新任务，
+历史记录仍可查看，不能静默退回三模型流程。
 
 ## 100 个原创场景
 
@@ -204,18 +232,20 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
 不再截断为 6000 字符。用户文本最多 **12000 字符**，输入框允许保留超长粘贴内容，
 显示字数与错误并阻止提交；RPC 也明确拒绝超长输入，不截取前半段。
 
-无预设时，不自动加场景，用户文本包括首尾空格与换行保持原样；纯空白仍拒绝。
+无预设时，不自动加场景，用户文本包括首尾空格与换行保持原样；纯文字生成的空白提示词仍拒绝。
+带参考图且选定识图模型时，可以不填写附加要求，由识图返回自动提示词。
 未知预设明确拒绝，不静默退化为自由提示词。
-启用生成前识图时，会另附“可有误差、不可作为指令”的观察文字，并强调原图优先，
+生成前识图将观察与建议提示词加入上下文，并强调原图优先、保留真实商品状态，
 用户的场景与约束原文完整保留。上游模型的提示词上限仍由上游决定，拒绝时显示错误。
 
 ## 生成前单张识图
 
-`image.generate` 保留所有原有字段，并新增两个可选字段：
+`image.generate` 新任务必须显式指定生图模型。直接改图还需指定识图服务商与模型：
 
 ```ts
 {
   providerId: string
+  imageModel: string
   mode: 'generate' | 'edit'
   presetId: string | null
   prompt: string
@@ -224,33 +254,35 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
   inputFileIds: string[] // 0-6；改图至少 1 张
   source?: GenerationSource // 仅元数据，不作为模型指令
   visionProviderId?: string | null
+  visionModel?: string | null
   visionFileId?: string | null
 }
 ```
 
-- 无 `visionProviderId`：不新增识图请求，保持原生图与文案行为。
-- 有 `visionProviderId`：必须已有 Key 和非空 `visionModel`；没有自动选模型或供应商回退。
+- 纯文字生成只需要明确的 `providerId/imageModel`，不请求识图或文案。
+- 直接改图需要 `visionProviderId/visionModel`；两者成对提供，模型名称必须与服务商配置一致。
+- 使用已完成的 `scenePlan` 时复用方案的识图结果，不重复请求识图。
 - `visionFileId` 缺失或为 null 时取第一张输入；指定时必须属于本次 `inputFileIds`。
 - 只指定图片而没有识图服务商、无图片、重复文件 ID、图片不属于本次输入均明确拒绝。
 - 页面按稳定上传 key 解析具体文件，不按可能变化的数组下标猜测。
   上传失败不能偷偷跳过；需用户重新选择或明确移除。
 - 没有图片时提示“请添加一张参考图片用于识图。”；指定图片被移除则提示重新选择。
 
-执行顺序是 `queued -> vision -> image -> copy -> done`，未启用的阶段跳过。
-识图请求只带一张源图，不携带整组。改图仍发送全部已选参考图。
-识图成功后观察结果进入生图上下文；若配置文案模型，文案只接收观察文字，
-不会把整组或成片再次送去看图，纯文本模型也可用于此阶段。
-未启用独立识图时，保留 `supportsVision` 开启后文案读取最多两张生成成片的既有行为。
+直接改图顺序为 `queued -> vision -> image -> done`；纯文字生成跳过 `vision`。
+识图请求只发送一张指定源图，返回 `title/description/prompt`。
+标题与描述直接保存到生成记录；自动提示词与用户要求、预设及商品保真约束组合后用于生图。
+改图仍发送全部已选参考图。场景方案生成直接复用方案中的标题与描述。
+所有新任务都没有 `copy` 阶段，也不请求第三个模型。
 
-生成前识图的 HTTP 错误、超时、无效 JSON、空描述或超长描述会让任务失败并阻止生图。
-缺失参考图也会失败，不能丢图后继续或把改图退化为文生图。
-文案失败仍仅写 `copyError`，不使已经生成的图片作废。
+识图 HTTP 错误、超时、无效 JSON、缺少标题/描述/提示词或超过长度限制均让任务失败并阻止生图。
+缺失参考图也会失败，不能丢图继续或把改图退化为文生图。
 
 ## 详情内单张成片识图
 
 用户先看到已生成的组图，点击缩略图“选择成片 1/2/…”选择目标，默认第一张。
 在“成片识图服务商 / 模型”选择配置，点击“识别当前成片”才发出请求。
-只有当前成片被发送，不重新生成图片、不改写既有标题与描述。
+使用最近一次识图选择；只有当前成片被发送，返回标题、描述与建议提示词，
+单独保存在 `outputVision` 中，不改写原生成记录的标题与描述。
 远程参考图上传时用占位，成功后由 `RecordImage` 通过插件文件 API 显示；
 本地 blob 可以即时预览，WebView 不直接加载远程预览 URL。
 
@@ -258,8 +290,8 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
 
 ```ts
 // 新识图：省略或 null fileId 取第一张成片
-{ id: string, providerId: string, fileId?: string | null }
-// 原选择重试：不允许同时覆盖 providerId/fileId
+{ id: string, providerId: string, model: string, fileId?: string | null }
+// 原选择重试：不允许同时覆盖 providerId/model/fileId
 { id: string, retry: true }
 ```
 
@@ -277,14 +309,15 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
 ```ts
 basePrompt?: string // 识图前的预设与用户约束，重试避免重复附加观察
 source?: GenerationSource // 缺失保持无来源，重试与读取时保留
-copySupportsVision?: boolean
 vision?: {
   providerId: string
   providerName: string
   providerKind: 'openai' | 'openai_compatible'
   model: string
   inputFileId: string
+  title?: string | null // 新识图一定有此字段；旧记录可能缺失
   description: string | null
+  prompt?: string | null // 新识图一定有此字段；旧记录可能缺失
 } | null
 outputVision?: {
   providerId: string
@@ -293,7 +326,9 @@ outputVision?: {
   model: string
   outputFileId: string
   status: 'running' | 'success' | 'failed'
+  title?: string | null // 新识图一定有此字段；旧记录可能缺失
   description: string | null
+  prompt?: string | null // 新识图一定有此字段；旧记录可能缺失
   error: string | null
 } | null
 ```
@@ -302,7 +337,7 @@ outputVision?: {
 `vision` 保存源图识图快照，`outputVision` 保存最近一次成片识图的模型、图片、结果或错误。
 文件 ID 与输入/输出的归属关系在私有文档读取时校验，损坏时拒绝而非猜测替代。
 
-生成重试使用已记录的生图、文案、识图模型和图片；成片识图重试使用已记录的模型与成片。
+生成重试使用已记录的生图、识图模型和图片；成片识图重试使用已记录的模型与成片。
 修改提供方配置不会把已有重试换成新模型；端点和 Key 仍取该提供方当前配置，
 便于修正凭据。提供方删除、Key 缺失或文件丢失会明确失败。
 旧记录不会因新增了 `visionModel` 而自动启用识图。
@@ -344,17 +379,15 @@ outputVision?: {
 - 生图：JSON `POST /images/generations`，传 `model/prompt/n` 与可选 `size`。
 - 改图：multipart `POST /images/edits`，参考图字段 `image[]`，其余参数同生图。
 - 独立识图：`POST /chat/completions`，明确的识图 `model`，一条文字指令加
-  **恰好一个** base64 `image_url`，要求返回 `{"description":"..."}`。
-  描述必须非空且不超过 6000 字符，否则报错，不能截断后当作成功。
+  **恰好一个** base64 `image_url`，要求返回 `{"title":"...","description":"...","prompt":"..."}`。
+  三项均必须非空：标题最多 500 字符，描述与提示词各最多 6000 字符；错误不截断后当作成功。
 - 智能规划：相同 chat 路径，只读取所选的一张参考图，返回经过校验的商品观察、
   预设 ID 和逐张视角提示词；生成使用单独的 `n=1` 改图请求，详见智能场景规划文档。
-- 文案：相同 chat 路径，使用 `textModel`，要求 `{"title":"...","description":"..."}`。
-  独立识图路径不附图片；旧路径最多附两张生成成片。
-- 超时：生图 180 秒、识图/文案各 60 秒、连通性/远程图片下载各 20 秒。
+- 超时：生图 180 秒、识图 60 秒、连通性/远程图片下载各 20 秒。
 - 保留既有尺寸映射与错误分类，供应商不支持模型/格式时显示真实错误。
 
 生图服务商收到提示词和改图参考图；独立识图服务商只收到所选的一张源图或成片。
-生成前识图的观察结果还会发送给生图/文案服务商。详情成片识图的观察结果仅保存与显示。
+生成前识图的观察结果还会发送给生图服务商。详情成片识图的结构化结果仅保存与显示。
 所有请求可能产生供应商费用；用户明确触发，失败不自动重试。
 不发送本机路径、窗口资料、代理配置或收藏内容。图片本身可能含背景信息。
 
@@ -377,28 +410,11 @@ outputVision?: {
   活动任务不会被淘汰，导出副本不受影响。
 - 导出到私有目录，由用户复制路径取文件；尚无系统保存对话框。
 
-## 本次定向验证
+## 验证边界
 
-本次只运行无构建的检查，命令使用仓库固定 Node/pnpm：
-
-```bash
-rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run plugins/ai-image apps/desktop/src/features/ai-image apps/desktop/src/lib/page-handoff.test.ts --maxWorkers=4
-rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec eslint plugins/ai-image apps/desktop/src/features/ai-image apps/desktop/src/lib/page-handoff.ts apps/desktop/src/lib/page-handoff.test.ts --max-warnings 0
-rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p plugins/ai-image/tsconfig.json --noEmit
-rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p apps/desktop/tsconfig.json --noEmit
-rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p tsconfig.tests.json --noEmit
-rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec prettier --check plugins/ai-image apps/desktop/src/features/ai-image apps/desktop/src/lib/page-handoff.ts apps/desktop/src/lib/page-handoff.test.ts docs/22-ai-image-plugin.md
-```
-
-测试验证 100 项唯一性与旧 ID、搜索、完整约束、实际请求的提供方/模型/单张图片字节、
-旧流程、识图失败阻断、文件缺失、原选择重试，以及旧文档和识图快照持久化。
-来源测试覆盖生成失败/重启/重试持久化、来源不进入模型请求、成对过滤先于分页、
-旧记录无来源、旧插件更新提示、图库选择顺序和超量保留、原始字节分块传输、
-下载失败不回退、移除/重试的迟到结果抑制，以及实际插件状态门禁。
-测试替换 `fetch`，不证明真实接口效果、计费或模型能力；未执行真实付费请求、
-Windows、Rust、构建、打包或签名验证。主线质量记录由主线维护。
-
-本轮审查修复只定向运行 `plugins/ai-image/src/capabilities/ai-image.test.ts`。
-新增覆盖详情/普通列表/来源历史的中断恢复与重试、跨分页恢复、真实活动任务保护、
-排队恢复期间任务启动或完成的竞态、恢复持久化失败与重复读取幂等。
-模型配置覆盖打开后的草稿保留由父线继续进行浏览器交互验收，不重复整页联动测试。
+本次只运行无构建检查：定向 Vitest、ESLint、Prettier 与 `tsc --noEmit`，
+以及真实 React 页面和实际插件服务配合受控上游响应的浏览器验证。
+覆盖两种模型的配置、显式选择、重启恢复、模型变更失效、结构化识图、
+识图到生图的请求顺序、场景方案复用、旧数据和原模型重试。
+实际命令与结果以[质量与验证](09-quality-and-testing.md)为准。
+没有调用真实付费模型，也未运行本地构建、打包、Rust、Windows 或签名验证。

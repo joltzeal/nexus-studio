@@ -71,6 +71,7 @@ describe('场景预设', () => {
     expect(composePrompt('home-sofa', long)).toContain(long)
     const request = {
       providerId: 'p',
+      imageModel: 'image-model',
       mode: 'generate',
       presetId: null,
       prompt: 'x'.repeat(12000),

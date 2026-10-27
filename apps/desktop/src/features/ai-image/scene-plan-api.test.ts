@@ -12,6 +12,7 @@ function request(): GenerateInput {
   draft.prompt = 'Edited shared scene.'
   return {
     providerId: 'image-provider',
+    imageModel: 'image-model',
     presetId: null,
     prompt: planContext.requirements,
     size: 'auto',
@@ -26,8 +27,8 @@ beforeEach(() => {
 
 describe('scene plan RPC', () => {
   it('creates the exact selected plan and reads its persisted ID', async () => {
-    const { providerId, inputFileId, requirements, count } = planContext
-    const input = { providerId, inputFileId, requirements, count }
+    const { providerId, model, inputFileId, requirements, count } = planContext
+    const input = { providerId, model, inputFileId, requirements, count }
     const plan = makePlan()
     vi.mocked(callPlugin).mockResolvedValue({ plan })
     expect(await createScenePlan(input)).toEqual(plan)
@@ -147,6 +148,7 @@ describe('planned generation', () => {
   it.each([
     { visionProviderId: 'vision-provider' },
     { visionProviderId: null },
+    { visionModel: 'vision-model' },
     { visionFileId: 'reference' },
     { visionFileId: null },
     { count: 2 },

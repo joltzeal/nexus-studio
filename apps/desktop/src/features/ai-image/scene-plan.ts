@@ -16,6 +16,7 @@ export const MAX_VIEW_LABEL = 120
 
 export interface ScenePlanInput {
   providerId: string
+  model: string
   inputFileId: string
   requirements: string
   count: number
@@ -82,6 +83,7 @@ export function visionProviderKey(provider: Provider | undefined): string {
 export function sceneContextKey(context: ScenePlanContext): string {
   return JSON.stringify([
     context.providerId,
+    context.model,
     context.providerKey,
     context.inputFileId,
     context.requirements,
@@ -90,7 +92,7 @@ export function sceneContextKey(context: ScenePlanContext): string {
 }
 
 export function validateScenePlanInput(input: ScenePlanInput): void {
-  if (!input.providerId || !input.inputFileId)
+  if (!input.providerId || !input.model.trim() || !input.inputFileId)
     throw new Error('请选择识图模型和一张已上传的参考图。')
   if (!Number.isInteger(input.count) || input.count < 1 || input.count > 4)
     throw new Error('请选择 1–4 个视角。')
@@ -151,6 +153,10 @@ export function parseScenePlan(value: unknown): ScenePlan {
     })
     if (!distinctViews(views)) throw new Error('方案包含重复视角，请重新识图。')
     result = {
+      ...(raw.title === undefined ? {} : { title: text(raw.title, true) }),
+      ...(raw.description === undefined
+        ? {}
+        : { description: text(raw.description, true) }),
       product: text(raw.product),
       material: text(raw.material),
       observations: text(raw.observations),
@@ -189,6 +195,7 @@ export function sceneDraft(
   if (plan.status !== 'success' || !plan.result) throw new Error('场景方案尚未完成。')
   if (
     plan.providerId !== context.providerId ||
+    plan.model !== context.model ||
     plan.inputFileId !== context.inputFileId ||
     plan.count !== context.count ||
     plan.requirements !== context.requirements ||

@@ -1,5 +1,6 @@
 import { callPlugin } from '@/lib/platform/native-plugins'
 import { checkReference } from './prepare-reference'
+import { providerCatalog } from './model-selection'
 import {
   parseScenePlan,
   scenePlanError,
@@ -19,6 +20,7 @@ import {
   type GenerationRecord,
   type GenerationSource,
   type Provider,
+  type ProviderCatalog,
   type RecordPage,
   type RecordStatus,
   type ScenePreset,
@@ -49,13 +51,11 @@ export interface ProviderInput {
   baseUrl: string
   apiKey?: string
   imageModel: string
-  textModel: string
   visionModel?: string
-  supportsVision: boolean
 }
 
-export function listProviders(): Promise<{ items: Provider[]; storageDurable: boolean }> {
-  return call('image.providers.list')
+export async function listProviders(): Promise<ProviderCatalog> {
+  return providerCatalog(await call<ProviderCatalog>('image.providers.list'))
 }
 
 export function saveProvider(input: ProviderInput): Promise<Provider> {
@@ -150,7 +150,7 @@ export function retryRecord(id: string): Promise<{ record: GenerationRecord }> {
 
 export function recognizeRecord(
   input:
-    | { id: string; providerId: string; fileId?: string | null }
+    | { id: string; providerId: string; model: string; fileId?: string | null }
     | { id: string; retry: true },
 ): Promise<{ record: GenerationRecord }> {
   return call('image.records.recognize', input)
@@ -162,6 +162,7 @@ export function exportRecord(id: string): Promise<{ paths: string[] }> {
 
 export interface GenerateInput {
   providerId: string
+  imageModel: string
   mode: GenerationRecord['mode']
   presetId: string | null
   prompt: string
@@ -170,6 +171,7 @@ export interface GenerateInput {
   inputFileIds: string[]
   source?: GenerationSource
   visionProviderId?: string | null
+  visionModel?: string | null
   visionFileId?: string | null
   scenePlan?: { id: string; prompt: string; views: SceneView[] }
 }
@@ -177,9 +179,18 @@ export interface GenerateInput {
 export async function generate(
   input: GenerateInput,
 ): Promise<{ record: GenerationRecord }> {
+  if (!input.providerId.trim() || !input.imageModel.trim())
+    throw new Error('请选择生图服务商和模型。')
+  if (
+    input.mode === 'edit' &&
+    !input.scenePlan &&
+    (!input.visionProviderId?.trim() || !input.visionModel?.trim())
+  )
+    throw new Error('请选择识图服务商和模型。')
   if (
     input.scenePlan !== undefined &&
     (input.visionProviderId !== undefined ||
+      input.visionModel !== undefined ||
       input.visionFileId !== undefined ||
       input.mode !== 'edit' ||
       input.count !== input.scenePlan.views.length ||

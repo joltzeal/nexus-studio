@@ -228,14 +228,19 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
   密钥不进入日志，也不作为响应字段返回。
 - 生成是“先落记录、再后台执行”：`image.generate` 立即返回 `running` 记录，
   慢任务不受 120 s 请求超时约束，页面按 2.5 s 轮询记录状态。
-- 模型配置可独立填写 `visionModel`；`image.generate` 可指定 `visionProviderId` 与
-  属于输入组图的单个 `visionFileId`。`image.records.recognize` 对一张已生成成片识图，
-  不重新生图；模型、图片与结果持久化，重试保持原选择。字段及失败语义见模块文档。
+- 模型配置只包含 `visionModel/imageModel`，至少填写一项。
+  `image.providers.list` 返回 `modelConfigVersion: 2` 与最近使用的两组服务商/模型选择；
+  新调用必须明确提供模型名称，名称与当前配置不符时拒绝，不能默默替换。
+  `image.generate` 必填 `imageModel`；直接改图还需成对提供 `visionProviderId/visionModel`，
+  `visionFileId` 指向输入组图中的一张。识图一次返回标题、描述和生图提示词，不再请求文案模型。
+  `image.records.recognize` 通过 `providerId/model` 对一张成片识图，不重新生图；
+  模型、图片与结果持久化，重试保持原选择。字段及失败语义见模块文档。
 - `image.presets` 返回 100 个原创生活化场景及分类，保留旧 ID；自定义约束不静默截断。
-- `image.plans.create/get` 异步识图并返回场景与逐张视角方案。
+- `image.plans.create/get` 使用显式 `providerId/model` 异步识图，返回商品标题、描述、场景与逐张视角方案。
   `image.generate.scenePlan` 提交确认后的编辑稿，记录保留原方案及实际请求快照。
   每个视角独立改图，部分失败不删除成功输出，重试只补未完成视角；
-  旧调用保持兼容，完整契约见[智能场景规划](31-ai-scene-planning.md)。
+  旧记录仍可读取；缺少显式模型的新调用需更新，主程序按协议版本阻止旧流程。
+  完整契约见[智能场景规划](31-ai-scene-planning.md)。
 - 跨插件生图通过页面 handoff 传递图片选择与公开 `source` 元数据：
   `pluginId`、`itemId`、`title`、`url`。AI 插件保存来源，重试保留来源，
   `image.records.list` 按来源筛选后分页；旧记录不推断来源。

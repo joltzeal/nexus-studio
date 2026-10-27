@@ -14,11 +14,8 @@ export interface ProviderRecord {
    */
   apiKey: string
   imageModel: string
-  textModel: string
-  /** Optional on legacy configurations; never inferred from the copy model. */
-  visionModel?: string
-  /** Legacy copy stage: whether the text model can read generated images. */
-  supportsVision: boolean
+  /** Missing legacy values are read as empty, never inferred from another model. */
+  visionModel: string
   createdAt: string
   updatedAt: string
 }
@@ -30,9 +27,7 @@ export interface ProviderView {
   kind: ProviderKind
   baseUrl: string
   imageModel: string
-  textModel: string
   visionModel: string
-  supportsVision: boolean
   hasApiKey: boolean
   apiKeyHint: string
   createdAt: string
@@ -42,6 +37,22 @@ export interface ProviderView {
 export type GenerationMode = 'generate' | 'edit'
 export type RecordStatus = 'running' | 'success' | 'failed'
 export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
+
+export interface ModelSelection {
+  providerId: string
+  model: string
+}
+
+export interface ModelSelections {
+  image: ModelSelection | null
+  vision: ModelSelection | null
+}
+
+export interface VisionResult {
+  title: string
+  description: string
+  prompt: string
+}
 
 /** A file the plugin owns under its private `images/` directory. */
 export interface StoredFile {
@@ -59,6 +70,9 @@ export interface VisionRecord {
   /** Exactly one of this record's inputs, resolved before the job starts. */
   inputFileId: string
   description: string | null
+  /** Optional only for historical recognition results. */
+  title?: string | null
+  prompt?: string | null
 }
 
 export interface OutputVisionRecord {
@@ -69,6 +83,8 @@ export interface OutputVisionRecord {
   outputFileId: string
   status: RecordStatus
   description: string | null
+  title?: string | null
+  prompt?: string | null
   error: string | null
 }
 
@@ -87,6 +103,8 @@ export interface SceneView {
 }
 
 export interface ScenePlanResult {
+  title: string
+  description: string
   product: string
   material: string
   observations: string
@@ -96,6 +114,10 @@ export interface ScenePlanResult {
   prompt: string
   views: SceneView[]
 }
+
+/** Older plans did not return listing text; reading them must not invent it. */
+export type StoredScenePlanResult = Omit<ScenePlanResult, 'title' | 'description'> &
+  Partial<Pick<ScenePlanResult, 'title' | 'description'>>
 
 export interface ScenePlan {
   id: string
@@ -109,7 +131,7 @@ export interface ScenePlan {
   inputFileId: string
   requirements: string
   count: number
-  result: ScenePlanResult | null
+  result: StoredScenePlanResult | null
   error: string | null
 }
 
@@ -146,7 +168,8 @@ export interface GenerationRecord {
   providerName: string
   providerKind: ProviderKind
   imageModel: string
-  textModel: string
+  /** Historical fields only: never used for new model requests. */
+  textModel?: string
   copySupportsVision?: boolean
   /** Missing on legacy records means no separate recognition request. */
   vision?: VisionRecord | null
@@ -157,8 +180,8 @@ export interface GenerationRecord {
   description: string | null
   /** Recognition/image failure. Keeps model and input selections for retry. */
   error: string | null
-  /** Copy-stage failure. The image can still succeed, so it is reported separately. */
-  copyError: string | null
+  /** Historical copy-stage failure, retained without running a copy model. */
+  copyError?: string | null
   durationMs: number | null
 }
 
@@ -269,9 +292,7 @@ export function providerView(record: ProviderRecord): ProviderView {
     kind: record.kind,
     baseUrl: record.baseUrl,
     imageModel: record.imageModel,
-    textModel: record.textModel,
-    visionModel: record.visionModel ?? '',
-    supportsVision: record.supportsVision,
+    visionModel: record.visionModel,
     hasApiKey: record.apiKey !== '',
     apiKeyHint: apiKeyHint(record.apiKey),
     createdAt: record.createdAt,

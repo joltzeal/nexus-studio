@@ -3,6 +3,7 @@ import type { GenerationRecord, Provider, ScenePlan, StoredFile } from './types'
 
 export const planContext: ScenePlanContext = {
   providerId: 'vision-provider',
+  model: 'vision-model',
   providerKey: 'vision-provider-configuration',
   inputFileId: 'reference',
   requirements: '  Preserve the worn corners.\nDo not add a frame.  ',
@@ -23,6 +24,8 @@ export function makePlan(overrides: Partial<ScenePlan> = {}): ScenePlan {
     requirements: planContext.requirements,
     count: planContext.count,
     result: {
+      title: 'Vintage wall art',
+      description: 'Used wall art with visible corner wear.',
       product: '墙面装饰画',
       material: '可能为金属或帆布',
       observations: '可见印刷图案与边角磨损',
@@ -52,9 +55,7 @@ export function makeProvider(overrides: Partial<Provider> = {}): Provider {
     kind: 'openai_compatible',
     baseUrl: 'https://models.example.invalid/v1',
     imageModel: 'image-model',
-    textModel: '',
     visionModel: 'vision-model',
-    supportsVision: false,
     hasApiKey: true,
     apiKeyHint: 'test',
     createdAt: '2026-10-25T01:00:00.000Z',

@@ -17,6 +17,18 @@ export function SceneRecognition({ result }: { result: ScenePlanResult }) {
       className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs"
       aria-label="智能识图结果"
     >
+      {result.title ? (
+        <>
+          <dt className="text-muted-foreground">标题</dt>
+          <dd className="break-words">{result.title}</dd>
+        </>
+      ) : null}
+      {result.description ? (
+        <>
+          <dt className="text-muted-foreground">描述</dt>
+          <dd className="whitespace-pre-wrap break-words">{result.description}</dd>
+        </>
+      ) : null}
       <dt className="text-muted-foreground">商品</dt>
       <dd className="break-words">{result.product || '未明确'}</dd>
       <dt className="text-muted-foreground">材质</dt>

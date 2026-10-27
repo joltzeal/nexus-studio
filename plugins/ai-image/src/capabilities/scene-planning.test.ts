@@ -66,6 +66,8 @@ function image(): Response {
 
 function result(count = 3): ScenePlanResult {
   return {
+    title: '装饰画牌',
+    description: '边角有磨损，保留原字样。',
     product: '有磨损的装饰画牌',
     material: '疑似印刷金属薄板，单张照片不足以确认材质',
     observations: '正面图案完整可见，边角有磨损；保留原文字。',
@@ -140,8 +142,7 @@ async function provider(instance: Instance, extra: Record<string, unknown> = {})
     apiKey: 'sk-test-only',
     imageModel: 'image-frozen',
     visionModel: 'vision-frozen',
-    textModel: '',
-    supportsVision: false,
+
     ...extra,
   })
 }
@@ -180,6 +181,7 @@ async function planned(count = 3, store?: PrivateStore, images?: ImageStore) {
   mockFetch(() => chat(result(count)))
   const { plan } = await instance.call<{ plan: ScenePlan }>('image.plans.create', {
     providerId: instance.provider.id,
+    model: instance.provider.visionModel,
     inputFileId: instance.selected.id,
     requirements: '客厅自然光，保留磨损',
     count,
@@ -192,6 +194,7 @@ async function planned(count = 3, store?: PrivateStore, images?: ImageStore) {
 function generation(instance: Awaited<ReturnType<typeof planned>>) {
   return {
     providerId: instance.provider.id,
+    imageModel: instance.provider.imageModel,
     mode: 'edit',
     presetId: 'wood-desk',
     prompt: '  Keep the exact red lettering.\nEND-USER-CONSTRAINT  ',
@@ -250,6 +253,7 @@ describe('scene planning RPC', () => {
     const requirements = `  客厅，保持商品原状\n${'x'.repeat(11000)} END  `
     const { plan } = await instance.call<{ plan: ScenePlan }>('image.plans.create', {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: instance.selected.id,
       requirements,
       count: 3,
@@ -308,6 +312,12 @@ describe('scene planning RPC', () => {
   })
 
   const malformed: [string, (value: ScenePlanResult) => unknown][] = [
+    ['missing title', (value) => ({ ...value, title: undefined })],
+    ['blank title', (value) => ({ ...value, title: ' ' })],
+    ['oversized title', (value) => ({ ...value, title: 'a'.repeat(501) })],
+    ['missing description', (value) => ({ ...value, description: undefined })],
+    ['blank description', (value) => ({ ...value, description: '' })],
+    ['oversized description', (value) => ({ ...value, description: 'a'.repeat(6001) })],
     ['wrong count', (value) => ({ ...value, views: value.views.slice(0, 1) })],
     ['unknown preset', (value) => ({ ...value, presetId: 'invented' })],
     [
@@ -356,6 +366,7 @@ describe('scene planning RPC', () => {
       const calls = mockFetch(() => chat(transform(result())))
       const { plan } = await instance.call<{ plan: ScenePlan }>('image.plans.create', {
         providerId: instance.provider.id,
+        model: instance.provider.visionModel,
         inputFileId: instance.selected.id,
         requirements: '',
         count: 3,
@@ -376,6 +387,7 @@ describe('scene planning RPC', () => {
     )
     const { plan } = await instance.call<{ plan: ScenePlan }>('image.plans.create', {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: instance.selected.id,
       requirements: '',
       count: 1,
@@ -390,12 +402,15 @@ describe('scene planning RPC', () => {
     const calls = mockFetch(() => chat(result()))
     const payload = {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: instance.selected.id,
       requirements: '',
       count: 3,
     }
     for (const extra of [
       { providerId: 'missing' },
+      { model: undefined },
+      { model: 'stale-model' },
       { inputFileId: 'missing' },
       { count: 0 },
       { count: 5 },
@@ -516,6 +531,7 @@ describe('distinct scene views', () => {
       { count: 2 },
       { presetId: 'missing' },
       { visionProviderId: null },
+      { visionModel: null },
       { visionFileId: null },
       { scenePlan: { ...payload.scenePlan, id: 'missing' } },
       { scenePlan: { ...payload.scenePlan, prompt: ' ' } },
@@ -548,14 +564,11 @@ describe('distinct scene views', () => {
     expect(calls).not.toHaveBeenCalled()
   })
 
-  it('retains partial successes and retries only a failed view with frozen models/prompts and completed copy', async () => {
+  it('retains partial successes and retries only a failed view with frozen models/prompts and plan listing text', async () => {
     const instance = await planned()
-    await provider(instance, { id: instance.provider.id, textModel: 'copy-frozen' })
     const payload = generation(instance)
     let imageCalls = 0
-    const firstCalls = mockFetch((url) => {
-      if (url.endsWith('/chat/completions'))
-        return chat({ title: '装饰画牌', description: '边角有磨损，保留原字样。' })
+    const firstCalls = mockFetch(() => {
       imageCalls += 1
       return imageCalls === 2 ? json({ error: 'unsupported image format' }, 400) : image()
     })
@@ -573,21 +586,16 @@ describe('distinct scene views', () => {
     ])
     expect(partial.scenePlan?.views[1]?.error).toContain('unsupported image format')
     expect(partial.title).toBe('装饰画牌')
-    expect(firstCalls).toHaveBeenCalledTimes(4)
-    const copyRequest = JSON.parse(String(firstCalls.mock.calls[3]?.[1]?.body)) as {
-      model: string
-      messages: unknown[]
-    }
-    expect(copyRequest.model).toBe('copy-frozen')
-    expect(JSON.stringify(copyRequest)).not.toContain('image_url')
-    for (const value of Object.values(SOURCE))
-      expect(JSON.stringify(copyRequest)).not.toContain(value)
+    expect(partial.description).toBe(instance.plan.result?.description)
+    expect(firstCalls).toHaveBeenCalledTimes(3)
+    expect(firstCalls.mock.calls.every(([url]) => url.endsWith('/images/edits'))).toBe(
+      true,
+    )
 
     await provider(instance, {
       id: instance.provider.id,
       imageModel: 'new-image',
       visionModel: 'new-vision',
-      textModel: 'new-copy',
     })
     await instance.store.mutate((document) => {
       document.plans[0]!.result!.prompt = 'Changed plan after submission.'
@@ -664,121 +672,113 @@ describe('distinct scene views', () => {
 })
 
 describe('scene lifecycle, recovery and file ownership', () => {
-  it.each(['success', 'failed'] as const)(
-    'repairs exactly one final aggregate save failure after durable views and %s copy without new requests',
-    async (copyStatus) => {
-      const directory = await mkdtemp(join(tmpdir(), 'nexus-scene-aggregate-'))
-      directories.push(directory)
-      const base = createFileStore(directory)
-      const failedSnapshots: GenerationRecord[] = []
-      const recoveryEntered = deferred<void>()
-      const resumeRecovery = deferred<void>()
-      let pauseRecovery = true
-      const faulted: PrivateStore = {
-        kind: base.kind,
-        durable: base.durable,
-        read: () => base.read(),
-        mutate: (apply) =>
-          base.mutate(async (document) => {
-            const before = structuredClone(document.records[0])
-            const value = await apply(document)
-            const after = document.records[0]
-            if (
-              before?.status === 'running' &&
-              before.scenePlan?.views.every((view) => view.status === 'success') &&
-              after?.stage === 'done'
-            ) {
-              if (failedSnapshots.length === 0) {
-                expect(after.status).toBe('success')
-                failedSnapshots.push(before)
-                throw unavailable('final aggregate save failed')
-              }
-              if (pauseRecovery) {
-                pauseRecovery = false
-                recoveryEntered.resolve()
-                await resumeRecovery.promise
-              }
+  it('repairs exactly one final aggregate save failure after durable views and plan text without new requests', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-scene-aggregate-'))
+    directories.push(directory)
+    const base = createFileStore(directory)
+    const failedSnapshots: GenerationRecord[] = []
+    const recoveryEntered = deferred<void>()
+    const resumeRecovery = deferred<void>()
+    let pauseRecovery = true
+    const faulted: PrivateStore = {
+      kind: base.kind,
+      durable: base.durable,
+      read: () => base.read(),
+      mutate: (apply) =>
+        base.mutate(async (document) => {
+          const before = structuredClone(document.records[0])
+          const value = await apply(document)
+          const after = document.records[0]
+          if (
+            before?.status === 'running' &&
+            before.scenePlan?.views.every((view) => view.status === 'success') &&
+            after?.stage === 'done'
+          ) {
+            if (failedSnapshots.length === 0) {
+              expect(after.status).toBe('success')
+              failedSnapshots.push(before)
+              throw unavailable('final aggregate save failed')
             }
-            return value
-          }),
-      }
-      const instance = await planned(
-        3,
-        faulted,
-        createFileImageStore(join(directory, 'images')),
-      )
-      await provider(instance, { id: instance.provider.id, textModel: 'copy-frozen' })
-      const calls = mockFetch((url) => {
-        if (!url.endsWith('/chat/completions')) return image()
-        return copyStatus === 'success'
-          ? chat({ title: '装饰画牌', description: '正面字样及边角磨损保持原样。' })
-          : json({ error: 'copy unavailable' }, 503)
-      })
-      const { record } = await instance.call<{ record: GenerationRecord }>(
-        'image.generate',
-        generation(instance),
-      )
-      try {
-        await recoveryEntered.promise
-        const persisted = (await createFileStore(directory).read()).records[0]!
-        expect(failedSnapshots).toHaveLength(1)
-        expect(persisted).toEqual(failedSnapshots[0])
-        expect(persisted.status).toBe('running')
-        expect(persisted.outputs).toHaveLength(3)
-        expect(persisted.scenePlan?.views.map((view) => view.status)).toEqual([
-          'success',
-          'success',
-          'success',
-        ])
-        expect(instance.plugin.status()['running']).toBe(1)
-        await expect(
-          instance.call('image.records.get', { id: record.id }),
-        ).resolves.toEqual({ record: persisted })
-        await expect(
-          instance.call('image.records.retry', { id: record.id }),
-        ).rejects.toThrow('仍在生成')
-      } finally {
-        resumeRecovery.resolve()
-      }
-      await vi.waitFor(() => expect(instance.plugin.status()['running']).toBe(0))
-      // Read the disk directly so RPC recovery cannot hide a broken final catch.
-      const completed = (await createFileStore(directory).read()).records[0]!
-      const saved = failedSnapshots[0]!
-      expect(completed).toEqual({
-        ...saved,
-        status: 'success',
-        stage: 'done',
-        error: null,
-        durationMs: expect.any(Number),
-      })
-      expect(completed.copyError === null).toBe(copyStatus === 'success')
-      expect(instance.logger.warn).toHaveBeenCalledWith('场景生图执行或状态写入失败', {
-        recordId: record.id,
-        error: 'final aggregate save failed',
-      })
-      await expect(
-        instance.call('image.records.retry', { id: record.id }),
-      ).resolves.toEqual({ record: completed })
+            if (pauseRecovery) {
+              pauseRecovery = false
+              recoveryEntered.resolve()
+              await resumeRecovery.promise
+            }
+          }
+          return value
+        }),
+    }
+    const instance = await planned(
+      3,
+      faulted,
+      createFileImageStore(join(directory, 'images')),
+    )
+    const calls = mockFetch(() => image())
+    const { record } = await instance.call<{ record: GenerationRecord }>(
+      'image.generate',
+      generation(instance),
+    )
+    try {
+      await recoveryEntered.promise
+      const persisted = (await createFileStore(directory).read()).records[0]!
+      expect(failedSnapshots).toHaveLength(1)
+      expect(persisted).toEqual(failedSnapshots[0])
+      expect(persisted.status).toBe('running')
+      expect(persisted.outputs).toHaveLength(3)
+      expect(persisted.scenePlan?.views.map((view) => view.status)).toEqual([
+        'success',
+        'success',
+        'success',
+      ])
+      expect(instance.plugin.status()['running']).toBe(1)
       await expect(
         instance.call('image.records.get', { id: record.id }),
-      ).resolves.toEqual({ record: completed })
-      const restarted = setup(
-        createFileStore(directory),
-        createFileImageStore(join(directory, 'images')),
-      )
+      ).resolves.toEqual({ record: persisted })
       await expect(
-        restarted.call('image.records.get', { id: record.id }),
-      ).resolves.toEqual({ record: completed })
-      expect(failedSnapshots).toHaveLength(1)
-      expect(
-        calls.mock.calls.filter(([url]) => url.endsWith('/images/edits')),
-      ).toHaveLength(3)
-      expect(
-        calls.mock.calls.filter(([url]) => url.endsWith('/chat/completions')),
-      ).toHaveLength(1)
-      expect(calls).toHaveBeenCalledTimes(4)
-    },
-  )
+        instance.call('image.records.retry', { id: record.id }),
+      ).rejects.toThrow('仍在生成')
+    } finally {
+      resumeRecovery.resolve()
+    }
+    await vi.waitFor(() => expect(instance.plugin.status()['running']).toBe(0))
+    // Read the disk directly so RPC recovery cannot hide a broken final catch.
+    const completed = (await createFileStore(directory).read()).records[0]!
+    const saved = failedSnapshots[0]!
+    expect(completed).toEqual({
+      ...saved,
+      status: 'success',
+      stage: 'done',
+      error: null,
+      durationMs: expect.any(Number),
+    })
+    expect(completed.title).toBe(instance.plan.result?.title)
+    expect(completed.description).toBe(instance.plan.result?.description)
+    expect(instance.logger.warn).toHaveBeenCalledWith('场景生图执行或状态写入失败', {
+      recordId: record.id,
+      error: 'final aggregate save failed',
+    })
+    await expect(
+      instance.call('image.records.retry', { id: record.id }),
+    ).resolves.toEqual({ record: completed })
+    await expect(instance.call('image.records.get', { id: record.id })).resolves.toEqual({
+      record: completed,
+    })
+    const restarted = setup(
+      createFileStore(directory),
+      createFileImageStore(join(directory, 'images')),
+    )
+    await expect(restarted.call('image.records.get', { id: record.id })).resolves.toEqual(
+      { record: completed },
+    )
+    expect(failedSnapshots).toHaveLength(1)
+    expect(
+      calls.mock.calls.filter(([url]) => url.endsWith('/images/edits')),
+    ).toHaveLength(3)
+    expect(
+      calls.mock.calls.filter(([url]) => url.endsWith('/chat/completions')),
+    ).toHaveLength(0)
+    expect(calls).toHaveBeenCalledTimes(3)
+  })
 
   it.each(['detail', 'source list', 'retry', 'restart'] as const)(
     'reconciles an old failed aggregate through %s without redoing completed views or copy',
@@ -790,20 +790,17 @@ describe('scene lifecycle, recovery and file ownership', () => {
         createFileStore(directory),
         createFileImageStore(join(directory, 'images')),
       )
-      await provider(instance, { id: instance.provider.id, textModel: 'copy-frozen' })
-      mockFetch((url) =>
-        url.endsWith('/chat/completions')
-          ? json({ error: 'copy unavailable' }, 503)
-          : image(),
-      )
+      mockFetch(() => image())
       const { record } = await instance.call<{ record: GenerationRecord }>(
         'image.generate',
         generation(instance),
       )
       const completed = await waitRecord(instance, record.id)
-      expect(completed.copyError).not.toBeNull()
+      completed.copyError = 'Historical copy failure'
+      completed.textModel = 'legacy-copy'
       await instance.store.mutate((document) => {
         const saved = document.records[0]!
+        Object.assign(saved, completed)
         saved.status = 'failed'
         saved.error = 'final aggregate save failed'
         // Completion recovery must not need the former provider or a new API key.
@@ -1019,6 +1016,7 @@ describe('scene lifecycle, recovery and file ownership', () => {
         kind === 'plan'
           ? instance.call<{ plan: ScenePlan }>('image.plans.create', {
               providerId: original.provider.id,
+              model: original.provider.visionModel,
               inputFileId: 'selected',
               requirements: '',
               count: 1,
@@ -1068,6 +1066,7 @@ describe('scene lifecycle, recovery and file ownership', () => {
     const calls = mockFetch(() => chat(result(1)))
     const payload = {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: 'selected',
       requirements: '',
       count: 1,
@@ -1102,11 +1101,22 @@ describe('scene lifecycle, recovery and file ownership', () => {
 
   it('protects an original image while a new plan is accepting it and its previous record is removed', async () => {
     const instance = await configured()
-    mockFetch(() => image())
+    mockFetch((url) =>
+      url.endsWith('/chat/completions')
+        ? chat({
+            title: result(1).title,
+            description: result(1).description,
+            prompt: result(1).prompt,
+          })
+        : image(),
+    )
     const { record } = await instance.call<{ record: GenerationRecord }>(
       'image.generate',
       {
         providerId: instance.provider.id,
+        imageModel: instance.provider.imageModel,
+        visionProviderId: instance.provider.id,
+        visionModel: instance.provider.visionModel,
         mode: 'edit',
         presetId: 'home-sofa',
         prompt: '',
@@ -1127,6 +1137,7 @@ describe('scene lifecycle, recovery and file ownership', () => {
     mockFetch(() => chat(result(1)))
     const creation = instance.call<{ plan: ScenePlan }>('image.plans.create', {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: 'selected',
       requirements: '',
       count: 1,
@@ -1159,6 +1170,7 @@ describe('scene lifecycle, recovery and file ownership', () => {
     mockFetch(() => chat(result(1)))
     const { plan } = await instance.call<{ plan: ScenePlan }>('image.plans.create', {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: firstDone.outputs[0]!.id,
       requirements: '',
       count: 1,
@@ -1191,6 +1203,7 @@ describe('scene lifecycle, recovery and file ownership', () => {
     })
     const payload = {
       providerId: instance.provider.id,
+      model: instance.provider.visionModel,
       inputFileId: 'selected',
       requirements: '',
       count: 1,

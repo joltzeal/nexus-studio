@@ -17,6 +17,7 @@ export function useScenePlanner(
   context: ScenePlanContext,
   methods: readonly string[] | undefined,
   onCompleted: (draft: ScenePlanDraft) => void,
+  onAccepted: () => Promise<void>,
 ) {
   const [session] = useState(
     () => new ScenePlanSession({ create: createScenePlan, get: getScenePlan }),
@@ -72,11 +73,13 @@ export function useScenePlanner(
       await session.start(
         {
           providerId: context.providerId,
+          model: context.model,
           inputFileId: context.inputFileId,
           requirements: context.requirements,
           count: context.count,
         },
         (state) => notify(state, presetRevision),
+        () => void onAccepted().catch(() => undefined),
       )
     } catch (cause) {
       setResult({

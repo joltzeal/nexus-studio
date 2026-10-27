@@ -92,6 +92,7 @@ describe('scene plan contract and editable draft', () => {
 
   it.each([
     { providerId: 'other-provider' },
+    { model: 'another-vision-model' },
     { providerKey: 'new-vision-model' },
     { inputFileId: 'other-reference' },
     { requirements: 'Changed requirements' },
@@ -108,6 +109,9 @@ describe('scene plan contract and editable draft', () => {
   })
 
   it('does not accept a plan for another request or silently trim the original requirements', () => {
+    expect(() => sceneDraft(makePlan({ model: 'changed-model' }), planContext)).toThrow(
+      '不一致',
+    )
     expect(() => sceneDraft(makePlan({ inputFileId: 'other' }), planContext)).toThrow(
       '不一致',
     )
@@ -122,6 +126,15 @@ describe('scene plan contract and editable draft', () => {
     ).toThrow('参考图已移除')
   })
 
+  it('keeps legacy plans readable without inventing titles or descriptions', () => {
+    const plan = makePlan()
+    if (!plan.result) throw new Error('Missing fixture result')
+    delete plan.result.title
+    delete plan.result.description
+    expect(parseScenePlan(plan).result).not.toHaveProperty('title')
+    expect(parseScenePlan(plan).result).not.toHaveProperty('description')
+  })
+
   it('keeps a plan current when a provider sheet refreshes metadata or non-vision models', () => {
     const provider = makeProvider()
     const before = { ...planContext, providerKey: visionProviderKey(provider) }
@@ -130,7 +143,6 @@ describe('scene plan contract and editable draft', () => {
     const refreshed = makeProvider({
       name: 'Renamed provider',
       imageModel: 'new-image-model',
-      textModel: 'new-text-model',
       updatedAt: '2026-10-25T02:00:00.000Z',
     })
     const after = { ...before, providerKey: visionProviderKey(refreshed) }
