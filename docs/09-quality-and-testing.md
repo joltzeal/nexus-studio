@@ -46,7 +46,35 @@
 最低主程序为 `0.1.17`，CI 启动校验要求 21 个 AI RPC。
 本次包含下一节已验收的实际生图测试；账号池与 SIM8 不升版。
 未执行本地构建、打包、Rust 编译/测试/Clippy、签名或安装验证。
-标签推送、远端插件 artifact 和 R2 上传结果在实际完成后补记。
+标签推送、远端插件 artifact 和 R2 上传结果见下节。
+
+### 2026-10-28 标签与插件发布
+
+发布提交 `ce82b29673aa3e2750601ebb3affa5715d10c07a` 已原子推送至
+`main`、`codex/fix-macos-node-runtime` 和 `v0.1.17`。
+Desktop release 运行 `40536850469` 已触发；插件任务 `122304297183` 成功，
+生成 `plugin-market-v0.1.17`（artifact `12747708061`）。
+实际下载的 artifact 已核对对应提交和 ZIP SHA-256：
+`14e0a1c66ae7f8d187efea41c76fd6c36f0ee838dd5eee26c4161b4b77294cff`。
+
+AI `1.3.0` 包大小为 170819 字节，最低主程序 `0.1.17`，
+包 SHA-256 为 `7f31bfba37decfe302688bf57dcdda04a5650743cd8a772eae87fa27583b540a`。
+包清单、四个包内文件摘要和实际启动握手均通过；下载包提供全部 21 个 AI RPC，
+包括 `image.providers.testImage`。本机只执行 CI 产物的启动检查，没有重新构建。
+
+2026-10-28 00:07（Asia/Shanghai）完成 R2 `--remote` 上传与回读：
+
+- 新包写入 `plugins/studio.ai-image/1.3.0.nexuspkg`，远端回读摘要与 CI 包一致。
+- 上传目录前重新读取并比较线上目录，确认没有并行修改；仅替换 AI 条目。
+- 目录保留全部八项，其他七项逐项一致，历史包保留；未上传重打包的 Vinted `1.1.1`。
+- 远端及公开 `catalog.json` 均与合并目录一致，公开 AI 包的摘要再次验证通过。
+- 插件包使用一年 immutable 缓存，目录使用 60 秒缓存。
+
+发布证据位于 `/tmp/nexus-release-0.1.17-hclddz1z/`：
+`artifact-metadata.json`、`plugin-job.json`、`package-verification.json`、
+`catalog.latest.json`、`catalog.recheck.json`、`catalog.remote.json`、
+`catalog.public.json` 与 `publication.json`。
+本次只等待配套插件 artifact，没有等待桌面矩阵或宣称安装包已编译、签名或安装验证。
 
 ## 2026-10-27 服务商实际生图测试与通道诊断
 
