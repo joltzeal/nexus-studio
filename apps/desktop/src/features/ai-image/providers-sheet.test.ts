@@ -1,6 +1,8 @@
 import type {
   ChangeEvent,
   ComponentProps,
+  DependencyList,
+  EffectCallback,
   FormEvent,
   MouseEvent,
   ReactElement,
@@ -22,7 +24,7 @@ import {
   KernelHookHarness,
   text,
 } from '@/features/settings/kernel-test-support'
-import { removeProvider, saveProvider, testProvider } from './api'
+import { listProviders, removeProvider, saveProvider, testProvider } from './api'
 import { ProvidersSheet } from './providers-sheet'
 import type { Provider } from './types'
 
@@ -33,9 +35,14 @@ vi.mock('react', async (importOriginal) => {
     ...react,
     useState: (initial: unknown) =>
       state.hooks ? state.hooks.state(initial) : react.useState(initial),
+    useEffect: (callback: EffectCallback, dependencies?: DependencyList) =>
+      state.hooks
+        ? state.hooks.effect(callback, dependencies)
+        : react.useEffect(callback, dependencies),
   }
 })
 vi.mock('./api', () => ({
+  listProviders: vi.fn(),
   removeProvider: vi.fn(),
   saveProvider: vi.fn(),
   testProvider: vi.fn(),
@@ -52,6 +59,8 @@ function provider(overrides: Partial<Provider> = {}): Provider {
     baseUrl: 'https://gateway.example/v1',
     imageModel: 'image-example',
     visionModel: 'vision-example',
+    imageTimeoutSeconds: 900,
+    imageResponseMode: 'auto',
     hasApiKey: true,
     apiKeyHint: 'test',
     createdAt: '2026-10-27T00:00:00.000Z',
@@ -65,8 +74,8 @@ const modelCases = [
   { role: 'vision only', imageModel: '', visionModel: 'vision-example' },
   { role: 'both roles', imageModel: 'image-example', visionModel: 'vision-example' },
 ]
-type InputField = 'name' | 'base' | 'key' | 'image' | 'vision-model'
-type Fields = Record<InputField, string>
+type InputField = 'name' | 'base' | 'key' | 'image' | 'vision-model' | 'image-timeout'
+type Fields = Partial<Record<InputField, string>>
 
 let hooks: KernelHookHarness
 let props: ComponentProps<typeof ProvidersSheet>
@@ -76,6 +85,10 @@ const input = (field: InputField) =>
     .props
 const button = (label: string) =>
   components(render(), Button).find((node) => text(node.props.children) === label)!.props
+const responseMode = () =>
+  components(render(), LabeledSelect).find(
+    (node) => node.props.id === 'ai-provider-response-mode',
+  )!.props
 const deleteButton = () =>
   components(render(), Button).find(
     (node) => node.props['aria-label'] === '删除 Saved provider',
@@ -118,14 +131,182 @@ beforeEach(() => {
   props = {
     providers: [],
     storageDurable: true,
+    transportSettingsVersion: 1,
     pluginMethods: ['image.providers.testImage'],
     onOpenChange: vi.fn(),
     onChanged: vi.fn().mockResolvedValue(undefined),
     onTestSubmitted: vi.fn().mockResolvedValue(undefined),
   }
   vi.mocked(saveProvider).mockResolvedValue(provider())
+  vi.mocked(listProviders).mockResolvedValue({
+    items: [],
+    storageDurable: true,
+    modelConfigVersion: 2,
+    transportSettingsVersion: 1,
+    selections: { image: null, vision: null },
+  })
 })
 afterEach(() => hooks.dispose())
+
+describe('provider image request settings', () => {
+  it('starts with fifteen minutes and automatic response, and explains streaming and retries', () => {
+    expectFields({ 'image-timeout': '15' })
+    expect(input('image-timeout').min).toBe(1)
+    expect(input('image-timeout').max).toBe(60)
+    expect(responseMode().value).toBe('auto')
+    expect(responseMode().options).toEqual([
+      { value: 'auto', label: '自动' },
+      { value: 'stream', label: '流式' },
+      { value: 'json', label: '普通' },
+    ])
+    expect(text(render())).toContain('网关')
+    expect(text(render())).toContain('不会自动重试')
+    expectNoRequests()
+  })
+
+  it.each([
+    { minutes: '1', seconds: 60, mode: 'auto' },
+    { minutes: '15', seconds: 900, mode: 'stream' },
+    { minutes: '60', seconds: 3600, mode: 'json' },
+    { minutes: '1.5', seconds: 90, mode: 'json' },
+  ])(
+    'saves $minutes minutes as $seconds seconds with $mode response',
+    async ({ minutes, seconds, mode }) => {
+      fill({ key: 'synthetic-key', image: 'image-model', 'image-timeout': minutes })
+      responseMode().onValueChange(mode)
+      await submit()
+      expect(saveProvider).toHaveBeenCalledExactlyOnceWith({
+        name: 'OpenAI',
+        kind: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'synthetic-key',
+        imageModel: 'image-model',
+        visionModel: '',
+        imageTimeoutSeconds: seconds,
+        imageResponseMode: mode,
+      })
+    },
+  )
+
+  it.each(['', ' ', '0', '0.99', '61', '-2', 'Infinity', 'not-a-number'])(
+    'rejects invalid minute input %s without clearing the draft or sending a request',
+    async (minutes) => {
+      fill({ key: 'synthetic-key', image: 'image-model', 'image-timeout': minutes })
+      await submit()
+      expectNoRequests()
+      expectFields({
+        'image-timeout': minutes,
+        image: 'image-model',
+        key: 'synthetic-key',
+      })
+      expect(text(components(render(), FieldError)[0]!.props.children)).toContain('1–60')
+    },
+  )
+
+  it('preserves a saved integer-second value across an unrelated edit and resets new drafts', async () => {
+    props.providers = [provider({ imageTimeoutSeconds: 61, imageResponseMode: 'stream' })]
+    click(button('编辑'))
+    expect(responseMode().value).toBe('stream')
+    fill({ name: 'Renamed' })
+    await submit()
+    expect(saveProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imageTimeoutSeconds: 61,
+        imageResponseMode: 'stream',
+      }),
+    )
+    click(button('新建'))
+    expectFields({ 'image-timeout': '15' })
+    expect(responseMode().value).toBe('auto')
+  })
+
+  it('includes the response mode in saved-provider dirty detection', async () => {
+    props.providers = [provider()]
+    click(button('编辑'))
+    responseMode().onValueChange('stream')
+    expect(button('测试连接').disabled).toBe(true)
+    expect(button('测试生图').disabled).toBe(true)
+    click(button('测试连接'))
+    click(button('测试生图'))
+    await flushPromises()
+    expectNoRequests()
+    responseMode().onValueChange('auto')
+    expect(button('测试连接').disabled).toBe(false)
+    expect(button('测试生图').disabled).toBe(false)
+  })
+
+  it('retains transport drafts after save failure', async () => {
+    props.providers = [provider()]
+    click(button('编辑'))
+    fill({ 'image-timeout': '60' })
+    responseMode().onValueChange('json')
+    vi.mocked(saveProvider).mockRejectedValue(new Error('Save failed'))
+    await submit()
+    expectFields({ 'image-timeout': '60' })
+    expect(responseMode().value).toBe('json')
+    expect(props.onChanged).not.toHaveBeenCalled()
+  })
+})
+
+describe('provider transport compatibility gate', () => {
+  it('blocks new settings and saves for old plugins while keeping saved connectivity and image tests usable', async () => {
+    props.providers = [provider()]
+    props.transportSettingsVersion = 0
+    expect(input('image-timeout').disabled).toBe(true)
+    expect(responseMode().disabled).toBe(true)
+    expect(button('保存配置').disabled).toBe(true)
+    expect(button('测试连接').disabled).toBe(false)
+    expect(button('测试生图').disabled).toBe(false)
+    expect(text(render())).toContain('更新 AI 生图插件')
+    click(button('编辑'))
+    await submit()
+    expectNoRequests()
+  })
+
+  it('checks the catalog itself when the parent has not supplied the new marker', async () => {
+    props.transportSettingsVersion = undefined
+    expect(button('保存配置').disabled).toBe(true)
+    hooks.flushEffects()
+    await flushPromises()
+    expect(listProviders).toHaveBeenCalledTimes(1)
+    expect(button('保存配置').disabled).toBe(false)
+    expect(input('image-timeout').disabled).toBe(false)
+  })
+
+  it('treats a missing marker as unsupported even with modelConfigVersion 2', async () => {
+    props.transportSettingsVersion = undefined
+    vi.mocked(listProviders).mockResolvedValue({
+      items: [],
+      storageDurable: true,
+      modelConfigVersion: 2,
+      selections: { image: null, vision: null },
+    })
+    render()
+    hooks.flushEffects()
+    await flushPromises()
+    expect(button('保存配置').disabled).toBe(true)
+    expect(text(render())).toContain('更新 AI 生图插件')
+    await submit()
+    expectNoRequests()
+  })
+
+  it('reports a failed capability read and allows a read-only recheck', async () => {
+    props.transportSettingsVersion = undefined
+    vi.mocked(listProviders).mockRejectedValueOnce(new Error('Plugin disconnected'))
+    render()
+    hooks.flushEffects()
+    await flushPromises()
+    expect(button('保存配置').disabled).toBe(true)
+    expect(text(render())).toContain('Plugin disconnected')
+    click(button('重新检查'))
+    render()
+    hooks.flushEffects()
+    await flushPromises()
+    expect(listProviders).toHaveBeenCalledTimes(2)
+    expect(button('保存配置').disabled).toBe(false)
+    expectNoRequests()
+  })
+})
 
 describe('provider model configuration', () => {
   it('offers exactly two empty model fields with guidance and no vision switch', () => {
@@ -192,6 +373,8 @@ describe('provider model configuration', () => {
         apiKey: 'sk-test-only',
         imageModel: models.imageModel,
         visionModel: models.visionModel,
+        imageTimeoutSeconds: 900,
+        imageResponseMode: 'auto',
       })
       expect(props.onChanged).toHaveBeenCalledTimes(1)
       expect(toast.success).toHaveBeenCalledTimes(1)
@@ -257,6 +440,8 @@ describe('provider model configuration', () => {
         baseUrl: 'https://gateway.example/v1',
         imageModel: models.imageModel,
         visionModel: models.visionModel,
+        imageTimeoutSeconds: 900,
+        imageResponseMode: 'auto',
       })
     },
   )
@@ -277,6 +462,8 @@ describe('provider model configuration', () => {
         baseUrl: 'https://gateway.example/v1',
         imageModel: models.imageModel,
         visionModel: models.visionModel,
+        imageTimeoutSeconds: 900,
+        imageResponseMode: 'auto',
       })
     },
   )
@@ -331,6 +518,8 @@ describe('provider model configuration', () => {
           apiKey: 'sk-replacement-draft',
           imageModel: 'image-changed',
           visionModel: 'vision-changed',
+          imageTimeoutSeconds: 900,
+          imageResponseMode: 'auto',
         },
       ])
       expect(props.onChanged).toHaveBeenCalledTimes(1)
@@ -365,6 +554,8 @@ describe('provider model configuration', () => {
         apiKey: 'sk-new-provider',
         imageModel: 'draft-image',
         visionModel: 'draft-vision',
+        imageTimeoutSeconds: 900,
+        imageResponseMode: 'auto',
       })
       expect(props.onChanged).toHaveBeenCalledTimes(1)
       expectFields({
@@ -405,6 +596,8 @@ describe('provider model configuration', () => {
           baseUrl: 'https://gateway.example/v1',
           imageModel: models.imageModel,
           visionModel: models.visionModel,
+          imageTimeoutSeconds: 900,
+          imageResponseMode: 'auto',
         },
       ])
       expect(props.onChanged).toHaveBeenCalledTimes(2)
@@ -607,6 +800,7 @@ describe('provider image test entry', () => {
     { field: 'key', value: 'synthetic-replacement-key' },
     { field: 'image', value: 'changed-image-model' },
     { field: 'vision-model', value: 'changed-vision-model' },
+    { field: 'image-timeout', value: '30' },
   ])(
     'blocks both tests until the edited $field is saved or reverted',
     async ({ field, value }) => {

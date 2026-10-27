@@ -1,5 +1,9 @@
 /** The two providers the plugin supports. Website task channels are out of scope. */
 export type ProviderKind = 'openai' | 'openai_compatible'
+export type ImageResponseMode = 'auto' | 'stream' | 'json'
+
+export const DEFAULT_IMAGE_TIMEOUT_SECONDS = 900
+export const DEFAULT_IMAGE_RESPONSE_MODE: ImageResponseMode = 'auto'
 
 export interface ProviderRecord {
   id: string
@@ -16,6 +20,8 @@ export interface ProviderRecord {
   imageModel: string
   /** Missing legacy values are read as empty, never inferred from another model. */
   visionModel: string
+  imageTimeoutSeconds: number
+  imageResponseMode: ImageResponseMode
   createdAt: string
   updatedAt: string
 }
@@ -28,6 +34,8 @@ export interface ProviderView {
   baseUrl: string
   imageModel: string
   visionModel: string
+  imageTimeoutSeconds: number
+  imageResponseMode: ImageResponseMode
   hasApiKey: boolean
   apiKeyHint: string
   createdAt: string
@@ -295,6 +303,8 @@ export function providerView(record: ProviderRecord): ProviderView {
     baseUrl: record.baseUrl,
     imageModel: record.imageModel,
     visionModel: record.visionModel,
+    imageTimeoutSeconds: record.imageTimeoutSeconds,
+    imageResponseMode: record.imageResponseMode,
     hasApiKey: record.apiKey !== '',
     apiKeyHint: apiKeyHint(record.apiKey),
     createdAt: record.createdAt,

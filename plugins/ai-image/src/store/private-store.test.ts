@@ -28,6 +28,8 @@ const provider: ProviderRecord & { textModel: string; supportsVision: boolean } 
   apiKey: 'sk-test',
   imageModel: 'gpt-image-1',
   visionModel: '',
+  imageTimeoutSeconds: 900,
+  imageResponseMode: 'auto',
   textModel: 'gpt-4o-mini',
   supportsVision: true,
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -86,6 +88,78 @@ const plan: ScenePlan = {
 }
 
 describe('私有存储', () => {
+  it('defaults missing transport settings on legacy read and persists them on the next edit', async () => {
+    const directory = await temporary()
+    const file = join(directory, 'ai-image.json')
+    const original = JSON.stringify({
+      schemaVersion: 1,
+      providers: [
+        {
+          ...provider,
+          imageTimeoutSeconds: undefined,
+          imageResponseMode: undefined,
+          futureSetting: 'preserved',
+        },
+      ],
+      records: [],
+    })
+    await writeFile(file, original)
+    const store = createFileStore(directory)
+    expect((await store.read()).providers[0]).toMatchObject({
+      imageTimeoutSeconds: 900,
+      imageResponseMode: 'auto',
+      futureSetting: 'preserved',
+    })
+    expect(await readFile(file, 'utf8')).toBe(original)
+    await store.mutate((document) => {
+      document.providers[0]!.name = 'Renamed'
+    })
+    expect((await createFileStore(directory).read()).providers[0]).toMatchObject({
+      name: 'Renamed',
+      imageTimeoutSeconds: 900,
+      imageResponseMode: 'auto',
+      futureSetting: 'preserved',
+    })
+  })
+
+  it.each([
+    { imageTimeoutSeconds: 60, imageResponseMode: 'auto' as const },
+    { imageTimeoutSeconds: 1471, imageResponseMode: 'stream' as const },
+    { imageTimeoutSeconds: 3600, imageResponseMode: 'json' as const },
+  ])('retains explicit transport settings across restart: %j', async (settings) => {
+    const directory = await temporary()
+    await createFileStore(directory).mutate((document) => {
+      document.providers.push({ ...provider, ...settings })
+    })
+    expect((await createFileStore(directory).read()).providers[0]).toMatchObject(settings)
+  })
+
+  it.each([
+    { imageTimeoutSeconds: 59 },
+    { imageTimeoutSeconds: 3601 },
+    { imageTimeoutSeconds: 60.5 },
+    { imageTimeoutSeconds: null },
+    { imageTimeoutSeconds: '900' },
+    { imageResponseMode: 'sse' },
+    { imageResponseMode: null },
+  ])(
+    'rejects corrupt persisted settings without rewriting them: %j',
+    async (settings) => {
+      const directory = await temporary()
+      const file = join(directory, 'ai-image.json')
+      const original = JSON.stringify({
+        schemaVersion: 1,
+        providers: [{ ...provider, ...settings }],
+        records: [],
+      })
+      await writeFile(file, original)
+      await expect(createFileStore(directory).read()).rejects.toThrow(
+        '插件私有存储结构无效',
+      )
+      expect(await readFile(file, 'utf8')).toBe(original)
+    },
+  )
+
   it('文件存储在重启后仍保留服务商与记录', async () => {
     const directory = await temporary()
     const first = createFileStore(directory)

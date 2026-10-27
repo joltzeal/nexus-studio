@@ -6,8 +6,13 @@ export const AI_IMAGE_PLUGIN_ID = 'studio.ai-image'
 export const AI_IMAGE_CAPABILITY = 'image.provider'
 export const PROVIDER_IMAGE_TEST_METHOD = 'image.providers.testImage'
 export const PROVIDER_IMAGE_TEST_UPDATE_HINT = '请更新 AI 生图插件后使用测试生图。'
+export const PROVIDER_TRANSPORT_UPDATE_HINT =
+  '请更新 AI 生图插件后配置请求等待时间与响应方式；现有已保存配置仍可测试。'
+export const DEFAULT_IMAGE_TIMEOUT_SECONDS = 900
+export const DEFAULT_IMAGE_RESPONSE_MODE = 'auto'
 
 export type ProviderKind = 'openai' | 'openai_compatible'
+export type ImageResponseMode = 'auto' | 'stream' | 'json'
 export type RecordStatus = 'running' | 'success' | 'failed'
 export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
 export type GenerationMode = 'generate' | 'edit'
@@ -20,6 +25,8 @@ export interface Provider {
   baseUrl: string
   imageModel: string
   visionModel?: string
+  imageTimeoutSeconds: number
+  imageResponseMode: ImageResponseMode
   hasApiKey: boolean
   apiKeyHint: string
   createdAt: string
@@ -40,6 +47,8 @@ export interface ProviderCatalog {
   items: Provider[]
   storageDurable: boolean
   modelConfigVersion: number
+  /** Missing on plugins that only support the original two-model settings. */
+  transportSettingsVersion?: number | undefined
   selections: ModelSelections
 }
 

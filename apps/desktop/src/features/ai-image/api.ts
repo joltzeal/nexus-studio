@@ -17,7 +17,10 @@ import {
 import {
   AI_IMAGE_CAPABILITY,
   AI_IMAGE_PLUGIN_ID,
+  DEFAULT_IMAGE_RESPONSE_MODE,
+  DEFAULT_IMAGE_TIMEOUT_SECONDS,
   PROVIDER_IMAGE_TEST_METHOD,
+  PROVIDER_TRANSPORT_UPDATE_HINT,
   SIZES,
   type GenerationRecord,
   type ImageSize,
@@ -55,13 +58,30 @@ export interface ProviderInput {
   apiKey?: string
   imageModel: string
   visionModel?: string
+  imageTimeoutSeconds?: number | undefined
+  imageResponseMode?: Provider['imageResponseMode'] | undefined
 }
 
 export async function listProviders(): Promise<ProviderCatalog> {
-  return providerCatalog(await call<ProviderCatalog>('image.providers.list'))
+  const result = await call<ProviderCatalog>('image.providers.list')
+  return {
+    ...providerCatalog(result),
+    transportSettingsVersion: result.transportSettingsVersion === 1 ? 1 : 0,
+    items: result.items.map((provider) => ({
+      ...provider,
+      imageTimeoutSeconds: provider.imageTimeoutSeconds ?? DEFAULT_IMAGE_TIMEOUT_SECONDS,
+      imageResponseMode: provider.imageResponseMode ?? DEFAULT_IMAGE_RESPONSE_MODE,
+    })),
+  }
 }
 
-export function saveProvider(input: ProviderInput): Promise<Provider> {
+export async function saveProvider(input: ProviderInput): Promise<Provider> {
+  if (
+    (input.imageTimeoutSeconds !== undefined || input.imageResponseMode !== undefined) &&
+    (await listProviders()).transportSettingsVersion !== 1
+  ) {
+    throw new Error(PROVIDER_TRANSPORT_UPDATE_HINT)
+  }
   return call('image.providers.save', input)
 }
 

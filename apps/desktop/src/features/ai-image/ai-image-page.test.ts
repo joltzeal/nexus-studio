@@ -133,6 +133,8 @@ function catalog(
         baseUrl: 'https://models.example.invalid/v1',
         imageModel: `${name}-image`,
         visionModel: `${name}-vision`,
+        imageTimeoutSeconds: 900,
+        imageResponseMode: 'auto',
         hasApiKey: true,
         apiKeyHint: 'test',
         createdAt: '2026-10-27T00:00:00.000Z',

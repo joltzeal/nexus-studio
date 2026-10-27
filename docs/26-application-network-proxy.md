@@ -19,6 +19,36 @@ HTTPS 使用 443、HTTP 使用 80；显式非默认端口保持不变。
 2026-10-24 修复了此前将空字符串转换成 0 导致 HTTPS 校验、下载和插件请求被重置的问题。
 该修复不改变所选代理，也不增加失败后的直连回退。
 
+### Node 长请求与流式响应
+
+应用网络预加载为直连、HTTP(S) 代理和 SOCKS5 代理统一安装 dispatcher 超时策略。
+调用方的 `AbortSignal` 仍可提前取消，包括最长 60 分钟的生图调用；底层响应头和
+响应体空闲超时统一设为 65 分钟，避免默认 5 分钟先截断请求。
+策略在每次 `dispatch` 时覆盖超时参数，不能仅设置 `Agent` 构造参数。
+
+每个底层 HTTP 请求另有 **65 分钟总时限**，从进入 dispatcher 队列开始计时，
+覆盖排队、等待响应头和读取完整响应体。SSE 心跳或其他持续数据不会重置总时限，
+收到响应头也不会提前清除计时器；完成、失败或协议升级交接后清除。
+排队期间到期会立即报错；即使之后获得连接，也会在发送前取消，不发送迟到的 POST。
+调用方自己的 `AbortSignal` 负责约束包含重定向或多次请求的整个操作。
+该策略不增加重试，也不更换所选代理或在失败后改走直连。
+连接阶段原有的短时限保持不变，包括 SOCKS5 的 15 秒连接时限。
+
+2026-10-28 对工作区实际安装源码的核对结果：
+
+- 包依赖为 `undici@7.16.0`；本机 Node `v24.18.0` 内置 Undici `7.28.0`。
+- 这两份 `fetch` 实现当前都未在 dispatch 参数中写死 `300000`；
+  5 分钟来自 Client 默认的 `headersTimeout/bodyTimeout`。
+- 7.16.0 的 HTTP/1 解析器优先采用请求级超时，再采用 Client 默认值。
+  因此仍在 dispatcher 边界覆盖参数，兼容显式传入 5 分钟超时的 fetch/调用方。
+- Node 官方文档确认 `setGlobalDispatcher()` 同时影响 Node 内置 fetch 和
+  使用全局 dispatcher 的 Undici 调用；插件自行创建的独立 dispatcher 仍属于下述网络边界。
+
+依据为已安装包的 `lib/web/fetch/index.js`、`lib/dispatcher/client.js`、
+`lib/dispatcher/client-h1.js`、`docs/docs/api/Dispatcher.md` 和 Node 内置源码，
+并核对 [Node 24 全局 fetch 文档](https://nodejs.org/docs/latest-v24.x/api/globals.html#custom-dispatcher)
+与 [Undici 7.16.0 Dispatcher 文档](https://github.com/nodejs/undici/blob/v7.16.0/docs/docs/api/Dispatcher.md)。
+
 窗口的“通过代理 IP 匹配时区、语言和 WebRTC IP”通过窗口自身代理访问
 ipwho.is，失败后尝试 IP.SB；使用独立 dispatcher，不继承这里的应用代理。
 不再下载或读取 GeoIP 数据库，也不要求用户配置接口密钥。
@@ -87,3 +117,9 @@ socks5h 经代理解析；代理自身的地址仍由本机解析。目标 HTTPS
 原生单元测试使用本地 HTTP/SOCKS5 服务验证转发、显式直连、代理失败阻断，
 并覆盖代理数据库损坏与无效已存配置。它们不代替 Windows 安装、
 macOS 覆盖更新、系统 PAC 和真实第三方代理的整机验证。
+
+Node 预加载测试直接由 Node 24 strip types 导入 `src/network-preload.ts`，
+不读取 `dist`、不要求本地构建。定向测试通过本机 HTTP/SOCKS5 服务检查直连与代理路由、
+实际 Undici 请求的超时参数、流式心跳下的总时限、调用方提前取消、排队取消、
+代理失败阻断及 POST 不重发。测试使用短的可控总时限验证截止行为，
+并单独核对生产的 65 分钟参数；不将其描述为真实运行一小时或真实模型集成测试。

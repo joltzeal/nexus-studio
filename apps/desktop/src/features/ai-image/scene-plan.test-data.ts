@@ -56,6 +56,8 @@ export function makeProvider(overrides: Partial<Provider> = {}): Provider {
     baseUrl: 'https://models.example.invalid/v1',
     imageModel: 'image-model',
     visionModel: 'vision-model',
+    imageTimeoutSeconds: 900,
+    imageResponseMode: 'auto',
     hasApiKey: true,
     apiKeyHint: 'test',
     createdAt: '2026-10-25T01:00:00.000Z',

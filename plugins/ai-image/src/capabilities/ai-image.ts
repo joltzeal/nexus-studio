@@ -39,6 +39,8 @@ import {
   composeSceneViewPrompt,
 } from '../domain/scene-plan.js'
 import {
+  DEFAULT_IMAGE_RESPONSE_MODE,
+  DEFAULT_IMAGE_TIMEOUT_SECONDS,
   MAX_INPUT_BYTES,
   MAX_PLANS,
   MAX_RECORDS,
@@ -93,9 +95,8 @@ export const AI_IMAGE_METHODS = [
   'image.generate',
 ] as const
 
-/** Image generation gets a longer deadline than recognition. */
-const IMAGE_TIMEOUT_MS = 180_000
-const VISION_TIMEOUT_MS = 60_000
+/** Recognition and planning need room to finish before image generation begins. */
+const VISION_TIMEOUT_MS = 300_000
 const TEST_TIMEOUT_MS = 20_000
 /** A product photo on a CDN either arrives quickly or the host is unreachable. */
 const REMOTE_TIMEOUT_MS = 20_000
@@ -231,6 +232,7 @@ export class AiImage {
       items: document.providers.map(providerView),
       storageDurable: this.store.durable,
       modelConfigVersion: 2,
+      transportSettingsVersion: 1,
       selections: document.selections,
     }
   }
@@ -262,6 +264,14 @@ export class AiImage {
         apiKey,
         imageModel: input.imageModel,
         visionModel,
+        imageTimeoutSeconds:
+          input.imageTimeoutSeconds ??
+          existing?.imageTimeoutSeconds ??
+          DEFAULT_IMAGE_TIMEOUT_SECONDS,
+        imageResponseMode:
+          input.imageResponseMode ??
+          existing?.imageResponseMode ??
+          DEFAULT_IMAGE_RESPONSE_MODE,
         createdAt: existing?.createdAt ?? timestamp,
         updatedAt: timestamp,
       }
@@ -1054,7 +1064,8 @@ export class AiImage {
         size: snapshot.size,
         count: snapshot.count,
         inputs: snapshot.mode === 'edit' ? inputs : [],
-        timeoutMs: IMAGE_TIMEOUT_MS,
+        timeoutMs: provider.imageTimeoutSeconds * 1000,
+        responseMode: provider.imageResponseMode,
       })
       if (snapshot.purpose === 'provider-test' && outputs.length !== 1) {
         throw new UpstreamError('invalid-response', '生图测试必须恰好返回一张图片')
@@ -1127,7 +1138,8 @@ export class AiImage {
             size: snapshot.size,
             count: 1,
             inputs,
-            timeoutMs: IMAGE_TIMEOUT_MS,
+            timeoutMs: provider.imageTimeoutSeconds * 1000,
+            responseMode: provider.imageResponseMode,
           })
           const output = outputs[0]
           if (outputs.length !== 1 || output === undefined) {

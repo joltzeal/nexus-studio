@@ -5,6 +5,7 @@ import {
   GenerateInputSchema,
   GenerationSourceSchema,
   normalizeBaseUrl,
+  ProviderSaveInputSchema,
   RecordsListInputSchema,
 } from './schemas.js'
 
@@ -30,6 +31,48 @@ describe('接口地址', () => {
     expect(baseUrlSchema.safeParse('file:///etc/passwd').success).toBe(false)
     expect(baseUrlSchema.safeParse('https://').success).toBe(false)
     expect(baseUrlSchema.safeParse('https://api.openai.com/v1').success).toBe(true)
+  })
+})
+
+describe('provider image transport settings', () => {
+  const provider = {
+    name: 'Gateway',
+    kind: 'openai_compatible',
+    baseUrl: 'https://gateway.example/v1',
+    imageModel: 'image-model',
+  }
+
+  it.each([
+    { imageTimeoutSeconds: 60, imageResponseMode: 'auto' },
+    { imageTimeoutSeconds: 1471, imageResponseMode: 'stream' },
+    { imageTimeoutSeconds: 3600, imageResponseMode: 'json' },
+  ])('accepts bounded integer seconds and the explicit mode: %j', (settings) => {
+    expect(ProviderSaveInputSchema.parse({ ...provider, ...settings })).toMatchObject(
+      settings,
+    )
+  })
+
+  it('leaves omitted settings absent so editing can retain saved values', () => {
+    const input = ProviderSaveInputSchema.parse(provider)
+    expect(input).not.toHaveProperty('imageTimeoutSeconds')
+    expect(input).not.toHaveProperty('imageResponseMode')
+  })
+
+  it.each([
+    { imageTimeoutSeconds: 59 },
+    { imageTimeoutSeconds: 3601 },
+    { imageTimeoutSeconds: 900.5 },
+    { imageTimeoutSeconds: '900' },
+    { imageTimeoutSeconds: null },
+    { imageTimeoutSeconds: Number.NaN },
+    { imageTimeoutSeconds: Number.POSITIVE_INFINITY },
+    { imageResponseMode: 'sse' },
+    { imageResponseMode: '' },
+    { imageResponseMode: null },
+  ])('rejects invalid transport settings instead of coercing them: %j', (settings) => {
+    expect(ProviderSaveInputSchema.safeParse({ ...provider, ...settings }).success).toBe(
+      false,
+    )
   })
 })
 

@@ -3,13 +3,19 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
 import { unavailable } from '../domain/errors.js'
-import { GenerationSourceSchema } from '../domain/schemas.js'
+import {
+  GenerationSourceSchema,
+  imageResponseModeSchema,
+  imageTimeoutSecondsSchema,
+} from '../domain/schemas.js'
 import {
   distinctViews,
   scenePlanResultFields,
   sceneViewFields,
 } from '../domain/scene-plan.js'
 import {
+  DEFAULT_IMAGE_RESPONSE_MODE,
+  DEFAULT_IMAGE_TIMEOUT_SECONDS,
   MAX_PLANS,
   type GenerationRecord,
   type ModelSelections,
@@ -46,6 +52,8 @@ const providerSchema = z.looseObject({
   apiKey: z.string(),
   imageModel: z.string(),
   visionModel: z.string().max(120).default(''),
+  imageTimeoutSeconds: imageTimeoutSecondsSchema.default(DEFAULT_IMAGE_TIMEOUT_SECONDS),
+  imageResponseMode: imageResponseModeSchema.default(DEFAULT_IMAGE_RESPONSE_MODE),
   textModel: z.string().optional(),
   supportsVision: z.boolean().optional(),
   createdAt: z.string(),

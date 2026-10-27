@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { CheckCircle2, Loader2, Plus, Trash2, XCircle } from 'lucide-react'
 import {
   AlertDialog,
@@ -25,14 +25,24 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { toast } from '@/components/ui/toast'
-import { removeProvider, saveProvider, testProvider, type ProviderInput } from './api'
+import {
+  listProviders,
+  removeProvider,
+  saveProvider,
+  testProvider,
+  type ProviderInput,
+} from './api'
 import { ProviderImageTestDialog } from './provider-image-test-dialog'
 import {
   DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_IMAGE_RESPONSE_MODE,
+  DEFAULT_IMAGE_TIMEOUT_SECONDS,
   PROVIDER_IMAGE_TEST_METHOD,
   PROVIDER_IMAGE_TEST_UPDATE_HINT,
   PROVIDER_KINDS,
+  PROVIDER_TRANSPORT_UPDATE_HINT,
   message,
+  type ImageResponseMode,
   type Provider,
   type ProviderKind,
 } from './types'
@@ -45,6 +55,8 @@ interface FormState {
   apiKey: string
   imageModel: string
   visionModel: string
+  imageTimeoutMinutes: string
+  imageResponseMode: ImageResponseMode
 }
 
 function emptyForm(): FormState {
@@ -56,6 +68,8 @@ function emptyForm(): FormState {
     apiKey: '',
     imageModel: '',
     visionModel: '',
+    imageTimeoutMinutes: String(DEFAULT_IMAGE_TIMEOUT_SECONDS / 60),
+    imageResponseMode: DEFAULT_IMAGE_RESPONSE_MODE,
   }
 }
 
@@ -68,6 +82,10 @@ function formOf(provider: Provider): FormState {
     apiKey: '',
     imageModel: provider.imageModel,
     visionModel: provider.visionModel ?? '',
+    imageTimeoutMinutes: String(
+      (provider.imageTimeoutSeconds ?? DEFAULT_IMAGE_TIMEOUT_SECONDS) / 60,
+    ),
+    imageResponseMode: provider.imageResponseMode ?? DEFAULT_IMAGE_RESPONSE_MODE,
   }
 }
 
@@ -75,6 +93,7 @@ export function ProvidersSheet({
   providers,
   storageDurable,
   modelConfigReady = true,
+  transportSettingsVersion,
   pluginMethods,
   onOpenChange,
   onChanged,
@@ -83,6 +102,7 @@ export function ProvidersSheet({
   providers: Provider[]
   storageDurable: boolean
   modelConfigReady?: boolean
+  transportSettingsVersion?: number | undefined
   pluginMethods?: string[] | undefined
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<void>
@@ -95,7 +115,18 @@ export function ProvidersSheet({
   const [removing, setRemoving] = useState<Provider | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [transportRevision, setTransportRevision] = useState(0)
+  const [transportCheck, setTransportCheck] = useState<{
+    revision: number
+    version: number
+    error: string | null
+  } | null>(null)
+  const currentTransport =
+    transportCheck?.revision === transportRevision ? transportCheck : null
+  const transportVersion = transportSettingsVersion ?? currentTransport?.version
+  const transportReady = transportVersion === 1
   const disabled = pending || !modelConfigReady
+  const saveDisabled = disabled || !transportReady
   const canTestImage = pluginMethods?.includes(PROVIDER_IMAGE_TEST_METHOD) === true
   const editedProvider = providers.find((provider) => provider.id === form.id)
   const unsavedProviderId =
@@ -105,9 +136,45 @@ export function ProvidersSheet({
       form.baseUrl !== editedProvider.baseUrl ||
       form.apiKey !== '' ||
       form.imageModel !== editedProvider.imageModel ||
-      form.visionModel !== (editedProvider.visionModel ?? ''))
+      form.visionModel !== (editedProvider.visionModel ?? '') ||
+      form.imageTimeoutMinutes !==
+        String(
+          (editedProvider.imageTimeoutSeconds ?? DEFAULT_IMAGE_TIMEOUT_SECONDS) / 60,
+        ) ||
+      form.imageResponseMode !==
+        (editedProvider.imageResponseMode ?? DEFAULT_IMAGE_RESPONSE_MODE))
       ? editedProvider.id
       : null
+
+  // Older page callers do not pass this marker. A read-only lookup keeps the
+  // settings gate independent from the two-model and actual-test capabilities.
+  useEffect(() => {
+    if (transportSettingsVersion !== undefined || !modelConfigReady) return
+    let active = true
+    void listProviders().then(
+      (catalog) => {
+        if (active) {
+          setTransportCheck({
+            revision: transportRevision,
+            version: catalog.transportSettingsVersion ?? 0,
+            error: null,
+          })
+        }
+      },
+      (cause: unknown) => {
+        if (active) {
+          setTransportCheck({
+            revision: transportRevision,
+            version: 0,
+            error: message(cause),
+          })
+        }
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [modelConfigReady, transportRevision, transportSettingsVersion])
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
@@ -126,7 +193,7 @@ export function ProvidersSheet({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (disabled) return
+    if (saveDisabled) return
     if (
       form.name.trim() === '' ||
       form.baseUrl.trim() === '' ||
@@ -139,6 +206,11 @@ export function ProvidersSheet({
       setError('新建配置需要填写 API Key。')
       return
     }
+    const timeoutMinutes = Number(form.imageTimeoutMinutes)
+    if (!Number.isFinite(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 60) {
+      setError('请求等待时间需为 1–60 分钟。')
+      return
+    }
     setPending(true)
     setError(null)
     setNotice(null)
@@ -148,6 +220,8 @@ export function ProvidersSheet({
       baseUrl: form.baseUrl.trim(),
       imageModel: form.imageModel.trim(),
       visionModel: form.visionModel.trim(),
+      imageTimeoutSeconds: Math.round(timeoutMinutes * 60),
+      imageResponseMode: form.imageResponseMode,
       ...(form.id === null ? {} : { id: form.id }),
       ...(form.apiKey.trim() === '' ? {} : { apiKey: form.apiKey.trim() }),
     }
@@ -430,6 +504,69 @@ export function ProvidersSheet({
                 />
               </Field>
             </div>
+            <div className="ai-form-grid">
+              <Field>
+                <FieldLabel htmlFor="ai-provider-image-timeout">
+                  请求等待时间（分钟）
+                </FieldLabel>
+                <Input
+                  id="ai-provider-image-timeout"
+                  type="number"
+                  min={1}
+                  max={60}
+                  step="any"
+                  value={form.imageTimeoutMinutes}
+                  disabled={saveDisabled}
+                  onChange={(event) => update('imageTimeoutMinutes', event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="ai-provider-response-mode">响应方式</FieldLabel>
+                <LabeledSelect
+                  id="ai-provider-response-mode"
+                  ariaLabel="响应方式"
+                  value={form.imageResponseMode}
+                  disabled={saveDisabled}
+                  options={[
+                    { value: 'auto', label: '自动' },
+                    { value: 'stream', label: '流式' },
+                    { value: 'json', label: '普通' },
+                  ]}
+                  onValueChange={(value) => {
+                    if (value === 'auto' || value === 'stream' || value === 'json')
+                      update('imageResponseMode', value)
+                  }}
+                />
+              </Field>
+            </div>
+            <FieldDescription>
+              1–60
+              分钟，精确到秒，应用于每次生图及每个视角请求，含结果图片下载；识图固定等待 5
+              分钟。自动按模型选择响应方式，流式需要网关支持；失败或超时不会自动重试。
+            </FieldDescription>
+            {modelConfigReady && !transportReady ? (
+              currentTransport?.error && transportSettingsVersion === undefined ? (
+                <div>
+                  <FieldDescription role="status">
+                    请求设置能力检查失败：{currentTransport.error}
+                  </FieldDescription>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setTransportRevision((current) => current + 1)}
+                  >
+                    重新检查
+                  </Button>
+                </div>
+              ) : (
+                <FieldDescription role="status">
+                  {transportVersion === undefined
+                    ? '正在检查插件是否支持请求设置…'
+                    : PROVIDER_TRANSPORT_UPDATE_HINT}
+                </FieldDescription>
+              )
+            ) : null}
             {storageDurable ? null : (
               <FieldDescription>
                 宿主没有提供私有目录，这次保存的配置与记录只在内存中，重启后失效。
@@ -453,7 +590,7 @@ export function ProvidersSheet({
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          <Button type="submit" form="ai-provider-form" disabled={disabled}>
+          <Button type="submit" form="ai-provider-form" disabled={saveDisabled}>
             {pending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             ) : null}

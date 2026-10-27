@@ -1,5 +1,19 @@
 # 插件商店与在线更新
 
+## AI 生图 1.4.0 与主程序 0.1.18
+
+`studio.ai-image` 升为 `1.4.0`，默认生图等待 15 分钟，支持每服务商调整等待时间、
+选择自动/流式/普通响应。文生图、改图、实际测试和逐视角生成共用新请求实现，
+支持标准 Images SSE 和普通 JSON；读取响应与结果下载使用同一个截止时间。
+配置迁移、兼容模式与异常处理见[生图请求](35-ai-streaming-and-timeouts.md)。
+
+要求 `minCoreVersion: 0.1.18`，主程序同时提供设置页面和网络传输层修复。
+从 `plugin-market-v0.1.18` CI artifact 取得新包，验证清单、摘要、包内文件和
+21 方法启动握手后，仅发布 `plugins/studio.ai-image/1.4.0.nexuspkg`，
+回读校验后再合并线上完整目录。其他七项及历史包保持原值；
+artifact 中重新打包的同版本 Vinted 包不上传。
+实际发布状态以[质量记录](09-quality-and-testing.md)中的远端和公开回读证据为准。
+
 ## AI 生图 1.3.0 与主程序 0.1.17
 
 `studio.ai-image` 升为 `1.3.0`，新增 `image.providers.testImage`，

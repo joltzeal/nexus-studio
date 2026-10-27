@@ -3,12 +3,16 @@
 本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
 宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
 当前工作区在已发布的上传格式校验、Vinted 原图本机 JPEG 转换及商品资料预填基础上，
-将模型配置收敛为识图、生图两项。插件版本为 `1.3.0`，要求主程序 `0.1.17` 或更高版本；
+将模型配置收敛为识图、生图两项。插件版本为 `1.4.0`，要求主程序 `0.1.18` 或更高版本；
 主程序与插件需配套更新，实际发布结果见[插件商店](25-plugin-market.md)。
 
 `1.3.0` 新增服务商实际生图测试与通道错误诊断。
 该入口需要新的主程序页面与包含 `image.providers.testImage` 的插件配套使用，
 旧插件只保留连通性检查。详细接口与参考项目核对见[生图测试](33-ai-provider-testing.md)。
+
+`1.4.0` 将生图默认等待时间提高到 15 分钟，支持每服务商设置 1–60 分钟与
+自动/流式/普通响应。文生图、改图、测试和多视角共用同一实现；
+流式协议和截止时间见[生图请求](35-ai-streaming-and-timeouts.md)。
 
 ## 当前能力
 
@@ -149,7 +153,9 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
 | `visionModel` | 理解图片并返回商品标题、描述和生图提示词；不从其他旧模型字段推断 |
 | `imageModel`  | 生图或改图；发起生成时必须明确指定                               |
 
-`image.providers.save` 使用 `id/name/kind/baseUrl/apiKey/imageModel/visionModel`。
+`image.providers.save` 使用 `id/name/kind/baseUrl/apiKey/imageModel/visionModel`，
+并支持 `imageTimeoutSeconds` 与 `imageResponseMode`；默认值、迁移与门禁见
+[生图请求](35-ai-streaming-and-timeouts.md)。
 两项模型至少一项非空；新表单默认都留空，示例仅作 placeholder。
 编辑时省略 `apiKey` 保留原 Key；省略 `visionModel` 保留原识图配置，显式空字符串清空。
 保存失败保留表单输入；保存已成功但列表刷新失败时，表单保留返回的 ID 并清空 Key 输入，
@@ -163,6 +169,7 @@ AI 网关仍沿用 AI/应用网络策略，不改全局代理。两个插件后�
   items: ProviderView[]
   storageDurable: boolean
   modelConfigVersion: 2
+  transportSettingsVersion: 1
   selections: {
     image: { providerId: string; model: string } | null
     vision: { providerId: string; model: string } | null
@@ -388,7 +395,10 @@ outputVision?: {
   三项均必须非空：标题最多 500 字符，描述与提示词各最多 6000 字符；错误不截断后当作成功。
 - 智能规划：相同 chat 路径，只读取所选的一张参考图，返回经过校验的商品观察、
   预设 ID 和逐张视角提示词；生成使用单独的 `n=1` 改图请求，详见智能场景规划文档。
-- 超时：生图 180 秒、识图 60 秒、连通性/远程图片下载各 20 秒。
+- 超时：生图默认 15 分钟，可按服务商设置 1–60 分钟；识图 5 分钟，
+  连通性/参考图远程下载各 20 秒。单次生成与结果下载共用截止时间。
+- 生图支持标准 Images SSE，仍接受返回普通 JSON 的兼容网关；
+  只有最终完整图片才保存，不因流式失败自动重发请求。
 - 保留既有尺寸映射与错误分类，供应商不支持模型/格式时显示真实错误。
 - `/models` 成功不表示生图或改图通道可用；需分别实际测试对应模式。
   无可用通道错误提示检查当前 Key 分组、模型名称与服务商通道状态，保留 HTTP 状态和请求标识；

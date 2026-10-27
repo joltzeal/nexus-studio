@@ -32,6 +32,9 @@ export const baseUrlSchema = z.string().trim().min(8).max(300).refine(isHttpUrl,
   message: '接口地址必须是完整的 http(s) 地址，且不能包含账号密码',
 })
 
+export const imageTimeoutSecondsSchema = z.number().int().min(60).max(3600)
+export const imageResponseModeSchema = z.enum(['auto', 'stream', 'json'])
+
 export const ProviderSaveInputSchema = z.strictObject({
   id: z.string().trim().min(1).max(64).optional(),
   name: z.string().trim().min(1).max(60),
@@ -42,6 +45,9 @@ export const ProviderSaveInputSchema = z.strictObject({
   imageModel: z.string().trim().max(120),
   /** Omitted preserves the saved choice; an empty string explicitly clears it. */
   visionModel: z.string().trim().max(120).optional(),
+  /** Omitted settings preserve existing values; defaults apply only on creation. */
+  imageTimeoutSeconds: imageTimeoutSecondsSchema.optional(),
+  imageResponseMode: imageResponseModeSchema.optional(),
 })
 
 export const ProviderIdInputSchema = z.strictObject({

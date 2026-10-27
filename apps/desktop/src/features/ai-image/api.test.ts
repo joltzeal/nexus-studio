@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { callPlugin } from '@/lib/platform/native-plugins'
 import {
   generate,
+  listProviders,
   listRecords,
+  saveProvider,
   testProviderImage,
   uploadImage,
   type GenerateInput,
   type ProviderImageTestInput,
 } from './api'
+import { makeProvider } from './scene-plan.test-data'
 import { SOURCE_UPDATE_HINT } from './source'
 import type { GenerationRecord, GenerationSource, RecordPage } from './types'
 
@@ -43,6 +46,133 @@ const page: RecordPage = {
 
 beforeEach(() => {
   vi.mocked(callPlugin).mockReset()
+})
+
+describe('provider transport capability', () => {
+  const saved = {
+    ...makeProvider(),
+    imageTimeoutSeconds: 1800,
+    imageResponseMode: 'stream',
+  }
+  const catalog = {
+    items: [saved],
+    storageDurable: true,
+    modelConfigVersion: 2,
+    transportSettingsVersion: 1,
+    selections: { image: null, vision: null },
+  }
+  const input = {
+    name: 'Gateway',
+    kind: 'openai_compatible' as const,
+    baseUrl: 'https://gateway.example/v1',
+    imageModel: 'exact-image-model',
+    imageTimeoutSeconds: 1800,
+    imageResponseMode: 'stream' as const,
+  }
+
+  it('preserves the independent capability marker and saved settings when normalizing a catalog', async () => {
+    vi.mocked(callPlugin).mockResolvedValue(catalog)
+    expect(await listProviders()).toEqual(catalog)
+  })
+
+  it.each([undefined, 0, 2])(
+    'defaults legacy display fields without claiming support for version %s',
+    async (version) => {
+      vi.mocked(callPlugin).mockResolvedValue({
+        ...catalog,
+        transportSettingsVersion: version,
+        items: [
+          {
+            ...saved,
+            imageTimeoutSeconds: undefined,
+            imageResponseMode: undefined,
+          },
+        ],
+      })
+      expect(await listProviders()).toMatchObject({
+        modelConfigVersion: 2,
+        transportSettingsVersion: 0,
+        items: [{ imageTimeoutSeconds: 900, imageResponseMode: 'auto' }],
+      })
+    },
+  )
+
+  it.each([undefined, 0, 2])(
+    'blocks new fields before saving to transport version %s, without dropping them or retrying',
+    async (version) => {
+      vi.mocked(callPlugin).mockResolvedValue({
+        ...catalog,
+        transportSettingsVersion: version,
+      })
+      await expect(saveProvider(input)).rejects.toThrow('更新 AI 生图插件')
+      expect(callPlugin).toHaveBeenCalledExactlyOnceWith(
+        'studio.ai-image',
+        'image.provider',
+        'image.providers.list',
+        {},
+        30000,
+      )
+    },
+  )
+
+  it('saves exact seconds and mode after a fresh read-only compatibility check', async () => {
+    vi.mocked(callPlugin).mockResolvedValueOnce(catalog).mockResolvedValueOnce(saved)
+    expect(await saveProvider(input)).toEqual(saved)
+    expect(callPlugin).toHaveBeenNthCalledWith(
+      2,
+      'studio.ai-image',
+      'image.provider',
+      'image.providers.save',
+      input,
+      30000,
+    )
+    vi.mocked(callPlugin).mockResolvedValueOnce({
+      ...catalog,
+      transportSettingsVersion: undefined,
+    })
+    await expect(saveProvider(input)).rejects.toThrow('更新 AI 生图插件')
+    expect(callPlugin).toHaveBeenCalledTimes(3)
+  })
+
+  it('checks support even when just one setting is supplied', async () => {
+    vi.mocked(callPlugin).mockResolvedValue({ ...catalog, transportSettingsVersion: 0 })
+    await expect(
+      saveProvider({ ...input, imageResponseMode: undefined }),
+    ).rejects.toThrow('更新 AI 生图插件')
+    await expect(
+      saveProvider({ ...input, imageTimeoutSeconds: undefined }),
+    ).rejects.toThrow('更新 AI 生图插件')
+    expect(vi.mocked(callPlugin).mock.calls.map((call) => call[2])).toEqual([
+      'image.providers.list',
+      'image.providers.list',
+    ])
+  })
+
+  it('retains an old caller edit without inventing or overwriting optional settings', async () => {
+    const legacyEdit = {
+      id: 'saved-id',
+      name: input.name,
+      kind: input.kind,
+      baseUrl: input.baseUrl,
+      imageModel: input.imageModel,
+    }
+    vi.mocked(callPlugin).mockResolvedValue(saved)
+    await saveProvider(legacyEdit)
+    expect(callPlugin).toHaveBeenCalledExactlyOnceWith(
+      'studio.ai-image',
+      'image.provider',
+      'image.providers.save',
+      legacyEdit,
+      30000,
+    )
+  })
+
+  it('reports a failed capability check without attempting a save', async () => {
+    vi.mocked(callPlugin).mockRejectedValue(new Error('Plugin disconnected'))
+    await expect(saveProvider(input)).rejects.toThrow('Plugin disconnected')
+    expect(callPlugin).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(callPlugin).mock.calls[0]?.[2]).toBe('image.providers.list')
+  })
 })
 
 describe('source API', () => {

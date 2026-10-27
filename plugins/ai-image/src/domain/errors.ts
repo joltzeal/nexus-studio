@@ -138,7 +138,11 @@ export function upstreamFailure(error: UpstreamError): PluginFailure {
     case 'rate-limit':
       return rateLimited(message('服务商限流，请稍后重试'))
     case 'timeout':
-      return timedOut(message('服务商响应超时，请重试'))
+      return timedOut(
+        message(
+          '服务商响应超时，可在模型配置中延长等待时间；请先确认服务商任务状态再重试',
+        ),
+      )
     case 'not-found':
       return notConfigured(message('模型或接口地址不存在，请检查模型名与基础地址'))
     case 'bad-request':

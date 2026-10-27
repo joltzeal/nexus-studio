@@ -27,13 +27,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
         run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' build
+      - name: Verify AI requests and application transport
+        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
       - name: Pack companion plugins
         id: plugin-market
         shell: bash
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "需要主程序 0.1.17：新增服务商实际生图测试，支持文生图和单张参考图；显示模型通道不可用原因与请求标识；复用正式生成流程并保留测试记录。"
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "需要主程序 0.1.18：生图默认等待 15 分钟，可按服务商设置 1–60 分钟；支持自动、流式和普通响应；修复响应读取超时与连接释放，测试和多视角共用配置，失败不自动重复生成。"
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "Archived item and seller management, private proxies and scoped image downloads."
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup

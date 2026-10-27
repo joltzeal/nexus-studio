@@ -86,6 +86,8 @@ const provider: Provider = {
   kind: 'openai_compatible',
   baseUrl: 'https://saved.example.invalid/v1',
   imageModel: 'saved-image-model',
+  imageTimeoutSeconds: 900,
+  imageResponseMode: 'auto',
   hasApiKey: true,
   apiKeyHint: 'test',
   createdAt: '2026-10-27T00:00:00.000Z',

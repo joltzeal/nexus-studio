@@ -93,6 +93,7 @@ describe('actual provider image testing', () => {
       prompt: INPUT.prompt,
       n: 1,
       size: INPUT.size,
+      stream: true,
     })
     expect(document.records[0]).toMatchObject({
       id: accepted.record.id,
@@ -125,6 +126,7 @@ describe('actual provider image testing', () => {
     const form = fetch.mock.calls[0]?.[1]?.body as FormData
     expect(form.get('model')).toBe(MODEL)
     expect(form.get('n')).toBe('1')
+    expect(form.get('stream')).toBe('true')
     expect(form.getAll('image[]')).toHaveLength(1)
     const file = form.get('image[]') as File
     expect(file.type).toBe('image/png')
