@@ -62,6 +62,38 @@ Browser 插件不可用，使用现有 Playwright 1.62.1 / Chromium 151.0.7922.3
 未执行本地构建、打包、Rust 编译/测试/Clippy、真实付费模型、Windows、
 原生 WebView、签名或安装验证。远端发布证据另行记录。
 
+### 0.1.18 标签与 AI 1.4.0 商店发布
+
+发布提交 `0ca675f042c32a13afccdd17e7af3c3d090c133f` 已原子推送至
+`main`、`codex/fix-macos-node-runtime` 和 `v0.1.18`。
+Desktop release 运行 `40552125746` 已触发；插件任务 `122358369894` 成功，
+包括新增的 AI 请求/应用网络定向测试、打包和启动检查。
+取得 `plugin-market-v0.1.18`（artifact `12754314995`），核对其提交、
+1006498 字节 ZIP 和 SHA-256：
+`356789aa7c1dc75de2ed38d110dafa2338aa52e2b769ace39e85f21e158586cc`。
+
+下载的 AI `1.4.0` 包要求主程序 `0.1.18`，大小 178513 字节，
+SHA-256 为 `f8c7e58166f932a0d0140f57b6c3047ed27984fb119daae1d8feb1f958db379f`。
+清单、四个内部文件摘要和 21 方法实际启动握手均通过。
+进一步运行该 CI 包，使用四次本地 HTTP 请求验证请求设置能力标记和默认值、
+流式最终 PNG、同次 POST 返回 JSON、拒绝 stream 不重复提交、普通模式与秒数持久化。
+这是远端构件的本机执行验证，没有在本机重新构建或调用付费服务商。
+
+2026-10-28 01:39（Asia/Shanghai）完成 R2 `--remote` 上传与公开回读：
+
+- 新包写入 `plugins/studio.ai-image/1.4.0.nexuspkg`，回读摘要与 CI 包一致。
+- 写目录前重新读取并比较线上目录，确认没有并行更新；只替换 AI 条目。
+- 保留八个插件中的其他七项及历史对象，未上传同版本 Vinted 重打包文件。
+- 远端和公开 `catalog.json` 均与合并目录相同；公开 AI 包摘要再次验证通过。
+- 包使用一年 immutable 缓存，目录使用 60 秒缓存。
+
+发布证据在上述 `nexus-release-0.1.18-bgj5cix6` 目录中的
+`artifact-metadata.json`、`package-verification.json`、
+`artifact-transport-verification.json`、`catalog.latest.json`、
+`catalog.recheck.json`、`catalog.remote.json`、`catalog.public.json` 与 `publication.json`。
+本次仅取得配套插件 artifact，不等待桌面矩阵，不将标签推送或插件验证描述为
+桌面安装包编译、签名或跨系统安装验收完成。
+
 ## 2026-10-27 短信等待与 0.1.17 发布准备
 
 窗口行手机号旁增加显式开始/停止的等待入口。立即查询后每 5 秒调度，
