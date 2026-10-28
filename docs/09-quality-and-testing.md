@@ -16,6 +16,7 @@
 
 - AI 插件、AI 页面与独立发布工作流：31 文件、706 项测试通过。
 - 插件和测试入口 `tsc --noEmit` 通过；插件 ESLint 通过，零警告。
+- 修改文件 Prettier 与 `git diff --check` 通过。
 - 八项新增回归覆盖普通生成、历史补导出、重启、目录不可写、禁止重复收费、
   部分视角失败与恢复、并发文件保护和相同文件复用。
 - 文件验证实际写入并回读临时目录；模型仅使用合成响应，没有付费请求。
@@ -23,7 +24,33 @@
 发布工作流的旧 changelog 文案断言首次失败，调整本次发布文案后完整定向检查通过。
 日志在 `/var/folders/xq/78x2bsq94x5__k5mc4vz02600000gn/T/nexus-ai-1.4.2-7obq7Q/`，
 以 `tests-final.json` 和 `tests-final.log` 为最终测试结果。
-本地未构建、打包或运行 Rust 编译、测试、Clippy；远端构件与商店发布证据另行追加。
+本地未构建、打包或运行 Rust 编译、测试、Clippy。
+
+### 1.4.2 构件与商店发布
+
+发布代码提交 `d0c805230a073338c25c96bc3f38ec625c3c5f45` 已原子推送至
+`main`、工作分支与 `plugin-ai-image@1.4.2`。AI plugin release
+运行 `40637901188` 成功，取得 artifact `12794191697`
+（`plugin-market-plugin-ai-image@1.4.2`）。
+182526 字节 ZIP 的 SHA-256 为
+`b777d1cb89949498fde9c31d80de2e1268b09a655c6072f7c2151d40dfa0ba44`。
+
+下载的 AI 包为 182991 字节，SHA-256 为
+`6bb48a24b4769e43cc3813a0d275bf8e532f8df75ce883d84cf3797524c70122`。
+清单、四个内部文件摘要与 21 方法实际启动握手通过。
+执行下载的包，用五次本地 HTTP 请求验证 SSE/JSON、自动导出原始字节、
+补导出复用和恢复文件，以及目录不可写时保留成片、修复后只导出不重新请求模型。
+没有在本机重新编译，也没有付费请求。
+
+2026-10-28 13:28（Asia/Shanghai）完成 R2 上传：
+
+- 只新增 `plugins/studio.ai-image/1.4.2.nexuspkg`，远端与公开包摘要一致。
+- 写目录前重新读取完整目录并确认没有并行变动；只替换 AI 条目。
+- 远端与公开 `catalog.json` 回读一致，其他七个插件及历史包保留。
+- 最低主程序仍为 `0.1.18`，通过“插件中心 → 检查更新”安装。
+
+证据为本节日志目录中的 `artifact-metadata.json`、`package-verification.json`、
+`artifact-export-verification.json`、`catalog.public.json` 与 `publication.json`。
 
 ## 2026-10-28 AI 1.4.1 英文与手机实拍更新
 
