@@ -23,7 +23,40 @@
 本地未构建、打包或运行 Rust 编译、测试、Clippy。
 检查日志在 `/var/folders/xq/78x2bsq94x5__k5mc4vz02600000gn/T/nexus-ai-1.4.1-sbBAcD/`。
 独立 AI 插件工作流使用 `plugin-ai-image@1.4.1` 标签，主程序版本保持 `0.1.18`。
-远端产物与 R2 发布结果在完成后另行追加，不将准备记录作为已上线证据。
+
+### 1.4.1 远端构件与商店发布
+
+发布代码提交 `e5da2a793cf7e08e2b191d303e945c629a0e8a89` 已原子推送至
+`main`、`codex/fix-macos-node-runtime` 和 `plugin-ai-image@1.4.1`。
+独立 AI plugin release 运行 `40633444186` 成功，取得
+`plugin-market-plugin-ai-image@1.4.1`（artifact `12792920390`）。
+核对提交与 180805 字节 ZIP，SHA-256 为
+`8566fe865ab991c774dd86384e0e0b064ebce59c102380b399c08fb87d24f4d2`。
+
+下载包 `plugins/studio.ai-image/1.4.1.nexuspkg` 要求主程序 `0.1.18`，
+大小 181290 字节，SHA-256 为
+`eb5078af95e2bf1ae4029bbbf7329e20dd6d00a633d48e95ff7956c1d9ffee91`。
+清单、四个内部文件摘要、21 方法实际启动握手和持久化存储标记均通过。
+直接执行下载的包，使用九次本地 HTTP 请求验证：
+
+- SSE 最终图片、同次流式 POST 返回普通 JSON、拒绝 stream 不重复提交。
+- 普通模式与等待时间持久化，英文系统指令和手机实拍约束。
+- 原中文要求保留在资料中，但不重新拼入图片请求；英文标题和描述正常保存。
+- 中文模型响应阻止后续图片请求；场景使用独立英文译文。
+- 未翻译的直接生图测试在发起上游请求前被拒绝。
+
+2026-10-28 12:41（Asia/Shanghai）完成 R2 `--remote` 上传与公开回读：
+
+- 只新增 AI `1.4.1` 包，远端与公开包摘要均与 CI 包一致。
+- 写目录前再次读取并比较线上完整目录，确认没有并行更新。
+- 只替换 AI 条目，保留其他七个插件条目和历史包；目录仍为八项。
+- 远端与公开 `catalog.json` 均与合并目录一致。
+- 包使用一年 immutable 缓存，目录使用 60 秒缓存。
+
+证据存于本节日志目录中的 `artifact-metadata.json`、`package-verification.json`、
+`artifact-transport-verification.json`、`artifact-language-verification.json` 和
+`publication.json`。构建和打包仅在 CI 执行，本机只验证下载构件；
+未调用付费模型或将合成响应测试描述为真实图片质量验收。
 
 ## 2026-10-28 GitHub Actions 网络测试连接重置修复
 
