@@ -36,8 +36,13 @@ describe('场景预设', () => {
     expect(prompt).toContain('Additional requirements: 背景再暖一点')
   })
 
-  it('自由提示词原样发送，不附加预设说明', () => {
-    expect(composePrompt(null, '  a calm still life\n  ')).toBe('  a calm still life\n  ')
+  it('自由提示词保留原文并应用手机实拍与商品保真约束', () => {
+    const prompt = composePrompt(null, '  a calm still life\n  ')
+    expect(prompt).toContain('  a calm still life\n  ')
+    expect(prompt).toContain('handheld smartphone')
+    expect(prompt).toContain('every visible scratch, stain')
+    expect(prompt).toContain('HDR')
+    expect(prompt).toContain('uneven framing')
   })
 
   it('未知预设明确拒绝，不静默忽略场景', () => {

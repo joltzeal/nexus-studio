@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { PRESERVE, composePrompt, presetById } from './presets.js'
+import { composePrompt, presetById } from './presets.js'
 import type { StoredScenePlanResult, SceneView } from './types.js'
 
 const nonempty = (max: number) =>
@@ -47,6 +47,7 @@ export const scenePlanResultFields = {
     .refine((id) => presetById(id) !== null, '场景预设不存在'),
   reason: nonempty(2000),
   prompt: nonempty(6000),
+  translatedRequirements: z.string().max(12000).optional(),
   views: SceneViewsSchema,
 }
 
@@ -85,9 +86,7 @@ export function composeSceneViewPrompt(
     'Show only evidenced surfaces and geometry. Never invent an unseen back, side, attachment, frame or material.',
     'For distinct views use safe variations of framing, crop, distance or the visible face, without fabricating unseen details.',
     'Chosen scene and global user requirements (apply to every view):',
-    presetId === null
-      ? [PRESERVE, 'Global user requirements:', requirements].join('\n\n')
-      : composePrompt(presetId, requirements),
+    composePrompt(presetId, requirements),
     'Edited shared scene prompt (subordinate to preservation rules and the chosen scene):',
     sharedPrompt,
     'The per-view prompt below overrides default camera framing, distance, crop and camera angle in the scene preset and shared prompt. Keep the chosen setting consistent; it never overrides product-preservation rules or permits unseen geometry.',

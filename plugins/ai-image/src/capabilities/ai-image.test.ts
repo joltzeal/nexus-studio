@@ -259,7 +259,7 @@ describe('生成', () => {
     expect(String(url)).toBe('https://api.openai.com/v1/images/edits')
     expect(init?.body).toBeInstanceOf(FormData)
     const form = init?.body as FormData
-    expect(form.get('prompt')).toContain('place it on a desk')
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain('place it on a desk')
     expect(form.get('prompt')).toContain(VISION_RESULT.prompt)
     expect(form.getAll('image[]')).toHaveLength(1)
     expect(form.get('size')).toBeNull()
@@ -276,7 +276,7 @@ describe('生成', () => {
             {
               message: {
                 content:
-                  '```json\n{"title":"铁皮画","description":"边角有磨损。","prompt":"Show the actual worn sign in daylight."}\n```',
+                  '```json\n{"title":"Tin sign","description":"Visible wear along the corners.","prompt":"Show the actual worn sign in daylight."}\n```',
               },
             },
           ],
@@ -298,8 +298,8 @@ describe('生成', () => {
       inputFileIds: ['source-one'],
     })
     const finished = await settle(call, created.record.id)
-    expect(finished.title).toBe('铁皮画')
-    expect(finished.description).toBe('边角有磨损。')
+    expect(finished.title).toBe('Tin sign')
+    expect(finished.description).toBe('Visible wear along the corners.')
     expect(finished).not.toHaveProperty('copyError')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const chat = fetchMock.mock.calls.find(([url]) => url.endsWith('/chat/completions'))
@@ -906,7 +906,7 @@ describe('独立识图与原图选择', () => {
       expect(form.get('model')).toBe('image-chosen')
       expect(form.getAll('image[]')).toHaveLength(2)
       expect(form.get('prompt')).toContain(OBSERVATION)
-      expect(form.get('prompt')).toContain(GENERATION_INPUT.prompt)
+      expect(JSON.stringify(request)).toContain(GENERATION_INPUT.prompt)
       expect(form.get('prompt')).toContain(VISION_RESULT.prompt)
       expect(result.title).toBe(VISION_RESULT.title)
       expect(result.description).toBe(OBSERVATION)

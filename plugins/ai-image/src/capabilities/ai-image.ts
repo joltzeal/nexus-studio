@@ -17,6 +17,11 @@ import {
   presetLabel,
 } from '../domain/presets.js'
 import {
+  requireEnglishOutput,
+  requireEnglishPrompt,
+  sceneResultText,
+} from '../domain/prompt-language.js'
+import {
   FileChunkInputSchema,
   GenerateInputSchema,
   ProviderIdInputSchema,
@@ -811,6 +816,7 @@ export class AiImage {
       throw invalidRequest('改图必须指定独立识图服务商和模型，或使用已完成的场景规划')
     }
     let scenePlan: GenerationRecord['scenePlan']
+    let generationRequirements = input.prompt
     const presetId = input.presetId
     if (input.scenePlan !== undefined) {
       const plan = await this.plan(input.scenePlan.id)
@@ -829,7 +835,25 @@ export class AiImage {
       }
       const selectedPreset = presetId
       const result = plan.result
+      try {
+        requireEnglishOutput(sceneResultText(result))
+      } catch {
+        throw invalidRequest('场景方案须为英文，请重新智能识图后生成')
+      }
+      // The plan already translated its original requirements. Never splice the
+      // original language back into an otherwise English image request.
+      const requirements =
+        input.prompt === plan.requirements
+          ? (result.translatedRequirements ?? input.prompt)
+          : input.prompt
+      generationRequirements = requirements
       const sharedPrompt = input.scenePlan.prompt
+      requireEnglishPrompt(requirements)
+      requireEnglishPrompt(sharedPrompt)
+      for (const view of input.scenePlan.views) {
+        requireEnglishPrompt(view.prompt)
+        requireEnglishPrompt(view.label)
+      }
       scenePlan = {
         plan,
         prompt: sharedPrompt,
@@ -841,7 +865,7 @@ export class AiImage {
           effectivePrompt: composeSceneViewPrompt(
             result,
             selectedPreset,
-            input.prompt,
+            requirements,
             sharedPrompt,
             view,
           ),
@@ -851,13 +875,17 @@ export class AiImage {
     if (presetId !== null && presetById(presetId) === null) {
       throw invalidRequest('场景预设不存在')
     }
-    const prompt = composePrompt(presetId, input.prompt)
+    const prompt = composePrompt(presetId, generationRequirements)
     if (
       scenePlan === undefined &&
       input.visionProviderId == null &&
-      prompt.trim() === ''
+      presetId === null &&
+      input.prompt.trim() === ''
     ) {
       throw invalidRequest('请填写提示词或选择一个场景预设')
+    }
+    if (scenePlan === undefined && input.visionProviderId == null) {
+      requireEnglishPrompt(input.prompt)
     }
     if (new Set(input.inputFileIds).size !== input.inputFileIds.length) {
       throw invalidRequest('参考图片不能重复')
@@ -925,8 +953,8 @@ export class AiImage {
       title:
         purpose === 'provider-test'
           ? input.mode === 'edit'
-            ? '测试图生图'
-            : '测试生图'
+            ? 'Image edit test'
+            : 'Image generation test'
           : (scenePlan?.plan.result?.title ?? null),
       description: scenePlan?.plan.result?.description ?? null,
       error: null,
@@ -1043,8 +1071,8 @@ export class AiImage {
           PRESERVE,
           'Automatic image prompt (subordinate to preservation rules and user requirements):',
           recognized.prompt,
-          'Scene and user requirements:',
-          prompt,
+          'Chosen scene and complete English requirements:',
+          composePrompt(snapshot.presetId, recognized.prompt),
         ].join('\n\n')
         await this.settle(recordId, {
           vision: { ...snapshot.vision, ...recognized },

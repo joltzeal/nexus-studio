@@ -66,34 +66,36 @@ function image(): Response {
 
 function result(count = 3): ScenePlanResult {
   return {
-    title: '装饰画牌',
-    description: '边角有磨损，保留原字样。',
-    product: '有磨损的装饰画牌',
-    material: '疑似印刷金属薄板，单张照片不足以确认材质',
-    observations: '正面图案完整可见，边角有磨损；保留原文字。',
-    uncertainties: '无法确认背面、厚度、安装方式及是否有画布纹理。',
+    title: 'Decorative sign',
+    description: 'Worn corners with the original lettering intact.',
+    product: 'Worn decorative sign',
+    material: 'Appears to be printed metal; one photo cannot confirm the material.',
+    observations: 'The front artwork and worn corners are visible; retain the lettering.',
+    uncertainties:
+      'The back, thickness, mounting and possible canvas texture are unknown.',
     presetId: 'home-sofa',
-    reason: '客厅背景适合此类家居装饰，不能把金属画牌改成画布。',
+    reason: 'A living room suits this decor; do not change a metal sign into canvas.',
     prompt: 'Place the same visible item in a modest Western living room in daylight.',
+    translatedRequirements: 'Preserve all visible wear.',
     views: [
       {
         id: 'context',
-        label: '客厅全景',
+        label: 'Living room context',
         prompt: 'Show the visible front with modest living-room context.',
       },
       {
         id: 'front',
-        label: '正面近景',
+        label: 'Front close view',
         prompt: 'Crop closely to the visible front, keeping all markings legible.',
       },
       {
         id: 'wear',
-        label: '磨损细节',
+        label: 'Wear detail',
         prompt: 'Show the evidenced worn corner in a closer crop of the same front.',
       },
       {
         id: 'wide',
-        label: '正面留白',
+        label: 'Wide front view',
         prompt: 'Use a wider front-facing composition with natural negative space.',
       },
     ].slice(0, count),
@@ -176,14 +178,19 @@ async function waitRecord(instance: Instance, id: string): Promise<GenerationRec
   })
 }
 
-async function planned(count = 3, store?: PrivateStore, images?: ImageStore) {
+async function planned(
+  count = 3,
+  store?: PrivateStore,
+  images?: ImageStore,
+  requirements = '客厅自然光，保留磨损',
+) {
   const instance = await configured(store, images)
   mockFetch(() => chat(result(count)))
   const { plan } = await instance.call<{ plan: ScenePlan }>('image.plans.create', {
     providerId: instance.provider.id,
     model: instance.provider.visionModel,
     inputFileId: instance.selected.id,
-    requirements: '客厅自然光，保留磨损',
+    requirements,
     count,
   })
   const completed = await waitPlan(instance, plan.id)
@@ -291,15 +298,15 @@ describe('scene planning RPC', () => {
       expect(text).toContain('exactly 3 views')
       for (const preset of SCENE_PRESETS) {
         expect(text).toContain(JSON.stringify(preset.id))
-        expect(text).toContain(preset.category)
-        expect(text).toContain(preset.hint)
+        expect(text).not.toContain(preset.category)
+        expect(text).not.toContain(preset.hint)
       }
       const system = body.messages[0]?.content
       expect(system).toContain(PRESERVE)
       expect(system).toContain('tin/metal sign')
       expect(system).toContain('canvas')
       expect(system).toContain('living-room')
-      expect(system).toContain('Simplified Chinese')
+      expect(system).not.toContain('Simplified Chinese')
       expect(system).toContain('English')
       expect((await instance.store.read()).records).toEqual([])
     } finally {
@@ -432,6 +439,64 @@ describe('scene planning RPC', () => {
 })
 
 describe('distinct scene views', () => {
+  it.each(['', '保留磨损'])(
+    'lets edited scenes replace the model suggestion for original requirements: %s',
+    async (requirements) => {
+      const instance = await planned(1, undefined, undefined, requirements)
+      const payload = generation(instance)
+      const calls = mockFetch(() => image())
+      const { record } = await instance.call<{ record: GenerationRecord }>(
+        'image.generate',
+        {
+          ...payload,
+          presetId: null,
+          prompt: instance.plan.requirements,
+          scenePlan: {
+            ...payload.scenePlan,
+            prompt: 'On a kitchen counter under neutral room light.',
+            views: [
+              { ...payload.scenePlan.views[0]!, prompt: 'Show the whole front face.' },
+            ],
+          },
+        },
+      )
+      expect((await waitRecord(instance, record.id)).status).toBe('success')
+      const sent = String((calls.mock.calls[0]?.[1]?.body as FormData).get('prompt'))
+      expect(sent).toContain('kitchen counter')
+      expect(sent).not.toContain(instance.plan.result?.prompt)
+      expect(sent).not.toMatch(/\p{Script=Han}/u)
+    },
+  )
+
+  it('uses the plan English rendering instead of reintroducing its original Chinese requirements', async () => {
+    const instance = await planned(1)
+    const payload = generation(instance)
+    const calls = mockFetch(() => image())
+    const { record } = await instance.call<{ record: GenerationRecord }>(
+      'image.generate',
+      { ...payload, prompt: instance.plan.requirements },
+    )
+    const finished = await waitRecord(instance, record.id)
+    expect(finished.status).toBe('success')
+    expect(finished.scenePlan?.plan.requirements).toBe(instance.plan.requirements)
+    const prompt = String((calls.mock.calls[0]?.[1]?.body as FormData).get('prompt'))
+    expect(prompt).not.toMatch(/\p{Script=Han}/u)
+    expect(prompt).toContain(instance.plan.result?.translatedRequirements)
+    expect(prompt).toContain('handheld smartphone')
+    expect(finished.prompt).not.toMatch(/\p{Script=Han}/u)
+    expect(calls).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects untranslated manual view edits before starting generation', async () => {
+    const instance = await planned(1)
+    const payload = generation(instance)
+    const calls = mockFetch(() => image())
+    payload.scenePlan.views[0]!.prompt = '请从正面拍摄'
+    await expect(instance.call('image.generate', payload)).rejects.toThrow('英文')
+    expect((await instance.store.read()).records).toHaveLength(0)
+    expect(calls).not.toHaveBeenCalled()
+  })
+
   it('makes sequential n=1 edit calls, preserves all constraints and original bytes, without source leakage', async () => {
     const instance = await planned()
     const payload = generation(instance)
@@ -509,7 +574,7 @@ describe('distinct scene views', () => {
     const finished = await waitRecord(instance, record.id)
     expect(finished.presetId).toBeNull()
     expect(finished.presetLabel).toBeNull()
-    expect(finished.prompt).toBe('')
+    expect(finished.prompt).toContain('handheld smartphone')
     expect(finished.scenePlan?.plan.result?.presetId).toBe('home-sofa')
     expect(finished.scenePlan?.views[0]?.id).toBe('wear')
     expect(calls).toHaveBeenCalledTimes(1)
@@ -585,7 +650,7 @@ describe('distinct scene views', () => {
       'success',
     ])
     expect(partial.scenePlan?.views[1]?.error).toContain('unsupported image format')
-    expect(partial.title).toBe('装饰画牌')
+    expect(partial.title).toBe('Decorative sign')
     expect(partial.description).toBe(instance.plan.result?.description)
     expect(firstCalls).toHaveBeenCalledTimes(3)
     expect(firstCalls.mock.calls.every(([url]) => url.endsWith('/images/edits'))).toBe(

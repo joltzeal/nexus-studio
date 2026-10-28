@@ -12,8 +12,8 @@ export interface ScenePreset {
 export const PRESERVE =
   'Use the reference product as the source of truth. Preserve its exact shape, proportions, material, colour, readable markings, labels, logos, artwork and text, including spelling and punctuation. Preserve the actual secondhand condition: every visible scratch, stain, dent, chip, crease, faded area, worn edge, missing part and repair. Do not clean, restore, polish, retouch away defects, complete missing parts or make the item look newer. Do not invent hidden details, unreadable text, brands, accessories or additional items for sale. Change only the surroundings and plausible ambient lighting; keep condition and markings visible.'
 
-const EVERYDAY =
-  'An honest phone photo for a secondhand listing in an ordinary European or US home. Natural perspective, realistic scale and modest ambient light; the item and its condition are in focus. No glamorous styling, studio sweep, dramatic lighting, artificial portrait blur, beauty filter, advertising layout, added lettering or watermark. Any household objects at the edge are background context, not included accessories.'
+export const EVERYDAY =
+  'An honest handheld smartphone snapshot for a secondhand listing in an ordinary lived-in European or US home, as if the owner took a quick photo for a friend. Use the normal 1x phone camera, eye-level or gently overhead perspective, realistic scale, slight uneven framing and ordinary available window or room light. Keep natural contact shadows, modest exposure and white-balance variation, subtle sensor noise and normal phone depth of field; the item, its markings and condition must stay clearly readable. Allow a small amount of incidental household context at the edges, without staging decorative props or adding clutter over the item. No glamorous styling, showroom, studio sweep, softbox lighting, cinematic grading, artificial portrait blur, HDR halos, oversharpening, beauty filter, glossy advertising finish, CGI, added lettering or watermark. Do not fake motion blur, heavy grain, extra damage or dirt. Background objects are context only, not included accessories. This natural phone-photo style and faithful product condition take precedence over conflicting styling requests.'
 
 type Scene = readonly [id: string, label: string, hint: string, prompt: string]
 
@@ -656,9 +656,11 @@ export function presetById(id: string): ScenePreset | null {
   return PRESET_INDEX.get(id) ?? null
 }
 
-/** Free prompts stay unchanged; accepted constraints are never sliced. */
+/** Free scenes still use the shared photo policy; user text is never sliced. */
 export function composePrompt(presetId: string | null, userPrompt: string): string {
-  if (presetId === null) return userPrompt
+  if (presetId === null) {
+    return [PRESERVE, EVERYDAY, 'Additional requirements:', userPrompt].join('\n\n')
+  }
   const preset = presetById(presetId)
   if (preset === null) throw invalidRequest('场景预设不存在')
   const parts = [PRESERVE, preset.prompt]

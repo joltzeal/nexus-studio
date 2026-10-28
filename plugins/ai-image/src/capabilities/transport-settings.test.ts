@@ -43,6 +43,7 @@ const VISION = {
   prompt: 'Show the same cup and preserve its chipped rim.',
 }
 const PLAN: ScenePlanResult = {
+  translatedRequirements: 'Preserve the item and its condition.',
   ...VISION,
   product: 'Cup',
   material: 'Appears ceramic',

@@ -162,7 +162,7 @@ export const GenerateInputSchema = z
     providerId: z.string().trim().min(1).max(64),
     imageModel: z.string().trim().min(1).max(120),
     mode: z.enum(['generate', 'edit']),
-    /** `null` means "send the prompt as typed", without a preset preamble. */
+    /** `null` omits a specific scene, while preserving the shared photo policy. */
     presetId: z.string().trim().max(64).nullable(),
     // Reject over-limit input instead of silently trimming pasted constraints.
     prompt: z.string().max(12000),

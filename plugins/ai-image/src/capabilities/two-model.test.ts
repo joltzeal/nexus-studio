@@ -23,6 +23,7 @@ const RECOGNITION = {
 }
 const PLAN = {
   ...RECOGNITION,
+  translatedRequirements: 'Preserve every letter.',
   product: 'Mug',
   material: 'Appears ceramic',
   observations: 'A chipped rim and readable ABC marking.',
@@ -173,6 +174,55 @@ describe('two-model provider contract', () => {
 })
 
 describe('explicit model selection', () => {
+  it.each([
+    '标题：蓝色杯子\n请在客厅用手机随手拍，保留缺口',
+    'Titre : tasse bleue\nPhoto dans le salon, conserver la fissure.',
+  ])(
+    'uses English recognition without copying original requirements into image requests: %s',
+    async (prompt) => {
+      const instance = await configured()
+      const calls = fetchModels()
+      await instance.call('image.generate', {
+        ...GENERATE,
+        providerId: instance.provider.id,
+        mode: 'edit',
+        prompt,
+        inputFileIds: ['first'],
+        visionProviderId: instance.provider.id,
+        visionModel: 'vision-selected',
+      })
+      const record = (await idle(instance)).records[0]
+      expect(record).toMatchObject({
+        status: 'success',
+        title: RECOGNITION.title,
+        description: RECOGNITION.description,
+      })
+      expect(record?.basePrompt).toContain(prompt)
+      expect(String(calls.mock.calls[0]?.[1]?.body)).toContain(prompt.split('\n')[0])
+      const sent = String((calls.mock.calls[1]?.[1]?.body as FormData).get('prompt'))
+      expect(sent).not.toContain(prompt)
+      expect(sent).not.toMatch(/\p{Script=Han}/u)
+      expect(sent).toContain(RECOGNITION.prompt)
+      expect(sent).toContain('handheld smartphone')
+      expect(record?.prompt).toBe(sent)
+      expect(calls).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it('rejects untranslated text-only generation before accepting a record or charging', async () => {
+    const instance = await configured()
+    const calls = fetchModels()
+    await expect(
+      instance.call('image.generate', {
+        ...GENERATE,
+        providerId: instance.provider.id,
+        prompt: '在客厅拍摄杯子',
+      }),
+    ).rejects.toThrow('英文')
+    expect((await instance.store.read()).records).toHaveLength(0)
+    expect(calls).not.toHaveBeenCalled()
+  })
+
   it('allows automatic edit prompts with empty user text, while pure text requires text or a preset', async () => {
     const instance = await configured()
     const calls = fetchModels()
@@ -196,7 +246,7 @@ describe('explicit model selection', () => {
     const document = await idle(instance)
     expect(document.records[0]).toMatchObject({
       status: 'success',
-      basePrompt: '',
+      basePrompt: expect.stringContaining('handheld smartphone'),
       title: RECOGNITION.title,
       description: RECOGNITION.description,
     })
@@ -396,12 +446,7 @@ describe('explicit model selection', () => {
     const form = calls.mock.calls[1]?.[1]?.body as FormData
     expect(form.get('model')).toBe('image-selected')
     expect(form.getAll('image[]')).toHaveLength(2)
-    for (const expected of [
-      PRESERVE,
-      RECOGNITION.prompt,
-      RECOGNITION.description,
-      GENERATE.prompt,
-    ]) {
+    for (const expected of [PRESERVE, RECOGNITION.prompt, RECOGNITION.description]) {
       expect(form.get('prompt')).toContain(expected)
     }
     expect(finished.prompt).toBe(form.get('prompt'))
@@ -417,6 +462,9 @@ describe('explicit model selection', () => {
     { prompt: undefined },
     { prompt: '' },
     { prompt: 'x'.repeat(6001) },
+    { title: '中文标题' },
+    { description: '蓝色杯子，有缺口' },
+    { prompt: '在桌面上拍摄' },
   ])(
     'rejects incomplete or unbounded recognition without image requests: %j',
     async (patch) => {

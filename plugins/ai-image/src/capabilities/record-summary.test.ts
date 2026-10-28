@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { createAiImagePlugin } from '../index.js'
 import { generationSummary } from '../domain/generation-summary.js'
-import { composePrompt, presetLabel } from '../domain/presets.js'
+import { presetLabel } from '../domain/presets.js'
 import { composeSceneViewPrompt } from '../domain/scene-plan.js'
 import type { GenerationRecord, ScenePlan, ScenePlanResult } from '../domain/types.js'
 import { DEFAULT_MAX_LINE_BYTES, type PluginResponse } from '../rpc/protocol.js'
@@ -55,7 +55,8 @@ function maximumRecord(): GenerationRecord {
     result,
     error: null,
   }
-  const basePrompt = composePrompt(null, requirements)
+  // Legacy history keeps its original text even after the new English policy.
+  const basePrompt = requirements
   const record: GenerationRecord = {
     id: randomUUID(),
     source: {

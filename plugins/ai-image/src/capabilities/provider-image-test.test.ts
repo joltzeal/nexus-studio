@@ -90,7 +90,7 @@ describe('actual provider image testing', () => {
     expect(fetch.mock.calls[0]?.[0]).toBe('https://gateway.example/v1/images/generations')
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
       model: MODEL,
-      prompt: INPUT.prompt,
+      prompt: expect.stringContaining(INPUT.prompt),
       n: 1,
       size: INPUT.size,
       stream: true,
@@ -99,7 +99,7 @@ describe('actual provider image testing', () => {
       id: accepted.record.id,
       purpose: 'provider-test',
       status: 'success',
-      title: '测试生图',
+      title: 'Image generation test',
     })
     expect(document.records[0]?.outputs).toHaveLength(1)
     expect(document.selections).toEqual({ image: null, vision: null })
@@ -135,7 +135,7 @@ describe('actual provider image testing', () => {
       status: 'success',
       mode: 'edit',
       vision: null,
-      title: '测试图生图',
+      title: 'Image edit test',
     })
   })
 

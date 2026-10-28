@@ -1,0 +1,112 @@
+name: AI plugin release
+
+on:
+  push:
+    tags:
+      - 'plugin-ai-image@*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.repository == 'joltzeal/nexus-studio'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build AI plugin and dependencies
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' build
+      - name: Check AI plugin
+        run: |
+          pnpm exec eslint plugins/ai-image scripts/lib/ai-plugin-release-workflow.test.mjs --max-warnings 0
+          pnpm exec vitest run plugins/ai-image scripts/lib/ai-plugin-release-workflow.test.mjs --maxWorkers=2
+      - name: Pack AI plugin
+        id: market
+        shell: bash
+        run: |
+          market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
+          echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "English listing output and image prompts, with realistic casual smartphone photos."
+          node scripts/build-market.mjs --out "$market_dir"
+      - name: Verify artifact and plugin startup
+        shell: bash
+        env:
+          PLUGIN_MARKET_DIR: ${{ steps.market.outputs.directory }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+          import { createHash } from 'node:crypto'
+          import { readFileSync, readdirSync } from 'node:fs'
+          import { join, resolve, sep } from 'node:path'
+          import { readPackage } from './scripts/lib/market-package.mjs'
+          import { AI_IMAGE_METHODS as AI_METHODS } from './plugins/ai-image/dist/src/capabilities/ai-image.js'
+
+          const json = (path) => JSON.parse(readFileSync(path, 'utf8'))
+          const manifest = json('plugins/ai-image/dist/nexus.plugin.json')
+          const pkg = json('plugins/ai-image/package.json')
+          assert.equal(pkg.name, '@nexus/plugin-ai-image', 'Unexpected package name')
+          assert.equal(manifest.id, 'studio.ai-image', 'Unexpected plugin identity')
+          assert.equal(manifest.version, pkg.version, 'Package/manifest version mismatch')
+          assert.equal(process.env.GITHUB_REF_NAME, `plugin-ai-image@${pkg.version}`,
+            'Plugin tag must match the package version')
+          assert.equal(AI_METHODS.length, 21, 'Expected 21 compiled AI methods')
+          assert.equal(new Set(AI_METHODS).size, 21, 'Expected 21 distinct compiled AI methods')
+
+          const market = resolve(process.env.PLUGIN_MARKET_DIR)
+          const catalog = json(join(market, 'catalog.json'))
+          assert.equal(catalog.schemaVersion, 1, 'Unsupported catalog schema')
+          assert.equal(catalog.plugins.length, 1, 'Catalog must contain only the AI plugin')
+          const entry = catalog.plugins[0]
+          assert.deepEqual(entry.manifest, manifest, 'Catalog manifest mismatch')
+          const path = `plugins/${manifest.id}/${manifest.version}.nexuspkg`
+          assert.equal(entry.package.url, path, 'Unexpected package path')
+          const file = join(market, path)
+          const bytes = readFileSync(file)
+          assert.equal(bytes.length, entry.package.size, 'Package size mismatch')
+          assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.package.sha256,
+            'Package digest mismatch')
+          const unpacked = readPackage(bytes)
+          assert.deepEqual(unpacked.header.manifest, manifest, 'Package header manifest mismatch')
+          const packagedManifest = unpacked.files.find((entry) => entry.path === 'nexus.plugin.json')
+          assert.ok(packagedManifest, 'Missing packaged manifest')
+          assert.deepEqual(JSON.parse(packagedManifest.data.toString('utf8')), manifest,
+            'Packaged manifest mismatch')
+
+          const packages = readdirSync(join(market, 'plugins'), { recursive: true })
+            .filter((file) => file.endsWith('.nexuspkg'))
+            .map((file) => `plugins/${file.split(sep).join('/')}`)
+          assert.deepEqual(packages.sort(), [path],
+            'The artifact must not include stale or unrelated plugin packages')
+
+          const report = execFileSync(process.execPath, ['scripts/verify-package.mjs', file], {
+            encoding: 'utf8',
+            timeout: 15_000,
+          })
+          assert.equal(report.split('\n')[0], `ok ${manifest.id} ${manifest.version}`,
+            'Verified package identity mismatch')
+          const methodLine = report.match(/^\s+\S+ (\d+) \S+\uFF1A([^\r\n]*)$/m)
+          assert.ok(methodLine, 'Missing ready method report')
+          const advertised = methodLine[2].split(', ').filter(Boolean)
+          assert.equal(advertised.length, Number(methodLine[1]), 'Invalid advertised method count')
+          assert.deepEqual(advertised.sort(), [...AI_METHODS].sort(),
+            'Packaged RPC methods must match the 21 compiled AI_METHODS')
+          process.stdout.write(report)
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-market-${{ github.ref_name }}
+          path: |
+            ${{ steps.market.outputs.directory }}/catalog.json
+            ${{ steps.market.outputs.directory }}/plugins/**/*.nexuspkg
+          if-no-files-found: error
+          retention-days: 14

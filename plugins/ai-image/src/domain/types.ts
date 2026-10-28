@@ -120,6 +120,8 @@ export interface ScenePlanResult {
   presetId: string
   reason: string
   prompt: string
+  /** English translation of user constraints only; absent in older saved plans. */
+  translatedRequirements?: string
   views: SceneView[]
 }
 
