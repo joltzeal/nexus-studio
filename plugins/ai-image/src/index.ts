@@ -19,6 +19,7 @@ import {
   createMemoryImageStore,
   type ImageStore,
 } from './store/image-files.js'
+import { imageExportDirectory } from './store/export-directory.js'
 
 export { manifest }
 export { AI_IMAGE_METHODS, AiImage } from './capabilities/ai-image.js'
@@ -90,7 +91,7 @@ export function createAiImagePlugin(
     options.images ??
     (directory === null
       ? createMemoryImageStore()
-      : createFileImageStore(join(directory, 'images'), join(directory, 'exports')))
+      : createFileImageStore(join(directory, 'images'), imageExportDirectory))
 
   const plugin = new AiImage({
     store,

@@ -586,7 +586,7 @@ function RecordDetailContent({
 
               {exported.length === 0 ? null : (
                 <div className="ai-export-result">
-                  <p>已导出到插件私有目录，可复制路径：</p>
+                  <p>图片已导出，可复制完整路径：</p>
                   <code>{exported.join('\n')}</code>
                   <Button
                     type="button"

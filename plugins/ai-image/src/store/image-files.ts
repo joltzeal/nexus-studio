@@ -20,7 +20,7 @@ export interface ImageStore {
   readChunk(id: string, offset: number, length: number): Promise<ChunkResult>
   readAll(id: string): Promise<{ bytes: Uint8Array; mime: string }>
   remove(id: string): Promise<void>
-  /** Copies bytes into the plugin's `exports` directory; null when not durable. */
+  /** Copies bytes into the export destination; null when exporting is unavailable. */
   exportCopy(
     bytes: Uint8Array,
     mime: string,
@@ -82,10 +82,11 @@ class FileImageStore implements ImageStore {
   readonly durable = true
   private index: Map<string, string> | null = null
   private exportQueue: Promise<unknown> = Promise.resolve()
+  private resolvedExportDirectory: Promise<string | null> | null = null
 
   constructor(
     private readonly directory: string,
-    private readonly exportsDirectory: string | null,
+    private readonly exportsDirectory: string | null | (() => Promise<string>),
   ) {}
 
   async write(id: string, mime: string, bytes: Uint8Array): Promise<StoredFile> {
@@ -142,15 +143,21 @@ class FileImageStore implements ImageStore {
     baseName: string,
     reuseIdentical: boolean,
   ): Promise<string | null> {
-    if (this.exportsDirectory === null) return null
     const extension = extensionFor(mime) ?? 'png'
     const safe = baseName.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
     const stem = safe === '' ? 'nexus-ai' : safe.slice(0, 80)
     try {
-      await mkdir(this.exportsDirectory, { recursive: true })
+      const directory = await (this.resolvedExportDirectory ??= Promise.resolve().then(
+        () =>
+          typeof this.exportsDirectory === 'function'
+            ? this.exportsDirectory()
+            : this.exportsDirectory,
+      ))
+      if (directory === null) return null
+      await mkdir(directory, { recursive: true })
       for (let counter = 1; ; counter += 1) {
         const suffix = counter === 1 ? '' : `-${String(counter)}`
-        const target = join(this.exportsDirectory, `${stem}${suffix}.${extension}`)
+        const target = join(directory, `${stem}${suffix}.${extension}`)
         const handle = await open(target, 'wx', 0o600).catch(async (error: unknown) => {
           if (!isExistingFile(error)) throw error
           if (reuseIdentical) {
@@ -172,6 +179,7 @@ class FileImageStore implements ImageStore {
         }
       }
     } catch (error) {
+      this.resolvedExportDirectory = null
       throw unavailable('导出图片失败', error)
     }
   }
@@ -206,7 +214,7 @@ function isExistingFile(error: unknown): boolean {
 
 export function createFileImageStore(
   directory: string,
-  exportsDirectory: string | null = null,
+  exportsDirectory: string | null | (() => Promise<string>) = null,
 ): ImageStore {
   return new FileImageStore(directory, exportsDirectory)
 }

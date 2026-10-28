@@ -5,6 +5,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createAiImagePlugin } from '../index.js'
+import { createFileImageStore } from '../store/image-files.js'
 import type { GenerationRecord, ProviderView } from '../domain/types.js'
 
 const PNG = Buffer.from(
@@ -13,11 +14,15 @@ const PNG = Buffer.from(
 )
 const directories: string[] = []
 
-async function setup(directory?: string) {
+async function setup(directory?: string, exportDirectory?: string) {
   const root = directory ?? (await mkdtemp(join(tmpdir(), 'nexus-ai-export-')))
   if (directory === undefined) directories.push(root)
   const instance = createAiImagePlugin({
     storageDirectory: root,
+    images: createFileImageStore(
+      join(root, 'images'),
+      exportDirectory ?? join(root, 'exports'),
+    ),
     diagnostics: new PassThrough(),
   })
   const call = <T>(method: string, payload: unknown): Promise<T> =>
@@ -82,6 +87,29 @@ afterEach(async () => {
 })
 
 describe('generated image exports', () => {
+  it('exports old records into the new destination without reusing their private export paths', async () => {
+    const instance = await setup()
+    const requests = providerImages()
+    vi.stubGlobal('fetch', requests)
+    const { record } = await generate(instance)
+    const original = await finished(instance, record.id)
+    const downloads = join(instance.root, 'Downloads', 'Nexus AI')
+    const reopened = await setup(instance.root, downloads)
+    const exported = await reopened.call<{ paths: string[] }>('image.records.export', {
+      id: record.id,
+    })
+    expect(exported.paths).toHaveLength(1)
+    expect(exported.paths[0]).toBe(
+      join(downloads, `nexus-ai-${original.outputs[0]!.id}.png`),
+    )
+    expect(await readFile(exported.paths[0]!)).toEqual(PNG)
+    expect(await readFile(original.exportedPaths![0]!)).toEqual(PNG)
+    expect((await reopened.store.read()).records[0]?.exportedPaths).toEqual(
+      exported.paths,
+    )
+    expect(requests).toHaveBeenCalledTimes(1)
+  })
+
   it('writes every generated image into the configured exports directory before completion', async () => {
     const instance = await setup()
     const requests = providerImages(2)

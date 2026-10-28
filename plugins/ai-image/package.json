@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-ai-image",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "private": true,
   "description": "Nexus AI image plugin: vision-guided product imagery with explicit vision and image model selection",
   "type": "module",
