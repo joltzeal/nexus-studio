@@ -13,6 +13,7 @@
 
 - AI 插件、AI 页面与独立发布流程：33 文件、719 项测试通过。
 - 插件和测试入口 `tsc --noEmit`、插件与所改页面 ESLint 全部通过。
+- 修改文件 Prettier 与 `git diff --check` 通过。
 - 回归实际写入临时 Downloads，覆盖系统路径解析、查询失败、目录不可写时不回退私有目录、
   历史记录补导出、文件复用和不重复调用模型。
 - 本机 macOS 的系统查询返回 `/Users/ameno/Downloads/`。
@@ -21,7 +22,31 @@
 日志在 `/var/folders/xq/78x2bsq94x5__k5mc4vz02600000gn/T/nexus-ai-1.4.3-5gMyFV/`。
 本地未构建、打包或运行 Rust 编译、测试、Clippy；主程序版本保持 `0.1.18`。
 旧主程序中的“插件私有目录”说明已在源码改为中性文案，本次插件发布不会替换已安装主程序的界面。
-CI 构件、真实下载目录写入与 R2 发布证据在完成后追加。
+
+### 1.4.3 构件、真实 Downloads 与商店发布
+
+代码提交 `1eb126b1f9983a6fc6ff374fd39139f51b19feaf` 已推送主线和工作分支，
+标签 `plugin-ai-image@1.4.3` 的 CI 运行 `40664427008` 成功。
+取得 artifact `12805850493`，核对其提交、183840 字节 ZIP 和 SHA-256：
+`e9f27307adcd95e2b52b163d3953bca8e5d142707c07c967404be08f21c8f74d`。
+
+下载的插件包大小 184297 字节，SHA-256 为
+`a27b64fe7edb3dac62371bdafb0c03c9c4b6e14393aa8976f57dcb4b36c7e7e3`。
+清单、四个内部文件摘要、21 方法启动握手全部通过。
+直接执行该构件，以四次本地 HTTP 请求验证 SSE/JSON 与导出：
+
+- 三张合成响应图片实际写入 `/Users/ameno/Downloads/Nexus AI/`，文件字节与响应一致。
+- 未创建插件私有 `exports/`。
+- 手动导出复用已有下载副本；移除本次验证创建的一个文件后，补导出恢复相同路径，
+  没有新增模型请求。
+- 清理仅删除本次验证新建且内容仍匹配的三张测试图片，保留既有下载文件与目录。
+
+2026-10-28 17:31（Asia/Shanghai）完成 R2 `--remote` 上传。
+公开与远端包摘要一致，线上目录指向 `1.4.3`；写目录前核对没有并行更新，
+其他七个插件条目和历史包保持原值。目录和包均完成公开下载回读。
+证据位于本节目录中的 `artifact-metadata.json`、`package-verification.json`、
+`artifact-downloads-verification.json` 与 `publication.json`。
+没有本地重新构建、调用付费模型或执行 Windows 原生验证。
 
 ## 2026-10-28 AI 1.4.2 自动导出修复
 
