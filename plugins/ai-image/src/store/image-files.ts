@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { unavailable } from '../domain/errors.js'
@@ -21,7 +21,12 @@ export interface ImageStore {
   readAll(id: string): Promise<{ bytes: Uint8Array; mime: string }>
   remove(id: string): Promise<void>
   /** Copies bytes into the plugin's `exports` directory; null when not durable. */
-  exportCopy(bytes: Uint8Array, mime: string, baseName: string): Promise<string | null>
+  exportCopy(
+    bytes: Uint8Array,
+    mime: string,
+    baseName: string,
+    reuseIdentical?: boolean,
+  ): Promise<string | null>
 }
 
 function chunkOf(bytes: Uint8Array, offset: number, length: number): ChunkResult {
@@ -76,6 +81,7 @@ class FileImageStore implements ImageStore {
   readonly kind = 'file' as const
   readonly durable = true
   private index: Map<string, string> | null = null
+  private exportQueue: Promise<unknown> = Promise.resolve()
 
   constructor(
     private readonly directory: string,
@@ -117,15 +123,24 @@ class FileImageStore implements ImageStore {
     this.index?.delete(id)
   }
 
-  /**
-   * The shell has no file-save dialog, so an export lands in the plugin's own
-   * `exports` directory and the page shows the path. Existing files are never
-   * overwritten: a counter is appended instead.
-   */
   async exportCopy(
     bytes: Uint8Array,
     mime: string,
     baseName: string,
+    reuseIdentical = false,
+  ): Promise<string | null> {
+    const next = this.exportQueue.then(() =>
+      this.writeExport(bytes, mime, baseName, reuseIdentical),
+    )
+    this.exportQueue = next.catch(() => undefined)
+    return await next
+  }
+
+  private async writeExport(
+    bytes: Uint8Array,
+    mime: string,
+    baseName: string,
+    reuseIdentical: boolean,
   ): Promise<string | null> {
     if (this.exportsDirectory === null) return null
     const extension = extensionFor(mime) ?? 'png'
@@ -133,14 +148,29 @@ class FileImageStore implements ImageStore {
     const stem = safe === '' ? 'nexus-ai' : safe.slice(0, 80)
     try {
       await mkdir(this.exportsDirectory, { recursive: true })
-      let target = join(this.exportsDirectory, `${stem}.${extension}`)
-      let counter = 2
-      while (await exists(target)) {
-        target = join(this.exportsDirectory, `${stem}-${String(counter)}.${extension}`)
-        counter += 1
+      for (let counter = 1; ; counter += 1) {
+        const suffix = counter === 1 ? '' : `-${String(counter)}`
+        const target = join(this.exportsDirectory, `${stem}${suffix}.${extension}`)
+        const handle = await open(target, 'wx', 0o600).catch(async (error: unknown) => {
+          if (!isExistingFile(error)) throw error
+          if (reuseIdentical) {
+            const existing = await readFile(target).catch(() => null)
+            if (existing?.equals(bytes)) return 'identical' as const
+          }
+          return null
+        })
+        if (handle === 'identical') return target
+        if (handle === null) continue
+        try {
+          await handle.writeFile(bytes)
+          await handle.close()
+          return target
+        } catch (error) {
+          await handle.close().catch(() => undefined)
+          await unlink(target).catch(() => undefined)
+          throw error
+        }
       }
-      await writeFile(target, bytes, { mode: 0o600 })
-      return target
     } catch (error) {
       throw unavailable('导出图片失败', error)
     }
@@ -165,13 +195,13 @@ class FileImageStore implements ImageStore {
   }
 }
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
+function isExistingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'EEXIST'
+  )
 }
 
 export function createFileImageStore(

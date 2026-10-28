@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -737,6 +737,79 @@ describe('distinct scene views', () => {
 })
 
 describe('scene lifecycle, recovery and file ownership', () => {
+  it('exports completed views even when another view fails and only generates missing views on retry', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-scene-exports-'))
+    directories.push(directory)
+    const instance = await planned(
+      3,
+      createFileStore(directory),
+      createFileImageStore(join(directory, 'images'), join(directory, 'exports')),
+    )
+    let requests = 0
+    mockFetch(() => {
+      requests += 1
+      return requests === 2
+        ? json({ error: { message: 'temporary upstream failure' } }, 503)
+        : image()
+    })
+    const { record } = await instance.call<{ record: GenerationRecord }>(
+      'image.generate',
+      generation(instance),
+    )
+    const partial = await waitRecord(instance, record.id)
+    expect(partial.status).toBe('failed')
+    expect(partial.outputs).toHaveLength(2)
+    expect(await readdir(join(directory, 'exports'))).toHaveLength(2)
+    const initialPaths = [...partial.exportedPaths!]
+    await instance.call('image.records.retry', { id: record.id })
+    const complete = await waitRecord(instance, record.id)
+    expect(complete.status).toBe('success')
+    expect(complete.exportedPaths).toHaveLength(3)
+    expect(complete.exportedPaths).toEqual(expect.arrayContaining(initialPaths))
+    expect(await readdir(join(directory, 'exports'))).toHaveLength(3)
+    for (const path of complete.exportedPaths!) expect(await readFile(path)).toEqual(PNG)
+    expect(requests).toBe(4)
+  })
+
+  it('preserves an export warning across scene reads and restart until manual export succeeds', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'nexus-scene-export-failure-'))
+    directories.push(directory)
+    const instance = await planned(
+      2,
+      createFileStore(directory),
+      createFileImageStore(join(directory, 'images'), join(directory, 'exports')),
+    )
+    await writeFile(join(directory, 'exports'), 'not a directory')
+    const requests = mockFetch(() => image())
+    const { record } = await instance.call<{ record: GenerationRecord }>(
+      'image.generate',
+      generation(instance),
+    )
+    const complete = await waitRecord(instance, record.id)
+    expect(complete.status).toBe('success')
+    expect(complete.exportError).toContain('导出')
+    expect(complete.error).toBe(complete.exportError)
+    const reopened = setup(
+      createFileStore(directory),
+      createFileImageStore(join(directory, 'images'), join(directory, 'exports')),
+    )
+    const read = await reopened.call<{ record: GenerationRecord }>('image.records.get', {
+      id: record.id,
+    })
+    expect(read.record.error).toBe(complete.exportError)
+    await rm(join(directory, 'exports'))
+    const exported = await reopened.call<{ paths: string[] }>('image.records.export', {
+      id: record.id,
+    })
+    expect(exported.paths).toHaveLength(2)
+    const after = await reopened.call<{ record: GenerationRecord }>('image.records.get', {
+      id: record.id,
+    })
+    expect(after.record.error).toBeNull()
+    expect(after.record.exportError).toBeNull()
+    expect(requests).toHaveBeenCalledTimes(2)
+  })
+
   it('repairs exactly one final aggregate save failure after durable views and plan text without new requests', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'nexus-scene-aggregate-'))
     directories.push(directory)

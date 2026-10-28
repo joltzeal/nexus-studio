@@ -173,6 +173,8 @@ const recordSchema = z
     description: z.string().nullable(),
     error: z.string().nullable(),
     copyError: z.string().nullable().optional(),
+    exportedPaths: z.array(z.string().min(1)).optional(),
+    exportError: z.string().nullable().optional(),
     durationMs: z.number().nullable(),
   })
   .refine(

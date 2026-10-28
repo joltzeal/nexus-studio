@@ -35,7 +35,7 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "English listing output and image prompts, with realistic casual smartphone photos."
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "Automatic image exports and safe export recovery; keeps English listing output and realistic casual smartphone photos."
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify artifact and plugin startup
         shell: bash

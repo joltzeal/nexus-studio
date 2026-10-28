@@ -124,6 +124,11 @@ interface Upload {
   chunks: Buffer[]
 }
 
+interface ExportResult {
+  exportedPaths: string[]
+  exportError: string | null
+}
+
 /** Keeps the CDN's own file stem so a record's inputs read like the product. */
 function remoteName(url: string, mime: string): string {
   const extension = extensionFor(mime) ?? 'png'
@@ -522,6 +527,14 @@ export class AiImage {
     if (this.running.has(input.id)) throw invalidRequest('这条记录仍在生成中')
     this.running.add(input.id)
     try {
+      const previous = await this.record(input.id)
+      if (previous.status === 'success' && previous.exportError) {
+        await this.autoExport(input.id)
+        const updated = await this.record(input.id)
+        await this.settle(input.id, { error: updated.exportError ?? null })
+        this.running.delete(input.id)
+        return { record: await this.record(input.id) }
+      }
       const record = await this.store.mutate((document) => {
         const found = document.records.find((entry) => entry.id === input.id)
         if (found === undefined) throw invalidRequest('生成记录不存在')
@@ -662,28 +675,53 @@ export class AiImage {
     await this.settle(recordId, { outputVision: result })
   }
 
-  /**
-   * Writes the record's outputs into the plugin's `exports` directory and hands
-   * back the paths: the desktop shell has no save dialog, so this is how an
-   * image leaves the app without promising a download the webview cannot do.
-   */
   private async exportRecord(context: DispatchContext): Promise<unknown> {
     context.assertAlive()
     const input = parseOrThrow(RecordIdInputSchema, context.payload)
-    const record = await this.record(input.id)
-    if (record.outputs.length === 0) throw invalidRequest('这条记录还没有可导出的图片')
-    const paths: string[] = []
-    for (const [index, file] of record.outputs.entries()) {
-      const stored = await this.images.readAll(file.id)
-      const path = await this.images.exportCopy(
-        stored.bytes,
-        stored.mime,
-        `nexus-ai-${record.id.slice(0, 8)}-${String(index + 1)}`,
-      )
-      if (path === null) throw notConfigured('宿主未提供私有目录，无法导出图片')
-      paths.push(path)
+    if (this.running.has(input.id)) throw invalidRequest('这条记录仍有任务在执行')
+    this.running.add(input.id)
+    try {
+      const record = await this.record(input.id)
+      if (record.outputs.length === 0) throw invalidRequest('这条记录还没有可导出的图片')
+      const result = await this.exportOutputs(record)
+      if (result === null) throw notConfigured('宿主未提供私有目录，无法导出图片')
+      await this.settle(input.id, {
+        ...result,
+        ...(record.status === 'success' ? { error: result.exportError } : {}),
+      })
+      if (result.exportError !== null) throw unavailable(result.exportError)
+      return { paths: result.exportedPaths }
+    } finally {
+      this.running.delete(input.id)
     }
-    return { paths }
+  }
+
+  private async exportOutputs(record: GenerationRecord): Promise<ExportResult | null> {
+    const exportedPaths: string[] = []
+    try {
+      for (const file of record.outputs) {
+        const stored = await this.images.readAll(file.id)
+        const path = await this.images.exportCopy(
+          stored.bytes,
+          stored.mime,
+          `nexus-ai-${file.id}`,
+          true,
+        )
+        if (path === null) return null
+        exportedPaths.push(path)
+      }
+      return { exportedPaths, exportError: null }
+    } catch (error) {
+      const exportError = `图片已生成，但导出失败：${this.message(error)}。请点击“导出图片”补导出，无需重新生图。`
+      this.logger.warn('成片导出失败', { recordId: record.id, error: exportError })
+      return { exportedPaths, exportError }
+    }
+  }
+
+  private async autoExport(recordId: string): Promise<void> {
+    if (!this.images.durable) return
+    const result = await this.exportOutputs(await this.record(recordId))
+    if (result !== null) await this.settle(recordId, result)
   }
 
   // ---- generation ----
@@ -1102,12 +1140,16 @@ export class AiImage {
         stored.push(await this.images.write(this.idFactory(), output.mime, output.bytes))
       }
 
+      // Keep paid results durable before attempting an independent export copy.
+      await this.settle(recordId, { outputs: stored, outputVision: null })
+      await this.autoExport(recordId)
+      const completed = await this.record(recordId)
       await this.settle(recordId, {
         status: 'success',
         stage: 'done',
         outputs: stored,
         outputVision: null,
-        error: null,
+        error: completed.exportError ?? null,
         durationMs: Date.now() - started,
       })
       await this.deleteFiles(snapshot.outputs)
@@ -1193,6 +1235,7 @@ export class AiImage {
           await this.deleteFiles([file])
           throw error
         }
+        await this.autoExport(snapshot.id)
       }
       await this.store.mutate((document) => {
         const record = document.records.find((entry) => entry.id === snapshot.id)
@@ -1276,7 +1319,7 @@ export class AiImage {
     }
     record.status = 'success'
     record.stage = 'done'
-    record.error = null
+    record.error = record.exportError ?? null
     record.updatedAt = this.now().toISOString()
     return true
   }
@@ -1330,7 +1373,7 @@ export class AiImage {
         (this.sceneViewsSucceeded(record) &&
           (record.status !== 'success' ||
             record.stage !== 'done' ||
-            record.error !== null)))
+            record.error !== (record.exportError ?? null))))
     const interruptedPlan = (plan: ScenePlan) =>
       plan.status === 'running' && !this.runningPlans.has(plan.id)
     if (

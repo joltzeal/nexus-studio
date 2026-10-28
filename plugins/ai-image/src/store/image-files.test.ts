@@ -58,6 +58,38 @@ describe('图片文件存储', () => {
     expect(new Uint8Array(await readFile(first ?? ''))).toEqual(PNG)
   })
 
+  it('并行导出同名不同图片时不会相互覆盖', async () => {
+    const directory = await temporary()
+    const store = createFileImageStore(
+      join(directory, 'images'),
+      join(directory, 'exports'),
+    )
+    const secondBytes = new Uint8Array([...PNG, 5])
+    const [first, second] = await Promise.all([
+      store.exportCopy(PNG, 'image/png', 'same-name'),
+      store.exportCopy(secondBytes, 'image/png', 'same-name'),
+    ])
+    expect(first).not.toBe(second)
+    expect(new Uint8Array(await readFile(first!))).toEqual(PNG)
+    expect(new Uint8Array(await readFile(second!))).toEqual(secondBytes)
+  })
+
+  it('补导出复用相同字节，保留用户修改过的同名文件', async () => {
+    const directory = await temporary()
+    const store = createFileImageStore(
+      join(directory, 'images'),
+      join(directory, 'Export Photos'),
+    )
+    const first = await store.exportCopy(PNG, 'image/png', 'product', true)
+    expect(await store.exportCopy(PNG, 'image/png', 'product', true)).toBe(first)
+    const changed = new Uint8Array([...PNG, 9])
+    const second = await store.exportCopy(changed, 'image/png', 'product', true)
+    expect(second).not.toBe(first)
+    expect(new Uint8Array(await readFile(first!))).toEqual(PNG)
+    expect(new Uint8Array(await readFile(second!))).toEqual(changed)
+    expect(await store.exportCopy(changed, 'image/png', 'product', true)).toBe(second)
+  })
+
   it('删除后不再可读', async () => {
     const directory = await temporary()
     const store = createFileImageStore(join(directory, 'images'))

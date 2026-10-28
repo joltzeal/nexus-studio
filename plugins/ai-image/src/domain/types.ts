@@ -193,6 +193,10 @@ export interface GenerationRecord {
   error: string | null
   /** Historical copy-stage failure, retained without running a copy model. */
   copyError?: string | null
+  /** Export copies survive removal of the generation record. */
+  exportedPaths?: string[]
+  /** Export failure never invalidates an already generated image. */
+  exportError?: string | null
   durationMs: number | null
 }
 
