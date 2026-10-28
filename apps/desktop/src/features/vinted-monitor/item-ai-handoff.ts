@@ -30,6 +30,7 @@ export function itemAiHandoff(
     .join('\n')
   // Keep the full prompt and selection so the editable dialog can report overflow.
   return {
+    presentation: 'dialog',
     images: [...images],
     title: item.title,
     source: vintedItemSource(item),

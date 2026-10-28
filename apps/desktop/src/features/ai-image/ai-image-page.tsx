@@ -50,6 +50,7 @@ const FILTERS: { value: RecordStatus | 'all'; label: string }[] = [
 export interface AiImagePageProps {
   plugin: PluginView | null
   hostAvailable: boolean
+  presentation?: 'page' | 'dialog'
   /** Pictures another page sent over; `null` means nothing is pending. */
   handoff?: AiImageHandoff | null
   onHandoffConsumed?: () => void
@@ -58,9 +59,11 @@ export interface AiImagePageProps {
 export function AiImagePage({
   plugin,
   hostAvailable,
+  presentation = 'page',
   handoff = null,
   onHandoffConsumed,
 }: AiImagePageProps) {
+  const showHistory = presentation === 'page'
   const running = hostAvailable && plugin?.enabled === true && plugin.state === 'running'
   const pluginId = plugin?.id
   const pluginVersion = plugin?.version
@@ -114,6 +117,7 @@ export function AiImagePage({
 
   const refreshRecords = useCallback(async () => {
     if (
+      !showHistory ||
       !providerLifecycle.running ||
       providerRequest.current.lifecycle !== providerLifecycle
     )
@@ -140,7 +144,7 @@ export function AiImagePage({
       setTotal(0)
       setError(message(cause))
     }
-  }, [page, filter, providerLifecycle])
+  }, [page, filter, providerLifecycle, showHistory])
 
   const refreshProviders = useCallback(async () => {
     const request = providerRequest.current
@@ -149,19 +153,21 @@ export function AiImagePage({
     const isCurrent = () =>
       request.lifecycle === providerLifecycle && request.revision === revision
     try {
-      const result = await listProviders()
-      if (!isCurrent()) return
-      setProviderState({ lifecycle: providerLifecycle, catalog: result })
-      setStorageDurable(result.storageDurable)
+      await listProviders().then((result) => {
+        if (!isCurrent()) return
+        setProviderState({ lifecycle: providerLifecycle, catalog: result })
+        setStorageDurable(result.storageDurable)
+        if (!showHistory) setError(null)
+      })
     } catch (cause) {
       if (isCurrent()) setError(message(cause))
       throw cause
     }
-  }, [providerLifecycle])
+  }, [providerLifecycle, showHistory])
 
   // Keep state writes in promise callbacks and share ordering with explicit refreshes.
   useEffect(() => {
-    if (!running) return
+    if (!running || !showHistory) return
     const revision = ++recordsRequest.current
     const key = `${filter}:${String(page)}`
     let active = true
@@ -188,7 +194,7 @@ export function AiImagePage({
       active = false
       recordsRequest.current += 1
     }
-  }, [running, page, filter, providerLifecycle])
+  }, [running, page, filter, providerLifecycle, showHistory])
 
   useEffect(() => {
     if (!running) return
@@ -245,6 +251,66 @@ export function AiImagePage({
    */
   const pendingHandoff = handoff !== null && running
   const initialImages = useMemo(() => handoffImages(handoff), [handoff])
+
+  const dialogs = (
+    <>
+      {running && (generating || pendingHandoff) ? (
+        <GenerateDialog
+          key={handoff === null ? 'manual' : JSON.stringify(handoff)}
+          providers={providers}
+          selections={selections}
+          modelConfigReady={modelConfigReady}
+          presets={presets}
+          pluginMethods={plugin?.methods}
+          initialImages={initialImages}
+          loadError={showHistory ? null : error}
+          {...(showHistory
+            ? {}
+            : {
+                submittedMessage: '已提交生成任务，可在商品的生图历史中查看进度',
+              })}
+          {...(handoff?.source === undefined ? {} : { source: handoff.source })}
+          {...(handoff?.initialPrompt === undefined
+            ? {}
+            : { initialPrompt: handoff.initialPrompt })}
+          onOpenChange={(open) => {
+            setGenerating(open)
+            // Closing the dialog ends the handoff, otherwise it would reopen.
+            if (!open) onHandoffConsumed?.()
+          }}
+          onSubmitted={refreshGeneration}
+          onModelsChanged={refreshProviders}
+          onConfigure={() => setConfiguring(true)}
+        />
+      ) : null}
+
+      {configuring ? (
+        <ProvidersSheet
+          key={JSON.stringify(providerLifecycle)}
+          providers={providers}
+          modelConfigReady={modelConfigReady}
+          pluginMethods={plugin?.methods}
+          storageDurable={storageDurable}
+          onOpenChange={setConfiguring}
+          onChanged={refreshProviders}
+          onTestSubmitted={refreshGeneration}
+        />
+      ) : null}
+
+      {detailId === null ? null : (
+        <RecordDetailDialog
+          key={detailId}
+          recordId={detailId}
+          providers={providers}
+          selections={selections}
+          modelConfigReady={modelConfigReady}
+          onClose={() => setDetailId(null)}
+          onChanged={refreshGeneration}
+        />
+      )}
+    </>
+  )
+  if (!showHistory) return dialogs
 
   return (
     <section
@@ -494,54 +560,7 @@ export function AiImagePage({
         ) : null}
       </Card>
 
-      {running && (generating || pendingHandoff) ? (
-        <GenerateDialog
-          key={handoff === null ? 'manual' : JSON.stringify(handoff)}
-          providers={providers}
-          selections={selections}
-          modelConfigReady={modelConfigReady}
-          presets={presets}
-          pluginMethods={plugin?.methods}
-          initialImages={initialImages}
-          {...(handoff?.source === undefined ? {} : { source: handoff.source })}
-          {...(handoff?.initialPrompt === undefined
-            ? {}
-            : { initialPrompt: handoff.initialPrompt })}
-          onOpenChange={(open) => {
-            setGenerating(open)
-            // Closing the dialog ends the handoff, otherwise it would reopen.
-            if (!open) onHandoffConsumed?.()
-          }}
-          onSubmitted={refreshGeneration}
-          onModelsChanged={refreshProviders}
-          onConfigure={() => setConfiguring(true)}
-        />
-      ) : null}
-
-      {configuring ? (
-        <ProvidersSheet
-          key={JSON.stringify(providerLifecycle)}
-          providers={providers}
-          modelConfigReady={modelConfigReady}
-          pluginMethods={plugin?.methods}
-          storageDurable={storageDurable}
-          onOpenChange={setConfiguring}
-          onChanged={refreshProviders}
-          onTestSubmitted={refreshGeneration}
-        />
-      ) : null}
-
-      {detailId === null ? null : (
-        <RecordDetailDialog
-          key={detailId}
-          recordId={detailId}
-          providers={providers}
-          selections={selections}
-          modelConfigReady={modelConfigReady}
-          onClose={() => setDetailId(null)}
-          onChanged={refreshGeneration}
-        />
-      )}
+      {dialogs}
     </section>
   )
 }

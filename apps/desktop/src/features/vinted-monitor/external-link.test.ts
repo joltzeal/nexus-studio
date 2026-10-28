@@ -246,6 +246,7 @@ describe('Vinted external links', () => {
       }
       sheet.props.onGenerate(fullItem, ['third.webp', 'first.webp'])
       expect(listener).toHaveBeenCalledExactlyOnceWith({
+        presentation: 'dialog',
         images: ['third.webp', 'first.webp'],
         title: item.title,
         source: {

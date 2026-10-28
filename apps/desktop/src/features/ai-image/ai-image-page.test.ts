@@ -5,6 +5,7 @@ import type { PluginView } from '@/lib/platform/native-plugins'
 import {
   components,
   deferred,
+  elements,
   flushPromises,
   KernelHookHarness,
   text,
@@ -478,4 +479,37 @@ describe('provider image test lifecycle', () => {
       expect(errors()).toEqual([])
     },
   )
+})
+
+describe('in-place product image generation', () => {
+  beforeEach(() => {
+    props = { ...props, presentation: 'dialog', onHandoffConsumed: vi.fn() }
+  })
+
+  it('loads the composer without replacing the source page or reading global history', async () => {
+    await settle()
+
+    expectCatalog(catalog('initial'))
+    expect(
+      elements(render()).some((node) => node.props['aria-labelledby'] === 'ai-heading'),
+    ).toBe(false)
+    expect(listRecords).not.toHaveBeenCalled()
+
+    await generation().onSubmitted()
+    generation().onOpenChange(false)
+    expect(props.onHandoffConsumed).toHaveBeenCalledOnce()
+    expect(listRecords).not.toHaveBeenCalled()
+  })
+
+  it('allows model configuration and surfaces a failed catalog read in the dialog', async () => {
+    vi.mocked(listProviders).mockRejectedValueOnce(new Error('Cannot read providers'))
+    await settle()
+    expect(generation().loadError).toBe('Cannot read providers')
+    generation().onConfigure()
+    await configuration().onChanged()
+
+    expectCatalog(catalog('initial'))
+    expect(generation().loadError).toBeNull()
+    expect(listRecords).not.toHaveBeenCalled()
+  })
 })

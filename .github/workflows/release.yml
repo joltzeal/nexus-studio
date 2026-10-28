@@ -35,8 +35,8 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "需要主程序 0.1.18：生图默认等待 15 分钟，可按服务商设置 1–60 分钟；支持自动、流式和普通响应；修复响应读取超时与连接释放，测试和多视角共用配置，失败不自动重复生成。"
-          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "Archived item and seller management, private proxies and scoped image downloads."
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "Export images to system Downloads/Nexus AI, including redirected Windows Downloads; keeps English listing output and realistic casual smartphone photos."
+          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.19：从商品打开 AI 生图弹窗时保留当前页面，提交后继续浏览商品；筛选、分页和商品来源保持不变。采集数据和 RPC 保持兼容。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
         shell: bash

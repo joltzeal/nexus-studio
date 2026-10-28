@@ -1,10 +1,8 @@
 /**
  * Cross-page payloads that are not worth a store.
  *
- * A page cannot reach into another page's props: the shell renders one tab at a
- * time and the source unmounts as soon as the target mounts. This module is the
- * smallest thing that survives that handover — a send that fires immediately and
- * a listener the shell keeps for its whole life.
+ * The shell owns the handoff so a source can open an in-place dialog or navigate
+ * to the AI page without coupling the two pages' component state.
  */
 /** Public item metadata only; never credentials or model instructions. */
 export interface GenerationSource {
@@ -15,6 +13,8 @@ export interface GenerationSource {
 }
 
 export interface AiImageHandoff {
+  /** Defaults to the AI page; dialog keeps the source page mounted. */
+  presentation?: 'page' | 'dialog'
   /** Remote picture URLs, in the order the source page showed them. */
   images: string[]
   /** Where the pictures came from, so the dialog can say so. */
@@ -28,7 +28,7 @@ type Listener = (payload: AiImageHandoff) => void
 
 const listeners = new Set<Listener>()
 
-/** The shell switches pages; the AI page reads the payload from its props. */
+/** The shell presents the requested editor and retains the payload until close. */
 export function sendToAiImage(payload: AiImageHandoff): void {
   for (const listener of [...listeners]) listener(payload)
 }

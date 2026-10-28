@@ -85,6 +85,8 @@ export function GenerateDialog({
   source,
   initialPrompt,
   pluginMethods,
+  loadError = null,
+  submittedMessage = '已提交生成任务，记录里可以查看进度',
   onOpenChange,
   onSubmitted,
   onConfigure,
@@ -99,6 +101,8 @@ export function GenerateDialog({
   source?: GenerationSource
   initialPrompt?: string
   pluginMethods?: readonly string[]
+  loadError?: string | null
+  submittedMessage?: string
   onOpenChange: (open: boolean) => void
   onSubmitted: () => Promise<void>
   onConfigure: () => void
@@ -394,7 +398,7 @@ export function GenerateDialog({
       if (!mounted.current) return
       await onSubmitted()
       if (!mounted.current) return
-      toast.success('已提交生成任务，记录里可以查看进度')
+      toast.success(submittedMessage)
       onOpenChange(false)
     } catch (cause) {
       if (mounted.current) setError(message(cause))
@@ -422,6 +426,7 @@ export function GenerateDialog({
         </DialogHeader>
 
         {!modelConfigReady ? <FieldError>{MODEL_CONFIG_UPDATE_HINT}</FieldError> : null}
+        {loadError === null ? null : <FieldError role="alert">{loadError}</FieldError>}
         {origin === undefined ? null : <SourceLink source={origin} />}
 
         <div className="ai-dialog-body">

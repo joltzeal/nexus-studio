@@ -35,7 +35,7 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "修复商品采集失败：规范请求域名、匿名会话初始化与 Cookie 复用、代理保持一致，并显示具体失败阶段及 HTTP 状态。"
+          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.19：从商品打开 AI 生图弹窗时保留当前页面，提交后继续浏览商品；筛选、分页和商品来源保持不变。采集数据和 RPC 保持兼容。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify artifact and plugin startup
         env:

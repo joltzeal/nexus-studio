@@ -21,6 +21,7 @@ const item = {
 describe('Vinted product AI handoff', () => {
   it('passes only public product fields, source identity, and chosen images', () => {
     expect(itemAiHandoff(item, ['third.webp', 'first.webp'])).toEqual({
+      presentation: 'dialog',
       images: ['third.webp', 'first.webp'],
       title: 'Blue coat',
       source: {

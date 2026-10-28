@@ -26,6 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { usePreferences } from '@/hooks/use-preferences'
 import { SpacesPage } from '@/features/spaces/spaces-page'
 import { GroupsPage } from '@/features/groups/groups-page'
+import { AiImagePage } from '@/features/ai-image/ai-image-page'
 import { PluginsPage } from '@/features/plugins/plugins-page'
 import { PluginPage } from '@/features/plugins/plugin-page'
 import {
@@ -71,8 +72,7 @@ export function AppShell() {
     initialPluginNavigation,
   )
   const [pluginsOpen, setPluginsOpen] = useState(true)
-  // A page can hand pictures to the AI page; the payload is kept here so it
-  // survives the switch and is dropped once the dialog has taken it.
+  // The shell keeps the editor payload until close, including in-place dialogs.
   const [aiImageHandoff, setAiImageHandoff] = useState<AiImageHandoff | null>(null)
   const {
     loading,
@@ -87,9 +87,9 @@ export function AppShell() {
   const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark'
   const themeAction = nextTheme === 'dark' ? '切换为深色' : '切换为浅色'
   const pluginPage = plugins.find((entry) => pluginPageValue(entry.id) === page) ?? null
-  const aiImageReady = plugins.some(
-    (plugin) => plugin.id === 'studio.ai-image' && plugin.state === 'running',
-  )
+  const aiImagePlugin = plugins.find((plugin) => plugin.id === 'studio.ai-image') ?? null
+  const aiImageReady = aiImagePlugin?.state === 'running'
+  const dialogHandoff = aiImageHandoff?.presentation === 'dialog' ? aiImageHandoff : null
 
   useEffect(() => {
     const stop = watchPluginCatalog(
@@ -118,8 +118,10 @@ export function AppShell() {
     () =>
       onAiImageHandoff((payload) => {
         setAiImageHandoff(payload)
-        navigate({ type: 'navigate', page: pluginPageValue('studio.ai-image') })
-        setPluginsOpen(true)
+        if (payload.presentation !== 'dialog') {
+          navigate({ type: 'navigate', page: pluginPageValue('studio.ai-image') })
+          setPluginsOpen(true)
+        }
       }),
     [],
   )
@@ -292,7 +294,7 @@ export function AppShell() {
                   plugin={plugin}
                   hostAvailable
                   aiImageReady={aiImageReady}
-                  handoff={aiImageHandoff}
+                  handoff={dialogHandoff === null ? aiImageHandoff : null}
                   onHandoffConsumed={consumeAiImageHandoff}
                   onManage={() => openPage('plugins')}
                   onWindows={() => openPage('spaces')}
@@ -312,6 +314,15 @@ export function AppShell() {
                 <SettingsPage />
               </Suspense>
             </TabsContent>
+            {dialogHandoff === null ? null : (
+              <AiImagePage
+                plugin={aiImagePlugin}
+                hostAvailable
+                presentation="dialog"
+                handoff={dialogHandoff}
+                onHandoffConsumed={consumeAiImageHandoff}
+              />
+            )}
           </>
         )}
       </main>

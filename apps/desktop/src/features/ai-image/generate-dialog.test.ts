@@ -462,3 +462,56 @@ describe('generation model compatibility', () => {
     },
   )
 })
+
+describe('source-page generation feedback', () => {
+  it('closes an accepted task with the source-page progress hint', async () => {
+    props.selections = remembered
+    props.submittedMessage = 'Track this task in the product image history'
+    await settle()
+    await submit()
+
+    expect(props.onOpenChange).toHaveBeenCalledExactlyOnceWith(false)
+    expect(toast.success).toHaveBeenCalledExactlyOnceWith(props.submittedMessage)
+  })
+
+  it('keeps the source and uploaded reference after rejection for an explicit retry', async () => {
+    props.selections = remembered
+    props.initialImages = [reference]
+    props.source = {
+      pluginId: 'studio.vinted-monitor',
+      itemId: 'vinted.fr:123',
+      title: 'Blue coat',
+      url: 'https://www.vinted.fr/items/123',
+    }
+    vi.mocked(generate).mockRejectedValueOnce(new Error('Plugin is temporarily busy'))
+    await settle()
+    await submit()
+
+    expect(props.onOpenChange).not.toHaveBeenCalled()
+    expect(props.onSubmitted).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(text(render())).toContain('Plugin is temporarily busy')
+    expect(modelSelect('image').value).toBe(modelValue(imagePair))
+
+    await submit()
+    expect(generate).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(generate).mock.lastCall?.[0]).toMatchObject({
+      source: props.source,
+      inputFileIds: ['reference-1'],
+      prompt,
+    })
+    expect(transferInitialImage).toHaveBeenCalledOnce()
+    expect(props.onOpenChange).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it('shows a catalog failure within the composer', async () => {
+    props.loadError = 'Cannot load model settings'
+    await settle()
+    expect(
+      components(render(), FieldError)
+        .filter((node) => node.props.role === 'alert')
+        .map((node) => text(node.props.children)),
+    ).toContain(props.loadError)
+    expectNoGeneration()
+  })
+})
