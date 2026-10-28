@@ -23,7 +23,30 @@
 组件回归验证事件与状态，不冒充真实 WebView 焦点、Windows 或安装包验收。
 主程序为 `0.1.19`，Vinted package/manifest 为 `1.1.2`，
 最低主程序 `0.1.19`；AI 插件继续使用已发布的 `1.4.3`。
-远端构件与商店发布结果在完成后另行记录。
+
+### 0.1.19 标签与 Vinted 1.1.2 商店发布
+
+2026-10-28 已将提交 `a58b0f9bc1b95ba06caf8d12b0aadc2bdeb0a65c` 推送到
+`main`、`codex/fix-macos-node-runtime` 和 `v0.1.19`。
+Desktop release 运行 `40680748383` 的 `plugins` 任务成功，
+取得 `plugin-market-v0.1.19`（artifact `12813105417`）并核对提交与 ZIP 摘要：
+`d4ea864622da57674acd519747597efc5ef01c2b3b9f452524d33280960bd6c3`。
+
+下载的 Vinted 包清单、4 个内部文件与摘要校验通过，实际启动加密包完成 20 方法握手。
+2026-10-28 19:42（Asia/Shanghai）完成 R2 发布：
+
+- 对象 `plugins/studio.vinted-monitor/1.1.2.nexuspkg`，大小 835026 字节。
+- SHA-256：`68e39bd2bf6119b4628b304957422bc4c98d3843cb6795743e692d81b4d65435`。
+- 上传包后回读验证，再确认线上目录没有并行更新后合并 Vinted 条目。
+- 远端和公开目录、包全部回读一致；目录仍有八项，其他七项原值不变，
+  AI `1.4.3` 原包及全部历史包保留。
+
+本轮终端残留代理端口不可用，Cloudflare 刷新认证时直连解析失败；
+仅发布命令改用已配置且可连通的系统代理后完成，没有修改应用代理或系统设置。
+证据保存在上述目录的 `artifact-metadata.json`、`package-verification.json`、
+`publication.json` 与 `catalog.public.json`。没有等待桌面三平台编译结束，
+不将插件任务成功描述为安装包发布完成；用户需先更新主程序至 `0.1.19`，
+再通过插件中心检查更新安装 `1.1.2`。
 
 ## 2026-10-28 AI 1.4.3 导出到系统下载文件夹
 
