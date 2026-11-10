@@ -354,16 +354,15 @@ impl WindowService {
             .list_groups(&connection)
     }
     fn validate_group(&self, group: Option<&str>) -> BrowserResult<()> {
-        if let Some(group) = group {
-            if !super::group_store::GroupStore::new(self.store.database_path())
+        if let Some(group) = group
+            && !super::group_store::GroupStore::new(self.store.database_path())
                 .map_err(failure)?
                 .list()
                 .map_err(failure)?
                 .iter()
                 .any(|g| g.id == group)
-            {
-                return Err(BrowserError::new("invalid_config", "所选分组不存在"));
-            }
+        {
+            return Err(BrowserError::new("invalid_config", "所选分组不存在"));
         }
         Ok(())
     }
@@ -512,19 +511,20 @@ impl WindowService {
                 }
                 let started = previous.is_some_and(|o| o.nexus_started)
                     && !matches!(display, WindowState::Stopped | WindowState::Missing);
-                if !pending && connection.provider_id != BrowserProviderId::CloakBrowser {
-                    if let Some(remote) = observation.as_ref().and_then(|batch| {
+                if !pending
+                    && connection.provider_id != BrowserProviderId::CloakBrowser
+                    && let Some(remote) = observation.as_ref().and_then(|batch| {
                         batch
                             .profiles
                             .iter()
                             .find(|remote| remote.id == record.binding.profile_id)
-                    }) {
-                        let updated = self
-                            .store
-                            .refresh_external_metadata(&record.id, remote)
-                            .map_err(failure)?;
-                        refreshed.insert(record.id.clone(), updated);
-                    }
+                    })
+                {
+                    let updated = self
+                        .store
+                        .refresh_external_metadata(&record.id, remote)
+                        .map_err(failure)?;
+                    refreshed.insert(record.id.clone(), updated);
                 }
                 self.observations.set(&record.id, display, started)?;
                 state.advance(&record.id)?;
@@ -1457,9 +1457,9 @@ impl WindowService {
                     .into_iter()
                     .find(|profile| profile.id == provider_profile_id)
                     .ok_or_else(|| BrowserError::new("profile_missing", "所选官方环境不可见"))?;
-                if !remote.provider_config["identity"]
+                if remote.provider_config["identity"]
                     .as_object()
-                    .is_some_and(|identity| !identity.is_empty())
+                    .is_none_or(|identity| identity.is_empty())
                 {
                     return Err(BrowserError::new(
                         "scope_mismatch",
@@ -1518,8 +1518,8 @@ impl WindowService {
                     .get(&record.binding.profile_id)
                     .copied()
                     .unwrap_or(WindowState::Unknown);
-                if !matches!(actual, WindowState::Stopped | WindowState::Running)
-                    && !(op.kind == "delete" && actual == WindowState::Missing)
+                if !(matches!(actual, WindowState::Stopped | WindowState::Running)
+                    || op.kind == "delete" && actual == WindowState::Missing)
                 {
                     return Err(uncertain());
                 }

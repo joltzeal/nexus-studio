@@ -171,12 +171,11 @@ impl OperationStore {
     pub fn list(&self, connection: Option<&str>) -> BrowserResult<Vec<BrowserOperation>> {
         let db = open_database(&self.path).map_err(error)?;
         let mut query=db.prepare("SELECT record_json FROM browser_operations WHERE (?1 IS NULL OR connection_id=?1) AND phase NOT IN('committed','failed','cancelled') ORDER BY rowid DESC").map_err(error)?;
-        let collected = query
+        query
             .query_map([connection], |r| r.get::<_, String>(0))
             .map_err(error)?
             .map(|row| serde_json::from_str(&row.map_err(error)?).map_err(error))
-            .collect();
-        collected
+            .collect()
     }
     pub fn window_pending(&self, id: &str) -> BrowserResult<bool> {
         Ok(self.list(None)?.iter().any(|op| op.window_id == id))

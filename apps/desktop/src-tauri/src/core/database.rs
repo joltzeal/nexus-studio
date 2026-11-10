@@ -72,7 +72,7 @@ fn upgrade_windows(db: &mut Connection, path: &Path) -> Result<(), String> {
         let mut query = tx
             .prepare("SELECT id,record_json,rowid FROM profile_records ORDER BY rowid")
             .map_err(|_| "无法读取待升级窗口")?;
-        let collected = query
+        query
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -82,8 +82,7 @@ fn upgrade_windows(db: &mut Connection, path: &Path) -> Result<(), String> {
             })
             .map_err(|_| "无法读取待升级窗口")?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| "无法读取待升级窗口")?;
-        collected
+            .map_err(|_| "无法读取待升级窗口")?
     };
     for (id, text, order) in records {
         let mut record: Value =

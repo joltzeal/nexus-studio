@@ -44,6 +44,12 @@ SDK `tsc --noEmit`、Vitest 配置 ESLint、修改文件 Prettier、Rust 测试�
 `rustfmt --check` 与差异空白检查通过。提取夹具的 Node 冒烟确认正常握手、
 故障退出和 Unix 关闭输出但进程存活，未构建本地包或编译 Rust。
 
+提交 `89d1484` 的运行 `42797933332` 已通过 JavaScript 全部门禁及 macOS 320 项
+Rust 测试，包括真实安装的账号插件握手和加密迁移。随后 macOS `rust:lint`
+报告 8 处 Clippy 错误：3 处可合并的条件、3 处多余返回变量和 2 处布尔表达式。
+逐项按等价表达式简化，保留短路顺序和原有检查，未关闭 lint 或改变门禁。
+修复后的双平台结果继续以新提交 CI 为准。
+
 ## 2026-11-10 多浏览器统一窗口重构
 
 统一 `BrowserProvider` / `WindowService` 接入内置浏览器、AdsPower 和比特浏览器。

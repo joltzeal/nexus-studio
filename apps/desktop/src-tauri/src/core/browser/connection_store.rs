@@ -89,17 +89,16 @@ impl ConnectionStore {
         let previous = previous
             .map(|text| serde_json::from_str::<BrowserConnection>(&text).map_err(storage))
             .transpose()?;
-        if let Some(previous) = previous.as_ref() {
-            if previous.provider_id != record.provider_id
+        if let Some(previous) = previous.as_ref()
+            && (previous.provider_id != record.provider_id
                 || (!previous.scope_label.trim().is_empty()
                     && previous.scope_label.trim() != record.scope_label.trim())
-                || (previous.scope_id.is_some() && previous.scope_id != record.scope_id)
-            {
-                return Err(BrowserError::new(
-                    "scope_mismatch",
-                    "当前账户与接入绑定不同，请创建新的接入",
-                ));
-            }
+                || (previous.scope_id.is_some() && previous.scope_id != record.scope_id))
+        {
+            return Err(BrowserError::new(
+                "scope_mismatch",
+                "当前账户与接入绑定不同，请创建新的接入",
+            ));
         }
         // Activation and invalidation can change flags without advancing the configuration revision.
         if previous.as_ref() != observed
@@ -156,12 +155,11 @@ impl ConnectionStore {
         let mut query = db
             .prepare("SELECT record_json FROM browser_connections ORDER BY rowid")
             .map_err(storage)?;
-        let collected = query
+        query
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(storage)?
             .map(|row| serde_json::from_str(&row.map_err(storage)?).map_err(storage))
-            .collect();
-        collected
+            .collect()
     }
     pub fn save(&self, input: ConnectionInput) -> BrowserResult<BrowserConnection> {
         if input.provider_id == BrowserProviderId::CloakBrowser {
