@@ -28,6 +28,9 @@ jobs:
       - run: pnpm runtime:check
 
   native:
+    env:
+      RUST_BACKTRACE: 1
+      RUST_TEST_NOCAPTURE: 1
     strategy:
       fail-fast: false
       matrix:

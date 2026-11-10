@@ -1088,6 +1088,7 @@ pub(crate) mod tests {
                             Err(error) => panic!("mock accept: {error}"),
                         }
                     };
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
@@ -1175,8 +1176,31 @@ pub(crate) mod tests {
     impl Drop for MockServer {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
-            self.worker.take().unwrap().join().unwrap();
+            let result = self.worker.take().unwrap().join();
+            if !thread::panicking() {
+                result.expect("mock server worker failed");
+            }
         }
+    }
+
+    #[test]
+    fn mock_server_waits_for_request_bytes_after_accepting_a_connection() {
+        let server = MockServer::new(vec![MockResponse::json(json!({"code":0}))]);
+        let mut client =
+            std::net::TcpStream::connect(server.endpoint.strip_prefix("http://").unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        client
+            .write_all(b"GET /delayed HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].target, "/delayed");
     }
 
     pub(crate) fn record(connection: &BrowserConnection, id: &str) -> WindowRecord {
