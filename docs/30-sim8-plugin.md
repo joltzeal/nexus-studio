@@ -6,6 +6,10 @@
 
 ## 当前事实
 
+配套 `0.1.20` 的插件版本为 `1.0.2`，最低主程序 `0.1.20`。
+此版本加入 `expire` 读取、到期前七天每日提醒及当天关闭提醒的持久化，
+需同时更新主程序和插件；实际构件与上传状态见[质量记录](09-quality-and-testing.md)。
+
 插件包位于 `plugins/sim8`，实现 `verification.provider` 能力的方法、私有 JSON
 存储与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/sim8`，
 安装后显示在「插件中心 → SIM8 接码」。Nexus `0.1.8` 包含此专用页面，

@@ -26,9 +26,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' build
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' build
       - name: Verify AI requests and application transport
-        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
+        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-accounts/src plugins/sim8/src packages/plugin-sdk/src packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
       - name: Pack companion plugins
         id: plugin-market
         shell: bash
@@ -37,6 +37,8 @@ jobs:
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
           node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "Export images to system Downloads/Nexus AI, including redirected Windows Downloads; keeps English listing output and realistic casual smartphone photos."
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.19：从商品打开 AI 生图弹窗时保留当前页面，提交后继续浏览商品；筛选、分页和商品来源保持不变。采集数据和 RPC 保持兼容。"
+          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套主程序 0.1.20：统一窗口生命周期清理，删除窗口时幂等解除账号关联；修复安装后的 SDK 生命周期入口。账号资料保留。"
+          node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.20：读取接码链接 expire，在到期前七天提供每日提醒，支持今天不再提醒及续费后重新计算。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
         shell: bash
@@ -95,6 +97,48 @@ jobs:
               'vinted.image.read',
               'vinted.image.close',
               'vinted.url.inspect',
+            ],
+            'vinted-accounts': [
+              'vinted.accounts.list',
+              'vinted.accounts.save',
+              'vinted.accounts.remove',
+              'vinted.accounts.import',
+              'vinted.accounts.template',
+              'vinted.accounts.otp',
+              'vinted.accounts.bind',
+              'vinted.accounts.unbind',
+              'vinted.accounts.bindings',
+              'window.detach',
+              'transfer.export',
+              'transfer.import',
+              'transfer.rollback',
+              'transfer.commit',
+            ],
+            sim8: [
+              'sim8.config.get',
+              'sim8.config.set',
+              'sim8.profile',
+              'sim8.catalog.categories',
+              'sim8.catalog.apps',
+              'sim8.buy.prefixes',
+              'sim8.buy.create',
+              'sim8.buy.deferred',
+              'sim8.orders.list',
+              'sim8.orders.apis',
+              'sim8.orders.one',
+              'sim8.orders.changeToken',
+              'sim8.orders.renewText',
+              'sim8.orders.renewIds',
+              'sim8.filter.apps',
+              'sim8.filter.create',
+              'sim8.filter.detail',
+              'sim8.records.list',
+              'sim8.records.remove',
+              'sim8.records.clear',
+              'sim8.expiry.list',
+              'sim8.expiry.refresh',
+              'sim8.expiry.dismiss',
+              'sim8.sms.read',
             ],
           }
           const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
@@ -199,7 +243,15 @@ jobs:
           projectPath: apps/desktop
           tagName: v__VERSION__
           releaseName: 'Nexus v__VERSION__'
-          releaseBody: 'Desktop packages and signed update artifacts. Installation requires platform signing before public distribution.'
+          releaseBody: |
+            - 统一内置浏览器、AdsPower 和比特浏览器接入，窗口管理使用提供方页签。
+            - 重构窗口调度、持久化操作与恢复流程，移除旧窗口接口及历史导入格式。
+            - SIM8 新增号码到期前七天的每日提醒，支持当天关闭提醒。
+            - 修复 SQLite 类型、插件安装启动和跨平台检查问题。
+
+            配套 Vinted 账号池 1.0.2、SIM8 1.0.2 通过插件商店独立安装。
+            历史窗口数据库在首次启动时备份并升级；旧格式导出文件需在旧版处理。
+            macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
           uploadUpdaterJson: true
           args: ${{ matrix.tauriArgs }}

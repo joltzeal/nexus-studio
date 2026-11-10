@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-sim8",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Nexus SIM8 plugin: number purchase, SMS extraction and number filtering over the SIM8 API",
   "type": "module",

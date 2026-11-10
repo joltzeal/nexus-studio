@@ -63,6 +63,48 @@ const requiredMethods = {
     'vinted.image.close',
     'vinted.url.inspect',
   ],
+  'vinted-accounts': [
+    'vinted.accounts.list',
+    'vinted.accounts.save',
+    'vinted.accounts.remove',
+    'vinted.accounts.import',
+    'vinted.accounts.template',
+    'vinted.accounts.otp',
+    'vinted.accounts.bind',
+    'vinted.accounts.unbind',
+    'vinted.accounts.bindings',
+    'window.detach',
+    'transfer.export',
+    'transfer.import',
+    'transfer.rollback',
+    'transfer.commit',
+  ],
+  sim8: [
+    'sim8.config.get',
+    'sim8.config.set',
+    'sim8.profile',
+    'sim8.catalog.categories',
+    'sim8.catalog.apps',
+    'sim8.buy.prefixes',
+    'sim8.buy.create',
+    'sim8.buy.deferred',
+    'sim8.orders.list',
+    'sim8.orders.apis',
+    'sim8.orders.one',
+    'sim8.orders.changeToken',
+    'sim8.orders.renewText',
+    'sim8.orders.renewIds',
+    'sim8.filter.apps',
+    'sim8.filter.create',
+    'sim8.filter.detail',
+    'sim8.records.list',
+    'sim8.records.remove',
+    'sim8.records.clear',
+    'sim8.expiry.list',
+    'sim8.expiry.refresh',
+    'sim8.expiry.dismiss',
+    'sim8.sms.read',
+  ],
 }
 
 afterEach(() => {
@@ -206,7 +248,7 @@ console.log('   \\u72b6\\u6001 {}')
 }
 
 describe('companion plugin release workflow', () => {
-  it('builds AI and Vinted with dependencies and packs only them into a fresh directory', () => {
+  it('builds companion plugins with dependencies and packs only them into a fresh directory', () => {
     const directory = temporaryDirectory()
     const calls = join(directory, 'calls.jsonl')
     const output = join(directory, 'output')
@@ -243,11 +285,17 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       '@nexus/plugin-ai-image...',
       '--filter',
       '@nexus/plugin-vinted-monitor...',
+      '--filter',
+      '@nexus/plugin-vinted-accounts...',
+      '--filter',
+      '@nexus/plugin-sim8...',
       'build',
     ])
     expect(commands.slice(1).map((args) => args.slice(0, 3))).toEqual([
       ['node', 'scripts/pack-plugin.mjs', 'plugins/ai-image'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/vinted-monitor'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/vinted-accounts'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/sim8'],
       ['node', 'scripts/build-market.mjs', '--out'],
     ])
     const market = readFileSync(output, 'utf8').match(/^directory=(.+)$/m)?.[1]
@@ -278,7 +326,7 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     expect(workflow.split('  publish:\n')[1]).toContain('needs: [package, plugins]')
   })
 
-  it('accepts a complete two-plugin artifact using manifest versions and successful verifier reports', () => {
+  it('accepts a complete companion artifact using manifest versions and successful verifier reports', () => {
     const data = fixture()
     const result = data.verify()
     expect(result.status, result.stderr).toBe(0)
@@ -289,6 +337,8 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     expect(verified).toEqual(data.plugins.map((plugin) => plugin.file))
     expect(result.stdout).toContain('ok studio.ai-image 11.2.3')
     expect(result.stdout).toContain('ok studio.vinted-monitor 17.4.5')
+    expect(result.stdout).toContain('ok studio.vinted-accounts 17.4.5')
+    expect(result.stdout).toContain('ok studio.sim8 17.4.5')
   })
 
   it.each(

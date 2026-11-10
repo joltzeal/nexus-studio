@@ -5,9 +5,9 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.vinted-accounts',
-  version: '1.0.1',
+  version: '1.0.2',
   name: 'Vinted 账号池',
-  minCoreVersion: '0.1.0',
+  minCoreVersion: '0.1.20',
   capabilities: ['account.pool'],
   permissions: {
     // Credentials never leave the private store: the plugin makes no network

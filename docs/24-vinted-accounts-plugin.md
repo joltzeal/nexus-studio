@@ -5,6 +5,10 @@
 
 ## 当前事实
 
+配套 `0.1.20` 的插件版本为 `1.0.2`，最低主程序 `0.1.20`；
+新增宿主私有 `window.detach`，仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
+发行构件与商店上传的实际状态分别记录在[质量记录](09-quality-and-testing.md)。
+
 插件包位于 `plugins/vinted-accounts`，实现 `account.pool` 能力的方法、
 私有 JSON 存储与逐行 JSON RPC 服务端。页面位于
 `apps/desktop/src/features/accounts`，在主导航里叫「Vinted 账号」。
@@ -59,6 +63,7 @@ plugins/vinted-accounts/
 | `vinted.accounts.unbind`   | `{ windowId }`                                | 解除该窗口的关联                 |
 | `vinted.accounts.bindings` | —                                             | 绑定列表，附带账号摘要           |
 | `vinted.accounts.otp`      | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文 |
+| `window.detach`            | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系   |
 | `transfer.export`          | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照   |
 | `transfer.import`          | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执 |
 | `transfer.rollback`        | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定   |
