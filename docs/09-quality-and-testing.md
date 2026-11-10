@@ -26,6 +26,24 @@ SQL 冒烟覆盖最大修订号 CAS、过期 CAS / 失效请求不修改记录�
 同轮 Windows 测试也异常退出，未输出足够的 panic 上下文；
 质量工作流为原生测试开启回溯和即时输出，保留后续失败的原始诊断。
 
+提交 `e922c5f` 的运行 `42795473674` 中，JavaScript 检查与两平台 Rust 编译通过，
+完整测试不再异常中止。macOS 为 317 项通过、2 项失败；Windows 为 305 项通过、3 项失败。
+共同失败为安装后 Vinted 账号插件无法握手：SDK 的 `./lifecycle` 导出 TypeScript 源码，
+复制到真实 `node_modules` 后被 Node 24 拒绝，最小物理依赖复制已复现
+`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`。运行导出现改为编译后的 JavaScript /
+声明文件，Vitest 单独解析源码，不把测试加载能力当作安装后的执行能力。
+
+Windows 额外失败为测试夹具用 `fs.closeSync(1)` 模拟关闭输出；Node 在 Windows
+对标准文件描述符关闭不执行实际操作，测试因此一直等到 120 秒启动截止时间。
+故障退出夹具现主动退出，覆盖两平台；保持进程存活但关闭 stdout 的独立用例只在 Unix
+执行，仍验证失败清理和同环境重试，没有放宽生产启动判定或超时。
+两处修复后的原生测试与 Clippy 以随后 GitHub Actions 的实际结果为准。
+
+本地直接执行 SDK / Vinted 账号插件的 Vitest，8 文件 / 110 项通过；
+SDK `tsc --noEmit`、Vitest 配置 ESLint、修改文件 Prettier、Rust 测试文件
+`rustfmt --check` 与差异空白检查通过。提取夹具的 Node 冒烟确认正常握手、
+故障退出和 Unix 关闭输出但进程存活，未构建本地包或编译 Rust。
+
 ## 2026-11-10 多浏览器统一窗口重构
 
 统一 `BrowserProvider` / `WindowService` 接入内置浏览器、AdsPower 和比特浏览器。

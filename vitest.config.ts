@@ -5,6 +5,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./apps/desktop/src', import.meta.url)),
+      '@nexus/plugin-sdk/lifecycle': fileURLToPath(
+        new URL('./packages/plugin-sdk/src/lifecycle.ts', import.meta.url),
+      ),
     },
   },
   test: {

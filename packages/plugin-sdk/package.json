@@ -6,15 +6,17 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    "./lifecycle": "./src/lifecycle.ts",
+    "./lifecycle": {
+      "types": "./dist/lifecycle.d.ts",
+      "import": "./dist/lifecycle.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
   "files": [
-    "dist",
-    "src/lifecycle.ts"
+    "dist"
   ],
   "sideEffects": false,
   "scripts": {

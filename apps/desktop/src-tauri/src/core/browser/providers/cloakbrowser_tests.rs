@@ -353,10 +353,11 @@ if (action === 'inventory') {
       versionOverride: process.env.CLOAKBROWSER_VERSION ?? null,
       binaryOverride: process.env.CLOAKBROWSER_BINARY_PATH ?? null
     }));
-    if (mode === 'closed-output' || mode === 'failure') {
-      if (mode === 'failure') {
-        fs.writeSync(2, 'PROFILE_GEO_PROXY_CONNECT_FAILED socks5://synthetic-user:synthetic-password@proxy.invalid:1080 cb_synthetic-license\n');
-      }
+    if (mode === 'failure') {
+      fs.writeSync(2, 'PROFILE_GEO_PROXY_CONNECT_FAILED socks5://synthetic-user:synthetic-password@proxy.invalid:1080 cb_synthetic-license\n');
+      process.exit(1);
+    }
+    if (mode === 'closed-output') {
       fs.closeSync(1);
       setInterval(() => {}, 1000);
       return;
@@ -1124,28 +1125,37 @@ fn unresolved_proxy_and_missing_package_binding_never_start_the_runtime() {
     assert!(provider.session(&record.id).unwrap().is_none());
 }
 
+fn assert_failed_start_cleanup(mode: &str) {
+    let (root, provider, record) = prepared_fixture();
+    fs::write(root.path().join("mode"), mode).unwrap();
+    let started = Instant::now();
+    let error = provider
+        .start_profile(&connection(), &record, &resolved(ProxyMode::Direct, None))
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(root.path().join("launch.json").is_file());
+    assert!(!error.message.contains("synthetic-user"));
+    assert!(!error.message.contains("synthetic-password"));
+    assert!(!error.message.contains("cb_synthetic-license"));
+    assert_eq!(provider.observe(&record.id).unwrap(), WindowState::Stopped);
+    assert!(provider.session(&record.id).unwrap().is_none());
+    fs::write(root.path().join("mode"), "normal").unwrap();
+    provider
+        .start_profile(&connection(), &record, &resolved(ProxyMode::Direct, None))
+        .unwrap();
+    provider.stop_profile(&connection(), &record).unwrap();
+}
+
+#[test]
+fn failed_start_reaps_the_runner_before_retry() {
+    assert_failed_start_cleanup("failure");
+}
+
+// Node deliberately leaves stdio open for fs.closeSync on Windows.
+#[cfg(unix)]
 #[test]
 fn closed_startup_output_kills_and_reaps_the_runner_before_retry() {
-    for mode in ["closed-output", "failure"] {
-        let (root, provider, record) = prepared_fixture();
-        fs::write(root.path().join("mode"), mode).unwrap();
-        let started = Instant::now();
-        let error = provider
-            .start_profile(&connection(), &record, &resolved(ProxyMode::Direct, None))
-            .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(root.path().join("launch.json").is_file());
-        assert!(!error.message.contains("synthetic-user"));
-        assert!(!error.message.contains("synthetic-password"));
-        assert!(!error.message.contains("cb_synthetic-license"));
-        assert_eq!(provider.observe(&record.id).unwrap(), WindowState::Stopped);
-        assert!(provider.session(&record.id).unwrap().is_none());
-        fs::write(root.path().join("mode"), "normal").unwrap();
-        provider
-            .start_profile(&connection(), &record, &resolved(ProxyMode::Direct, None))
-            .unwrap();
-        provider.stop_profile(&connection(), &record).unwrap();
-    }
+    assert_failed_start_cleanup("closed-output");
 }
 
 #[test]
