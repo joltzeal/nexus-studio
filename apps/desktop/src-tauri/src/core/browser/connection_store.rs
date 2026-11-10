@@ -109,10 +109,11 @@ impl ConnectionStore {
         }
         let text = serde_json::to_string(record).map_err(storage)?;
         let changed = if let Some(observed) = observed {
+            let revision = i64::try_from(observed.revision).map_err(storage)?;
             tx.execute(
                 "UPDATE browser_connections SET enabled=?2,record_json=?3
                  WHERE id=?1 AND json_extract(record_json,'$.revision')=?4",
-                params![record.id, record.enabled, text, observed.revision],
+                params![record.id, record.enabled, text, revision],
             )
         } else {
             tx.execute(
@@ -297,6 +298,7 @@ impl ConnectionStore {
         Ok(record)
     }
     pub fn unconfirm(&self, id: &str, observed_revision: u64) -> BrowserResult<()> {
+        let revision = i64::try_from(observed_revision).map_err(storage)?;
         open_database(&self.path)
             .map_err(storage)?
             .execute(
@@ -305,7 +307,7 @@ impl ConnectionStore {
                  WHERE id=?1 AND json_extract(record_json,'$.revision')=?2 AND provider<>?3",
                 params![
                     id,
-                    observed_revision,
+                    revision,
                     serde_json::to_string(&BrowserProviderId::CloakBrowser).map_err(storage)?
                 ],
             )
@@ -448,7 +450,7 @@ mod tests {
         assert_eq!(updated.scope_id.as_deref(), Some("owner-a"));
         assert!(!updated.scope_confirmed);
         let confirmed = store
-            .confirm(&saved.id, "Account A", None, saved.revision)
+            .confirm(&updated.id, "Account A", None, updated.revision)
             .unwrap();
         assert_eq!(confirmed.scope_id.as_deref(), Some("owner-a"));
         assert_eq!(
@@ -457,7 +459,7 @@ mod tests {
                     &saved.id,
                     "Account A",
                     Some("owner-b".into()),
-                    saved.revision
+                    confirmed.revision
                 )
                 .unwrap_err()
                 .code,
@@ -665,6 +667,44 @@ mod tests {
         expected.scope_confirmed = false;
         assert_eq!(store.get(&expected.id).unwrap(), expected);
         assert_eq!(store.get(BUILTIN_CONNECTION_ID).unwrap(), builtin);
+    }
+
+    #[test]
+    fn sqlite_revision_limit_preserves_exact_confirmation_and_invalidation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("nexus.sqlite");
+        let store = ConnectionStore::new(path.clone()).unwrap();
+        let saved = store.save(input("Account A")).unwrap();
+        open_database(&path)
+            .unwrap()
+            .execute(
+                "UPDATE browser_connections SET record_json=json_set(record_json,'$.revision',?2) WHERE id=?1",
+                params![saved.id, i64::MAX],
+            )
+            .unwrap();
+        let latest = store.get(&saved.id).unwrap();
+        let confirmed = store
+            .confirm(&latest.id, "Account A", None, latest.revision)
+            .unwrap();
+        assert_eq!(confirmed.revision, i64::MAX as u64);
+
+        store.unconfirm(&confirmed.id, saved.revision).unwrap();
+        assert_eq!(store.get(&confirmed.id).unwrap(), confirmed);
+        assert_eq!(
+            store.unconfirm(&confirmed.id, u64::MAX).unwrap_err().code,
+            "storage_failed"
+        );
+        assert_eq!(store.get(&confirmed.id).unwrap(), confirmed);
+
+        store.unconfirm(&confirmed.id, confirmed.revision).unwrap();
+        let mut invalidated = confirmed;
+        invalidated.scope_confirmed = false;
+        assert_eq!(store.get(&invalidated.id).unwrap(), invalidated);
+
+        let mut changed = input("Account A");
+        changed.id = Some(invalidated.id.clone());
+        assert_eq!(store.save(changed).unwrap_err().code, "storage_failed");
+        assert_eq!(store.get(&invalidated.id).unwrap(), invalidated);
     }
 
     #[test]

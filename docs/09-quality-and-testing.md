@@ -1,5 +1,22 @@
 # 质量门禁与验证记录
 
+## 2026-11-10 Rust CI 编译修复
+
+提交 `8950d61` 的 Foundation quality 运行 `42791774663` 中，JavaScript 的 lint、
+格式、类型、测试、构建和运行时检查通过；macOS / Windows 均在 `rust:check` 失败。
+两处连接修订号以 `u64` 绑定 SQL 参数，但当前 rusqlite 不实现该类型的 `ToSql`；
+数据库升级函数的尾部表达式还返回了 `Result<(), &str>`，与声明的 `String` 不符。
+
+修复在 SQL 参数边界使用可失败的 `i64::try_from`，越界报错，不截断修订号；
+升级提交错误显式返回 `String`，比特浏览器的测试专用导入移入测试模块。
+补充 SQLite 最大有符号修订号、过期修订号及越界不修改记录的 Rust 回归，
+并修正已有确认测试在保存新配置后仍传旧修订号的问题。
+
+本地仅执行三文件 rustfmt、差异检查和直接提取生产语句的内存 SQLite 冒烟。
+SQL 冒烟覆盖最大修订号 CAS、过期 CAS / 失效请求不修改记录、当前修订失效保留配置；
+未打开用户数据库，未运行本地构建或 Rust 编译、测试、Clippy。
+修复后的编译和 Rust 回归结果以新提交的 GitHub Actions 为准。
+
 ## 2026-11-10 多浏览器统一窗口重构
 
 统一 `BrowserProvider` / `WindowService` 接入内置浏览器、AdsPower 和比特浏览器。

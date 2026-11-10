@@ -9,7 +9,7 @@ use crate::core::browser::local_api::{
 use crate::core::browser::provider::{
     BrowserError, BrowserProvider, BrowserProviderId, BrowserResult, CreatedProfile,
     ObservedProfiles, ProviderGroup, ProviderProbe, ProxyMode, RemoteProfile, ResolvedProxy,
-    UpdateEvidence, WindowState,
+    UpdateEvidence,
 };
 use crate::core::window_store::WindowRecord;
 use serde_json::{Map, Value, json};
@@ -630,6 +630,7 @@ fn update_payload(previous: &WindowRecord, updated: &WindowRecord) -> BrowserRes
 mod tests {
     use super::*;
     use crate::core::browser::local_api::tests::{MockResponse, MockServer, record};
+    use crate::core::browser::provider::WindowState;
     use serde_json::json;
 
     fn response(data: Value) -> MockResponse {

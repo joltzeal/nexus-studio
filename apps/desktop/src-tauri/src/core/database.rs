@@ -145,7 +145,7 @@ fn upgrade_windows(db: &mut Connection, path: &Path) -> Result<(), String> {
          INSERT INTO browser_schema(version) VALUES(2);",
     ).map_err(|_| "无法提交浏览器数据结构升级")?;
     initialize_sort_sequence(&tx)?;
-    tx.commit().map_err(|_| "窗口数据升级提交失败")
+    tx.commit().map_err(|_| "窗口数据升级提交失败".to_owned())
 }
 
 fn initialize_sort_sequence(db: &Connection) -> Result<(), String> {
