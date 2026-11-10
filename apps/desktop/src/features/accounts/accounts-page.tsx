@@ -62,7 +62,7 @@ import { updateContact } from '@/features/sim8/accounts-bridge'
 import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-batch'
 import { toggleSelection } from '@/features/spaces/transfer-state'
-import { nativeProfilesAvailable } from '@/lib/platform/native-profiles'
+import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { AccountEditor } from './account-editor'
 import {
   ACCOUNT_PAGE_SIZES,
@@ -341,7 +341,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
             <Button
               variant="outline"
               size="sm"
-              disabled={!nativeProfilesAvailable() || !selected.length}
+              disabled={!browserWindowsAvailable() || !selected.length}
               onClick={() => {
                 if (selected.length > MAX_BATCH_WINDOWS) {
                   toast.error(`每批最多选择 ${MAX_BATCH_WINDOWS} 个账号。`)

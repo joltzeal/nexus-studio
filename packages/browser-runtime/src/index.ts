@@ -16,3 +16,5 @@ export type {
   RuntimeDescription,
   RuntimeHealth,
 } from './protocol.js'
+export { parseRuntimeWindow } from './runtime-window.js'
+export type { RuntimeWindow } from './runtime-window.js'

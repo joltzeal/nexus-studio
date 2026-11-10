@@ -1,54 +1,39 @@
-# Nexus 桌面前端演示
+# Nexus 桌面应用
 
-本目录包含 React / TypeScript / Vite 前端与 Tauri 2 桌面壳。
-桌面窗口管理直接使用 Rust 原生 Profile；授权密钥由 Rust 写入 SQLite，分组和偏好等仍保留本地页面边界。
-页面采用纸白与钴蓝的现代、克制 B 端后台风格，使用 Tailwind 4 与 shadcn/ui。
+本目录包含 React / TypeScript / Vite 前端、Tauri 2 桌面入口与 Rust 业务核心。
+界面采用纸白与钴蓝，保持紧凑表格、侧栏和 shadcn/ui 控件。
 
-## 页面与状态
+## 页面与数据
 
-主页面为“窗口管理、分组管理、插件中心、代理池、地址生成器、共享货源、AI 生图、Vinted 监控、应用设置”。
-设置内含“外观、工作区、CloakBrowser、关于”，具体职责见[页面交互](../../docs/11-demo-pages.md)。
-分组和外观/工作区偏好沿用 localStorage；窗口与插件状态通过 Rust 命令读取。
-浏览器预览和 Tauri WebView 各自按来源存储，不自动同步。
-窗口创建即创建磁盘绑定 Profile；详情不自动启动，打开和停止是单独操作。
-插件中心在桌面端安装和托管插件进程；窗口可选择直连、手动代理或代理插件。
-发布构建默认不带插件，插件以加密的 `.nexuspkg` 从用户填写的商店地址安装，
-见[插件商店与在线更新](../../docs/25-plugin-market.md)。
-授权密钥以明文存储在未加密 SQLite 数据库，不能描述为系统级安全存储。
+四个主页面为窗口管理、分组管理、插件中心和应用设置。
+插件二级目录根据宿主目录动态生成；设置包含浏览器接入、内置内核、激活码和应用代理。
 
-## 从仓库根目录运行
+窗口页使用三个提供方 Tabs，在现有表格上管理内置浏览器、AdsPower 与比特浏览器。
+新建时选择当前接入，已有外部环境可从官方列表接入；创建后不能原地更换绑定。
+全局代理占用、账号关系、短信等待与 SIM8 到期提醒覆盖全部接入。
+详情不启动浏览器；打开、停止、移出 Nexus 与删除环境是独立操作。
 
-工具链基线为 Node.js 24.18.0、pnpm 11.17.0、Rust 1.93.0。
-浏览器预览需要 Node.js 与 pnpm；Tauri 开发另需 Rust 和平台编译前置条件。
+Rust 是 SQLite 的唯一所有者，窗口与连接字段明文保存，不写 Keychain。
+外观与工作区偏好保留在 localStorage，浏览器预览和 Tauri WebView 按来源分别保存。
+网页预览不可执行原生窗口命令，不返回模拟成功结果。
 
-```sh
-rtk proxy pnpm install --frozen-lockfile
-rtk proxy pnpm run dev
-```
+## 结构
 
-默认预览地址为 `http://localhost:1420`，具体以终端输出为准。
-桌面壳使用 `rtk proxy pnpm run desktop:dev`，与 Vite 入口按需要分别启动。
+- `src/lib/platform`：严格校验新窗口、连接、操作恢复与迁移命令。
+- `src/features/spaces`：窗口表格、Tabs、编辑、接入已有环境与批量创建。
+- `src-tauri/src/core/window_service.rs`：窗口编排、锁、代理、操作意图与恢复。
+- `src-tauri/src/core/browser`：提供方 trait、三个适配器、连接与观察存储。
+- `src-tauri/src/core/window_store.rs`：严格 schema 2 窗口和不可变绑定。
+- `src-tauri/src/core/transfer_service.rs`：内置窗口 manifest 3 加密迁移和同步。
 
-## 工程边界
+旧 `profile_*` IPC、`NativeProfile` DTO、运行时 schema 1 与旧快照导入已移除。
+已有 SQLite 只在启动时执行一次事务升级，正常读写不包含兼容分支。
+插件仍使用 Nexus UUID；厂商 ID 不替代业务关联 ID。
 
-- `src` 承载前端页面、演示状态、存储适配与主题组件。
-- `src-tauri` 包含 Profile 记录与调度、SQLite 授权和插件宿主。
-- 工作区 contracts 与 plugin-sdk 保留公开契约，插件宿主仅接入部分能力。
-- browser-runtime 包含健康协议与真实 CloakBrowser 子进程适配器。
+## 开发与检查
 
-集中处理 localStorage、结构校验和存储错误，组件不散落平台细节。
-使用语义 token；主题值集中在 `src/App.css`，页面不直接写颜色。
-左侧提供 Nexus 标识、工作区与紧凑导航，顶栏展示面包屑。
-窗口页使用 Table、搜索及创建/编辑/详情 Dialog；原生分组尚未接入。
-设置不挂载 ThemePreview，插件无彩色装饰，去掉大标题、插画和营销留白。
-保持轻分隔、稳定对齐与适度圆角，避免古典后台厚重装饰。
-
-## 检查与后续
-
-从根目录使用 `rtk proxy pnpm run check` 检查工程。
-独立协议检查为 `rtk proxy pnpm run runtime:check`，桌面构建为 `rtk proxy pnpm run desktop:build`。
-入口存在不代表检查通过，实际结果由主线填入[质量矩阵](../../docs/09-quality-and-testing.md)。
-未签名本机构件只作为开发演示，不证明 Windows 安装或正式分发可用。
-原生 Profile 用法见[试用文档](../../docs/13-native-profiles.md)，
-授权 SQLite 与发行适配边界见[系统架构](../../docs/02-architecture.md)。
-完整文档入口见[文档索引](../../docs/README.md)与[开发规范](../../docs/03-development-standards.md)。
+从仓库根目录运行 `rtk proxy pnpm run dev` 预览前端。
+开发工具链版本和桌面前置条件见[开发规范](../../docs/03-development-standards.md)。
+当前不跑本地构建、打包或 Rust 编译/测试/Clippy；直接工具检查和未验证项见
+[质量记录](../../docs/09-quality-and-testing.md)。不要以格式检查代替 Rust 编译或厂商 API 实测。
+模块入口见[文档索引](../../docs/README.md)。

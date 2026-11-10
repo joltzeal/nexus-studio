@@ -1,3 +1,5 @@
+import type { WindowDetachInput, WindowDetachResult } from './lifecycle.js'
+
 export interface CapabilityDescriptor {
   readonly id: string
   readonly name: string
@@ -43,8 +45,12 @@ export type MonitorCollector = CapabilityDescriptor
  * Platform account pool: credential records plus the binding between an account
  * and a browser window. Host-private transfer methods can include credentials
  * inside an encrypted window archive; business DTOs remain owned by the plugin.
+ * Every account pool advertises `window.detach` for host-owned window deletion.
  */
-export type AccountPool = CapabilityDescriptor
+export interface AccountPool extends CapabilityDescriptor {
+  /** Idempotently clear only the binding; keep accounts, phone and proxy data. */
+  detachWindow(input: WindowDetachInput): Promise<WindowDetachResult>
+}
 export type WindowSync = CapabilityDescriptor
 
 export interface PluginCapabilityContracts {

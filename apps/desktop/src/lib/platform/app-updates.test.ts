@@ -1,8 +1,9 @@
+import { browserWindow } from './browser-test-support'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { invoke, isTauri, Resource } from '@tauri-apps/api/core'
 import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
-import { listNativeProfiles } from './native-profiles'
+import { listBrowserWindows } from './windows'
 import {
   checkAppUpdate,
   downloadAppUpdate,
@@ -21,13 +22,13 @@ vi.mock('@tauri-apps/plugin-updater', async (importOriginal) => ({
   check: () => Promise.resolve(null),
 }))
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: vi.fn() }))
-vi.mock('./native-profiles', () => ({ listNativeProfiles: vi.fn() }))
+vi.mock('./windows', () => ({ listBrowserWindows: vi.fn() }))
 
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(isTauri).mockReturnValue(true)
   vi.mocked(relaunch).mockResolvedValue(undefined)
-  vi.mocked(listNativeProfiles).mockResolvedValue([])
+  vi.mocked(listBrowserWindows).mockResolvedValue([])
   vi.mocked(invoke).mockResolvedValue(73)
   vi.spyOn(Resource.prototype, 'close').mockResolvedValue(undefined)
   vi.stubEnv('PROD', true)
@@ -126,16 +127,14 @@ it('installs an update and relaunches when every window is stopped', async () =>
 })
 
 it('downloads in the background while windows are running without installing or restarting', async () => {
-  vi.mocked(listNativeProfiles).mockResolvedValue([{ running: true }] as Awaited<
-    ReturnType<typeof listNativeProfiles>
-  >)
+  vi.mocked(listBrowserWindows).mockResolvedValue([browserWindow({ state: 'running' })])
   const download = vi.fn().mockResolvedValue(undefined)
   const install = vi.fn()
 
   await downloadAppUpdate({ download, install } as unknown as AvailableUpdate, () => {})
 
   expect(download).toHaveBeenCalledOnce()
-  expect(listNativeProfiles).not.toHaveBeenCalled()
+  expect(listBrowserWindows).not.toHaveBeenCalled()
   expect(install).not.toHaveBeenCalled()
   expect(relaunch).not.toHaveBeenCalled()
 })
@@ -214,7 +213,7 @@ it('waits for native admission and keeps its guard through installation and rela
   await installing
   // Relaunch can resolve before process exit. Only that exit releases the guard.
   expect(Resource.prototype.close).not.toHaveBeenCalled()
-  expect(listNativeProfiles).not.toHaveBeenCalled()
+  expect(listBrowserWindows).not.toHaveBeenCalled()
 })
 
 it.each(['disk write failed', 'signature verification failed'])(

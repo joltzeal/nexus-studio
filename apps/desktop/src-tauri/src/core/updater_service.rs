@@ -1,6 +1,6 @@
 use super::network_proxy::{NetworkProxy, NetworkProxyStore};
-use super::profile_service::AppOperationGuard;
 use super::transfer_service::TransferService;
+use super::window_service::AppOperationGuard;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;

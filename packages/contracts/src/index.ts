@@ -1,3 +1,4 @@
+export * from './browser.js'
 export {
   AccentColorSchema,
   DEFAULT_PREFERENCES,

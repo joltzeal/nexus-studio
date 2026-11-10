@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import type {
+  BrowserConnection,
+  CreateBrowserWindowInput,
+  ProxyMode,
+  UpdateBrowserWindowInput,
+} from '@nexus/contracts/browser'
 import { Dices, Loader2, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -26,7 +32,6 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toast'
-import { parseWindowConfig, type WindowConfig } from '@/demo/model'
 import { getConfig } from '@/features/proxy/api'
 import { ProxyCheckSummary } from '@/features/proxy/proxy-check-summary'
 import { ProxyPicker } from '@/features/proxy/proxy-picker'
@@ -35,24 +40,23 @@ import type { WindowGroup } from '@/lib/platform/native-groups'
 import type { LicenseStatus } from '@/lib/platform/native-license'
 import { listProxyProviders, type PluginView } from '@/lib/platform/native-plugins'
 import {
-  nativeProfilesAvailable,
-  type NativeProfile,
+  browserWindowsAvailable,
+  type BrowserWindow,
   type WindowSettings,
-} from '@/lib/platform/native-profiles'
+} from '@/lib/platform/windows'
 import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
-import { configOf } from './window-config'
+import { configOf, parseWindowConfig, type WindowConfig } from './window-config'
 import { checkWindowProxy } from './window-proxy'
 import { MAX_BATCH_WINDOWS } from './window-batch'
 import { WindowKernelField } from './window-kernel-field'
 
+export type WindowEditorInput = Omit<UpdateBrowserWindowInput, 'id'>
+export type CreateWindowEditorInput = Omit<
+  CreateBrowserWindowInput,
+  'operationId' | 'connectionId'
+>
 export type SaveWindow = (
-  name: string,
-  proxy: string | null,
-  proxyPlugin: string | null,
-  proxyEndpoint: number | null,
-  settings: WindowSettings,
-  groupId?: string | null,
-  kernelVersion?: string | null,
+  input: WindowEditorInput | CreateWindowEditorInput,
 ) => Promise<void>
 
 function message(error: unknown): string {
@@ -65,6 +69,7 @@ function message(error: unknown): string {
 
 export function WindowEditor({
   window,
+  connection,
   groups,
   takenNames,
   licenseStatus,
@@ -72,7 +77,8 @@ export function WindowEditor({
   onSave,
   onCancel,
 }: {
-  window: NativeProfile | null
+  window: BrowserWindow | null
+  connection: BrowserConnection
   groups: WindowGroup[]
   takenNames: string[]
   licenseStatus: LicenseStatus | null
@@ -85,17 +91,31 @@ export function WindowEditor({
   onSave: SaveWindow
   onCancel: () => void
 }) {
+  const builtin = connection.providerId === 'cloakbrowser'
+  const nameLimit = builtin ? 40 : 100
+  const caps = connection.capabilities
+  const remoteReadonly = window !== null && (!caps.update || window.state !== 'stopped')
+  const needsLicense = builtin && window === null
   const [name, setName] = useState(window?.name ?? '')
   const [platform, setPlatform] = useState<WindowSettings['platform']>(
     window?.settings.platform ?? 'Vinted',
   )
   const [note, setNote] = useState(window?.settings.note ?? '')
   const [groupId, setGroupId] = useState(window?.groupId ?? 'ungrouped')
-  const [kernelVersion, setKernelVersion] = useState<string | null>(null)
-  const [config, setConfig] = useState<WindowConfig>(() => configOf(window))
-  const [proxySource, setProxySource] = useState<'direct' | 'manual' | 'plugin'>(
-    window?.proxyPlugin ? 'plugin' : window?.proxy ? 'manual' : 'direct',
+  const [kernelVersion, setKernelVersion] = useState<string | null>(
+    window?.kernelVersion ?? null,
   )
+  const [config, setConfig] = useState<WindowConfig>(() => {
+    const value = configOf(window)
+    return window
+      ? value
+      : {
+          ...value,
+          geoip: builtin && caps.geoip,
+          fingerprintSeed: caps.fingerprintSeed ? value.fingerprintSeed : null,
+        }
+  })
+  const [proxySource, setProxySource] = useState<ProxyMode>(window?.proxyMode ?? 'direct')
   const [proxyPlugin, setProxyPlugin] = useState<string | null>(
     window?.proxyPlugin ?? null,
   )
@@ -108,10 +128,14 @@ export function WindowEditor({
   const [checkNote, setCheckNote] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const submitting = useRef(false)
+  const generated = useRef<{ name: string | null; seed: number | null }>({
+    name: null,
+    seed: null,
+  })
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!nativeProfilesAvailable()) return
+    if (!browserWindowsAvailable()) return
     let active = true
     void listProxyProviders().then(
       (list) => {
@@ -156,8 +180,11 @@ export function WindowEditor({
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (submitting.current) return
-    if (Array.from(name.trim()).length > 40 || Array.from(note.trim()).length > 120) {
-      setError('窗口名称最多 40 个字符，备注最多 120 个字符。')
+    if (
+      (!remoteReadonly && Array.from(name.trim()).length > nameLimit) ||
+      Array.from(note.trim()).length > 120
+    ) {
+      setError(`窗口名称最多 ${nameLimit} 个字符，备注最多 120 个字符。`)
       return
     }
     if (
@@ -169,26 +196,51 @@ export function WindowEditor({
       setError(`每批可创建 1–${MAX_BATCH_WINDOWS} 个窗口。`)
       return
     }
-    if (!window && !licenseStatus?.configured) {
+    if (needsLicense && !licenseStatus?.configured) {
       setError('请先在「应用设置 → 激活码」中保存激活码。')
+      return
+    }
+    if (!window && !caps.create) {
+      setError('当前接入不支持创建窗口。')
       return
     }
     submitting.current = true
     setPending(true)
     setError(null)
     try {
+      if (remoteReadonly) {
+        await onSave({
+          name: window.name,
+          proxyMode: window.proxyMode,
+          proxy: window.proxy,
+          proxyPlugin: window.proxyPlugin,
+          proxyEndpoint: window.proxyEndpoint,
+          settings: { ...window.settings, platform, note: note.trim() },
+          groupId: groupId === 'ungrouped' ? null : groupId,
+        })
+        return
+      }
+      if (
+        (proxySource === 'manual' && !caps.manualProxy) ||
+        (proxySource === 'plugin' && !caps.proxyPlugin)
+      )
+        throw new Error('当前接入不支持所选代理来源。')
       const checked = parseWindowConfig(config)
       const settings: WindowSettings = {
         platform,
         note: note.trim(),
-        geoip: checked.geoip,
-        timezone: checked.timezone,
-        locale: checked.locale,
+        geoip:
+          proxySource === 'provider' && window
+            ? window.settings.geoip
+            : caps.geoip && checked.geoip,
+        timezone:
+          proxySource === 'provider' && window
+            ? window.settings.timezone
+            : checked.timezone,
+        locale:
+          proxySource === 'provider' && window ? window.settings.locale : checked.locale,
         viewport: checked.viewport,
-        fingerprintSeed: batch
-          ? null
-          : (checked.fingerprintSeed ??
-            (window === null ? randomFingerprintSeed() : null)),
+        fingerprintSeed: !caps.fingerprintSeed || batch ? null : checked.fingerprintSeed,
         startUrl: checked.startUrl,
       }
       if (proxySource === 'plugin' && proxyPlugin === null) {
@@ -219,22 +271,37 @@ export function WindowEditor({
       }
       setPending(true)
       setError(null)
-      await onSave(
-        // An unnamed window still needs a label: one English word will do.
-        batch
+      // Freeze generated defaults before dispatch so a retry keeps the same intent.
+      if (
+        !batch &&
+        !window &&
+        caps.fingerprintSeed &&
+        settings.fingerprintSeed === null
+      ) {
+        settings.fingerprintSeed = generated.current.seed ??= randomFingerprintSeed()
+        setConfig((current) => ({
+          ...current,
+          fingerprintSeed: settings.fingerprintSeed,
+        }))
+      }
+      const submittedName =
+        batch || name.trim() !== ''
           ? name.trim()
-          : name.trim() === ''
-            ? randomWindowName(takenNames)
-            : name.trim(),
-        proxySource === 'manual' && checked.proxy.protocol !== 'direct'
-          ? checked.proxy.server
-          : null,
-        proxySource === 'plugin' ? proxyPlugin : null,
-        proxySource === 'plugin' ? selectedEndpoint : null,
+          : (generated.current.name ??= randomWindowName(takenNames))
+      if (!batch && name.trim() === '') setName(submittedName)
+      await onSave({
+        name: submittedName,
+        proxyMode: proxySource,
+        proxy:
+          proxySource === 'manual' && checked.proxy.protocol !== 'direct'
+            ? checked.proxy.server
+            : null,
+        proxyPlugin: proxySource === 'plugin' ? proxyPlugin : null,
+        proxyEndpoint: proxySource === 'plugin' ? selectedEndpoint : null,
         settings,
-        groupId === 'ungrouped' ? null : groupId,
-        ...(!window && kernelVersion !== null ? [kernelVersion] : []),
-      )
+        groupId: groupId === 'ungrouped' ? null : groupId,
+        ...(window === null ? { kernelVersion } : {}),
+      })
     } catch (cause) {
       setError(message(cause))
     } finally {
@@ -261,11 +328,11 @@ export function WindowEditor({
         <DialogDescription className={window ? 'sr-only' : undefined}>
           {batch
             ? batch.fromAccounts
-              ? `为 ${batch.count} 个账号各创建一个窗口，共用以下配置，每个窗口使用独立随机种子。`
-              : '统一设置代理和浏览器配置，每个窗口使用独立随机种子。'
+              ? `为 ${batch.count} 个账号各创建一个窗口，共用以下配置，每个窗口保持独立浏览器环境。`
+              : '统一设置代理和浏览器配置，每个窗口保持独立浏览器环境。'
             : window
               ? `编辑窗口「${window.name}」的设置。`
-              : '创建独立浏览器环境。可先在设置的「浏览器内核」中下载所需内核。'}
+              : `通过「${connection.name}」创建独立浏览器环境。`}
         </DialogDescription>
       </DialogHeader>
       <form
@@ -300,8 +367,8 @@ export function WindowEditor({
             <Input
               id="window-name"
               autoFocus={!batch?.onCountChange}
-              maxLength={batch ? 36 : 40}
-              disabled={pending}
+              maxLength={batch ? 36 : nameLimit}
+              disabled={pending || remoteReadonly}
               placeholder={
                 batch
                   ? batch.fromAccounts
@@ -314,14 +381,14 @@ export function WindowEditor({
             />
           </Field>
           {batch?.fields ? <fieldset disabled={pending}>{batch.fields}</fieldset> : null}
-          {!window && !licenseStatus?.configured ? (
+          {needsLicense && !licenseStatus?.configured ? (
             <FieldError role="alert">
               {licenseStatus
                 ? '请先在「应用设置 → 激活码」中保存激活码。'
                 : '尚未确认激活码状态，请刷新窗口列表后重试。'}
             </FieldError>
           ) : null}
-          {!window ? (
+          {!window && builtin && caps.kernelSelection ? (
             <WindowKernelField
               value={kernelVersion}
               disabled={pending}
@@ -381,23 +448,49 @@ export function WindowEditor({
               </SelectContent>
             </Select>
           </Field>
+          <p className="text-xs text-muted-foreground">
+            浏览器接入：{connection.name}（创建后固定）
+          </p>
+          {remoteReadonly ? (
+            <p className="text-xs text-muted-foreground">
+              {window?.state === 'stopped'
+                ? '当前接入未验证安全的配置修改'
+                : '窗口尚未确认已停止'}
+              ，仅可修改 Nexus 平台、备注和分组。其他设置请在官方浏览器中修改。
+            </p>
+          ) : null}
           <h3>连接与地域</h3>
           <div className="window-form-grid">
             <Field>
               <FieldLabel htmlFor="window-proxy-source">代理来源</FieldLabel>
               <Select
                 value={proxySource}
-                disabled={pending}
+                disabled={pending || remoteReadonly}
                 onValueChange={(value) => {
-                  if (value !== 'direct' && value !== 'manual' && value !== 'plugin')
+                  if (
+                    value !== 'direct' &&
+                    value !== 'manual' &&
+                    value !== 'plugin' &&
+                    value !== 'provider'
+                  )
                     return
+                  if (value === 'provider' && (builtin || !window)) return
                   setProxySource(value)
                   setCheckResult(null)
                   setCheckNote(null)
-                  if (value === 'direct') {
+                  if (value === 'direct' || value === 'provider') {
                     setProxyPlugin(null)
                     setEndpointId(null)
-                    patch({ proxy: { protocol: 'direct', server: '' } })
+                    patch({
+                      proxy: { protocol: 'direct', server: '' },
+                      ...(value === 'provider' && window
+                        ? {
+                            geoip: window.settings.geoip,
+                            timezone: window.settings.timezone,
+                            locale: window.settings.locale,
+                          }
+                        : {}),
+                    })
                   } else if (value === 'manual') {
                     setProxyPlugin(null)
                     setEndpointId(null)
@@ -414,9 +507,20 @@ export function WindowEditor({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
+                    {!builtin && window ? (
+                      <SelectItem value="provider">沿用浏览器设置</SelectItem>
+                    ) : null}
                     <SelectItem value="direct">直连</SelectItem>
-                    <SelectItem value="manual">手动填写</SelectItem>
-                    <SelectItem value="plugin">代理池</SelectItem>
+                    {caps.manualProxy || proxySource === 'manual' ? (
+                      <SelectItem value="manual" disabled={!caps.manualProxy}>
+                        手动填写{!caps.manualProxy ? '（当前不可修改）' : ''}
+                      </SelectItem>
+                    ) : null}
+                    {caps.proxyPlugin || proxySource === 'plugin' ? (
+                      <SelectItem value="plugin" disabled={!caps.proxyPlugin}>
+                        代理池{!caps.proxyPlugin ? '（当前不可修改）' : ''}
+                      </SelectItem>
+                    ) : null}
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -426,10 +530,12 @@ export function WindowEditor({
                 <Field>
                   <FieldLabel htmlFor="window-protocol">协议</FieldLabel>
                   <Select
-                    value={config.proxy.protocol === 'socks5' ? 'socks5' : 'http'}
-                    disabled={pending}
+                    value={
+                      config.proxy.protocol === 'direct' ? 'http' : config.proxy.protocol
+                    }
+                    disabled={pending || remoteReadonly}
                     onValueChange={(value) => {
-                      if (value === 'http' || value === 'socks5') {
+                      if (value === 'http' || value === 'https' || value === 'socks5') {
                         patch({ proxy: { protocol: value, server: config.proxy.server } })
                         setCheckResult(null)
                       }
@@ -441,6 +547,7 @@ export function WindowEditor({
                     <SelectContent>
                       <SelectGroup>
                         <SelectItem value="http">HTTP</SelectItem>
+                        <SelectItem value="https">HTTPS</SelectItem>
                         <SelectItem value="socks5">SOCKS5</SelectItem>
                       </SelectGroup>
                     </SelectContent>
@@ -451,7 +558,7 @@ export function WindowEditor({
                   <Input
                     id="window-proxy"
                     maxLength={200}
-                    disabled={pending}
+                    disabled={pending || remoteReadonly}
                     placeholder={`${config.proxy.protocol}://host:port`}
                     value={config.proxy.server}
                     onChange={(event) => {
@@ -472,7 +579,7 @@ export function WindowEditor({
                 ) : (
                   <Select
                     value={proxyPlugin ?? ''}
-                    disabled={pending}
+                    disabled={pending || remoteReadonly}
                     onValueChange={(value) => {
                       setProxyPlugin(value)
                       setEndpointId(null)
@@ -505,7 +612,7 @@ export function WindowEditor({
               endpointId={endpointId}
               currentWindowId={window?.id ?? null}
               batch={batch !== undefined}
-              disabled={pending}
+              disabled={pending || remoteReadonly}
               onChange={(next) => {
                 setEndpointId(next)
                 setCheckResult(null)
@@ -515,7 +622,7 @@ export function WindowEditor({
             />
           ) : null}
 
-          {proxySource !== 'direct' ? (
+          {(proxySource === 'manual' || proxySource === 'plugin') && !remoteReadonly ? (
             <div className="proxy-check-block">
               <div className="proxy-check-actions">
                 <Button
@@ -549,17 +656,24 @@ export function WindowEditor({
             </div>
           ) : null}
 
-          <Field className="window-switch-field" orientation="horizontal">
-            <FieldLabel htmlFor="window-geoip">
-              通过代理 IP 匹配时区、语言和 WebRTC IP
-            </FieldLabel>
-            <Switch
-              id="window-geoip"
-              disabled={pending}
-              checked={config.geoip}
-              onCheckedChange={(checked) => patch({ geoip: checked })}
-            />
-          </Field>
+          {caps.geoip && proxySource !== 'provider' ? (
+            <Field className="window-switch-field" orientation="horizontal">
+              <FieldLabel htmlFor="window-geoip">
+                通过代理 IP 匹配时区、语言和 WebRTC IP
+              </FieldLabel>
+              <Switch
+                id="window-geoip"
+                disabled={pending || remoteReadonly}
+                checked={config.geoip}
+                onCheckedChange={(checked) => patch({ geoip: checked })}
+              />
+            </Field>
+          ) : null}
+          {proxySource === 'provider' ? (
+            <p className="text-xs text-muted-foreground">
+              沿用官方浏览器的代理、时区和语言，不覆盖已有配置。
+            </p>
+          ) : null}
           {proxySource === 'direct' ? (
             <p className="text-xs text-muted-foreground">
               直连时保留自动匹配偏好但不生效；配置代理后才按代理出口匹配。
@@ -571,7 +685,9 @@ export function WindowEditor({
               <Input
                 id="window-timezone"
                 maxLength={64}
-                disabled={pending}
+                disabled={
+                  pending || remoteReadonly || proxySource === 'provider' || !caps.geoip
+                }
                 placeholder="默认 / America/New_York"
                 value={config.timezone}
                 onChange={(event) => patch({ timezone: event.target.value })}
@@ -582,7 +698,9 @@ export function WindowEditor({
               <Input
                 id="window-locale"
                 maxLength={35}
-                disabled={pending}
+                disabled={
+                  pending || remoteReadonly || proxySource === 'provider' || !caps.geoip
+                }
                 placeholder="默认 / en-US"
                 value={config.locale}
                 onChange={(event) => patch({ locale: event.target.value })}
@@ -595,7 +713,7 @@ export function WindowEditor({
               <FieldLabel htmlFor="window-viewport">窗口尺寸</FieldLabel>
               <Select
                 value={config.viewport}
-                disabled={pending}
+                disabled={pending || remoteReadonly}
                 onValueChange={(value) => {
                   if (
                     value === 'default' ||
@@ -618,7 +736,7 @@ export function WindowEditor({
                 </SelectContent>
               </Select>
             </Field>
-            {batch ? (
+            {!caps.fingerprintSeed ? null : batch ? (
               <Field>
                 <FieldLabel htmlFor="window-seed">指纹种子</FieldLabel>
                 <Input id="window-seed" value="每个窗口独立随机生成" readOnly />
@@ -660,7 +778,7 @@ export function WindowEditor({
               id="window-url"
               type="url"
               maxLength={2048}
-              disabled={pending}
+              disabled={pending || remoteReadonly}
               placeholder="https://example.com"
               value={config.startUrl}
               onChange={(event) => patch({ startUrl: event.target.value })}
@@ -676,7 +794,11 @@ export function WindowEditor({
         <Button
           type="submit"
           form="window-form"
-          disabled={pending || (!window && !licenseStatus?.configured)}
+          disabled={
+            pending ||
+            (needsLicense && !licenseStatus?.configured) ||
+            (!window && !caps.create)
+          }
         >
           {pending
             ? batch

@@ -1,20 +1,16 @@
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { promisify } from 'node:util'
 import { launchPersistentContext } from 'cloakbrowser'
 import type { BrowserContext } from 'playwright-core'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { installedRuntimeWindow } from '../fixtures/runtime-window.js'
 import { restorePortableState } from './portable-state.js'
-import {
-  parseBrowserVersion,
-  snapshotProfile,
-  type NativeProfile,
-} from './profile-runtime.js'
+import { snapshotProfile } from './profile-runtime.js'
 
 const binary = process.env.NEXUS_TEST_BROWSER_BINARY
 const cache = process.env.NEXUS_TEST_BROWSER_CACHE
@@ -51,13 +47,13 @@ it.skipIf(!enabled)(
     const originalBinary = process.env.CLOAKBROWSER_BINARY_PATH
     try {
       process.env.CLOAKBROWSER_BINARY_PATH = binary
-      const version = parseBrowserVersion(
-        (await promisify(execFile)(binary!, ['--version'])).stdout,
-      )
+      const record = await installedRuntimeWindow(binary!, cache!)
+      record.settings.startUrl = `${origin}/after-restore`
       context = await launchPersistentContext({
         userDataDir: source,
         headless: true,
-        browserVersion: version,
+        browserVersion: record.kernel_version,
+        args: [`--fingerprint=${record.settings.fingerprintSeed}`],
       })
       await context.addCookies([
         { name: 'stale', value: 'must-not-send', domain: '127.0.0.1', path: '/' },
@@ -93,7 +89,7 @@ it.skipIf(!enabled)(
       await writeFile(
         wrapper,
         `import * as sdk from ${JSON.stringify(sdk)};
-         export const {ensureBinary,validateLicense,buildLaunchOptions}=sdk;
+         export const {ensureBinary,validateLicense}=sdk;
          export async function launchPersistentContext(options) {
            const context=await sdk.launchPersistentContext(options);
            // Exercise a restored tab request before runtime gets the context.
@@ -115,8 +111,10 @@ it.skipIf(!enabled)(
       )
       child = spawn(process.execPath, [
         '--import',
+        fileURLToPath(new URL('../fixtures/source-loader.mjs', import.meta.url)),
+        '--import',
         preload,
-        fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url)),
+        fileURLToPath(new URL('./profile-runner.ts', import.meta.url)),
         'launch',
         target,
       ])
@@ -130,16 +128,7 @@ it.skipIf(!enabled)(
         child!.once('close', resolve)
       })
       timer = setTimeout(() => child!.kill(), 20_000)
-      child.stdin!.write(
-        `${JSON.stringify({
-          schema_version: 1,
-          id: 'synthetic',
-          binary_path: binary!,
-          binding: { profile_id: 'synthetic', channel_version: version },
-          proxy: null,
-          settings: { geoip: true, startUrl: `${origin}/after-restore` },
-        })}\n`,
-      )
+      child.stdin!.write(`${JSON.stringify(record)}\n`)
       await expect
         .poll(() => requests, { timeout: 10_000 })
         .toContainEqual({ path: '/after-restore', cookie: 'session=restored' })
@@ -172,27 +161,10 @@ it.skipIf(!enabled).each(['empty', 'copied'])(
     const directory = await mkdtemp(join(tmpdir(), 'nexus-portable-browser-'))
     const source = join(directory, 'source', 'user-data')
     const target = join(directory, 'target', 'user-data')
-    const version = parseBrowserVersion(
-      (await promisify(execFile)(binary!, ['--version'])).stdout,
-    )
-    const record: NativeProfile = {
-      schema_version: 1,
-      id: 'source',
-      binary_path: binary!,
-      binding: { profile_id: 'source', channel_version: version },
-      proxy: null,
-      proxy_plugin: 'unused-offline-plugin',
-      settings: {
-        platform: '',
-        note: '',
-        geoip: true,
-        timezone: '',
-        locale: '',
-        viewport: 'default',
-        fingerprintSeed: null,
-        startUrl: 'https://must-not-be-contacted.example',
-      },
-    }
+    const record = await installedRuntimeWindow(binary!, cache!)
+    record.proxy_mode = 'plugin'
+    record.proxy_plugin = 'unused-offline-plugin'
+    record.settings.startUrl = 'https://must-not-be-contacted.example'
     const originalBinary = process.env.CLOAKBROWSER_BINARY_PATH
     process.env.CLOAKBROWSER_BINARY_PATH = binary
     let context: BrowserContext | undefined
@@ -210,7 +182,8 @@ it.skipIf(!enabled).each(['empty', 'copied'])(
         userDataDir: source,
         headless: true,
         geoip: false,
-        browserVersion: version,
+        browserVersion: record.kernel_version,
+        args: [`--fingerprint=${record.settings.fingerprintSeed}`],
         contextOptions: { serviceWorkers: 'block' },
       })
       await context.route('**/*', (route) =>
@@ -267,11 +240,21 @@ it.skipIf(!enabled).each(['empty', 'copied'])(
       await context.close()
       context = undefined
 
-      const runner = fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url))
-      const child = spawn(process.execPath, [runner, 'snapshot', source], {
-        env: process.env,
-        stdio: 'pipe',
-      })
+      const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
+      const child = spawn(
+        process.execPath,
+        [
+          '--import',
+          fileURLToPath(new URL('../fixtures/source-loader.mjs', import.meta.url)),
+          runner,
+          'snapshot',
+          source,
+        ],
+        {
+          env: process.env,
+          stdio: 'pipe',
+        },
+      )
       let stdout = ''
       let stderr = ''
       child.stdout.on('data', (data: Buffer) => {
@@ -328,7 +311,8 @@ it.skipIf(!enabled).each(['empty', 'copied'])(
         userDataDir: target,
         headless: true,
         geoip: false,
-        browserVersion: version,
+        browserVersion: record.kernel_version,
+        args: [`--fingerprint=${record.settings.fingerprintSeed}`],
       })
       await context.addCookies([
         {

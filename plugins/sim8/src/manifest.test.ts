@@ -31,7 +31,7 @@ describe('sim8 manifest', () => {
   })
 
   it('lists every method exactly once', () => {
-    expect(SIM8_METHODS.length).toBe(21)
+    expect(SIM8_METHODS.length).toBe(24)
     expect(new Set(SIM8_METHODS).size).toBe(SIM8_METHODS.length)
     for (const method of SIM8_METHODS) expect(method.startsWith('sim8.')).toBe(true)
   })

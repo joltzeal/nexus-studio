@@ -1,4 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  listBrowserConnections,
+  BROWSER_PROVIDERS,
+  type BrowserConnection,
+} from '@/lib/platform/browser-connections'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Loader2 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -26,23 +38,26 @@ import { bindAccount, listAccounts } from '@/features/accounts/api'
 import { listGroups, type WindowGroup } from '@/lib/platform/native-groups'
 import { getLicenseStatus, type LicenseStatus } from '@/lib/platform/native-license'
 import {
-  createNativeProfile,
-  listNativeProfiles,
-  type NativeProfile,
-} from '@/lib/platform/native-profiles'
+  createBrowserWindow,
+  reconcileBrowserOperation,
+  listBrowserWindows,
+  type BrowserWindow,
+} from '@/lib/platform/windows'
 import { withDeadline } from './transfer-state'
 import { WindowBatchJob, type BatchAccount, type WindowBatchItem } from './window-batch'
 import { WindowEditor, type SaveWindow } from './window-editor'
 
 interface BatchContext {
-  profiles: NativeProfile[]
+  profiles: BrowserWindow[]
   groups: WindowGroup[]
-  license: LicenseStatus
+  license: LicenseStatus | null
+  connections: BrowserConnection[]
   boundAccountIds: Set<string>
 }
 
 interface BatchWindowDialogProps {
   accounts?: readonly BatchAccount[]
+  connection?: BrowserConnection
   onClose: () => void
   onSettled: (items: readonly WindowBatchItem[]) => void | Promise<void>
 }
@@ -67,11 +82,17 @@ async function accountBindings(
   return new Set(data.bindings.map((binding) => binding.accountId))
 }
 
+let lastConnectionId: string | null = null
+
 export function BatchWindowDialog({
   accounts,
+  connection,
   onClose,
   onSettled,
 }: BatchWindowDialogProps) {
+  const [connectionId, setConnectionId] = useState<string | null>(
+    connection?.id ?? lastConnectionId,
+  )
   const [context, setContext] = useState<BatchContext | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
@@ -85,7 +106,9 @@ export function BatchWindowDialog({
   const job = useRef<WindowBatchJob | null>(null)
   const running = useRef(false)
   const mounted = useRef(true)
+  const selectionVersion = useRef(0)
   const confirmedAccounts = useRef(new Set<string>())
+  const fixedConnectionId = connection?.id
 
   useEffect(() => {
     mounted.current = true
@@ -97,19 +120,37 @@ export function BatchWindowDialog({
 
   useEffect(() => {
     let active = true
+    selectionVersion.current += 1
     void withDeadline(
       Promise.all([
-        listNativeProfiles(),
+        listBrowserWindows(),
         listGroups(),
-        getLicenseStatus(),
+        getLicenseStatus().catch(() => null),
+        listBrowserConnections(),
         accountBindings(accounts),
       ]),
       10_000,
       '读取创建配置超时，请重试。',
     ).then(
-      ([profiles, groups, license, boundAccountIds]) => {
+      ([profiles, groups, license, connections, boundAccountIds]) => {
         if (active) {
-          setContext({ profiles, groups, license, boundAccountIds })
+          setContext({ profiles, groups, license, connections, boundAccountIds })
+          setConnectionId(
+            (current) =>
+              fixedConnectionId ??
+              (connections.some(
+                (entry) =>
+                  entry.id === current &&
+                  entry.enabled &&
+                  entry.scopeConfirmed &&
+                  entry.capabilities.create,
+              )
+                ? current
+                : (connections.find(
+                    (entry) =>
+                      entry.enabled && entry.scopeConfirmed && entry.capabilities.create,
+                  )?.id ?? null)),
+          )
           setLoadError(null)
         }
       },
@@ -119,8 +160,19 @@ export function BatchWindowDialog({
     )
     return () => {
       active = false
+      selectionVersion.current += 1
     }
-  }, [accounts, loadAttempt])
+  }, [accounts, loadAttempt, fixedConnectionId, connection?.revision])
+
+  const selectedConnection =
+    context?.connections.find(
+      (entry) =>
+        entry.id === connectionId &&
+        (!fixedConnectionId || entry.id === fixedConnectionId) &&
+        entry.enabled &&
+        entry.scopeConfirmed &&
+        entry.capabilities.create,
+    ) ?? null
 
   const alreadyBound =
     accounts?.filter((account) => context?.boundAccountIds.has(account.id)) ?? []
@@ -166,24 +218,50 @@ export function BatchWindowDialog({
     }
   }
 
-  const start: SaveWindow = async (
-    namePrefix,
-    proxy,
-    proxyPlugin,
-    proxyEndpoint,
-    settings,
-    groupId,
-    kernelVersion,
-  ) => {
-    if (running.current || job.current) return
+  const start: SaveWindow = async (input) => {
+    if (!('kernelVersion' in input)) throw new Error('创建请求缺少内核选择。')
+    const {
+      name: namePrefix,
+      proxyMode,
+      proxy,
+      proxyPlugin,
+      proxyEndpoint,
+      settings,
+      groupId,
+      kernelVersion,
+    } = input
+    if (!selectedConnection) throw new Error('请选择已启用且支持创建的浏览器接入。')
+    if (!mounted.current || running.current || job.current) return
+    const version = selectionVersion.current
     const confirmed = new Set(
       allowExisting ? alreadyBound.map((account) => account.id) : [],
     )
-    const [profiles, boundAccountIds] = await withDeadline(
-      Promise.all([listNativeProfiles(), accountBindings(accounts)]),
+    const [profiles, boundAccountIds, connections] = await withDeadline(
+      Promise.all([
+        listBrowserWindows(),
+        accountBindings(accounts),
+        listBrowserConnections(),
+      ]),
       10_000,
       '核对窗口和账号超时，请重试。',
     )
+    if (
+      !mounted.current ||
+      version !== selectionVersion.current ||
+      running.current ||
+      job.current
+    )
+      return
+    const currentConnection = connections.find(
+      (entry) =>
+        entry.id === selectedConnection.id &&
+        entry.enabled &&
+        entry.scopeConfirmed &&
+        entry.capabilities.create,
+    )
+    if (!currentConnection || currentConnection.revision !== selectedConnection.revision)
+      throw new Error('浏览器接入已变化，请关闭弹窗后重新选择。')
+    lastConnectionId = currentConnection.id
     const unconfirmed =
       accounts?.filter(
         (account) => boundAccountIds.has(account.id) && !confirmed.has(account.id),
@@ -197,18 +275,23 @@ export function BatchWindowDialog({
     const next = new WindowBatchJob(
       {
         count,
+        connection: currentConnection,
         namePrefix,
         ...(accounts ? { accounts } : {}),
-        proxy: { proxy, proxyPlugin, proxyEndpoint },
+        proxy: { proxyMode, proxy, proxyPlugin, proxyEndpoint },
         settings,
         groupId: groupId ?? null,
         kernelVersion: kernelVersion ?? null,
       },
       profiles,
       {
-        createProfile: createNativeProfile,
-        listProfiles: () =>
-          withDeadline(listNativeProfiles(), 10_000, '核对已创建窗口超时，请重试。'),
+        createWindow: createBrowserWindow,
+        reconcileOperation: (operationId) =>
+          withDeadline(
+            reconcileBrowserOperation(operationId),
+            30_000,
+            '核对操作超时，请重试。',
+          ),
         bindAccount,
       },
     )
@@ -274,7 +357,9 @@ export function BatchWindowDialog({
                         </span>
                       </TableCell>
                     ) : null}
-                    <TableCell className="font-mono tabular-nums">{item.seed}</TableCell>
+                    <TableCell className="font-mono tabular-nums">
+                      {item.seed ?? '由浏览器生成'}
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant={item.status === 'failed' ? 'destructive' : 'secondary'}
@@ -289,7 +374,7 @@ export function BatchWindowDialog({
                             : item.status === 'binding'
                               ? '正在关联'
                               : item.status === 'failed'
-                                ? item.profile
+                                ? item.window
                                   ? '待关联'
                                   : '待重试'
                                 : '待处理'}
@@ -350,8 +435,10 @@ export function BatchWindowDialog({
             )}
           </DialogFooter>
         </DialogContent>
-      ) : context ? (
+      ) : context && selectedConnection ? (
         <WindowEditor
+          key={selectedConnection.id}
+          connection={selectedConnection}
           window={null}
           groups={context.groups}
           takenNames={context.profiles.map((profile) => profile.name)}
@@ -360,39 +447,84 @@ export function BatchWindowDialog({
             count,
             ...(accounts ? {} : { onCountChange: setCount }),
             fromAccounts: !!accounts,
-            fields: accounts ? (
+            fields: (
               <FieldGroup>
-                <div
-                  className="flex max-h-24 flex-wrap gap-1 overflow-y-auto"
-                  aria-label="所选账号"
-                >
-                  {accounts.map((account) => (
-                    <Badge key={account.id} variant="secondary" className="max-w-full">
-                      <span className="truncate">{account.label}</span>
-                      {context.boundAccountIds.has(account.id) ? ' · 已有关联' : ''}
-                    </Badge>
-                  ))}
-                </div>
-                {alreadyBound.length ? (
-                  <Alert>
-                    <AlertDescription>
-                      <Field orientation="horizontal">
-                        <Checkbox
-                          id="batch-allow-existing"
-                          checked={allowExisting}
-                          onCheckedChange={(checked) =>
-                            setAllowExisting(checked === true)
-                          }
-                        />
-                        <FieldLabel htmlFor="batch-allow-existing">
-                          {alreadyBound.length} 个账号已关联窗口，仍为它们创建并关联新窗口
-                        </FieldLabel>
-                      </Field>
-                    </AlertDescription>
-                  </Alert>
+                {!connection ? (
+                  <Field>
+                    <FieldLabel>浏览器接入</FieldLabel>
+                    <Select
+                      value={connectionId ?? ''}
+                      onValueChange={(id) => {
+                        selectionVersion.current += 1
+                        setConnectionId(id)
+                        setAllowExisting(false)
+                      }}
+                    >
+                      <SelectTrigger aria-label="批量创建的浏览器接入">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {context.connections
+                          .filter(
+                            (entry) =>
+                              entry.enabled &&
+                              entry.scopeConfirmed &&
+                              entry.capabilities.create,
+                          )
+                          .map((entry) => (
+                            <SelectItem key={entry.id} value={entry.id}>
+                              {
+                                BROWSER_PROVIDERS.find(
+                                  (provider) => provider.id === entry.providerId,
+                                )?.name
+                              }{' '}
+                              · {entry.name}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                ) : null}
+                {accounts ? (
+                  <>
+                    <div
+                      className="flex max-h-24 flex-wrap gap-1 overflow-y-auto"
+                      aria-label="所选账号"
+                    >
+                      {accounts.map((account) => (
+                        <Badge
+                          key={account.id}
+                          variant="secondary"
+                          className="max-w-full"
+                        >
+                          <span className="truncate">{account.label}</span>
+                          {context.boundAccountIds.has(account.id) ? ' · 已有关联' : ''}
+                        </Badge>
+                      ))}
+                    </div>
+                    {alreadyBound.length ? (
+                      <Alert>
+                        <AlertDescription>
+                          <Field orientation="horizontal">
+                            <Checkbox
+                              id="batch-allow-existing"
+                              checked={allowExisting}
+                              onCheckedChange={(checked) =>
+                                setAllowExisting(checked === true)
+                              }
+                            />
+                            <FieldLabel htmlFor="batch-allow-existing">
+                              {alreadyBound.length}{' '}
+                              个账号已关联窗口，仍为它们创建并关联新窗口
+                            </FieldLabel>
+                          </Field>
+                        </AlertDescription>
+                      </Alert>
+                    ) : null}
+                  </>
                 ) : null}
               </FieldGroup>
-            ) : undefined,
+            ),
           }}
           onSave={start}
           onCancel={onClose}
@@ -402,14 +534,18 @@ export function BatchWindowDialog({
           <DialogHeader>
             <DialogTitle>批量创建窗口</DialogTitle>
             <DialogDescription>
-              {loadError ? '暂时无法读取创建配置。' : '正在读取窗口、分组和账号配置…'}
+              {loadError
+                ? '暂时无法读取创建配置。'
+                : context
+                  ? '没有可用的创建接入，请先在应用设置的「浏览器接入」中配置、确认并启用。'
+                  : '正在读取窗口、分组和账号配置…'}
             </DialogDescription>
           </DialogHeader>
           {loadError ? (
             <FieldError role="alert">{loadError}</FieldError>
-          ) : (
+          ) : !context ? (
             <Loader2 className="animate-spin" />
-          )}
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" onClick={onClose}>
               取消

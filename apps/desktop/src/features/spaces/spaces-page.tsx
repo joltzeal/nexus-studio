@@ -1,3 +1,14 @@
+import type { Dispatch, SetStateAction } from 'react'
+import {
+  BROWSER_PROVIDERS,
+  listBrowserConnections,
+  type BrowserConnection,
+  type BrowserProviderId,
+} from '@/lib/platform/browser-connections'
+import { BrowserConnectionsPage } from '@/features/settings/browser-connections-page'
+import { BrowserOperationRecovery } from './browser-operation-recovery'
+import type { CreateBrowserWindowInput } from '@nexus/contracts/browser'
+import { AttachWindowDialog } from './attach-window-dialog'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowUpRight,
@@ -94,18 +105,18 @@ import {
 } from '@/features/accounts/types'
 import { listGroups, type WindowGroup } from '@/lib/platform/native-groups'
 import {
-  createNativeProfile,
-  deleteNativeProfile,
-  listNativeProfiles,
-  nativeProfilesAvailable,
-  orderProfilesNewestFirst,
-  updateNativeProfile,
-  type NativeProfile,
-} from '@/lib/platform/native-profiles'
+  createBrowserWindow,
+  deleteBrowserWindow,
+  listBrowserWindows,
+  browserWindowsAvailable,
+  orderBrowserWindows,
+  updateBrowserWindow,
+  type BrowserWindow,
+} from '@/lib/platform/windows'
 import { getLicenseStatus, type LicenseStatus } from '@/lib/platform/native-license'
 import { WindowEditor } from './window-editor'
 import { BatchWindowDialog } from './batch-window-dialog'
-import { mergeBatchProfiles } from './window-batch'
+import { mergeBatchWindows } from './window-batch'
 import { formatAbsolute, formatRelative, majorVersion } from '@/lib/format-time'
 import { hasProxy } from './window-proxy'
 import { ProxyGateDialog } from './proxy-gate'
@@ -118,6 +129,7 @@ import { WindowNote } from './window-note'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { AccountSmsWaitButton } from './account-sms-wait-button'
 import { smsWaits } from '@/features/accounts/sms-wait-runtime'
+import { Sim8ExpiryNotice } from '@/features/sim8/expiry-notice'
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -128,17 +140,73 @@ function message(error: unknown): string {
 }
 
 export function SpacesPage() {
-  const native = nativeProfilesAvailable()
-  const [windows, setWindows] = useState<NativeProfile[]>([])
+  const [expiryRefreshKey, setExpiryRefreshKey] = useState(0)
+  const native = browserWindowsAvailable()
+  const [windows, setWindows] = useState<BrowserWindow[]>([])
+  const [connections, setConnections] = useState<BrowserConnection[]>([])
+  const [providerId, setProviderId] = useState<BrowserProviderId>('cloakbrowser')
+  const [attaching, setAttaching] = useState(false)
+  const [managingConnections, setManagingConnections] = useState(false)
+  const connection =
+    connections.find((entry) => entry.providerId === providerId && entry.enabled) ?? null
+  const connectionId = connection?.id ?? null
+  const createIntent = useRef<CreateBrowserWindowInput | null>(null)
+  const viewEpoch = useRef(0)
+  const selectionScope = useRef(connectionId)
+  const connectionSnapshot = useRef('')
+  const connectionRequest = useRef(0)
+  const windowReads = useRef({
+    request: 0,
+    revision: 0,
+    active: true,
+    latest: null as Promise<BrowserWindow[]> | null,
+  })
+  const applyWindows: Dispatch<SetStateAction<BrowserWindow[]>> = useCallback(
+    (update) => {
+      windowReads.current.revision += 1
+      setWindows(update)
+    },
+    [],
+  )
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
   const [groups, setGroups] = useState<WindowGroup[]>([])
-  const [groupFilter, setGroupFilter] = useState('all')
-  const [accountFilter, setAccountFilter] = useState('all')
-  const [query, setQuery] = useState('')
+  const [filters, setFilters] = useState<
+    Record<string, { group: string; account: string; query: string }>
+  >({})
+  const filterKey = connectionId ?? providerId
+  const currentFilters = filters[filterKey] ?? { group: 'all', account: 'all', query: '' }
+  const { group: groupFilter, account: accountFilter, query } = currentFilters
+  const setGroupFilter = (group: string) =>
+    setFilters((current) => ({
+      ...current,
+      [filterKey]: {
+        ...(current[filterKey] ?? { group: 'all', account: 'all', query: '' }),
+        group,
+      },
+    }))
+  const setAccountFilter = (account: string) =>
+    setFilters((current) => ({
+      ...current,
+      [filterKey]: {
+        ...(current[filterKey] ?? { group: 'all', account: 'all', query: '' }),
+        account,
+      },
+    }))
+  const setQuery = (query: string) =>
+    setFilters((current) => ({
+      ...current,
+      [filterKey]: {
+        ...(current[filterKey] ?? { group: 'all', account: 'all', query: '' }),
+        query,
+      },
+    }))
   const [editing, setEditing] = useState<string | 'new' | null>(null)
   const [batchCreating, setBatchCreating] = useState(false)
   const [viewing, setViewing] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [deleteEnvironment, setDeleteEnvironment] = useState(true)
+  const deletingRequest = useRef(false)
+  const [deletePending, setDeletePending] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -157,17 +225,77 @@ export function SpacesPage() {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
   const phoneUnlinkRequests = useRef(new Set<string>())
-  const [binding, setBinding] = useState<NativeProfile | null>(null)
+  const [binding, setBinding] = useState<BrowserWindow | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [conflict, setConflict] = useState<{
-    window: NativeProfile
+    window: BrowserWindow
     accountId: string
     duplicates: string[]
   } | null>(null)
   const [bindingError, setBindingError] = useState<string | null>(null)
   const [bindingPending, setBindingPending] = useState(false)
+  const bindingSession = useRef(0)
+  const bindingRequest = useRef<number | null>(null)
+  const dismissBinding = useCallback(() => {
+    bindingSession.current += 1
+    setBinding(null)
+    setConflict(null)
+    setBindingError(null)
+    setBindingPending(false)
+  }, [])
   const recovery = useTransferRecovery(native)
 
+  const load = useCallback((): Promise<BrowserWindow[]> => {
+    const state = windowReads.current
+    const request = ++state.request
+    let revision = state.revision
+    async function read(): Promise<BrowserWindow[]> {
+      while (state.active) {
+        const records = await withDeadline(
+          listBrowserWindows(),
+          10_000,
+          '读取窗口列表超时，请重试刷新。',
+        )
+        if (!state.active) return []
+        // Action confirmation must observe the same latest snapshot as the table.
+        if (request !== state.request) return state.latest ?? []
+        if (revision !== state.revision) {
+          revision = state.revision
+          continue
+        }
+        setWindows(records)
+        return records
+      }
+      return []
+    }
+    state.latest = read()
+    return state.latest
+  }, [])
+  const loadConnections = useCallback(async () => {
+    const request = ++connectionRequest.current
+    const items = await listBrowserConnections()
+    if (request === connectionRequest.current && windowReads.current.active) {
+      const snapshot = items
+        .filter((entry) => entry.enabled)
+        .map((entry) => `${entry.id}:${entry.revision}`)
+        .sort()
+        .join('|')
+      if (snapshot !== connectionSnapshot.current) {
+        connectionSnapshot.current = snapshot
+        viewEpoch.current += 1
+        selectionScope.current = null
+        setSelectedIds(new Set())
+        setEditing(null)
+        setBatchCreating(false)
+        setViewing(null)
+        setDeleting(null)
+        setAttaching(false)
+        dismissBinding()
+        setEditingAccount(null)
+      }
+      setConnections(items)
+    }
+  }, [dismissBinding])
   const {
     gate,
     operatingWindows,
@@ -177,34 +305,58 @@ export function SpacesPage() {
     stop,
     refreshGate,
     closeGate,
-  } = useWindowLaunch(setWindows, setError)
+  } = useWindowLaunch(load, setError, connectionId, connection?.revision ?? 0)
 
-  const load = useCallback(async () => {
-    const records = await withDeadline(
-      listNativeProfiles(),
-      10_000,
-      '读取窗口列表超时，请重试刷新。',
+  function changeProvider(value: string) {
+    if (
+      !BROWSER_PROVIDERS.some((provider) => provider.id === value) ||
+      value === providerId
     )
-    setWindows(records)
-  }, [])
+      return
+    viewEpoch.current += 1
+    selectionScope.current =
+      connections.find((entry) => entry.providerId === value && entry.enabled)?.id ?? null
+    setProviderId(value as BrowserProviderId)
+    setSelectedIds(new Set())
+    setEditing(null)
+    setBatchCreating(false)
+    setViewing(null)
+    setDeleting(null)
+    setAttaching(false)
+    dismissBinding()
+    setEditingAccount(null)
+    setError(null)
+    closeGate()
+  }
+
+  useEffect(() => {
+    selectionScope.current = connectionId
+  }, [connectionId])
 
   async function refresh() {
     if (refreshing) return
+    setExpiryRefreshKey((value) => value + 1)
     recovery.retry()
     setRefreshing(true)
+    const epoch = viewEpoch.current
     try {
-      const [records, currentGroups, license] = await withDeadline(
-        Promise.all([listNativeProfiles(), listGroups(), getLicenseStatus()]),
+      const [, currentGroups, license] = await withDeadline(
+        Promise.all([
+          load(),
+          listGroups(),
+          getLicenseStatus().catch(() => null),
+          loadConnections(),
+        ]),
         10_000,
         '刷新窗口和分组超时，请重试。',
       )
-      setWindows(records)
+      if (epoch !== viewEpoch.current) return
       setGroups(currentGroups)
       setLicenseStatus(license)
       await refreshBindings()
-      setError(null)
+      if (epoch === viewEpoch.current) setError(null)
     } catch (cause) {
-      setError(message(cause))
+      if (epoch === viewEpoch.current) setError(message(cause))
     } finally {
       setRefreshing(false)
     }
@@ -227,20 +379,19 @@ export function SpacesPage() {
   }, [native])
 
   useEffect(() => {
-    if (!native) return
-    let active = true
-    void listNativeProfiles().then(
-      (records) => {
-        if (active) setWindows(records)
-      },
-      (cause: unknown) => {
-        if (active) setError(message(cause))
-      },
-    )
-    return () => {
-      active = false
+    const reads = windowReads.current
+    reads.active = true
+    if (native) {
+      void Promise.all([load(), loadConnections()]).catch((cause: unknown) => {
+        if (windowReads.current.active) setError(message(cause))
+      })
     }
-  }, [native])
+    return () => {
+      reads.active = false
+      reads.request += 1
+      connectionRequest.current += 1
+    }
+  }, [native, load, loadConnections])
 
   useEffect(() => {
     if (!native) return
@@ -397,12 +548,11 @@ export function SpacesPage() {
   }
 
   async function refreshAfterImport() {
-    const [records, currentGroups] = await withDeadline(
-      Promise.all([listNativeProfiles(), listGroups()]),
+    const [, currentGroups] = await withDeadline(
+      Promise.all([load(), listGroups()]),
       10_000,
       '刷新窗口和分组超时',
     )
-    setWindows(records)
     setGroups(currentGroups)
     setSelectedIds(new Set())
     await withDeadline(refreshBindings(), 10_000, '刷新账号关联超时')
@@ -413,8 +563,20 @@ export function SpacesPage() {
     void refreshBindings().catch(() => undefined)
   }, [accountGeneration, accountsRunning, refreshBindings])
 
-  async function bind(window: NativeProfile, accountId: string | null) {
-    if (!accountsReady || !accountSync.current.ready || bindingPending) return
+  async function bind(window: BrowserWindow, accountId: string | null) {
+    const session = bindingSession.current
+    if (
+      !accountsReady ||
+      !accountSync.current.ready ||
+      bindingRequest.current === session
+    )
+      return
+    const epoch = viewEpoch.current
+    const current = () =>
+      session === bindingSession.current &&
+      epoch === viewEpoch.current &&
+      windowReads.current.active
+    bindingRequest.current = session
     const previous = bindings.find((entry) => entry.windowId === window.id)?.accountId
     if (previous && previous !== accountId) smsWaits.stopWindow(window.id)
     setBindingPending(true)
@@ -427,41 +589,51 @@ export function SpacesPage() {
         const result = await bindAccount(accountId, window.id)
         if (!result.bound) {
           // Nothing was written: the warning comes first.
-          setConflict({ window, accountId, duplicates: result.duplicates })
+          if (current()) setConflict({ window, accountId, duplicates: result.duplicates })
           return
         }
         toast.success('已关联账号')
       }
       await refreshAfterBinding()
-      setBinding(null)
+      if (current()) dismissBinding()
     } catch (cause) {
-      setBindingError(message(cause))
+      if (current()) setBindingError(message(cause))
     } finally {
-      setBindingPending(false)
+      if (bindingRequest.current === session) bindingRequest.current = null
+      if (current()) setBindingPending(false)
     }
   }
 
   async function confirmDuplicate() {
+    const session = bindingSession.current
     if (
       conflict === null ||
       !accountsReady ||
       !accountSync.current.ready ||
-      bindingPending
+      bindingRequest.current === session
     )
       return
+    const epoch = viewEpoch.current
+    const current = () =>
+      session === bindingSession.current &&
+      epoch === viewEpoch.current &&
+      windowReads.current.active
+    bindingRequest.current = session
     setBindingPending(true)
     setBindingError(null)
     try {
       await bindAccount(conflict.accountId, conflict.window.id, true)
       await refreshAfterBinding()
       toast.success('已关联账号')
-      setConflict(null)
-      setBinding(null)
+      if (current()) dismissBinding()
     } catch (cause) {
-      setBindingError(message(cause))
-      setConflict(null)
+      if (current()) {
+        setBindingError(message(cause))
+        setConflict(null)
+      }
     } finally {
-      setBindingPending(false)
+      if (bindingRequest.current === session) bindingRequest.current = null
+      if (current()) setBindingPending(false)
     }
   }
 
@@ -495,7 +667,10 @@ export function SpacesPage() {
     return accounts.find((entry) => entry.id === id)?.account ?? id
   }
 
-  const visible = orderProfilesNewestFirst(windows).filter(
+  const connectionWindows = windows.filter(
+    (window) => window.connectionId === connectionId,
+  )
+  const visible = orderBrowserWindows(connectionWindows).filter(
     (window) =>
       (groupFilter === 'all' ||
         (groupFilter === 'ungrouped'
@@ -506,17 +681,17 @@ export function SpacesPage() {
         .includes(query.toLowerCase()) &&
       matchesAccountFilter(window.id),
   )
-  const selected = windows.find((window) => window.id === viewing)
-  const transferWindows = windows.filter((window) => selectedIds.has(window.id))
+  const selected = connectionWindows.find((window) => window.id === viewing)
+  const transferWindows = connectionWindows.filter((window) => selectedIds.has(window.id))
   const selectableIds = visible
-    .filter((window) => !window.running && !operatingWindows.has(window.id))
+    .filter((window) => window.state === 'stopped' && !operatingWindows.has(window.id))
     .map((window) => window.id)
   const selectedVisibleCount = selectableIds.filter((id) => selectedIds.has(id)).length
-  const target = windows.find((window) => window.id === deleting)
-  const running = windows.filter((window) => window.running).length
-  const proxied = windows.filter((window) => hasProxy(window)).length
+  const target = connectionWindows.find((window) => window.id === deleting)
+  const running = connectionWindows.filter((window) => window.state === 'running').length
+  const proxied = connectionWindows.filter((window) => hasProxy(window)).length
   const bound = accountsInstalled
-    ? windows.filter((window) => bindingOf(window.id) !== null).length
+    ? connectionWindows.filter((window) => bindingOf(window.id) !== null).length
     : 0
 
   return (
@@ -542,16 +717,30 @@ export function SpacesPage() {
           </Button>
           <Button
             variant="outline"
-            disabled={!native}
+            disabled={
+              !native || !connection?.scopeConfirmed || !connection.capabilities.create
+            }
             onClick={() => setBatchCreating(true)}
           >
             <PanelsTopLeft data-icon="inline-start" />
             批量创建
           </Button>
+          {connection?.capabilities.attach ? (
+            <Button
+              variant="outline"
+              disabled={!native || !connection.scopeConfirmed}
+              onClick={() => setAttaching(true)}
+            >
+              接入已有窗口
+            </Button>
+          ) : null}
           <Button
-            disabled={!native}
+            disabled={
+              !native || !connection?.scopeConfirmed || !connection.capabilities.create
+            }
             onClick={() => {
               setError(null)
+              createIntent.current = null
               setEditing('new')
             }}
           >
@@ -560,12 +749,56 @@ export function SpacesPage() {
           </Button>
         </div>
       </div>
+      <Tabs value={providerId} onValueChange={changeProvider}>
+        <TabsList aria-label="浏览器提供方">
+          {BROWSER_PROVIDERS.map((provider) => (
+            <TabsTrigger key={provider.id} value={provider.id}>
+              {provider.name}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      {native ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>
+            {connection ? `当前接入：${connection.name}` : '此浏览器尚未启用接入'}
+          </span>
+          <Button size="sm" variant="link" onClick={() => setManagingConnections(true)}>
+            配置浏览器接入
+          </Button>
+        </div>
+      ) : null}
       {!native ? (
-        <p className="native-profiles-hint" role="status">
+        <p className="browser-windows-hint" role="status">
           请在 Nexus 桌面应用中创建和打开窗口；网页预览无法访问本机浏览器。
         </p>
       ) : null}
       {error ? <FieldError role="alert">{error}</FieldError> : null}
+      <Sim8ExpiryNotice
+        refreshKey={expiryRefreshKey}
+        now={now}
+        accounts={accountsReady ? accounts : null}
+        bindings={accountsReady ? bindings : []}
+        windows={windows}
+      />
+      {native && connectionId ? (
+        <BrowserOperationRecovery
+          key={connectionId}
+          connectionId={connectionId}
+          providerId={providerId}
+          refreshKey={expiryRefreshKey}
+          onRecovered={(window) => {
+            if (window)
+              applyWindows((current) =>
+                orderBrowserWindows([
+                  window,
+                  ...current.filter((item) => item.id !== window.id),
+                ]),
+              )
+            void load().catch((cause: unknown) => setError(message(cause)))
+          }}
+        />
+      ) : null}
       <TransferRecoveryNotice
         status={recovery.status}
         error={recovery.error}
@@ -577,7 +810,7 @@ export function SpacesPage() {
         <div className="space-stats" aria-label="窗口概览">
           <div className="space-stat">
             <span>窗口</span>
-            <strong>{windows.length}</strong>
+            <strong>{connectionWindows.length}</strong>
           </div>
           <div className="space-stat" data-tone="success">
             <span>运行中</span>
@@ -658,7 +891,9 @@ export function SpacesPage() {
           </>
         ) : null}
         <TransferToolbar
+          key={`${filterKey}:${connection?.revision ?? 0}`}
           native={native}
+          connection={connection}
           windows={transferWindows}
           operating={operatingWindows}
           onImported={refreshAfterImport}
@@ -669,7 +904,7 @@ export function SpacesPage() {
       <div className="space-table-panel">
         <div className="panel-heading">
           <h2>全部窗口</h2>
-          <Badge variant="secondary">{windows.length}</Badge>
+          <Badge variant="secondary">{connectionWindows.length}</Badge>
         </div>
         <Table aria-label="窗口列表">
           <TableHeader>
@@ -686,6 +921,7 @@ export function SpacesPage() {
                         : 'indeterminate'
                   }
                   onCheckedChange={(checked) =>
+                    selectionScope.current === connectionId &&
                     setSelectedIds((current) =>
                       toggleSelection(current, selectableIds, checked === true),
                     )
@@ -715,25 +951,32 @@ export function SpacesPage() {
               const accountNameClass =
                 summary?.status === 'blocked' ? 'text-destructive' : undefined
               const phoneUnlinkPending = linked !== null && unlinkingPhones.has(linked.id)
-              const starting = !window.running && startingWindows.has(window.id)
+              const starting =
+                window.state === 'starting' ||
+                (window.state !== 'running' && startingWindows.has(window.id))
               const checkingProxy =
                 gate?.window.id === window.id && gate.stage.stage === 'checking'
-              const busy = operatingWindows.has(window.id) || starting
-              const unconfirmed = unconfirmedWindows.has(window.id)
+              const busy =
+                operatingWindows.has(window.id) || starting || window.state === 'stopping'
+              const unconfirmed =
+                unconfirmedWindows.has(window.id) ||
+                window.state === 'unknown' ||
+                window.state === 'missing'
               return (
                 <TableRow
                   key={window.id}
                   className={starting ? 'space-row-starting' : undefined}
                   aria-busy={starting || undefined}
-                  data-running={window.running ? 'true' : undefined}
+                  data-running={window.state === 'running' ? 'true' : undefined}
                   data-state={selectedIds.has(window.id) ? 'selected' : undefined}
                 >
                   <TableCell>
                     <Checkbox
                       aria-label={`选择窗口 ${window.name}`}
                       checked={selectedIds.has(window.id)}
-                      disabled={window.running || busy}
+                      disabled={window.state !== 'stopped' || busy}
                       onCheckedChange={(checked) =>
+                        selectionScope.current === window.connectionId &&
                         setSelectedIds((current) =>
                           toggleSelection(current, [window.id], checked === true),
                         )
@@ -744,7 +987,7 @@ export function SpacesPage() {
                     <div className="space-name-cell">
                       <span
                         className="space-avatar"
-                        data-tone={window.running ? 'blue' : undefined}
+                        data-tone={window.state === 'running' ? 'blue' : undefined}
                         aria-hidden="true"
                       >
                         {window.name.slice(0, 1).toUpperCase()}
@@ -756,7 +999,7 @@ export function SpacesPage() {
                           name={window.name}
                           note={window.settings.note}
                           onSaved={(note) =>
-                            setWindows((current) =>
+                            applyWindows((current) =>
                               current.map((item) =>
                                 item.id === window.id
                                   ? { ...item, settings: { ...item.settings, note } }
@@ -885,36 +1128,42 @@ export function SpacesPage() {
                       data-state={
                         unconfirmed || starting
                           ? 'pending'
-                          : window.running
+                          : window.state === 'running'
                             ? 'running'
                             : 'stopped'
                       }
                     >
                       <span className="status-dot" aria-hidden="true" />
                       {unconfirmed
-                        ? '状态待确认'
+                        ? window.state === 'missing'
+                          ? '环境不可见'
+                          : '状态待确认'
                         : checkingProxy
                           ? '检测代理中'
                           : starting
                             ? '启动中'
                             : busy
                               ? '操作中'
-                              : window.running
+                              : window.state === 'running'
                                 ? '运行中'
-                                : '已停止'}
+                                : window.state === 'missing'
+                                  ? '环境不可见'
+                                  : window.state === 'unknown'
+                                    ? '状态待确认'
+                                    : '已停止'}
                     </span>
                   </TableCell>
                   <TableCell>
                     <div className="table-actions">
                       <Button
-                        variant={window.running ? 'outline' : 'default'}
+                        variant={window.state === 'running' ? 'outline' : 'default'}
                         size="sm"
                         className="w-28"
                         disabled={busy && !unconfirmed}
                         onClick={() =>
                           void (unconfirmed
                             ? refreshGate(window)
-                            : window.running
+                            : window.state === 'running'
                               ? stop(window)
                               : open(window))
                         }
@@ -923,7 +1172,7 @@ export function SpacesPage() {
                           <RefreshCw data-icon="inline-start" />
                         ) : busy ? (
                           <Loader2 data-icon="inline-start" className="animate-spin" />
-                        ) : window.running ? (
+                        ) : window.state === 'running' ? (
                           <Square data-icon="inline-start" />
                         ) : (
                           <Play data-icon="inline-start" />
@@ -936,7 +1185,7 @@ export function SpacesPage() {
                               ? startingWindows.has(window.id)
                                 ? '正在打开…'
                                 : '正在停止…'
-                              : window.running
+                              : window.state === 'running'
                                 ? '停止'
                                 : '打开'}
                       </Button>
@@ -944,7 +1193,7 @@ export function SpacesPage() {
                         variant="ghost"
                         size="icon"
                         aria-label={`编辑 ${window.name}`}
-                        disabled={window.running || busy}
+                        disabled={busy}
                         onClick={() => setEditing(window.id)}
                       >
                         <Pencil />
@@ -960,12 +1209,64 @@ export function SpacesPage() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label={`删除 ${window.name}`}
-                        disabled={window.running || busy}
-                        onClick={() => setDeleting(window.id)}
+                        aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Nexus' : '删除'} ${window.name}`}
+                        disabled={
+                          busy ||
+                          (window.providerId !== 'cloakbrowser' &&
+                          window.origin === 'attached'
+                            ? unconfirmed
+                            : window.state !== 'stopped') ||
+                          (window.origin === 'created' &&
+                            !connection?.capabilities.deleteEnvironment)
+                        }
+                        onClick={() => {
+                          setDeleteEnvironment(
+                            window.providerId === 'cloakbrowser' ||
+                              window.origin === 'created',
+                          )
+                          setDeleting(window.id)
+                        }}
                       >
                         <Trash2 />
                       </Button>
+                      {window.providerId !== 'cloakbrowser' ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`环境操作 ${window.name}`}
+                            >
+                              <Ellipsis />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              disabled={busy || unconfirmed}
+                              onSelect={() => {
+                                setDeleteEnvironment(false)
+                                setDeleting(window.id)
+                              }}
+                            >
+                              移出 Nexus
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              variant="destructive"
+                              disabled={
+                                busy ||
+                                window.state !== 'stopped' ||
+                                !connection?.capabilities.deleteEnvironment
+                              }
+                              onSelect={() => {
+                                setDeleteEnvironment(true)
+                                setDeleting(window.id)
+                              }}
+                            >
+                              删除浏览器环境
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : null}
                       {accountsInstalled ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -993,7 +1294,7 @@ export function SpacesPage() {
                               disabled={!accountsReady || bindingPending}
                               onSelect={() => {
                                 if (!accountsReady || !accountSync.current.ready) return
-                                setBindingError(null)
+                                dismissBinding()
                                 setBinding(window)
                               }}
                             >
@@ -1026,22 +1327,31 @@ export function SpacesPage() {
         {visible.length === 0 ? (
           <Empty>
             <EmptyHeader>
-              <EmptyTitle>{windows.length ? '没有找到窗口' : '还没有窗口'}</EmptyTitle>
+              <EmptyTitle>
+                {connectionWindows.length
+                  ? '没有找到窗口'
+                  : connection
+                    ? '还没有窗口'
+                    : '尚未启用浏览器接入'}
+              </EmptyTitle>
               <EmptyDescription>
-                {windows.length
+                {connectionWindows.length
                   ? '调整搜索条件。'
-                  : '创建窗口时会同时创建独立的浏览器环境。'}
+                  : connection
+                    ? '创建窗口或选择官方已有环境接入。'
+                    : '请在浏览器接入设置中保存、检测并确认账户作用域，再启用接入。'}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : null}
       </div>
 
-      {batchCreating ? (
+      {batchCreating && connection ? (
         <BatchWindowDialog
+          connection={connection}
           onClose={() => setBatchCreating(false)}
           onSettled={async (items) => {
-            setWindows((current) => mergeBatchProfiles(current, items))
+            applyWindows((current) => mergeBatchWindows(current, items))
             await load()
           }}
         />
@@ -1053,8 +1363,9 @@ export function SpacesPage() {
           if (!open) setEditing(null)
         }}
       >
-        {editing !== null ? (
+        {editing !== null && connection ? (
           <WindowEditor
+            connection={connection}
             key={editing}
             window={
               editing === 'new'
@@ -1063,39 +1374,49 @@ export function SpacesPage() {
             }
             groups={groups}
             takenNames={windows.map((item) => item.name)}
-            onSave={async (
-              name,
-              proxy,
-              proxyPlugin,
-              proxyEndpoint,
-              settings,
-              groupId,
-              kernelVersion?: string | null,
-            ) => {
-              if (editing === 'new') {
-                const created = await createNativeProfile(
-                  name,
-                  proxy,
-                  proxyPlugin,
-                  proxyEndpoint,
-                  settings,
-                  groupId,
-                  kernelVersion,
+            onSave={async (input) => {
+              const epoch = viewEpoch.current
+              const id = editing
+              if (id === 'new') {
+                if (!('kernelVersion' in input)) throw new Error('创建请求缺少内核选择。')
+                const previous = createIntent.current
+                if (
+                  previous &&
+                  JSON.stringify({
+                    ...input,
+                    connectionId: connection.id,
+                    operationId: previous.operationId,
+                  }) !== JSON.stringify(previous)
                 )
-                setWindows((current) => [created, ...current])
+                  throw new Error(
+                    '上次创建结果尚待核对，请先恢复该操作，再开始不同的创建请求。',
+                  )
+                const intent = previous ?? {
+                  ...input,
+                  connectionId: connection.id,
+                  operationId: crypto.randomUUID(),
+                }
+                createIntent.current = intent
+                let saved: BrowserWindow
+                try {
+                  saved = await createBrowserWindow(intent)
+                } catch (cause) {
+                  setExpiryRefreshKey((value) => value + 1)
+                  throw cause
+                }
+                applyWindows((current) =>
+                  orderBrowserWindows([
+                    saved,
+                    ...current.filter((window) => window.id !== saved.id),
+                  ]),
+                )
               } else {
-                await updateNativeProfile(
-                  editing,
-                  name,
-                  proxy,
-                  proxyPlugin,
-                  proxyEndpoint,
-                  settings,
-                  groupId,
-                )
+                if ('kernelVersion' in input)
+                  throw new Error('窗口编辑不能修改既有内核绑定。')
+                await updateBrowserWindow({ id, ...input })
                 await load()
               }
-              setEditing(null)
+              if (epoch === viewEpoch.current) setEditing(null)
             }}
             licenseStatus={licenseStatus}
             onCancel={() => setEditing(null)}
@@ -1149,9 +1470,11 @@ export function SpacesPage() {
               <div className="about-row">
                 <dt>代理</dt>
                 <dd>
-                  {selected.proxyPlugin
-                    ? `代理池${selected.proxyEndpoint === null ? '（默认代理）' : ` · #${selected.proxyEndpoint}`}`
-                    : (selected.proxy ?? '直连')}
+                  {selected.proxyMode === 'provider'
+                    ? '沿用浏览器设置'
+                    : selected.proxyPlugin
+                      ? `代理池${selected.proxyEndpoint === null ? '（默认代理）' : ` · #${selected.proxyEndpoint}`}`
+                      : (selected.proxy ?? '直连')}
                 </dd>
               </div>
               <div className="about-row">
@@ -1218,31 +1541,91 @@ export function SpacesPage() {
         {target ? (
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>删除窗口「{target.name}」？</AlertDialogTitle>
+              <AlertDialogTitle>
+                {deleteEnvironment ? '删除浏览器环境' : '移出 Nexus'}「{target.name}」？
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                将永久删除该窗口的浏览器数据，包括 Cookie 和登录状态，无法撤销。
+                {deleteEnvironment
+                  ? '将永久删除该浏览器环境及其 Cookie 和登录状态，并清理 Nexus 关联，无法撤销。'
+                  : '仅解除 Nexus 的窗口与插件关联。官方浏览器环境保留，也不会自动关闭。'}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
               <AlertDialogAction
                 variant="destructive"
+                disabled={deletePending}
                 onClick={(event) => {
                   event.preventDefault()
-                  smsWaits.stopWindow(target.id)
-                  void deleteNativeProfile(target.id)
-                    .then(load)
-                    .then(() => setDeleting(null))
-                    .catch((cause: unknown) => setError(message(cause)))
+                  if (
+                    deletingRequest.current ||
+                    (deleteEnvironment && target.state !== 'stopped')
+                  )
+                    return
+                  deletingRequest.current = true
+                  setDeletePending(true)
+                  const epoch = viewEpoch.current
+                  void deleteBrowserWindow(target.id, deleteEnvironment)
+                    .then(async () => {
+                      smsWaits.stopWindow(target.id)
+                      applyWindows((current) =>
+                        current.filter((window) => window.id !== target.id),
+                      )
+                      await load()
+                      if (epoch === viewEpoch.current) setDeleting(null)
+                    })
+                    .catch((cause: unknown) => {
+                      if (epoch === viewEpoch.current) setError(message(cause))
+                    })
+                    .finally(() => {
+                      deletingRequest.current = false
+                      setDeletePending(false)
+                    })
                 }}
               >
-                删除窗口
+                {deleteEnvironment ? '删除浏览器环境' : '移出 Nexus'}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         ) : null}
       </AlertDialog>
 
+      <Dialog open={attaching} onOpenChange={setAttaching}>
+        {attaching && connection ? (
+          <AttachWindowDialog
+            key={`${connection.id}:${connection.revision}`}
+            connection={connection}
+            onClose={() => setAttaching(false)}
+            onAttached={(attached) => {
+              applyWindows((current) =>
+                orderBrowserWindows([
+                  ...current.filter(
+                    (window) => !attached.some((row) => row.id === window.id),
+                  ),
+                  ...attached,
+                ]),
+              )
+              void load().catch((cause: unknown) => setError(message(cause)))
+            }}
+          />
+        ) : null}
+      </Dialog>
+      <Dialog
+        open={managingConnections}
+        onOpenChange={(next) => {
+          setManagingConnections(next)
+          if (!next)
+            void loadConnections().catch((cause: unknown) => setError(message(cause)))
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>浏览器接入设置</DialogTitle>
+            <DialogDescription>保存并启用接入后返回窗口管理。</DialogDescription>
+          </DialogHeader>
+          <BrowserConnectionsPage />
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={gate !== null}
         onOpenChange={(open) => {
@@ -1289,7 +1672,7 @@ export function SpacesPage() {
       <Dialog
         open={binding !== null}
         onOpenChange={(open) => {
-          if (!open) setBinding(null)
+          if (!open) dismissBinding()
         }}
       >
         {binding === null ? null : (
@@ -1302,7 +1685,7 @@ export function SpacesPage() {
             pending={bindingPending}
             error={bindingError}
             onConfirm={(accountId) => void bind(binding, accountId)}
-            onCancel={() => setBinding(null)}
+            onCancel={dismissBinding}
           />
         )}
       </Dialog>
@@ -1310,7 +1693,12 @@ export function SpacesPage() {
       <AlertDialog
         open={conflict !== null}
         onOpenChange={(open) => {
-          if (!open) setConflict(null)
+          if (!open) {
+            bindingSession.current += 1
+            setConflict(null)
+            setBindingError(null)
+            setBindingPending(false)
+          }
         }}
       >
         {conflict === null ? null : (
@@ -1342,7 +1730,9 @@ export function SpacesPage() {
   )
 }
 
-function ProxyCell({ window }: { window: NativeProfile }) {
+function ProxyCell({ window }: { window: BrowserWindow }) {
+  if (window.proxyMode === 'provider')
+    return <span className="table-muted">沿用浏览器设置</span>
   if (window.proxyPlugin !== null) {
     return (
       <span className="proxy-cell">
@@ -1394,7 +1784,7 @@ function AccountQuickAdd({
   accounts,
   onSaved,
 }: {
-  window: NativeProfile
+  window: BrowserWindow
   ready: boolean
   accounts: Account[]
   onSaved: () => Promise<void>
@@ -1630,7 +2020,7 @@ function AccountBindDialog({
   onConfirm,
   onCancel,
 }: {
-  window: NativeProfile
+  window: BrowserWindow
   ready: boolean
   accounts: Account[]
   current: string | null

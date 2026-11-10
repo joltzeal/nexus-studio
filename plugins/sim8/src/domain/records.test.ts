@@ -84,6 +84,29 @@ describe('record list', () => {
     expect(next.map((record) => record.tel)).toEqual(['2', '1'])
   })
 
+  it('keeps same-day dismissal across date-format changes and resets checks for a new link', () => {
+    const first = mergeRecords([], [purchased()], NOW)
+    const expiry = {
+      attemptedAt: NOW,
+      checkedAt: NOW,
+      dismissedOn: '2026-10-26',
+      dismissedFor: new Date(2026, 10, 1, 12).toISOString(),
+    }
+    first[0]!.expiry = expiry
+    const synced = mergeRecords(
+      first,
+      [purchased({ endTime: expiry.dismissedFor })],
+      LATER,
+    )
+    expect(synced[0]?.expiry).toEqual(expiry)
+    const changed = mergeRecords(
+      synced,
+      [purchased({ api: 'https://sms.example.test/new' })],
+      LATER,
+    )
+    expect(changed[0]?.expiry).toBeNull()
+  })
+
   it('finds a number regardless of formatting', () => {
     const records = mergeRecords([], [purchased()], NOW)
     expect(findRecord(records, '14155550100')?.tel).toBe('+14155550100')

@@ -1,3 +1,9 @@
+import { browserConnection, browserWindow } from '@/lib/platform/browser-test-support'
+import {
+  listBrowserConnections,
+  type BrowserConnection,
+} from '@/lib/platform/browser-connections'
+import { Sim8ExpiryNotice } from '@/features/sim8/expiry-notice'
 import {
   Children,
   createElement,
@@ -13,10 +19,12 @@ import {
 } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AlertDialogAction } from '@/components/ui/alert-dialog'
+import { AlertDialog, AlertDialogAction } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DialogContent } from '@/components/ui/dialog'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Tabs } from '@/components/ui/tabs'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { FieldError } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -33,17 +41,21 @@ import {
 } from '@/features/accounts/types'
 import type { WindowGroup } from '@/lib/platform/native-groups'
 import {
-  createNativeProfile,
-  listNativeProfiles,
-  operateNativeProfile,
-  updateNativeProfile,
-  type NativeProfile,
-} from '@/lib/platform/native-profiles'
+  createBrowserWindow,
+  listBrowserWindows,
+  listBrowserOperations,
+  reconcileBrowserOperation,
+  startBrowserWindow,
+  stopBrowserWindow,
+  updateBrowserWindow,
+  type BrowserWindow,
+} from '@/lib/platform/windows'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { ProxyGateDialog } from './proxy-gate'
 import { SpacesPage } from './spaces-page'
 import { WindowEditor } from './window-editor'
+import { flushPromises } from '@/features/settings/kernel-test-support'
 import { checkWindowProxy, type ProxyCheckOutcome } from './window-proxy'
 
 const state = vi.hoisted(() => ({
@@ -53,7 +65,8 @@ const state = vi.hoisted(() => ({
   pluginError: null as Error | null,
   accounts: [] as Account[],
   bindings: [] as BindingView[],
-  windows: [] as NativeProfile[],
+  windows: [] as BrowserWindow[],
+  connections: [] as BrowserConnection[],
   groups: [] as WindowGroup[],
   calls: [] as { method: string; input: unknown }[],
   saved: null as Account | null,
@@ -63,8 +76,9 @@ const state = vi.hoisted(() => ({
   saveError: null as Error | null,
   saveResponse: null as Promise<{ item: Account; created: boolean }> | null,
   bindResponse: { bound: true, duplicates: [] as string[] },
+  bindPendingResponse: null as Promise<{ bound: boolean; duplicates: string[] }> | null,
   realLaunch: false,
-  profileReadResponse: null as Promise<NativeProfile[]> | null,
+  profileReadResponse: null as Promise<BrowserWindow[]> | null,
 }))
 
 // Run the actual component handlers in the Node test environment. Child components
@@ -84,6 +98,8 @@ vi.mock('react', async (importOriginal) => {
       state.hooks ? state.hooks.state(initial) : realState(initial),
     useRef: (initial: unknown) =>
       state.hooks ? state.hooks.state(() => ({ current: initial }))[0] : realRef(initial),
+    useMemo: <T>(factory: () => T, deps: DependencyList) =>
+      state.hooks ? state.hooks.memo(factory(), deps) : react.useMemo(factory, deps),
     useId: () => (state.hooks ? state.hooks.state('test-contact-id')[0] : realId()),
     useEffect: (effect: EffectCallback, deps?: DependencyList) =>
       state.hooks ? state.hooks.effect(effect, deps) : realEffect(effect, deps),
@@ -127,23 +143,31 @@ vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
       if (state.saveError) throw state.saveError
       return state.saveResponse ?? { item: state.saved, created: false }
     }
-    if (method === 'vinted.accounts.bind') return state.bindResponse
+    if (method === 'vinted.accounts.bind')
+      return state.bindPendingResponse ?? state.bindResponse
     if (method === 'vinted.accounts.unbind') return { unbound: true }
     throw new Error(`Unexpected account method: ${method}`)
   },
 }))
 
-vi.mock('@/lib/platform/native-profiles', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/platform/native-profiles')>()),
-  nativeProfilesAvailable: () => state.native,
-  listNativeProfiles: vi.fn(async () => state.profileReadResponse ?? state.windows),
-  operateNativeProfile: vi.fn(async () => undefined),
-  createNativeProfile: vi.fn(async () => ({
+vi.mock('@/lib/platform/windows', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/platform/windows')>()),
+  browserWindowsAvailable: () => state.native,
+  listBrowserWindows: vi.fn(async () => state.profileReadResponse ?? state.windows),
+  startBrowserWindow: vi.fn(async () => undefined),
+  stopBrowserWindow: vi.fn(async () => undefined),
+  createBrowserWindow: vi.fn(async () => ({
     ...state.windows[0]!,
     id: 'created',
     name: 'created',
   })),
-  updateNativeProfile: vi.fn(async () => undefined),
+  updateBrowserWindow: vi.fn(async () => undefined),
+  reconcileBrowserOperation: vi.fn(),
+  listBrowserOperations: vi.fn(),
+}))
+vi.mock('@/lib/platform/browser-connections', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/platform/browser-connections')>()),
+  listBrowserConnections: vi.fn(async () => state.connections),
 }))
 vi.mock('@/lib/platform/native-groups', () => ({ listGroups: async () => state.groups }))
 vi.mock('@/lib/platform/native-license', () => ({
@@ -166,6 +190,7 @@ vi.mock('./use-window-launch', async (importOriginal) => {
         ? realController(...args)
         : {
             gate: null,
+            closeGate: () => undefined,
             operatingWindows: new Set(),
             startingWindows: new Set(),
             unconfirmedWindows: new Set(),
@@ -294,29 +319,9 @@ function account(overrides: Partial<Account> = {}): Account {
   }
 }
 
-function profile(id: string, running = false): NativeProfile {
-  return {
-    id,
-    name: id,
-    running,
-    version: '155.0.1.2',
-    groupId: null,
-    proxy: null,
-    proxyPlugin: null,
-    proxyEndpoint: null,
-    createdAt: 0,
-    lastOpenedAt: null,
-    settings: {
-      platform: 'Vinted',
-      note: '',
-      geoip: true,
-      timezone: '',
-      locale: '',
-      viewport: 'default',
-      fingerprintSeed: 42,
-      startUrl: '',
-    },
-  }
+let nextSortOrder = 10_000
+function profile(id: string, state: BrowserWindow['state'] = 'stopped'): BrowserWindow {
+  return browserWindow({ id, name: id, state, sortOrder: nextSortOrder-- })
 }
 
 function bind(windowId: string, item: Account): BindingView {
@@ -354,6 +359,7 @@ function checkedProxy(): ProxyCheckOutcome {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  nextSortOrder = 10_000
   state.native = false
   state.plugin = {
     id: 'studio.vinted-accounts',
@@ -361,7 +367,7 @@ beforeEach(() => {
     enabled: true,
   } as PluginView
   state.accounts = [account(), account({ id: 'other', account: 'other@example.com' })]
-  state.windows = [profile('first'), profile('second', true), profile('third')]
+  state.windows = [profile('first'), profile('second', 'running'), profile('third')]
   state.bindings = [
     bind('first', state.accounts[0]!),
     bind('second', state.accounts[0]!),
@@ -376,9 +382,25 @@ beforeEach(() => {
   state.saveError = null
   state.saveResponse = null
   state.bindResponse = { bound: true, duplicates: [] }
+  state.bindPendingResponse = null
   state.realLaunch = false
   state.profileReadResponse = null
-  vi.mocked(operateNativeProfile).mockReset().mockResolvedValue(undefined)
+  vi.mocked(listBrowserWindows)
+    .mockReset()
+    .mockImplementation(async () => state.profileReadResponse ?? state.windows)
+  vi.mocked(startBrowserWindow).mockReset().mockResolvedValue(undefined)
+  vi.mocked(stopBrowserWindow).mockReset().mockResolvedValue(undefined)
+  vi.mocked(createBrowserWindow)
+    .mockReset()
+    .mockImplementation(async () => profile('created'))
+  vi.mocked(reconcileBrowserOperation).mockReset().mockRejectedValue({
+    code: 'operation_failed',
+    message: '创建失败',
+    retryable: true,
+  })
+  vi.mocked(listBrowserOperations).mockReset().mockResolvedValue([])
+  state.connections = [browserConnection()]
+  vi.mocked(listBrowserConnections).mockImplementation(async () => state.connections)
   vi.mocked(checkWindowProxy).mockReset().mockResolvedValue(checkedProxy())
   state.calls = []
 })
@@ -536,6 +558,119 @@ function editorSession(props: ComponentProps<typeof AccountEditor>) {
 }
 
 describe('window management', () => {
+  function createEditor(page: Awaited<ReturnType<typeof mountedPage>>) {
+    components(page.render(), Button)
+      .find((node) => Children.toArray(node.props.children).includes('创建窗口'))!
+      .props.onClick?.({} as never)
+    const form = harness()
+    const render = () => {
+      const props = components(page.render(), WindowEditor)[0]!.props
+      return form.render(() => WindowEditor(props))
+    }
+    return {
+      render,
+      input(id: string, value: string) {
+        components(render(), Input)
+          .find((node) => node.props.id === id)!
+          .props.onChange?.({ target: { value } } as never)
+      },
+      select(id: string, value: string) {
+        components(render(), Select)
+          .find((node) =>
+            components(node, SelectTrigger).some((trigger) => trigger.props.id === id),
+          )!
+          .props.onValueChange?.(value)
+      },
+      async submit() {
+        const submit = elements(render()).find((node) => node.type === 'form')!.props
+          .onSubmit as (event: FormEvent) => void
+        submit({ preventDefault() {} } as FormEvent)
+        await flushPromises()
+      },
+    }
+  }
+
+  it('reuses a generated blank-name and blank-seed intent through the real editor and page', async () => {
+    const page = await mountedPage()
+    const editor = createEditor(page)
+    editor.input('window-seed', '')
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.1)
+    try {
+      vi.mocked(createBrowserWindow).mockRejectedValueOnce(new Error('response lost'))
+      await editor.submit()
+      const first = vi.mocked(createBrowserWindow).mock.calls[0]![0]
+      expect(first.name).not.toBe('')
+      expect(first.settings.fingerprintSeed).not.toBeNull()
+      expect(components(editor.render(), FieldError)[0]?.props.children).toBe(
+        'response lost',
+      )
+      random.mockReturnValue(0.9)
+      await editor.submit()
+      expect(createBrowserWindow).toHaveBeenNthCalledWith(2, first)
+      expect(reconcileBrowserOperation).not.toHaveBeenCalled()
+      expect(components(page.render(), WindowEditor)).toHaveLength(0)
+    } finally {
+      random.mockRestore()
+    }
+  })
+
+  it.each(['http', 'https', 'socks5'])(
+    'forwards authenticated manual %s from the external form to create',
+    async (protocol) => {
+      state.connections.push(browserConnection({ id: 'ads', providerId: 'adspower' }))
+      const page = await mountedPage()
+      components(page.render(), Tabs)
+        .find((node) => node.props.value === 'cloakbrowser')!
+        .props.onValueChange?.('adspower')
+      const editor = createEditor(page)
+      editor.select('window-proxy-source', 'manual')
+      editor.select('window-protocol', protocol)
+      const proxy = `${protocol}://fixture-user:fixture-pass@proxy.test:1080`
+      editor.input('window-proxy', proxy)
+      await editor.submit()
+      expect(createBrowserWindow).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          connectionId: 'ads',
+          operationId: expect.any(String),
+          proxyMode: 'manual',
+          proxy,
+        }),
+      )
+    },
+  )
+
+  it.each(['operation_failed', 'operation_missing', 'operation_uncertain'])(
+    'retries %s through create using the same frozen UUID and input',
+    async (code) => {
+      const page = await mountedPage()
+      components(page.render(), Button)
+        .find((node) => Children.toArray(node.props.children).includes('创建窗口'))!
+        .props.onClick?.({} as never)
+      const editor = () => components(page.render(), WindowEditor)[0]!.props
+      const input = {
+        name: 'fixed',
+        proxyMode: 'direct' as const,
+        proxy: null,
+        proxyPlugin: null,
+        proxyEndpoint: null,
+        settings: browserWindow().settings,
+        groupId: null,
+        kernelVersion: null,
+      }
+      vi.mocked(createBrowserWindow).mockRejectedValueOnce(new Error(code))
+      await expect(editor().onSave(input)).rejects.toThrow(code)
+      const first = vi.mocked(createBrowserWindow).mock.calls[0]![0]
+      const result = browserWindow({ id: 'reserved-uuid', name: 'fixed' })
+      vi.mocked(createBrowserWindow).mockResolvedValueOnce(result)
+      await editor().onSave(input)
+      expect(createBrowserWindow).toHaveBeenNthCalledWith(2, first)
+      expect(reconcileBrowserOperation).not.toHaveBeenCalled()
+      expect(listBrowserOperations).not.toHaveBeenCalled()
+      expect(components(page.render(), WindowEditor)).toHaveLength(0)
+      expect(visibleWindowNames(page.render())).toContain('fixed')
+    },
+  )
+
   it('does not offer a local-only window creation flow in a web preview', () => {
     const html = renderToStaticMarkup(createElement(SpacesPage))
     expect(html).not.toContain('浏览器 Profiles')
@@ -560,7 +695,7 @@ describe('window management', () => {
     }
     expect(html).toContain('全选当前筛选下的已关闭窗口')
     expect(html).toContain('已选 0')
-    expect(html).toContain('还没有窗口')
+    expect(html).toContain('尚未启用浏览器接入')
   })
 
   it('forwards the selected kernel only when creating a new window', async () => {
@@ -571,64 +706,473 @@ describe('window management', () => {
     expect(create).toBeDefined()
     create?.props.onClick?.({} as never)
     const settings = profile('new').settings
-    await components(page.render(), WindowEditor)[0]!.props.onSave(
-      'new',
-      null,
-      null,
-      null,
+    const input = {
+      name: 'new',
+      proxyMode: 'direct' as const,
+      proxy: null,
+      proxyPlugin: null,
+      proxyEndpoint: null,
       settings,
-      'group-1',
-      '155.0.1.2.7',
-    )
-    expect(createNativeProfile).toHaveBeenCalledExactlyOnceWith(
-      'new',
-      null,
-      null,
-      null,
-      settings,
-      'group-1',
-      '155.0.1.2.7',
-    )
-    expect(updateNativeProfile).not.toHaveBeenCalled()
-
+      groupId: 'group-1',
+      kernelVersion: '155.0.1.2.7',
+    }
+    await components(page.render(), WindowEditor)[0]!.props.onSave(input)
+    expect(createBrowserWindow).toHaveBeenCalledExactlyOnceWith({
+      ...input,
+      connectionId: 'builtin',
+      operationId: expect.any(String),
+    })
     const edit = components(page.render(), Button).find(
       (node) => node.props['aria-label'] === '编辑 first',
+    )!
+    edit.props.onClick?.({} as never)
+    const updated = {
+      name: 'renamed',
+      proxyMode: input.proxyMode,
+      proxy: input.proxy,
+      proxyPlugin: input.proxyPlugin,
+      proxyEndpoint: input.proxyEndpoint,
+      settings: input.settings,
+      groupId: 'group-2',
+    }
+    await components(page.render(), WindowEditor)[0]!.props.onSave(updated)
+    expect(updateBrowserWindow).toHaveBeenCalledExactlyOnceWith({
+      id: 'first',
+      ...updated,
+    })
+    expect(createBrowserWindow).toHaveBeenCalledOnce()
+  })
+
+  it.each(['running', 'unknown', 'missing'] as const)(
+    'offers local metadata editing while a window is %s',
+    async (windowState) => {
+      state.windows[0] = { ...state.windows[0]!, state: windowState }
+      const page = await mountedPage()
+      const edit = components(page.render(), Button).find(
+        (node) => node.props['aria-label'] === '编辑 first',
+      )!
+      expect(edit.props.disabled).toBe(false)
+      edit.props.onClick?.({} as never)
+      expect(components(page.render(), WindowEditor)[0]!.props.window?.state).toBe(
+        windowState,
+      )
+    },
+  )
+})
+
+describe('account binding view guards', () => {
+  function openBinding(tree: ReactNode, name: string) {
+    components(windowRow(tree, name), DropdownMenuItem)
+      .find((node) => Children.toArray(node.props.children).includes('更换账号'))!
+      .props.onSelect?.({} as Event)
+  }
+  function dismissBinding(tree: ReactNode) {
+    components(tree, Dialog)
+      .find((node) => localComponents(node, 'AccountBindDialog').length > 0)!
+      .props.onOpenChange?.(false)
+  }
+  async function changeView(
+    page: Awaited<ReturnType<typeof mountedPage>>,
+    change: string,
+  ) {
+    if (change === 'provider') {
+      const tabs = () =>
+        components(page.render(), Tabs).find((node) =>
+          ['cloakbrowser', 'adspower'].includes(String(node.props.value)),
+        )!
+      tabs().props.onValueChange?.('adspower')
+      tabs().props.onValueChange?.('cloakbrowser')
+    } else if (change === 'connection') {
+      state.connections = [
+        { ...state.connections[0]!, revision: state.connections[0]!.revision + 1 },
+      ]
+      refreshButton(page.render()).props.onClick?.({} as never)
+      await vi.waitFor(() =>
+        expect(refreshButton(page.render()).props.disabled).toBe(false),
+      )
+    }
+  }
+
+  it.each(
+    ['dismiss', 'provider', 'connection'].flatMap((change) =>
+      ['conflict', 'success', 'failure'].map((result) => ({ change, result })),
+    ),
+  )('ignores late $result dialog updates after $change', async ({ change, result }) => {
+    const page = await mountedPage()
+    const response = deferred<{ bound: boolean; duplicates: string[] }>()
+    state.bindPendingResponse = response.promise
+    openBinding(page.render(), 'first')
+    const original = localComponents(page.render(), 'AccountBindDialog')[0]!
+    ;(original.props.onConfirm as (id: string) => void)('other')
+    dismissBinding(page.render())
+    await changeView(page, change)
+    openBinding(page.render(), 'third')
+    const reads = accountReadCount()
+    if (result === 'failure') response.reject(new Error('old binding failure'))
+    else response.resolve({ bound: result === 'success', duplicates: ['third'] })
+    await flushPromises()
+    expect(localComponents(page.render(), 'AccountBindDialog')[0]?.props.window).toEqual(
+      state.windows[2],
     )
-    expect(edit).toBeDefined()
-    edit?.props.onClick?.({} as never)
-    await components(page.render(), WindowEditor)[0]!.props.onSave(
-      'renamed',
-      null,
-      null,
-      null,
+    expect(localComponents(page.render(), 'AccountBindDialog')[0]?.props.error).toBeNull()
+    expect(components(page.render(), AlertDialogAction)).toHaveLength(0)
+    expect(state.calls.filter((call) => call.method === 'vinted.accounts.bind')).toEqual([
+      {
+        method: 'vinted.accounts.bind',
+        input: { accountId: 'other', windowId: 'first', confirmDuplicates: false },
+      },
+    ])
+    if (result === 'success')
+      await vi.waitFor(() => expect(accountReadCount()).toBeGreaterThan(reads))
+  })
+
+  it.each(['success', 'failure'])(
+    'ignores late duplicate-confirmation %s after dismissal and Tab change',
+    async (result) => {
+      const page = await mountedPage()
+      state.bindResponse = { bound: false, duplicates: ['third'] }
+      openBinding(page.render(), 'first')
+      const original = localComponents(page.render(), 'AccountBindDialog')[0]!
+      ;(original.props.onConfirm as (id: string) => void)('other')
+      await vi.waitFor(() =>
+        expect(components(page.render(), AlertDialogAction)).toHaveLength(1),
+      )
+      const response = deferred<{ bound: boolean; duplicates: string[] }>()
+      state.bindPendingResponse = response.promise
+      components(page.render(), AlertDialogAction)[0]!.props.onClick?.({
+        preventDefault() {},
+      } as never)
+      components(page.render(), AlertDialog)
+        .find((node) => node.props.open)!
+        .props.onOpenChange?.(false)
+      dismissBinding(page.render())
+      await changeView(page, 'provider')
+      openBinding(page.render(), 'third')
+      if (result === 'failure') response.reject(new Error('old conflict failure'))
+      else response.resolve({ bound: true, duplicates: [] })
+      await flushPromises()
+      expect(
+        localComponents(page.render(), 'AccountBindDialog')[0]?.props.window,
+      ).toEqual(state.windows[2])
+      expect(
+        localComponents(page.render(), 'AccountBindDialog')[0]?.props.error,
+      ).toBeNull()
+      expect(
+        state.calls.filter((call) => call.method === 'vinted.accounts.bind')[1],
+      ).toEqual({
+        method: 'vinted.accounts.bind',
+        input: { accountId: 'other', windowId: 'first', confirmDuplicates: true },
+      })
+    },
+  )
+})
+
+describe('browser connections and global associations', () => {
+  async function externalPage() {
+    const page = await mountedPage()
+    state.connections.push(
+      browserConnection({
+        id: 'ads',
+        providerId: 'adspower',
+        name: 'Ads team',
+        capabilities: {
+          ...browserConnection().capabilities,
+          attach: true,
+          transfer: false,
+          fingerprintSeed: false,
+          kernelSelection: false,
+        },
+      }),
+    )
+    state.windows.push(
+      browserWindow({
+        id: 'ads-shop',
+        name: 'Ads shop',
+        providerId: 'adspower',
+        connectionId: 'ads',
+        origin: 'attached',
+        proxyMode: 'provider',
+      }),
+    )
+    const refresh = components(page.render(), Button).find((node) =>
+      Children.toArray(node.props.children).includes('刷新'),
+    )!
+    refresh.props.onClick?.({} as never)
+    await vi.waitFor(() => {
+      expect(components(page.render(), Sim8ExpiryNotice)[0]!.props.windows).toHaveLength(
+        4,
+      )
+      expect(
+        components(page.render(), Button).find((node) =>
+          Children.toArray(node.props.children).includes('刷新'),
+        ),
+      ).toBeDefined()
+    })
+    return page
+  }
+  function selectProvider(tree: ReactNode, provider: string) {
+    components(tree, Tabs)
+      .find(
+        (node) => node.props.value === 'cloakbrowser' || node.props.value === 'adspower',
+      )!
+      .props.onValueChange?.(provider)
+  }
+
+  it('filters only the display while SIM8 and duplicate names retain all windows', async () => {
+    const page = await externalPage()
+    expect(visibleWindowNames(page.render())).toEqual(['first', 'second', 'third'])
+    selectProvider(page.render(), 'adspower')
+    expect(visibleWindowNames(page.render())).toEqual(['Ads shop'])
+    expect(
+      components(page.render(), Sim8ExpiryNotice)[0]!.props.windows.map(
+        (window) => window.id,
+      ),
+    ).toEqual(['first', 'second', 'third', 'ads-shop'])
+    expect(
+      vi.mocked(listBrowserWindows).mock.calls.every((args) => args.length === 0),
+    ).toBe(true)
+  })
+
+  it('clears selection and editor on Tab change and restores per-connection filters', async () => {
+    const page = await externalPage()
+    const select = components(page.render(), Checkbox).find(
+      (node) => node.props['aria-label'] === '选择窗口 first',
+    )!
+    select.props.onCheckedChange?.(true)
+    const search = components(page.render(), Input).find(
+      (node) => node.props['aria-label'] === '搜索窗口',
+    )!
+    search.props.onChange?.({
+      target: { value: 'first' },
+    } as ChangeEvent<HTMLInputElement>)
+    components(page.render(), Button)
+      .find((node) => node.props['aria-label'] === '编辑 first')!
+      .props.onClick?.({} as never)
+    expect(components(page.render(), WindowEditor)).toHaveLength(1)
+    selectProvider(page.render(), 'adspower')
+    expect(components(page.render(), WindowEditor)).toHaveLength(0)
+    expect(components(page.render(), Checkbox).every((node) => !node.props.checked)).toBe(
+      true,
+    )
+    expect(visibleWindowNames(page.render())).toEqual(['Ads shop'])
+    selectProvider(page.render(), 'cloakbrowser')
+    expect(visibleWindowNames(page.render())).toEqual(['first'])
+  })
+
+  it('does not start or stop an unknown external window when checking its state', async () => {
+    state.realLaunch = true
+    const page = await externalPage()
+    state.windows = state.windows.map((window) =>
+      window.id === 'ads-shop' ? { ...window, state: 'unknown' as const } : window,
+    )
+    selectProvider(page.render(), 'adspower')
+    components(page.render(), Button)
+      .find((node) => Children.toArray(node.props.children).includes('刷新'))!
+      .props.onClick?.({} as never)
+    await vi.waitFor(() =>
+      expect(windowStatus(page.render(), 'Ads shop')).toBe('状态待确认'),
+    )
+    windowAction(page.render(), 'Ads shop', '确认状态').props.onClick?.({} as never)
+    await vi.waitFor(() =>
+      expect(components(page.render(), ProxyGateDialog)[0]?.props.stage.stage).toBe(
+        'unconfirmed',
+      ),
+    )
+    expect(startBrowserWindow).not.toHaveBeenCalled()
+    expect(stopBrowserWindow).not.toHaveBeenCalled()
+  })
+
+  it('does not revive an old proxy dialog or launch after switching Tabs during a check', async () => {
+    state.realLaunch = true
+    const page = await externalPage()
+    state.windows[0] = {
+      ...state.windows[0]!,
+      proxy: 'http://proxy.test:8080',
+      proxyMode: 'manual',
+    }
+    components(page.render(), Button)
+      .find((node) => Children.toArray(node.props.children).includes('刷新'))!
+      .props.onClick?.({} as never)
+    await vi.waitFor(() =>
+      expect(
+        components(page.render(), Sim8ExpiryNotice)[0]!.props.windows[0]!.proxy,
+      ).not.toBeNull(),
+    )
+    const check = deferred<ProxyCheckOutcome>()
+    vi.mocked(checkWindowProxy).mockReturnValueOnce(check.promise)
+    windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
+    selectProvider(page.render(), 'adspower')
+    page.render()
+    check.resolve(checkedProxy())
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(components(page.render(), ProxyGateDialog)).toHaveLength(0)
+    expect(startBrowserWindow).not.toHaveBeenCalled()
+  })
+
+  it('does not launch after the connection revision changes during a proxy check', async () => {
+    state.realLaunch = true
+    state.windows[0] = {
+      ...state.windows[0]!,
+      proxyMode: 'manual',
+      proxy: 'http://proxy.test:8080',
+    }
+    const page = await mountedPage()
+    const check = deferred<ProxyCheckOutcome>()
+    vi.mocked(checkWindowProxy).mockReturnValueOnce(check.promise)
+    windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
+    state.connections[0] = {
+      ...state.connections[0]!,
+      revision: state.connections[0]!.revision + 1,
+    }
+    refreshButton(page.render()).props.onClick?.({} as never)
+    await vi.waitFor(() =>
+      expect(Children.toArray(refreshButton(page.render()).props.children)).toContain(
+        '刷新',
+      ),
+    )
+    check.resolve(checkedProxy())
+    await Promise.resolve()
+    await Promise.resolve()
+    page.render()
+    expect(startBrowserWindow).not.toHaveBeenCalled()
+    expect(components(page.render(), ProxyGateDialog)).toHaveLength(0)
+  })
+
+  it('describes an attached window proxy as provider-managed in its details', async () => {
+    const page = await externalPage()
+    selectProvider(page.render(), 'adspower')
+    components(page.render(), Button)
+      .find((node) => node.props['aria-label'] === '查看 Ads shop 详情')!
+      .props.onClick?.({} as never)
+    const row = elements(page.render()).find(
+      (node) =>
+        node.props.className === 'about-row' &&
+        elements(node).some(
+          (child) => child.type === 'dt' && child.props.children === '代理',
+        ),
+    )!
+    expect(elements(row).find((node) => node.type === 'dd')?.props.children).toBe(
+      '沿用浏览器设置',
+    )
+  })
+
+  it('keeps the latest global snapshot when an older refresh completes later', async () => {
+    const page = await externalPage()
+    const old = deferred<BrowserWindow[]>()
+    vi.mocked(listBrowserWindows).mockReturnValueOnce(old.promise)
+    const refreshing = components(page.render(), Button).find((node) =>
+      Children.toArray(node.props.children).includes('刷新'),
+    )!
+    refreshing.props.onClick?.({} as never)
+    const load = components(page.render(), WindowEditor)
+    expect(load).toHaveLength(0)
+    // A completed create refreshes through the same guarded inventory reader.
+    components(page.render(), Button)
+      .find((node) => Children.toArray(node.props.children).includes('创建窗口'))!
+      .props.onClick?.({} as never)
+    const settings = browserWindow().settings
+    vi.mocked(createBrowserWindow).mockImplementationOnce(async () => {
+      const created = browserWindow({ id: 'created', name: 'created' })
+      state.windows.push(created)
+      return created
+    })
+    await components(page.render(), WindowEditor)[0]!.props.onSave({
+      name: 'new',
+      proxyMode: 'direct',
+      proxy: null,
+      proxyPlugin: null,
+      proxyEndpoint: null,
       settings,
-      'group-2',
-      '155.0.1.2.8',
+      groupId: null,
+      kernelVersion: null,
+    })
+    old.resolve([profile('stale')])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(visibleWindowNames(page.render())).not.toContain('stale')
+    expect(visibleWindowNames(page.render())).toContain('created')
+  })
+
+  it('ignores a refresh failure from the previous provider Tab', async () => {
+    const page = await externalPage()
+    const old = deferred<BrowserWindow[]>()
+    vi.mocked(listBrowserWindows).mockReturnValueOnce(old.promise)
+    refreshButton(page.render()).props.onClick?.({} as never)
+    selectProvider(page.render(), 'adspower')
+    old.reject(new Error('Previous Tab read failed'))
+    await vi.waitFor(() =>
+      expect(Children.toArray(refreshButton(page.render()).props.children)).toContain(
+        '刷新',
+      ),
     )
-    expect(updateNativeProfile).toHaveBeenCalledExactlyOnceWith(
-      'first',
-      'renamed',
-      null,
-      null,
-      null,
-      settings,
-      'group-2',
-    )
-    expect(createNativeProfile).toHaveBeenCalledOnce()
+    expect(
+      components(page.render(), FieldError).map((node) => node.props.children),
+    ).not.toContain('Previous Tab read failed')
   })
 })
 
 describe('starting window row highlighting', () => {
+  it('never confirms startup using a superseded running-state response', async () => {
+    state.realLaunch = true
+    state.windows[0] = {
+      ...state.windows[0]!,
+      proxyMode: 'manual',
+      proxy: 'http://proxy.example.com:8080',
+    }
+    const page = await mountedPage()
+    const old = deferred<BrowserWindow[]>()
+    const reads = vi.mocked(listBrowserWindows).mock.calls.length
+    vi.mocked(listBrowserWindows).mockReturnValueOnce(old.promise)
+    windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
+    await vi.waitFor(() => expect(listBrowserWindows).toHaveBeenCalledTimes(reads + 1))
+    refreshButton(page.render()).props.onClick?.({} as never)
+    await vi.waitFor(() => expect(listBrowserWindows).toHaveBeenCalledTimes(reads + 2))
+    old.resolve(
+      state.windows.map((window) =>
+        window.id === 'first' ? { ...window, state: 'running' as const } : window,
+      ),
+    )
+    await vi.waitFor(() => {
+      expect(components(page.render(), ProxyGateDialog)[0]?.props.stage.stage).toBe(
+        'unconfirmed',
+      )
+    })
+    expect(toast.success).not.toHaveBeenCalledWith('「first」已打开')
+    expect(windowStatus(page.render(), 'first')).not.toBe('运行中')
+  })
+
+  it('keeps a timed-out stop blocked until it settles without marking it as a startup', async () => {
+    vi.useFakeTimers()
+    state.realLaunch = true
+    const page = await mountedPage()
+    const stop = deferred<void>()
+    vi.mocked(stopBrowserWindow).mockReturnValueOnce(stop.promise)
+    windowAction(page.render(), 'second', '停止').props.onClick?.({} as never)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(windowStatus(page.render(), 'second')).toBe('状态待确认')
+    expect(windowRow(page.render(), 'second').props.className).toBeUndefined()
+    windowAction(page.render(), 'second', '确认状态').props.onClick?.({} as never)
+    await vi.waitFor(() =>
+      expect(components(page.render(), ProxyGateDialog)[0]?.props.stage.stage).toBe(
+        'unconfirmed',
+      ),
+    )
+    expect(stopBrowserWindow).toHaveBeenCalledExactlyOnceWith('second')
+    state.windows = state.windows.map((window) =>
+      window.id === 'second' ? { ...window, state: 'stopped' as const } : window,
+    )
+    stop.resolve()
+    await vi.waitFor(() => expect(windowStatus(page.render(), 'second')).toBe('已停止'))
+  })
+
   it('highlights a pending launch, never a simultaneous stop, and clears after confirmed startup', async () => {
     state.realLaunch = true
     const page = await mountedPage()
     const start = deferred<void>()
     const stop = deferred<void>()
-    vi.mocked(operateNativeProfile).mockImplementation((id, running) => {
-      if (id === 'first' && !running) return start.promise
-      if (id === 'second' && running) return stop.promise
-      throw new Error('Unexpected native operation')
-    })
+    vi.mocked(startBrowserWindow).mockReturnValue(start.promise)
+    vi.mocked(stopBrowserWindow).mockReturnValue(stop.promise)
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
     windowAction(page.render(), 'second', '停止').props.onClick?.({} as never)
     const pending = page.render()
@@ -641,27 +1185,27 @@ describe('starting window row highlighting', () => {
     expect(windowRow(pending, 'third').props.className).toBeUndefined()
 
     state.windows = state.windows.map((window) =>
-      window.id === 'first' ? { ...window, running: true } : window,
+      window.id === 'first' ? { ...window, state: 'running' as const } : window,
     )
     start.resolve()
     await vi.waitFor(() => expect(windowStatus(page.render(), 'first')).toBe('运行中'))
     expect(windowRow(page.render(), 'first').props.className).toBeUndefined()
     expect(windowRow(page.render(), 'first').props['aria-busy']).toBeUndefined()
     state.windows = state.windows.map((window) =>
-      window.id === 'second' ? { ...window, running: false } : window,
+      window.id === 'second' ? { ...window, state: 'stopped' as const } : window,
     )
     stop.resolve()
     await vi.waitFor(() => expect(windowStatus(page.render(), 'second')).toBe('已停止'))
     expect(windowRow(page.render(), 'second').props.className).toBeUndefined()
-    expect(operateNativeProfile).toHaveBeenNthCalledWith(1, 'first', false)
-    expect(operateNativeProfile).toHaveBeenNthCalledWith(2, 'second', true)
+    expect(startBrowserWindow).toHaveBeenCalledExactlyOnceWith('first')
+    expect(stopBrowserWindow).toHaveBeenCalledExactlyOnceWith('second')
   })
 
   it('clears the highlight after a definite launch rejection', async () => {
     state.realLaunch = true
     const page = await mountedPage()
     const start = deferred<void>()
-    vi.mocked(operateNativeProfile).mockReturnValue(start.promise)
+    vi.mocked(startBrowserWindow).mockReturnValue(start.promise)
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
     expect(windowRow(page.render(), 'first').props.className).toBe('space-row-starting')
     start.reject(new Error('启动已被宿主阻止'))
@@ -683,7 +1227,7 @@ describe('starting window row highlighting', () => {
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
     expect(windowRow(page.render(), 'first').props.className).toBe('space-row-starting')
     expect(windowStatus(page.render(), 'first')).toBe('检测代理中')
-    expect(operateNativeProfile).not.toHaveBeenCalled()
+    expect(startBrowserWindow).not.toHaveBeenCalled()
     check.resolve({ kind: 'unsupported', reason: '代理池暂不可用' })
     await vi.waitFor(() => {
       expect(components(page.render(), ProxyGateDialog)[0]!.props.stage.stage).toBe(
@@ -692,7 +1236,7 @@ describe('starting window row highlighting', () => {
     })
     expect(windowRow(page.render(), 'first').props.className).toBeUndefined()
     expect(windowStatus(page.render(), 'first')).toBe('已停止')
-    expect(operateNativeProfile).not.toHaveBeenCalled()
+    expect(startBrowserWindow).not.toHaveBeenCalled()
     components(page.render(), ProxyGateDialog)[0]!.props.onCancel()
     expect(components(page.render(), ProxyGateDialog)).toHaveLength(0)
   })
@@ -704,7 +1248,7 @@ describe('starting window row highlighting', () => {
     const check = deferred<ProxyCheckOutcome>()
     const start = deferred<void>()
     vi.mocked(checkWindowProxy).mockReturnValue(check.promise)
-    vi.mocked(operateNativeProfile).mockReturnValue(start.promise)
+    vi.mocked(startBrowserWindow).mockReturnValue(start.promise)
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
     expect(windowStatus(page.render(), 'first')).toBe('检测代理中')
     check.resolve(checkedProxy())
@@ -714,7 +1258,7 @@ describe('starting window row highlighting', () => {
       'launching',
     )
     state.windows = state.windows.map((window) =>
-      window.id === 'first' ? { ...window, running: true } : window,
+      window.id === 'first' ? { ...window, state: 'running' as const } : window,
     )
     start.resolve()
     await vi.waitFor(() => {
@@ -730,7 +1274,7 @@ describe('starting window row highlighting', () => {
     state.windows[0] = { ...state.windows[0]!, proxy: 'http://proxy.example.com:8080' }
     const page = await mountedPage()
     const start = deferred<void>()
-    vi.mocked(operateNativeProfile).mockReturnValue(start.promise)
+    vi.mocked(startBrowserWindow).mockReturnValue(start.promise)
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
     await vi.waitFor(() => expect(windowStatus(page.render(), 'first')).toBe('启动中'))
     await vi.advanceTimersByTimeAsync(120_000)
@@ -745,17 +1289,17 @@ describe('starting window row highlighting', () => {
       expect(stage.stage === 'unconfirmed' && !stage.reading).toBe(true)
     })
     expect(windowRow(page.render(), 'first').props.className).toBe('space-row-starting')
-    expect(operateNativeProfile).toHaveBeenCalledTimes(1)
+    expect(startBrowserWindow).toHaveBeenCalledTimes(1)
 
-    const confirmation = deferred<NativeProfile[]>()
+    const confirmation = deferred<BrowserWindow[]>()
     state.profileReadResponse = confirmation.promise
-    const reads = vi.mocked(listNativeProfiles).mock.calls.length
+    const reads = vi.mocked(listBrowserWindows).mock.calls.length
     start.resolve()
-    await vi.waitFor(() => expect(listNativeProfiles).toHaveBeenCalledTimes(reads + 1))
+    await vi.waitFor(() => expect(listBrowserWindows).toHaveBeenCalledTimes(reads + 1))
     expect(windowRow(page.render(), 'first').props.className).toBe('space-row-starting')
     confirmation.resolve(
       state.windows.map((window) =>
-        window.id === 'first' ? { ...window, running: true } : window,
+        window.id === 'first' ? { ...window, state: 'running' as const } : window,
       ),
     )
     await vi.waitFor(() => expect(windowStatus(page.render(), 'first')).toBe('运行中'))
@@ -766,11 +1310,11 @@ describe('starting window row highlighting', () => {
   it('keeps failed startup confirmation highlighted until a subsequent read confirms the settled window is stopped', async () => {
     state.realLaunch = true
     const page = await mountedPage()
-    const confirmation = deferred<NativeProfile[]>()
+    const confirmation = deferred<BrowserWindow[]>()
     state.profileReadResponse = confirmation.promise
-    const reads = vi.mocked(listNativeProfiles).mock.calls.length
+    const reads = vi.mocked(listBrowserWindows).mock.calls.length
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
-    await vi.waitFor(() => expect(listNativeProfiles).toHaveBeenCalledTimes(reads + 1))
+    await vi.waitFor(() => expect(listBrowserWindows).toHaveBeenCalledTimes(reads + 1))
     confirmation.reject(new Error('状态接口暂不可用'))
     await vi.waitFor(() =>
       expect(windowStatus(page.render(), 'first')).toBe('状态待确认'),
@@ -783,7 +1327,7 @@ describe('starting window row highlighting', () => {
     expect(components(page.render(), ProxyGateDialog)[0]!.props.stage.stage).toBe(
       'failed',
     )
-    expect(operateNativeProfile).toHaveBeenCalledTimes(1)
+    expect(startBrowserWindow).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -793,7 +1337,7 @@ describe('window account status filtering', () => {
     state.groups = [{ id: 'work', name: '工作组', note: '', windowCount: 4 }]
     state.windows = [
       { ...profile('first'), createdAt: 100, groupId: 'work' },
-      { ...profile('second', true), createdAt: 300, groupId: 'work' },
+      { ...profile('second', 'running'), createdAt: 300, groupId: 'work' },
       { ...profile('third'), createdAt: 500, groupId: 'other' },
       { ...profile('fourth'), createdAt: 600, groupId: 'work' },
       { ...profile('fifth'), createdAt: 400, groupId: 'work' },

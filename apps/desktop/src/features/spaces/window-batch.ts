@@ -1,8 +1,13 @@
+import type {
+  BrowserConnection,
+  CreateBrowserWindowInput,
+  ProxyMode,
+} from '@nexus/contracts/browser'
 import {
-  orderProfilesNewestFirst,
-  type NativeProfile,
+  orderBrowserWindows,
+  type BrowserWindow,
   type WindowSettings,
-} from '@/lib/platform/native-profiles'
+} from '@/lib/platform/windows'
 import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
 import { isKernelVersion } from '@/lib/platform/native-kernels'
 import type { WindowProxyRef } from './window-proxy'
@@ -16,13 +21,14 @@ export interface BatchAccount {
 }
 
 export interface WindowBatchConfig {
+  connection: BrowserConnection
   count: number
   namePrefix: string
   accounts?: readonly BatchAccount[]
-  proxy: WindowProxyRef
+  proxy: WindowProxyRef & { proxyMode: ProxyMode }
   settings: WindowSettings
   groupId: string | null
-  kernelVersion?: string | null
+  kernelVersion: string | null
 }
 
 export type BatchItemStatus = 'pending' | 'creating' | 'binding' | 'complete' | 'failed'
@@ -30,26 +36,19 @@ export type BatchItemStatus = 'pending' | 'creating' | 'binding' | 'complete' | 
 export interface WindowBatchItem {
   key: string
   name: string
-  seed: number
+  seed: number | null
+  operationId: string
+  input: CreateBrowserWindowInput | null
   account: BatchAccount | null
-  profile: NativeProfile | null
+  window: BrowserWindow | null
   status: BatchItemStatus
   error: string | null
   duplicateWindowIds: string[]
-  attempted: boolean
 }
 
 export interface WindowBatchPorts {
-  listProfiles: () => Promise<NativeProfile[]>
-  createProfile: (
-    name: string,
-    proxy: string | null,
-    proxyPlugin: string | null,
-    proxyEndpoint: number | null,
-    settings: WindowSettings,
-    groupId: string | null,
-    kernelVersion?: string | null,
-  ) => Promise<NativeProfile>
+  createWindow: (input: CreateBrowserWindowInput) => Promise<BrowserWindow>
+  reconcileOperation: (operationId: string) => Promise<BrowserWindow | null>
   bindAccount: (
     accountId: string,
     windowId: string,
@@ -57,16 +56,16 @@ export interface WindowBatchPorts {
   ) => Promise<{ bound: boolean; duplicates: string[] }>
 }
 
-export function mergeBatchProfiles(
-  current: readonly NativeProfile[],
+export function mergeBatchWindows(
+  current: readonly BrowserWindow[],
   items: readonly WindowBatchItem[],
-): NativeProfile[] {
+): BrowserWindow[] {
   const known = new Set(current.map((profile) => profile.id))
   const added = items.flatMap((item) =>
-    item.profile && !known.has(item.profile.id) ? [item.profile] : [],
+    item.window && !known.has(item.window.id) ? [item.window] : [],
   )
   // Retrying an earlier row must not move previously completed rows above it.
-  return orderProfilesNewestFirst([...added.reverse(), ...current])
+  return orderBrowserWindows([...added.reverse(), ...current])
 }
 
 function uniqueName(input: string, used: Set<string>): string {
@@ -85,7 +84,7 @@ function uniqueName(input: string, used: Set<string>): string {
 
 export function planWindowBatch(
   config: WindowBatchConfig,
-  existing: readonly NativeProfile[],
+  existing: readonly BrowserWindow[],
   randomSeed = randomFingerprintSeed,
 ): WindowBatchItem[] {
   if (
@@ -114,24 +113,28 @@ export function planWindowBatch(
     const base = prefix
       ? `${prefix}-${String(index + 1).padStart(2, '0')}`
       : account?.label || randomWindowName([...names])
-    let seed = randomSeed()
-    if (!Number.isInteger(seed) || seed < 1 || seed > MAX_SEED) {
-      throw new Error('随机种子生成失败，请重试。')
+    let seed: number | null = null
+    if (
+      config.connection.providerId === 'cloakbrowser' &&
+      config.connection.capabilities.fingerprintSeed
+    ) {
+      seed = randomSeed()
+      if (!Number.isInteger(seed) || seed < 1 || seed > MAX_SEED)
+        throw new Error('随机种子生成失败，请重试。')
+      while (seeds.has(seed)) seed = (seed % MAX_SEED) + 1
+      seeds.add(seed)
     }
-    // Collision resolution is bounded by the number of occupied seeds, even
-    // when the random source repeats. A retry reuses this plan unchanged.
-    while (seeds.has(seed)) seed = (seed % MAX_SEED) + 1
-    seeds.add(seed)
     return {
       key: String(index),
       name: uniqueName(base, names),
       seed,
+      operationId: crypto.randomUUID(),
+      input: null,
       account: account ? { ...account } : null,
-      profile: null,
+      window: null,
       status: 'pending',
       error: null,
       duplicateWindowIds: [],
-      attempted: false,
     }
   })
 }
@@ -154,12 +157,16 @@ export class WindowBatchJob {
 
   constructor(
     config: WindowBatchConfig,
-    existing: readonly NativeProfile[],
+    existing: readonly BrowserWindow[],
     private readonly ports: WindowBatchPorts,
     randomSeed = randomFingerprintSeed,
   ) {
     this.config = {
       ...config,
+      connection: {
+        ...config.connection,
+        capabilities: { ...config.connection.capabilities },
+      },
       proxy: { ...config.proxy },
       settings: { ...config.settings },
       ...(config.accounts
@@ -205,16 +212,10 @@ export class WindowBatchJob {
     return next.find((row) => row.key === key)!
   }
 
-  private async findCreated(item: WindowBatchItem): Promise<NativeProfile | null> {
-    const profiles = await this.ports.listProfiles()
-    const matches = profiles.filter(
-      (profile) =>
-        profile.name === item.name && profile.settings.fingerprintSeed === item.seed,
-    )
-    if (matches.length > 1) {
-      throw new Error('存在多个相同名称和种子的窗口，请先在窗口管理中核对。')
-    }
-    return matches[0] ?? null
+  private async recover(item: WindowBatchItem): Promise<BrowserWindow> {
+    const recovered = await this.ports.reconcileOperation(item.operationId)
+    if (recovered) return recovered
+    throw new Error('创建结果尚未确认，请先核对持久化操作；不会重复创建环境。')
   }
 
   private async execute(
@@ -227,51 +228,50 @@ export class WindowBatchJob {
       let item = this.patch(
         original.key,
         {
-          status: original.profile ? 'binding' : 'creating',
+          status: original.window ? 'binding' : 'creating',
           error: null,
           duplicateWindowIds: [],
         },
         onChange,
       )
       try {
-        if (!item.profile && item.attempted) {
-          // A backend write can succeed before its response fails. Reconcile
-          // first; if listing fails, do not issue another create.
-          item = this.patch(item.key, { profile: await this.findCreated(item) }, onChange)
-        }
-        if (!item.profile) {
-          item = this.patch(item.key, { attempted: true }, onChange)
-          let profile: NativeProfile
-          try {
-            const { proxy, settings, groupId } = this.config
-            profile = await this.ports.createProfile(
-              item.name,
-              proxy.proxy,
-              proxy.proxyPlugin,
-              proxy.proxyEndpoint,
-              { ...settings, fingerprintSeed: item.seed },
-              groupId,
-              ...(this.resolvedKernelVersion === null
-                ? []
-                : [this.resolvedKernelVersion]),
-            )
-          } catch (cause) {
-            let recovered: NativeProfile | null
-            try {
-              recovered = await this.findCreated(item)
-            } catch {
-              throw new Error(`创建结果尚未确认；重试会先核对窗口列表。${message(cause)}`)
-            }
-            if (!recovered) throw cause
-            profile = recovered
+        if (!item.window) {
+          // Every manual retry sends the frozen UUID and payload to the idempotent
+          // backend. Only the backend decides whether to reconcile or submit.
+          const input: CreateBrowserWindowInput = item.input ?? {
+            operationId: item.operationId,
+            connectionId: this.config.connection.id,
+            name: item.name,
+            proxyMode: this.config.proxy.proxyMode,
+            proxy: this.config.proxy.proxy,
+            proxyPlugin: this.config.proxy.proxyPlugin,
+            proxyEndpoint: this.config.proxy.proxyEndpoint,
+            settings: { ...this.config.settings, fingerprintSeed: item.seed },
+            groupId: this.config.groupId,
+            kernelVersion:
+              this.config.connection.providerId === 'cloakbrowser'
+                ? this.resolvedKernelVersion
+                : null,
           }
-          item = this.patch(item.key, { profile }, onChange)
+          item = this.patch(item.key, { input }, onChange)
+          let created: BrowserWindow
+          try {
+            created = await this.ports.createWindow(input)
+          } catch (cause) {
+            try {
+              created = await this.recover(item)
+            } catch {
+              throw new Error(`创建结果待核对：${message(cause)}`)
+            }
+          }
+          item = this.patch(item.key, { window: created }, onChange)
         }
-        const profile = item.profile
+        const profile = item.window
         if (!profile) throw new Error('窗口创建结果缺失，请重试核对。')
         // Freeze only the package version reported by the bound profile. Chrome's
         // display version can omit a revision and must never be used for pinning.
         if (
+          this.config.connection.providerId === 'cloakbrowser' &&
           this.resolvedKernelVersion === null &&
           isKernelVersion(profile.kernelVersion)
         ) {
@@ -304,7 +304,7 @@ export class WindowBatchJob {
           item.key,
           {
             status: 'failed',
-            error: item.profile
+            error: item.window
               ? `窗口已创建，账号关联失败：${message(cause)}`
               : message(cause),
           },

@@ -46,6 +46,8 @@ export type {
   AppItem,
   AppType,
   CategoryItem,
+  ExpirySnapshot,
+  ExpiryState,
   FilterAppItem,
   FilterDetail,
   OrderItem,

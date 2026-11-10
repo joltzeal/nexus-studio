@@ -1,32 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { NativeProfile } from '@/lib/platform/native-profiles'
+import type { BrowserWindow } from '@/lib/platform/windows'
+import { browserWindow } from '@/lib/platform/browser-test-support'
 import { launchAndConfirm, LaunchUnconfirmedError } from './window-launch'
 
 afterEach(() => vi.useRealTimers())
 
-function runningProfile(running: boolean): NativeProfile {
-  return {
-    id: 'a',
-    name: 'A',
-    version: '155.0.1.2',
-    proxy: null,
-    proxyPlugin: null,
-    proxyEndpoint: null,
-    groupId: null,
-    running,
-    createdAt: 0,
-    lastOpenedAt: null,
-    settings: {
-      platform: 'Vinted',
-      note: '',
-      geoip: true,
-      timezone: '',
-      locale: '',
-      viewport: 'default',
-      fingerprintSeed: 42,
-      startUrl: '',
-    },
-  }
+function windowWithState(state: BrowserWindow['state']): BrowserWindow {
+  return browserWindow({ id: 'a', state })
 }
 
 describe('window launch confirmation', () => {
@@ -35,14 +15,14 @@ describe('window launch confirmation', () => {
       launchAndConfirm(
         'a',
         async () => undefined,
-        async () => [runningProfile(true)],
+        async () => [windowWithState('running')],
       ),
-    ).resolves.toEqual([runningProfile(true)])
+    ).resolves.toEqual([windowWithState('running')])
     await expect(
       launchAndConfirm(
         'a',
         async () => undefined,
-        async () => [runningProfile(false)],
+        async () => [windowWithState('stopped')],
       ),
     ).rejects.toBeInstanceOf(LaunchUnconfirmedError)
   })

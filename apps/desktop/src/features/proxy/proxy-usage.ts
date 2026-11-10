@@ -1,8 +1,8 @@
-import type { NativeProfile } from '@/lib/platform/native-profiles'
+import type { BrowserWindow } from '@/lib/platform/windows'
 import { PROXY_PLUGIN_ID } from './types'
 
 export type ProxyUsageProfile = Pick<
-  NativeProfile,
+  BrowserWindow,
   'id' | 'name' | 'proxyPlugin' | 'proxyEndpoint'
 >
 

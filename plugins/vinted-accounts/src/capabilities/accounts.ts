@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto'
 
+import type { AccountPool as AccountPoolContract } from '@nexus/plugin-sdk'
+import {
+  WINDOW_DETACH_METHOD,
+  WindowDetachInputSchema,
+  type WindowDetachInput,
+  type WindowDetachResult,
+} from '@nexus/plugin-sdk/lifecycle'
+
 import { invalidRequest, unavailable } from '../domain/errors.js'
 import {
   TEMPLATE_HEADERS,
@@ -44,6 +52,7 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.bind',
   'vinted.accounts.unbind',
   'vinted.accounts.bindings',
+  WINDOW_DETACH_METHOD,
   ...TRANSFER_METHODS,
 ] as const
 
@@ -96,7 +105,7 @@ export interface AccountBindingView extends BindingRecord {
  * table is the plugin's data. Window ids are opaque strings: the plugin never
  * learns a window name, so the page owns every message that mentions one.
  */
-export class AccountPool {
+export class AccountPool implements AccountPoolContract {
   readonly id = 'account.pool'
   readonly name = 'Vinted 账号池'
 
@@ -147,6 +156,11 @@ export class AccountPool {
         return await this.bind(context)
       case 'vinted.accounts.unbind':
         return await this.unbind(context)
+      case WINDOW_DETACH_METHOD:
+        return await this.detachWindow(
+          parseOrThrow(WindowDetachInputSchema, context.payload),
+          context.assertAlive,
+        )
       case 'vinted.accounts.bindings':
         return await this.listBindings(context)
       default:
@@ -410,14 +424,23 @@ export class AccountPool {
 
   private async unbind(context: DispatchContext): Promise<unknown> {
     const input = parseOrThrow(WindowIdInputSchema, context.payload)
+    return await this.detachWindow(input, context.assertAlive)
+  }
+
+  async detachWindow(
+    input: WindowDetachInput,
+    assertAlive: () => void = () => undefined,
+  ): Promise<WindowDetachResult> {
+    assertAlive()
     const unbound = await this.store.mutate((document) => {
+      assertAlive()
       const before = document.bindings.length
       document.bindings = document.bindings.filter(
         (entry) => entry.windowId !== input.windowId,
       )
       return before !== document.bindings.length
     })
-    context.assertAlive()
+    assertAlive()
     return { windowId: input.windowId, unbound }
   }
 

@@ -5,6 +5,7 @@ import { AboutPage } from '@/features/about/about-page'
 import { LicenseSettingsPage } from '@/features/settings/license-settings-page'
 import { KernelSettingsPage } from '@/features/settings/kernel-settings-page'
 import { NetworkProxyPage } from '@/features/settings/network-proxy-page'
+import { BrowserConnectionsPage } from './browser-connections-page'
 
 export function SettingsPage() {
   return (
@@ -16,6 +17,7 @@ export function SettingsPage() {
       >
         <TabsTrigger value="appearance">外观</TabsTrigger>
         <TabsTrigger value="workspace">工作区</TabsTrigger>
+        <TabsTrigger value="browsers">浏览器接入</TabsTrigger>
         <TabsTrigger value="license">激活码</TabsTrigger>
         <TabsTrigger value="kernels">浏览器内核</TabsTrigger>
         <TabsTrigger value="proxy">应用代理</TabsTrigger>
@@ -26,6 +28,9 @@ export function SettingsPage() {
       </TabsContent>
       <TabsContent value="workspace">
         <WorkspacePage />
+      </TabsContent>
+      <TabsContent value="browsers">
+        <BrowserConnectionsPage />
       </TabsContent>
       <TabsContent value="license">
         <LicenseSettingsPage />

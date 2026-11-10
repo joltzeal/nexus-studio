@@ -1,4 +1,5 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use super::database::open_database;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -15,36 +16,6 @@ pub struct Group {
     pub name: String,
     pub note: String,
     pub window_count: u32,
-}
-
-pub(crate) fn open_database(path: &PathBuf) -> Result<Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| "无法创建数据目录")?;
-    }
-    let db = Connection::open(path).map_err(|_| "无法打开本地数据库")?;
-    db.execute_batch(
-        "PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;
-         CREATE TABLE IF NOT EXISTS groups (
-           id TEXT PRIMARY KEY,
-           name TEXT NOT NULL,
-           note TEXT NOT NULL DEFAULT ''
-         );
-         CREATE TABLE IF NOT EXISTS profile_records (
-           id TEXT PRIMARY KEY,
-           record_json TEXT NOT NULL,
-           group_id TEXT REFERENCES groups(id) ON DELETE SET NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_profile_group ON profile_records(group_id);",
-    )
-    .map_err(|_| "无法初始化本地数据库")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| "无法设置数据库权限")?;
-    }
-    Ok(db)
 }
 
 impl GroupStore {

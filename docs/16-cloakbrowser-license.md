@@ -6,26 +6,35 @@
 Nexus 调用当前锁定版本 CloakBrowser JS wrapper 的公开 `validateLicense` 与
 `ensureBinary` 能力；应用不代用户申请、生成或转售密钥。
 
-应用默认使用最新稳定内核，也支持 SDK 可提供的指定完整包版本，
-不恢复旧公开内核通道。下载、创建窗口、启动和需要浏览器读取的快照均要求激活码；
+本文的许可与内核流程只适用于内置 CloakBrowser。统一 `WindowService` 通过
+`builtin: Arc<CloakBrowserProvider>` 访问其 `license_store`、`runtime`、`kernels` 和
+`network`；通用窗口服务不直接持有内置许可、内核或运行时资源。
+`LicenseService` 负责设置页的在线校验与保存，和内置 provider 使用同一个 SQLite 授权存储。
+AdsPower 与比特浏览器通过各自本机管理 API 接入，不要求 CloakBrowser 激活码，
+其账号、内核和许可由厂商应用负责。
+
+内置窗口默认使用最新稳定内核，也支持 SDK 可提供的指定完整包版本。
+下载、创建内置环境、启动和需要浏览器读取的快照均要求激活码；
 本机有缓存也不允许省略激活码。并发席位最终由 CloakBrowser 服务端和二进制裁决，
 Nexus 不根据 Chromium 主版本号或计划名称硬编码并发上限，也不规避限制。
 
 ## SQLite 凭据生命周期
 
 - 设置页提供输入、校验并保存、删除；读取已存记录时显示“已保存激活码”，不将历史记录当作本次在线校验成功，绝不回显密钥。
+  对应命令为 `license_status`、`license_set({ key })` 和 `license_remove`；
+  状态接口仅返回 `configured`、`plan` 与 `expires`，没有密钥读回接口。
 - Rust 将授权记录写入 Nexus 应用数据目录中的 `nexus.sqlite`；数据库只由 Rust 打开和修改。
-  本期不接系统凭据库，也不迁移窗口或演示数据。
+  `LicenseStore` 使用 `cloakbrowser_license` 表，不接系统凭据库或 Keychain。
 - 数据库不加密，密钥以明文保存在本机文件中，访问控制依赖当前操作系统用户权限。
   设置页必须明确提示这一点。Unix 文件权限限制为当前用户；Windows 依赖应用数据目录 ACL。
-  UI、localStorage、Profile JSON、命令行参数及日志中不得出现密钥。
+  已存密钥不回显到 UI，也不写入 localStorage、`WindowRecord`、命令行参数或日志。
 - 校验失败或服务不可达时不覆盖已有密钥。用户明确删除后删除 SQLite 授权记录。
 - “校验并保存”仍调用 wrapper 的公开 `validateLicense()`，但每次使用独立的空临时缓存目录，
   必须取得本次在线结果；请求失败不会使用先前成功记录。原生适配进程最多等待 20 秒，
   完成后删除临时目录，失败保留原有 SQLite 记录。
 - 内核准备使用共享 SDK 缓存，其校验仍可能命中 24 小时缓存或离线旧缓存；
   设置校验成功不代表浏览器已获得运行席位，实际启动由官方服务及浏览器内核裁决。
-- 准备新版内核和启动窗口时，由 Rust 从 SQLite 取密钥，仅经子进程环境变量
+- 准备内置内核、启动和快照时，由 Rust 从 SQLite 取密钥，仅经子进程环境变量
   `CLOAKBROWSER_LICENSE_KEY` 传入 Node 适配进程；未保存时直接返回激活码提示。
   不修改用户 shell 环境。
 - CloakBrowser 缓存和校验缓存位于应用数据目录的 `cloakbrowser/`，不使用用户 home 下的 CLI 密钥文件。
@@ -34,25 +43,35 @@ Nexus 不根据 Chromium 主版本号或计划名称硬编码并发上限，也�
 
 ## 内核选择流程
 
-- 新建窗口默认使用 SDK 解析的最新稳定内核，也可选已安装的完整包版本；
+- 新建内置窗口默认使用 SDK 解析的最新稳定内核，也可选已安装的完整包版本；
   单个创建、批量创建、账号池入口共用同一接口，不按缓存的计划名称限制选择。
   付费计划的具体版本下载能力由 SDK 和激活服务裁决。
-- `profile_create` 接收名称、代理、窗口配置、分组及可选 `kernelVersion`；
+- `browser_window_create({ input })` 接收 `operationId`、`connectionId`、
+  名称、代理来源、窗口配置、分组及内置窗口可选的 `kernelVersion`；
   `kernel_download` 接受可选 `version`，省略或 `null` 表示最新稳定版。
   激活码由 Rust 读取 SQLite 后注入适配器，不由创建表单传递。
+- 内置窗口由 `WindowStore` 保存为 `WindowRecord` schema 2，
+  绑定为 `{ provider_id: "cloakbrowser", connection_id: "builtin-cloakbrowser", profile_id: <Nexus UUID> }`。
+  `kernel_version` 保存含 SDK 修订的完整包身份，Chrome 显示版本另存于
+  `provider_config.displayVersion`，不能用显示版本代替精确包。
 - Node 准备流程显式调用 `ensureBinary(key, version, 'stable')`；
   默认创建时 `version` 为空，精确下载、精确创建和导入恢复传入完整包版本。
   精确请求会核对返回的包修订和 Chrome 显示版本，不可获取时失败，不回退最新包。
 - 本机清单、下载结果和启动绑定仅接受受管的 `chromium-<版本>-pro` 缓存。
-  不支持旧公开内核，不提供转换或回退逻辑；旧窗口需要重新创建。
-- 已创建的受支持窗口继续保留原路径、版本和指纹种子。启动和快照关闭 SDK 自动更新，
+  `browser_window_update` 不接受绑定或内核变更；下载新版本不重绑已创建窗口。
+- 已创建的内置窗口保留原路径、完整包版本和指纹种子。启动和快照关闭 SDK 自动更新，
   先核对绑定再启动，删除激活码后也不能以缓存内核绕过检查。
-- 设置中的「浏览器内核」页可提前下载，创建复用同一准备锁与缓存。
+- 内置 `profile-runner.js` 保留 `validate-license`、`prepare`、`download`、
+  `launch` 和 `snapshot` 等真实运行时动作；`launch` / `snapshot` 只读取 schema 2 的内置绑定记录。
+  已有 SQLite 记录只在启动时事务升级，正常运行不读取旧记录格式；
+  导入只接受内置窗口的 manifest 3，不通过旧包恢复兼容入口。
+- 设置中的「内置浏览器」页可提前下载，创建复用同一准备锁与缓存。
   SDK 的版本解析和缓存行为、下载进度及错误分类见[浏览器内核](27-browser-kernels.md)。
 
 ## 并发及错误
 
-Nexus 允许不同 Profile 并行尝试，单 Profile 仍独占。CloakBrowser 许可服务和二进制最终裁决
+Nexus 允许不同内置窗口并行尝试，同一浏览器环境仍独占。`browser_window_start({ id })`
+通过已保存绑定交给 provider，CloakBrowser 许可服务和二进制最终裁决
 席位数。启动失败应展示脱敏、可操作的许可拒绝信息，
 且清理失败的子进程，不自动降级、换版本或回退直连。
 
@@ -66,20 +85,21 @@ UI 将校验状态和窗口启动状态分开，不把“密钥已存”显示�
 
 - macOS 与 Windows SQLite 应用数据目录下的授权读写、覆盖、删除分别验证；不得把一个平台的结果
   推断为另一个平台通过。
-- 校验失败时旧凭据保持不变；密钥不会出现在命令参数、Profile 文件、应用 localStorage 或日志。
-- 无激活码时创建和下载在调用 SDK 前失败；即使已缓存内核，启动和快照也失败。
-- 使用 UI 保存密钥后，新建窗口默认请求最新稳定内核；显式选择时只请求该完整包。
+- 校验失败时旧凭据保持不变；密钥不会出现在命令参数、窗口记录、应用 localStorage 或日志。
+- 无激活码时内置环境创建和下载在调用 SDK 前失败；即使已缓存内核，内置启动和快照也失败。
+- 使用 UI 保存密钥后，新建内置窗口默认请求最新稳定内核；显式选择时只请求该完整包。
 - 指定版本下载失败后，原始目标保存在任务状态中，页面重开和重试不会换成其他版本。
-- 同一批次拿到首个成功窗口的完整包版本后，后续条目及重试复用它，不重新解析最新版本。
+- 内置批次拿到首个成功窗口的完整包版本后，后续条目及重试复用它，不重新解析最新版本。
 - 下载新版本和应用重启不改变已有受支持窗口的版本、目录、代理或指纹种子。
-- 导入只接受当前快照格式和精确包身份；原包不可获取时失败，不改绑或降级。
+- 导入只接受内置 manifest 3 和精确包身份；原包不可获取时失败，不改绑或降级。
 - 并发超出实际席位时反馈启动失败，已运行窗口不受影响。
 - 网页预览不执行授权写入；桌面应用为唯一实际操作入口。
 
 ## 当前实现状态
 
 设置页提供状态读取、密钥校验保存和删除；状态只返回配置标志、计划与有效期。
-校验通过后才写库，失败不会覆盖旧密钥。授权、Profile 创建和启动命令均由 Rust 托管。
+校验通过后才写库，失败不会覆盖旧密钥。授权由 `LicenseService` 托管，
+窗口通过 `WindowService` 的 `browser_window_*` 命令进入内置 provider。
 已完成本机激活码数据库读写和常规测试。2026-10-24 按用户要求对两条激活码做了
 官方接口实时验证，直连与修复后的系统 SOCKS5 代理结果一致；没有覆盖 SQLite 中的激活码。
 测试记录仅保留结果类别，不记录完整激活码。

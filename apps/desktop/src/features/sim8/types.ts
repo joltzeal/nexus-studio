@@ -77,6 +77,19 @@ export interface RecordList {
   storageDurable: boolean
 }
 
+export interface ExpiryReminder {
+  tel: string
+  expiresAt: string
+  checkedAt: string | null
+}
+
+export interface ExpirySnapshot {
+  items: ExpiryReminder[]
+  pendingTels: string[]
+  failed: number
+  storageDurable: boolean
+}
+
 export interface OrderItem {
   ordernum: string
   allocationStatus: string
@@ -198,19 +211,26 @@ export function filterStatusLabel(value: number | null): string {
 
 /** A card that expired still has its record link, so it is worth marking. */
 export function recordExpired(record: SmsRecord): boolean {
-  if (record.status === 2) return true
   const at = Date.parse(record.endTime.replace(' ', 'T'))
-  return !Number.isNaN(at) && at < Date.now()
+  // A refreshed expire can supersede an old order status after renewal.
+  return Number.isNaN(at) ? record.status === 2 : at <= Date.now()
 }
 
 export function formatMoney(value: number): string {
   return `¥${value.toFixed(2)}`
 }
 
-/** The API answers with `Y-m-d H:i:s`; the page only needs the date part. */
+/** Keep local provider dates; render normalized ISO instants in the device timezone. */
 export function shortTime(value: string): string {
   if (value === '') return '—'
-  return value.length > 16 ? value.slice(0, 16) : value
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(value)) {
+    const date = new Date(value)
+    if (!Number.isNaN(date.getTime())) {
+      const two = (part: number) => String(part).padStart(2, '0')
+      return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`
+    }
+  }
+  return value.replace('T', ' ').slice(0, 16)
 }
 
 export function message(error: unknown): string {

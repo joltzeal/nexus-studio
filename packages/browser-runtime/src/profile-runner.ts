@@ -1,4 +1,4 @@
-import type { NativeProfile } from './profile-runtime.js'
+import { parseRuntimeWindow } from './runtime-window.js'
 import { validatePortableStateFiles } from './portable-state.js'
 import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
@@ -83,7 +83,13 @@ async function main(): Promise<void> {
       const commands = input[Symbol.asyncIterator]()
       const first = await commands.next()
       if (first.done) throw new Error('Profile configuration missing')
-      const record = JSON.parse(first.value) as NativeProfile
+      let payload: unknown
+      try {
+        payload = JSON.parse(first.value)
+      } catch {
+        throw new Error('PROFILE_RECORD_INVALID')
+      }
+      const record = parseRuntimeWindow(payload)
       const { snapshotProfile, openProfile } = await import('./profile-runtime.js')
       if (action === 'snapshot') {
         const state = await snapshotProfile(userDataDir, record)

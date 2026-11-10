@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { runtimeWindow } from '../fixtures/runtime-window.js'
 
 let directory: string
 let preload: string
@@ -39,10 +40,18 @@ beforeEach(async () => {
       return ${JSON.stringify(binary)};
     };
     export const validateLicense=()=>{};
-    export const buildLaunchOptions=async()=>({});
     export async function launchPersistentContext(options) {
       if (process.env.NEXUS_TEST_SDK_FAILURE)
         throw new Error('mmdb-lib is required for geoip');
+      if (options.browserVersion!=='155.0.8059.39.2' ||
+          options.launchOptions.executablePath!==${JSON.stringify(binary)} ||
+          process.env.CLOAKBROWSER_BINARY_PATH!==${JSON.stringify(binary)} ||
+          !options.args.includes('--fingerprint=123456789'))
+        throw new Error('Unexpected window binding');
+      if (options.proxy && (
+          options.proxy!=='http://synthetic-user:do-not-log@proxy.example:8080' ||
+          process.argv.some(arg=>arg.includes('do-not-log'))))
+        throw new Error('Unexpected resolved proxy');
       const context=new EventEmitter();
       let closeTimer;
       let rejectNavigation;
@@ -111,6 +120,10 @@ async function run(
   target = join(directory, 'user-data'),
   activated = true,
   requestedVersion?: string,
+  payload: unknown = runtimeWindow({
+    binary_path: binary,
+    settings: { ...runtimeWindow().settings, startUrl },
+  }),
 ) {
   const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
   const env: NodeJS.ProcessEnv = {
@@ -134,21 +147,7 @@ async function run(
   })
   child.stdin.on('error', () => {})
   child.stdin.write(
-    `${JSON.stringify({
-      schema_version: 1,
-      id: 'profile',
-      binary_path: binary,
-      binding: { profile_id: 'profile', channel_version: '155.0.8059.39.2' },
-      proxy: null,
-      settings: {
-        geoip: true,
-        timezone: '',
-        locale: '',
-        viewport: 'default',
-        fingerprintSeed: null,
-        startUrl,
-      },
-    })}\n`,
+    `${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n`,
   )
   if (closeStdin) child.stdin.end()
   let timedOut = false
@@ -169,6 +168,116 @@ async function run(
 }
 
 describe('profile runner subprocess', () => {
+  it('receives a resolved plugin proxy with credentials and a numeric pinned endpoint through stdin', async () => {
+    const record = runtimeWindow({
+      binary_path: binary,
+      proxy_mode: 'plugin',
+      proxy: 'http://synthetic-user:do-not-log@proxy.example:8080',
+      proxy_plugin: 'opaque/plugin-ref:v2',
+      proxy_endpoint: 37,
+      settings: { ...runtimeWindow().settings, geoip: false },
+    })
+    const result = await run(
+      'launch',
+      '',
+      false,
+      false,
+      undefined,
+      true,
+      undefined,
+      record,
+    )
+    expect(result).toEqual({
+      exit: 0,
+      stdout: 'NEXUS_READY\n',
+      stderr: '',
+      timedOut: false,
+    })
+  })
+
+  it.each(['launch', 'snapshot'])(
+    'rejects a string proxy endpoint from stdin before %s without compatibility coercion',
+    async (action) => {
+      const record = {
+        ...runtimeWindow({
+          binary_path: binary,
+          proxy_mode: 'plugin',
+          proxy: 'http://synthetic-user:do-not-log@proxy.example:8080',
+          proxy_plugin: 'opaque/plugin-ref:v2',
+          settings: { ...runtimeWindow().settings, geoip: false },
+        }),
+        proxy_endpoint: '37',
+      }
+      const result = await run(
+        action,
+        '',
+        false,
+        false,
+        undefined,
+        true,
+        undefined,
+        record,
+      )
+      expect(result).toEqual({
+        exit: 1,
+        stdout: '',
+        stderr: 'PROFILE_RECORD_INVALID\n',
+        timedOut: false,
+      })
+    },
+  )
+
+  it.each(['launch', 'snapshot'])(
+    'rejects a schema 1 stdin record before %s without waiting for EOF',
+    async (action) => {
+      const record = {
+        schema_version: 1,
+        id: 'profile',
+        binding: { profile_id: 'profile', channel_version: '155.0.8059.39.2' },
+        binary_path: binary,
+        proxy: 'http://account:do-not-log@proxy.example:8080',
+      }
+      const result = await run(
+        action,
+        '',
+        false,
+        false,
+        undefined,
+        true,
+        undefined,
+        record,
+      )
+      expect(result).toEqual({
+        exit: 1,
+        stdout: '',
+        stderr: 'PROFILE_RECORD_INVALID\n',
+        timedOut: false,
+      })
+    },
+  )
+
+  it.each(['launch', 'snapshot'])(
+    'redacts malformed stdin JSON and closes input before %s',
+    async (action) => {
+      const result = await run(
+        action,
+        '',
+        false,
+        false,
+        undefined,
+        true,
+        undefined,
+        '{"proxy":"http://account:do-not-log@proxy.example:8080",',
+      )
+      expect(result).toEqual({
+        exit: 1,
+        stdout: '',
+        stderr: 'PROFILE_RECORD_INVALID\n',
+        timedOut: false,
+      })
+    },
+  )
+
   it('routes a requested download revision to the exact SDK request and exits without stdin', async () => {
     const result = await run(
       'download',

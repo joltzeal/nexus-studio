@@ -1,65 +1,59 @@
 # Nexus
 
-面向 macOS / Windows 的多环境管理桌面产品，采用现代、克制的 B 端后台风格。
-当前桌面应用可创建、管理并启动独立的 CloakBrowser 窗口；分组和外观等非浏览器资料仍为本地页面状态。
-保留纸白与钴蓝，使用紧凑侧栏、轻量顶栏、环境列表与工具栏。
-九个导航为“窗口管理、分组管理、插件中心、代理池、地址生成器、共享货源、AI 生图、Vinted 监控、应用设置”，移除大标题与插画营销感。
+面向 macOS / Windows 的电商多窗口管理应用，使用 Tauri 2、Rust、React 与 shadcn/ui。
+窗口页保持紧凑表格，通过“内置浏览器 / AdsPower / 比特浏览器”Tabs 切换接入。
+账号、代理、号码、采集与 AI 生图通过插件扩展。
 
-## 当前可以演示什么
+## 窗口与浏览器
 
-- 窗口管理：创建窗口即创建原生 Profile，可编辑配置、删除浏览器数据、打开和停止窗口；内核版本在创建时固定。
-- 分组管理：原生窗口分组尚未接入；旧本地分组不会显示为真实窗口。
-- 插件中心和代理池：桌面端由插件宿主安装并运行受信任插件，代理池提供库存和配置；不是安全沙箱。
-  发布构建默认不带插件，插件以加密包从用户填写的商店地址安装，见[插件商店与在线更新](docs/25-plugin-market.md)。
-- 地址生成器：按国家/地区生成收货地址，结果可复制。
-- 共享货源：分类商户、商品列表、关键词搜索、以图搜图与本地收藏；左栏商户分页、右栏商品触底加载。
-- AI 生图：OpenAI 官方与 OpenAI 兼容两类服务商，生图/改图、参考图文案与滑动对比记录。
-- Vinted 监控：定时采集搜索页与会员衣柜，保留采集记录与商品归档，支持间隔与页数上限。
-- 应用设置：本地外观/工作区偏好，以及 CloakBrowser 密钥校验、SQLite 保存和删除。
+- Rust `WindowService` 统一管理创建、接入、编辑、打开、停止、移除与删除。
+- `BrowserProvider` 隔离内置 Node 运行时与外部本机 API；不依赖 CloakBrowser Manager。
+- 内置窗口在创建时固定完整内核包、数据目录和随机种子；设置页管理激活码与内核下载。
+- AdsPower、比特浏览器由用户安装并登录官方应用，在设置中连接本机 API、选择厂商分组并确认账户。
+  Nexus 不代替官方登录或套餐权限。未能安全实现的配置由能力声明禁用。
+- “移出 Nexus”只解除关联；“删除浏览器环境”在确认已停止后删除真实环境。
+- 写操作保存意图与结果；超时进入重新检查，避免重复创建或启动。
+  接口断线保留窗口与插件关系，显示状态未知。
 
-外观和工作区偏好使用 localStorage；浏览器预览与 Tauri WebView 按来源分别保存，不自动同步。
-真实窗口记录与浏览器数据位于应用数据目录；CloakBrowser 密钥由 Rust 以明文保存在未加密的 SQLite 数据库中，不写入 localStorage。
-窗口可选择直连、无凭据手动代理或代理插件。真实代理出口流量和许可席位尚未端到端验证。
+窗口绑定、业务分组、接入、激活码和应用代理由 Rust 明文存入 SQLite，不写 Keychain。
+外观与工作区偏好使用 localStorage；网页预览不能调用原生浏览器命令。
+已有 SQLite 在启动时事务升级一次，此后只接受窗口 schema 2。
+加密导入导出与设备同步只支持内置窗口和 manifest 3，不接受旧快照。
 
-## 本地开发
+## 插件
+
+插件中心根据已安装、已启用的插件动态生成二级导航。
+现有专用页面包括代理池、地址生成器、共享货源、AI 生图、Vinted 账号、Vinted 监控与 SIM8 接码。
+发布应用从插件商店安装 `.nexuspkg`；受信任的 Node 子进程不是安全沙箱。
+业务关联始终使用 Nexus 窗口 UUID，切换浏览器 Tab 不改变账号与号码关系。
+
+## 开发
 
 工具链基线为 Node.js 24.18.0、pnpm 11.17.0、Rust 1.93.0。
-前端预览需要 Node.js 与 pnpm；桌面壳开发另需 Rust 及目标平台的 Tauri 编译前置条件。
-从仓库根目录安装依赖并运行前端：
+使用 pnpm 工作区与唯一根锁文件。所有 shell 命令带 `rtk` 前缀：
 
 ```sh
 rtk proxy pnpm install --frozen-lockfile
 rtk proxy pnpm run dev
 ```
 
-Vite 预览地址为 `http://localhost:1420`，以实际终端输出为准。
-需要创建真实窗口时使用 `rtk proxy pnpm run desktop:dev`，
-在窗口管理页创建并打开。密钥在应用设置的 CloakBrowser 页输入，无需 CLI 登录。
-以上是开发者工具链要求；免配置安装包仍需打包 Node 运行时及浏览器适配器。
+Vite 默认地址为 `http://localhost:1420`，以实际输出为准。
+真实窗口操作使用桌面应用。构建工具链仅供开发者使用，最终用户无需配置 Node、Rust 或 `.env`。
+外部指纹浏览器仍需其官方应用处于登录且开放本机 API 的状态。
 
-## 工程入口
+| 路径                       | 职责                                       |
+| -------------------------- | ------------------------------------------ |
+| `apps/desktop`             | React 页面、Tauri、Rust 窗口服务与插件宿主 |
+| `packages/contracts`       | 共享严格 DTO 与校验                        |
+| `packages/plugin-sdk`      | 插件 manifest、协议与生命周期              |
+| `packages/browser-runtime` | 内置浏览器运行时、内核与便携站点状态       |
+| `plugins`                  | 仓库内插件实现                             |
+| `docs`                     | 分模块设计、开发规范与验证证据             |
 
-| 路径                       | 当前职责                                     |
-| -------------------------- | -------------------------------------------- |
-| `apps/desktop`             | React 页面、Tauri 壳与 Rust 原生窗口核心     |
-| `packages/contracts`       | 共享类型与校验契约                           |
-| `packages/plugin-sdk`      | 插件 manifest 与能力声明契约                 |
-| `packages/browser-runtime` | 健康协议与 CloakBrowser Profile 子进程适配器 |
-| `docs`                     | 各模块独立中文文档、长期规划与验证矩阵       |
+按当前协作要求，本地不执行构建、打包、Rust 编译/测试或 Clippy。
+可直接运行 Vitest、ESLint、Prettier、`tsc --noEmit` 与 rustfmt；根检查脚本可能构建依赖，不能替代直接检查。
+具体结果与 CI、厂商集成、Windows 安装的未验证边界见[质量记录](docs/09-quality-and-testing.md)。
 
-```sh
-rtk proxy pnpm run check
-rtk proxy pnpm run runtime:check
-rtk proxy pnpm run desktop:build
-```
-
-这些是检查和构建入口，不表示已经通过或已能正式分发。
-实际结果由主线填入[质量与验证](docs/09-quality-and-testing.md)。
-
-## 文档与后续规划
-
-先读[文档索引](docs/README.md)、[开发规范](docs/03-development-standards.md)和[演示页面](docs/11-demo-pages.md)。
-Rust 核心的调度和插件接口见[核心后端](docs/12-core-backend.md)；
-业务数据 SQLite 迁移与免配置的浏览器适配器发行包仍需后续接入。
-Manager 仅作参考，不依赖其服务、Python、FastAPI 或 Docker。
-Windows 安装、签名、公证、代理集成和无开发工具运行需分别取证，见[应用分发](docs/08-distribution.md)。
+先读[文档索引](docs/README.md)、[开发规范](docs/03-development-standards.md)、
+[多浏览器设计](docs/superpowers/specs/2026-11-10-multi-browser-provider-design.md)
+与[执行计划](docs/superpowers/plans/2026-11-10-multi-browser-refactor.md)。

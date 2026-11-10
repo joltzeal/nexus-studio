@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { PluginFailure } from '../domain/errors.js'
-import type { RenewReport, SmsRecord } from '../domain/types.js'
+import type { ExpirySnapshot, RenewReport, SmsRecord } from '../domain/types.js'
 import type { DispatchContext } from '../rpc/protocol.js'
 import { Redactor, type Logger } from '../rpc/redact.js'
 import { createMemoryStore, type PrivateStore } from '../store/private-store.js'
@@ -526,6 +526,49 @@ describe('number filtering', () => {
 })
 
 describe('reading a code', () => {
+  it('preserves a renewed expiry while saving a code from an earlier request', async () => {
+    let finish!: (response: Response) => void
+    let started!: () => void
+    const requested = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const { provider, store } = await fixture(({ url }) => {
+      if (url.includes('/buy/create')) return json(PURCHASE)
+      started()
+      return new Promise<Response>((resolve) => {
+        finish = resolve
+      })
+    })
+    await call(provider, 'sim8.buy.create', { appId: 9, num: 1 })
+    const reading = call(provider, 'sim8.sms.read', { tel: '+14155550100' })
+    await requested
+    await store.mutate((draft) => {
+      draft.records[0]!.endTime = '2026-12-01T10:00:00.000Z'
+    })
+    finish(json({ sms: 'Your code is 482913', expire: '2026-11-01T10:00:00Z' }))
+    await reading
+    const record = (await store.read()).records[0]!
+    expect(record.endTime).toBe('2026-12-01T10:00:00.000Z')
+    expect(record.lastRead?.code).toBe('482913')
+  })
+
+  it('records expire during a manual read without mistaking the date for an OTP', async () => {
+    const { provider, store } = await fixture(({ url }) =>
+      url.includes('/buy/create')
+        ? json(PURCHASE)
+        : json({ code: 0, expire: '2026-11-03T10:00:00Z', msg: 'No SMS yet' }),
+    )
+    await call(provider, 'sim8.buy.create', { appId: 9, num: 1 })
+    const result = await call<{ result: { code: string | null; expiresAt: string } }>(
+      provider,
+      'sim8.sms.read',
+      { tel: '+14155550100' },
+    )
+    expect(result.result.expiresAt).toBe('2026-11-03T10:00:00.000Z')
+    expect(result.result.code).toBeNull()
+    expect((await store.read()).records[0]?.endTime).toBe('2026-11-03T10:00:00.000Z')
+  })
+
   it('extracts the code from the record link and remembers it', async () => {
     const { provider, store } = await fixture(({ url }) => {
       if (url.includes('/buy/create')) return json(PURCHASE)
@@ -613,6 +656,59 @@ describe('reading a code', () => {
 })
 
 describe('local records', () => {
+  it('exposes expiry methods through the capability without requiring a purchase token', async () => {
+    const { provider, store, clock, calls } = await fixture(
+      () => json({ code: 0, expire: '2026-11-03T10:00:00Z' }),
+      { token: null },
+    )
+    clock.now = new Date('2026-10-30T10:00:00Z')
+    await store.mutate((draft) => {
+      draft.records = [
+        {
+          tel: '+14155550100',
+          token: '',
+          api: 'https://sms.example.test/readonly',
+          apiId: null,
+          ordernum: '',
+          appId: null,
+          cateId: null,
+          type: null,
+          endTime: '',
+          remark: '',
+          status: null,
+          renew: null,
+          smsCount: null,
+          voiceCount: null,
+          addedAt: clock.now.toISOString(),
+          updatedAt: clock.now.toISOString(),
+          lastRead: null,
+        },
+      ]
+    })
+    const initial = await call<ExpirySnapshot>(provider, 'sim8.expiry.list')
+    expect(initial.pendingTels).toEqual(['+14155550100'])
+    const refreshed = await call<ExpirySnapshot>(provider, 'sim8.expiry.refresh', {
+      tels: initial.pendingTels,
+    })
+    expect(refreshed.items).toHaveLength(1)
+    const item = refreshed.items[0]!
+    const dismissed = await call<ExpirySnapshot>(provider, 'sim8.expiry.dismiss', {
+      tel: item.tel,
+      expiresAt: item.expiresAt,
+    })
+    expect(dismissed.items).toEqual([])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toBe('https://sms.example.test/readonly')
+    await expect(
+      call(provider, 'sim8.expiry.refresh', {
+        tels: Array.from({ length: 9 }, (_, i) => String(i)),
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    await expect(
+      call(provider, 'sim8.expiry.dismiss', { tel: item.tel, expiresAt: 'tomorrow' }),
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+  })
+
   it('lists, searches, removes and clears', async () => {
     const { provider } = await fixture(({ url }) => {
       if (url.includes('/buy/create')) return json(PURCHASE)

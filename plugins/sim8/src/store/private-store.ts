@@ -51,6 +51,7 @@ const readSchema = z.looseObject({
   truncated: z.boolean().default(false),
   contentType: z.string().default(''),
   fetchedAt: z.string().default(''),
+  expiresAt: z.string().nullable().default(null),
 })
 
 const recordSchema = z.looseObject({
@@ -71,6 +72,15 @@ const recordSchema = z.looseObject({
   addedAt: z.string().default(''),
   updatedAt: z.string().default(''),
   lastRead: readSchema.nullable().default(null),
+  expiry: z
+    .looseObject({
+      attemptedAt: z.string().nullable().default(null),
+      checkedAt: z.string().nullable().default(null),
+      dismissedOn: z.string().nullable().default(null),
+      dismissedFor: z.string().nullable().default(null),
+    })
+    .nullable()
+    .default(null),
 })
 
 const configSchema = z.looseObject({

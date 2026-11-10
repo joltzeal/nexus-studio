@@ -1,4 +1,5 @@
 import { normalizeTel } from './normalize.js'
+import { expiryState, parseExpiry } from './expiry.js'
 import type { PurchasedApi, SmsRead, SmsRecord } from './types.js'
 
 /** One JSON document holds every number, so growth has to stay bounded. */
@@ -36,6 +37,13 @@ function merge(existing: SmsRecord, incoming: PurchasedApi, now: string): SmsRec
     smsCount: incoming.smsCount ?? existing.smsCount,
     voiceCount: incoming.voiceCount ?? existing.voiceCount,
     updatedAt: now,
+    expiry:
+      (incoming.api !== '' && incoming.api !== existing.api) ||
+      (incoming.endTime !== '' &&
+        incoming.endTime !== existing.endTime &&
+        parseExpiry(incoming.endTime) !== parseExpiry(existing.endTime))
+        ? null
+        : (existing.expiry ?? null),
   }
 }
 
@@ -76,7 +84,21 @@ export function mergeRecords(
 }
 
 export function withLastRead(record: SmsRecord, read: SmsRead): SmsRecord {
-  return { ...record, lastRead: read, updatedAt: read.fetchedAt }
+  return {
+    ...record,
+    lastRead: read,
+    updatedAt: read.fetchedAt,
+    ...(read.expiresAt
+      ? {
+          endTime: read.expiresAt,
+          expiry: {
+            ...expiryState(record),
+            attemptedAt: read.fetchedAt,
+            checkedAt: read.fetchedAt,
+          },
+        }
+      : {}),
+  }
 }
 
 export function findRecord(

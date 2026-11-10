@@ -19,68 +19,54 @@ import {
 import { withinProfileDeadline } from './profile-deadline.js'
 import { initializeStoredOrigins } from './stored-origins.js'
 import { prepareBrowserProxy } from './browser-proxy.js'
+import { parseRuntimeWindow, type RuntimeWindow } from './runtime-window.js'
 
 export { verifySdkDependencies } from './sdk-dependencies.js'
+export { parseRuntimeWindow, type RuntimeWindow } from './runtime-window.js'
 
 const execFileAsync = promisify(execFile)
 
-export interface NativeProfile {
-  schema_version: 1
-  id: string
-  binary_path: string
-  proxy: string | null
-  proxy_plugin?: string | null
-  binding: { profile_id: string; channel_version: string }
-  settings?: WindowSettings
-}
-
-interface WindowSettings {
-  platform: string
-  note: string
-  geoip: boolean
-  timezone: string
-  locale: string
-  viewport: string
-  fingerprintSeed: number | null
-  startUrl: string
-}
-
 export function browserOptionsForWindow(
   userDataDir: string,
-  record: Pick<NativeProfile, 'proxy' | 'proxy_plugin' | 'settings'>,
+  record: Pick<RuntimeWindow, 'proxy' | 'proxy_plugin' | 'settings'>,
 ): Parameters<typeof launchPersistentContext>[0] {
   if (record.proxy_plugin && !record.proxy?.trim()) {
     throw new Error('PROFILE_PROXY_MISSING')
   }
   const settings = record.settings
   const viewport =
-    settings?.viewport === '1440x900'
+    settings.viewport === '1440x900'
       ? { width: 1440, height: 900 }
-      : settings?.viewport === '1920x1080'
+      : settings.viewport === '1920x1080'
         ? { width: 1920, height: 1080 }
         : undefined
   return {
     userDataDir,
     headless: false,
     ...(record.proxy ? { proxy: record.proxy } : {}),
-    ...(record.proxy && (settings?.geoip ?? true) ? { geoip: true } : {}),
-    ...(settings?.timezone ? { timezone: settings.timezone } : {}),
-    ...(settings?.locale ? { locale: settings.locale } : {}),
+    ...(record.proxy && settings.geoip ? { geoip: true } : {}),
+    ...(settings.timezone ? { timezone: settings.timezone } : {}),
+    ...(settings.locale ? { locale: settings.locale } : {}),
     ...(viewport ? { viewport } : {}),
-    ...(settings?.fingerprintSeed
-      ? { args: [`--fingerprint=${settings.fingerprintSeed}`] }
-      : {}),
+    args: [`--fingerprint=${settings.fingerprintSeed}`],
   }
 }
 
 export function parseBrowserVersion(output: string): string {
-  const match = output.match(/\b(\d+\.\d+\.\d+\.\d+(?:\.\d+)?)\b/)
+  const match = output.match(/(?<![\w.])(\d+\.\d+\.\d+\.\d+(?:\.\d+)?)(?![\w.])/)
   if (!match) throw new Error('BINARY_VERSION_UNKNOWN')
   return match[1]!
 }
 
 export function assertBinaryVersion(expected: string, actual: string): void {
-  if (expected !== actual) throw new Error('PROFILE_ENGINE_MISMATCH')
+  // Chromium can omit the package revision in --version. Package identity is
+  // checked separately against the explicitly bound full kernel version.
+  if (
+    expected !== actual &&
+    !(actual.split('.').length === 4 && expected.startsWith(`${actual}.`))
+  ) {
+    throw new Error('PROFILE_ENGINE_MISMATCH')
+  }
 }
 
 export async function binaryVersion(binaryPath: string): Promise<string> {
@@ -127,12 +113,7 @@ export async function prepareBinary(
       throw new Error('PROFILE_ENGINE_MISMATCH')
     }
     const version = await binaryVersion(binary_path)
-    if (
-      kernel.version !== version &&
-      !(version.split('.').length === 4 && kernel.version.startsWith(`${version}.`))
-    ) {
-      throw new Error('PROFILE_ENGINE_MISMATCH')
-    }
+    assertBinaryVersion(kernel.version, version)
     return { binary_path, version }
   }, report)
 }
@@ -174,24 +155,16 @@ export async function validateBrowserLicense(licenseKey: string): Promise<{
 
 async function launchProfileContext(
   userDataDir: string,
-  record: NativeProfile,
+  record: RuntimeWindow,
   snapshot = false,
 ): Promise<BrowserContext> {
-  if (
-    record.schema_version !== 1 ||
-    !record.binding ||
-    record.id !== record.binding.profile_id ||
-    typeof record.binary_path !== 'string' ||
-    typeof record.binding.channel_version !== 'string'
-  ) {
-    throw new Error('PROFILE_RECORD_INVALID')
-  }
+  parseRuntimeWindow(record)
   const licenseKey = requireActivation(process.env.CLOAKBROWSER_LICENSE_KEY)
-  await installedKernel(record.binary_path)
-  assertBinaryVersion(
-    record.binding.channel_version,
-    await binaryVersion(record.binary_path),
-  )
+  const kernel = await installedKernel(record.binary_path)
+  if (kernel.version !== record.kernel_version) {
+    throw new Error('PROFILE_ENGINE_MISMATCH')
+  }
+  assertBinaryVersion(record.kernel_version, await binaryVersion(record.binary_path))
   process.env.CLOAKBROWSER_BINARY_PATH = record.binary_path
   const controller = new AbortController()
   const originalFetch = globalThis.fetch
@@ -216,8 +189,9 @@ async function launchProfileContext(
         snapshot ? { ...record, proxy: null, proxy_plugin: null } : record,
       ),
       licenseKey,
-      browserVersion: record.binding.channel_version,
-      launchOptions: { timeout: 60_000 },
+      browserVersion: record.kernel_version,
+      releaseChannel: 'stable' as const,
+      launchOptions: { timeout: 60_000, executablePath: record.binary_path },
       contextOptions: {
         offline: true,
         ...(snapshot ? { serviceWorkers: 'block' as const } : {}),
@@ -253,7 +227,7 @@ async function launchProfileContext(
 
 export async function snapshotProfile(
   userDataDir: string,
-  record: NativeProfile,
+  record: RuntimeWindow,
 ): Promise<PortableState> {
   const context = await launchProfileContext(userDataDir, record, true)
   try {
@@ -291,7 +265,7 @@ export async function snapshotProfile(
 
 export async function openProfile(
   userDataDir: string,
-  record: NativeProfile,
+  record: RuntimeWindow,
   commands: AsyncIterable<string>,
 ): Promise<void> {
   const context = await launchProfileContext(userDataDir, record)
@@ -304,11 +278,11 @@ export async function openProfile(
     await restorePortableState(context, userDataDir)
     await context.setOffline(false)
     process.stdout.write('NEXUS_READY\n')
-    if (record.settings?.startUrl) {
+    if (record.settings.startUrl) {
       // Navigation is independent of browser readiness and of the stop command loop.
       void (async () => {
         const page = context.pages()[0] ?? (await context.newPage())
-        await page.goto(record.settings!.startUrl, {
+        await page.goto(record.settings.startUrl, {
           timeout: 30_000,
           waitUntil: 'domcontentloaded',
         })

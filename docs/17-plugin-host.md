@@ -8,18 +8,27 @@
 
 ## 1. 代码位置与组成
 
-| 文件                              | 职责                                            |
-| --------------------------------- | ----------------------------------------------- |
-| `core/plugin_host/manifest.rs`    | 严格解析并校验 manifest，拒绝未知字段与不兼容项 |
-| `core/plugin_host/discovery.rs`   | 扫描插件包，读取入口与 digest，汇总扫描问题     |
-| `core/plugin_host/install.rs`     | 复制安装、校验复制结果、卸载与目录清理          |
-| `core/plugin_host/package.rs`     | `.nexuspkg` 切片与逐文件校验、密钥推导          |
-| `core/plugin_host/market.rs`      | 商店地址、catalog 解析、HTTP/文件拉取、版本比较 |
-| `core/plugin_host/registry.rs`    | `registry.json` 读写、上限读取与原子写入        |
-| `core/plugin_host/process.rs`     | 受管 Node.js 子进程、握手、调用、取消、脱敏     |
-| `core/plugin_host/permissions.rs` | 能力与域名的检查点                              |
-| `core/plugin_host/mod.rs`         | 宿主状态机、安装/监督重启/调用、窗口启动阻断    |
-| `core/plugin_service.rs`          | 桌面命令与初始化，与窗口服务共享同一个宿主实例  |
+| 文件                                     | 职责                                             |
+| ---------------------------------------- | ------------------------------------------------ |
+| `core/plugin_host/manifest.rs`           | 严格解析并校验 manifest，拒绝未知字段与不兼容项  |
+| `core/plugin_host/discovery.rs`          | 扫描插件包，读取入口与 digest，汇总扫描问题      |
+| `core/plugin_host/install.rs`            | 复制安装、校验复制结果、卸载与目录清理           |
+| `core/plugin_host/package.rs`            | `.nexuspkg` 切片与逐文件校验、密钥推导           |
+| `core/plugin_host/market.rs`             | 商店地址、catalog 解析、HTTP/文件拉取、版本比较  |
+| `core/plugin_host/registry.rs`           | `registry.json` 读写、上限读取与原子写入         |
+| `core/plugin_host/process.rs`            | 受管 Node.js 子进程、握手、调用、取消、脱敏      |
+| `core/plugin_host/permissions.rs`        | 能力与域名的检查点                               |
+| `core/plugin_host/mod.rs`                | 宿主状态机、安装/监督重启/调用、窗口启动阻断     |
+| `core/plugin_service.rs`                 | 桌面命令与初始化，与窗口服务共享同一个宿主实例   |
+| `core/window_service.rs`                 | 统一窗口 API、操作锁、代理解析与调度协调         |
+| `core/window_store.rs`                   | `WindowRecord` schema 2 持久化与代理来源校验     |
+| `core/browser/providers/cloakbrowser.rs` | 内置许可、内核、运行时、网络配置及受管浏览器进程 |
+
+`plugin_service` 初始化同一个 `Arc<PluginHost>`，供插件命令、`WindowService` 与迁移服务使用。
+`WindowService` 通过 `builtin: Arc<CloakBrowserProvider>` 访问内置资源，
+外部 provider 则调用厂商的本机管理 API。
+窗口由 `WindowStore` 保存为 schema 2，绑定包含 `provider_id`、`connection_id` 和
+`profile_id`；插件业务关联始终使用 Nexus 窗口 UUID，不使用厂商环境 ID。
 
 数据根目录为 `app_data_dir/plugins`：
 
@@ -134,7 +143,7 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 标准输出只承载协议消息。标准错误进入 4 KiB 环形缓冲作为诊断，
 写入前把 `scheme://user:pass@host` 改写为 `scheme://***@host`。
-启动解析的 `connectionUrl` 可能包含认证信息，只用于进程间启动传递，不写入日志；
+原生操作解析的 `connectionUrl` 可能包含认证信息，只交给对应 provider 使用，不写入日志；
 `ResolvedBrowserProxy` 的 `Debug` 实现隐藏完整连接地址。
 
 ## 7. 密码归属
@@ -142,17 +151,22 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 宿主没有系统钥匙串，也没有宿主侧凭据库。
 代理密码与 proxycheck 密钥由插件自己明文写入私有目录的 `secrets.json`（权限 0600），
 与 `proxy-pool.json` 同目录、同样的保护级别。宿主不读取插件存储的业务结构，也不代为保管。
-启动所需的代理密码会由插件解析并放入 `connectionUrl`，临时经过插件 IPC、宿主内存与
-浏览器适配器的标准输入；不能再把这一边界描述为“宿主从不接收密码”。
+原生操作所需的代理密码由插件解析并放入 `connectionUrl`，临时经过插件 IPC 和宿主内存。
+内置 `CloakBrowserProvider` 将其填入本次 schema 2 运行配置，经标准输入传给
+`profile-runner.js`。支持插件代理的外部 provider 会通过本机管理 API 应用该配置，
+厂商可能持久化收到的代理信息；不能把这一边界描述为“宿主从不接收密码”。
 
 - manifest 的 `permissions.secrets` 仍声明槽位名，用于说明插件需要哪些密钥，
   宿主不提供密钥库状态，页面只能展示槽位名，无法据此报告“已保存”。
 - `proxy.resolve` 的 `configHandle` 与 `secretRef` 仍是不透明引用，由插件自己解析；
   调度快照与 `ProxyReference` 只保存句柄和引用，不保存连接地址或密码。
-- `connectionUrl` 只用于本次启动，不写回窗口记录、不进入 UI，也不进入日志或错误消息。
+- 插件解析的 `connectionUrl` 只用于本次原生操作，不写回 Nexus 的 `WindowRecord`、
+  不进入 UI，也不进入日志或错误消息。
   插件无法解析必需密码时必须失败，不得生成省略认证的地址。
 - WebView 的通用 `plugin_call` 不允许调用原生启动专用的 `proxy.resolve`，
   避免将完整连接信息返回页面；普通列表、检测和配置方法继续通过既有插件接口使用。
+- `account.pool` 的 `window.detach` 同样只供原生删除流程调用，通用 `plugin_call`
+  明确拒绝。方法幂等解除窗口关联，清理失败保留待完成删除，不删除账号或号码本身。
 - 卸载插件时删除整个安装目录，私有目录由用户或后续清理入口处理。
 - 这是本地明文文件，能读取该用户文件的程序都能读到密码，产品不宣称加密或隔离。
 
@@ -175,12 +189,20 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 ## 9. 窗口启动阻断
 
-窗口记录新增 `proxy_plugin` 字段，与手动 `proxy` 互斥，由
-`profile_store` 在写入时校验（同时给出两者或 ID 非法都会被拒绝）。
+`WindowRecord` schema 2 用 `proxy_mode` 明确区分 `direct`、`manual`、`plugin` 和
+外部接入的 `provider` 模式。`WindowStore` 校验模式与 `proxy`、`proxy_plugin`、
+`proxy_endpoint` 一致：手动地址与插件引用互斥，直连和厂商管理模式不得携带这两类配置，
+插件 ID 与指定端点 ID 也必须有效。
 
-启动顺序为：解析代理 → 预留调度槽位 → 启动浏览器。解析失败时槽位不会被占用：
+`browser_window_start({ id })` 进入统一 `WindowService`，先持有窗口操作锁、检查待处理操作，
+再确认绑定、接入范围和实际状态。外部写操作要求启用接入并人工确认当前账号或工作区；
+本机 API 可达不等于已验证账号身份。随后按 provider 能力检查代理来源，
+解析代理、持久化启动意图并预留调度快照，再交给 provider 启动。
+代理解析失败时不会预留启动槽位。
+AdsPower 当前的 `update` 与 `proxy_plugin` 能力均关闭，不能使用插件代理启动或修改厂商配置；
+Nexus 备注等本地元数据仍可编辑。
 
-1. 记录里有 `proxy_plugin` 时，调用 `resolve_browser_proxy(plugin_id, window_id, endpoint_id)`，
+1. `proxy_mode: plugin` 时，调用 `resolve_browser_proxy(plugin_id, window_id, endpoint_id)`，
    内部只发一次 `proxy.resolve`，截止时间 20 秒。RPC payload 只有 `{ endpointId }`，
    不发送严格 schema 不接受的 `windowId`；公开方法保留未使用的 `_window_id` 参数。
 2. `endpoint_id` 指定一行时不要求默认项；未指定时才使用插件默认项。
@@ -194,15 +216,20 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
    已安装插件缺少有效字符串 `connectionUrl` 时明确提示更新或重新安装并阻断启动，
    无效地址返回不含输入内容的协议错误。
 4. `reference` 用于调度器的必需代理绑定；`connection_url` 只填入本次启动的临时配置，
-   经标准输入传给浏览器适配器，不保存到窗口记录、调度快照或 UI。调用方直接使用该结果，
+   内置 provider 经标准输入传给 `profile-runner.js`，支持的外部 provider 经独立直连的
+   loopback 管理 API 应用到指定环境。Nexus 不将解析地址写入窗口记录、调度快照或 UI；
+   外部厂商的持久化边界见第 7 节。调用方直接使用该结果，
    不再调用 `resolve_proxy` 重新解析，避免两次解析选择不同配置。
 5. `resolve_proxy(plugin_id, window_id, endpoint_id) -> Result<ProxyReference, HostError>`
    保留只返回不透明引用的原有接口，复用相同调用和解析 helper，
    不要求旧插件返回 `connectionUrl`。公开 SDK 的 `ProxyProvider.resolve()` 也保持只返回引用。
-6. 记录里没有插件也没有手动代理时才使用直连；插件失败不会退化为直连。
-   浏览器适配器收到 `proxy_plugin` 却没有运行时 `proxy` 时也必须拒绝启动。
+6. 只有明确的 `proxy_mode: direct` 才按直连配置启动；
+   外部 `provider` 模式保留厂商配置，不解析插件代理。插件失败不会退化为直连。
+   内置运行时收到 `proxy_plugin` 却没有已解析的运行时 `proxy` 时也必须拒绝启动。
 
-宿主未初始化时启动直接失败，提示“代理插件宿主未初始化，窗口启动被阻断”。
+宿主未初始化时插件代理启动直接失败，提示“代理插件宿主不可用”。
+内置 `profile-runner` 的 `launch` / `snapshot` 只接受 schema 2 的内置绑定记录；
+它不是外部 provider 的运行入口，也没有旧窗口格式的兼容读取。
 
 ## 10. 桌面命令与页面
 
@@ -287,6 +314,9 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 
 ## 13. 窗口迁移边界
 
+迁移服务持有同一个 `Arc<WindowService>`，通过 `WindowService.builtin` 使用内置资源。
+`window_transfer_*` 和 `window_sync_*` 原生命令只处理内置窗口的 manifest 3；
+整批操作含任一外部绑定即拒绝，不复制厂商目录或读取旧迁移格式。
 窗口迁移服务通过插件的 `transfer.export/import/rollback/commit` 交换不透明附件，
 不读取账号池或代理池的私有业务文件。WebView 通用 `plugin_call` 拒绝 `transfer.*`
 及 `window.sync` 能力；配对秘密、临时文件路径和导入收据由专用原生命令管理。

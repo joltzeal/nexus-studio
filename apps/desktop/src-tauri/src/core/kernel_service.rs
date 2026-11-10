@@ -1,7 +1,7 @@
 use super::license_store::LicenseStore;
 use super::network_proxy::NetworkProxyStore;
-use super::profile_store::PreparedBinary;
 use super::runtime_paths::RuntimePaths;
+use super::window_store::PreparedBinary;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -543,6 +543,52 @@ pub(super) fn sanitize_kernel_error(detail: &str) -> String {
     } else {
         "浏览器内核准备失败，请在设置的「浏览器内核」中重新下载".into()
     }
+}
+
+use tauri::State;
+#[tauri::command]
+pub async fn kernel_status(
+    state: State<'_, Arc<super::window_service::WindowService>>,
+    refresh: Option<bool>,
+) -> Result<KernelStatus, KernelFailure> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .builtin
+            .kernels
+            .status(refresh.unwrap_or(false))
+            .map_err(KernelFailure::operation)
+    })
+    .await
+    .map_err(|_| KernelFailure::operation("内核状态读取中断"))?
+}
+
+#[tauri::command]
+pub async fn kernel_check_latest(
+    state: State<'_, Arc<super::window_service::WindowService>>,
+) -> Result<KernelRelease, KernelFailure> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.builtin.kernels.check_latest())
+        .await
+        .map_err(|_| KernelFailure::operation("内核版本检查中断"))?
+}
+
+#[tauri::command]
+pub async fn kernel_download(
+    state: State<'_, Arc<super::window_service::WindowService>>,
+    version: Option<String>,
+) -> Result<String, KernelFailure> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .builtin
+            .kernels
+            .download(version.as_deref())
+            .map(|binary| binary.version)
+            .map_err(|message| state.builtin.kernels.failure(message))
+    })
+    .await
+    .map_err(|_| KernelFailure::operation("内核下载任务中断"))?
 }
 
 #[cfg(test)]

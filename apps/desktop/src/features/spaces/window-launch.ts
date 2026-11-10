@@ -1,4 +1,4 @@
-import type { NativeProfile } from '@/lib/platform/native-profiles'
+import type { BrowserWindow } from '@/lib/platform/windows'
 import { transferError } from '@/lib/platform/native-transfer'
 import { WaitTimeoutError, withDeadline } from './transfer-state'
 
@@ -9,8 +9,8 @@ export class LaunchUnconfirmedError extends Error {
 export async function launchAndConfirm(
   id: string,
   start: () => Promise<void>,
-  read: () => Promise<NativeProfile[]>,
-): Promise<NativeProfile[]> {
+  read: () => Promise<BrowserWindow[]>,
+): Promise<BrowserWindow[]> {
   try {
     await withDeadline(
       start(),
@@ -21,7 +21,7 @@ export async function launchAndConfirm(
     if (cause instanceof WaitTimeoutError) throw new LaunchUnconfirmedError(cause.message)
     throw cause
   }
-  let records: NativeProfile[]
+  let records: BrowserWindow[]
   try {
     records = await withDeadline(
       read(),
@@ -33,7 +33,7 @@ export async function launchAndConfirm(
       `启动调用已返回，但运行状态尚未确认：${transferError(cause)}`,
     )
   }
-  if (!records.some((record) => record.id === id && record.running)) {
+  if (!records.some((record) => record.id === id && record.state === 'running')) {
     throw new LaunchUnconfirmedError(
       '宿主尚未确认窗口正在运行。请重新读取状态后再决定是否重试。',
     )

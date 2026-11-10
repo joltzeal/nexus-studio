@@ -2,7 +2,7 @@ import { checkProxy, getConfig, probeProxy } from '@/features/proxy/api'
 import { message, type CheckResult } from '@/features/proxy/types'
 import { withDeadline } from './transfer-state'
 
-/** The three ways a window can reach the network. */
+/** Nexus-managed proxy sources; provider-owned proxy settings stay with the provider. */
 export interface WindowProxyRef {
   proxy: string | null
   proxyPlugin: string | null
@@ -20,8 +20,8 @@ export function hasProxy(ref: WindowProxyRef): boolean {
 
 /**
  * Runs the pool plugin's own check for a window's proxy. A pinned endpoint is
- * checked directly; a legacy window that only names the plugin falls back to
- * the plugin's default endpoint; a typed address is probed without saving it.
+ * checked directly; selecting the plugin without an endpoint uses its declared
+ * default endpoint; a typed address is probed without saving it.
  */
 export async function checkWindowProxy(ref: WindowProxyRef): Promise<ProxyCheckOutcome> {
   try {

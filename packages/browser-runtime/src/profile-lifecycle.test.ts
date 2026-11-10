@@ -1,13 +1,14 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { BrowserContext } from 'playwright-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { launchPersistentContext } from 'cloakbrowser'
+import { ensureBinary, launchPersistentContext } from 'cloakbrowser'
+import { runtimeWindow } from '../fixtures/runtime-window.js'
 import { resolveOnlineProxyGeo } from './online-proxy-geo.js'
 import * as runtime from './profile-runtime.js'
-import type { NativeProfile } from './profile-runtime.js'
+import type { RuntimeWindow } from './profile-runtime.js'
 
 vi.mock('cloakbrowser', () => ({
   launchPersistentContext: vi.fn(),
@@ -89,7 +90,7 @@ class ContextDouble extends EventEmitter {
 }
 
 let directory: string
-let profile: NativeProfile
+let profile: RuntimeWindow
 let context: ContextDouble
 let stop: ReturnType<typeof deferred<void>>
 let running: Promise<unknown> | undefined
@@ -121,12 +122,10 @@ beforeEach(async () => {
     `#!${process.execPath}\nprocess.stdout.write('CloakBrowser 155.0.8059.39.2\\n')\n`,
     { mode: 0o700 },
   )
-  profile = {
-    schema_version: 1,
-    id: 'profile',
+  profile = runtimeWindow({
     binary_path: binary,
-    binding: { profile_id: 'profile', channel_version: '155.0.8059.39.2' },
     proxy: 'http://account:p%40ss@proxy.example:8080',
+    proxy_mode: 'manual',
     settings: {
       platform: '',
       note: '',
@@ -134,10 +133,10 @@ beforeEach(async () => {
       timezone: '',
       locale: '',
       viewport: 'default',
-      fingerprintSeed: null,
+      fingerprintSeed: 123456789,
       startUrl: 'https://start.example',
     },
-  }
+  })
   context = new ContextDouble()
   // The pending navigation is deliberate; consume rejections in tests that never navigate.
   void context.navigation.promise.catch(() => {})
@@ -179,6 +178,205 @@ afterEach(async () => {
 })
 
 describe('profile context lifecycle', () => {
+  it.each(['launch', 'snapshot'])(
+    'uses only the persisted package, binary and fingerprint after reloading a window for %s',
+    async (action) => {
+      const path = join(directory, 'window.json')
+      await writeFile(path, JSON.stringify(profile))
+      const record = JSON.parse(await readFile(path, 'utf8')) as RuntimeWindow
+      await writeFile(
+        profile.binary_path,
+        `#!${process.execPath}\nconsole.log('Chromium 155.0.8059.39')\n`,
+      )
+      const other = profile.binary_path.replace('155.0.8059.39.2', '155.0.8059.39.3')
+      await mkdir(dirname(other), { recursive: true })
+      await writeFile(other, '#!/bin/sh\nexit 42\n', { mode: 0o700 })
+      vi.stubEnv('CLOAKBROWSER_BINARY_PATH', other)
+      vi.stubEnv('CLOAKBROWSER_VERSION', '155.0.8059.39.3')
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (action === 'snapshot') {
+          await runtime.snapshotProfile(join(directory, 'user-data'), record)
+        } else {
+          stop.resolve()
+          await runtime.openProfile(join(directory, 'user-data'), record, commands())
+        }
+      }
+      expect(launchPersistentContext).toHaveBeenCalledTimes(2)
+      for (const [options] of vi.mocked(launchPersistentContext).mock.calls) {
+        expect(options.browserVersion).toBe('155.0.8059.39.2')
+        expect(options.args).toContain('--fingerprint=123456789')
+        expect(options.launchOptions?.executablePath).toBe(record.binary_path)
+      }
+      expect(process.env.CLOAKBROWSER_BINARY_PATH).toBe(record.binary_path)
+      expect(ensureBinary).not.toHaveBeenCalled()
+      expect(record).toEqual(profile)
+      expect(await readFile(path, 'utf8')).toBe(JSON.stringify(profile))
+    },
+  )
+
+  it('launches the resolved proxy URL without changing its opaque plugin reference or numeric endpoint', async () => {
+    profile.proxy_mode = 'plugin'
+    profile.proxy_plugin = 'opaque/plugin-ref:v2'
+    profile.proxy_endpoint = 37
+    const original = structuredClone(profile)
+    stop.resolve()
+    await runtime.openProfile(join(directory, 'user-data'), profile, commands())
+    expect(vi.mocked(launchPersistentContext).mock.calls[0]![0].proxy).toBe(
+      original.proxy,
+    )
+    expect(profile).toEqual(original)
+    expect(output).toBe('NEXUS_READY\n')
+    expect(diagnostics).not.toContain('p%40ss')
+  })
+
+  it('blocks an unresolved plugin proxy without a direct launch or online request', async () => {
+    profile.proxy_mode = 'plugin'
+    profile.proxy = null
+    profile.proxy_plugin = 'opaque/plugin-ref:v2'
+    profile.proxy_endpoint = 37
+    const original = structuredClone(profile)
+    await expect(
+      runtime.openProfile(join(directory, 'user-data'), profile, commands()),
+    ).rejects.toThrow('PROFILE_PROXY_MISSING')
+    expect(profile).toEqual(original)
+    expect(launchPersistentContext).not.toHaveBeenCalled()
+    expect(resolveOnlineProxyGeo).not.toHaveBeenCalled()
+    expect(output).toBe('')
+  })
+
+  it.each(['launch', 'snapshot'])(
+    'rejects a missing bound binary before %s even when another revision is installed',
+    async (action) => {
+      const other = profile.binary_path.replace('155.0.8059.39.2', '155.0.8059.39.3')
+      await mkdir(dirname(other), { recursive: true })
+      await writeFile(other, '#!/bin/sh\nexit 42\n', { mode: 0o700 })
+      await rm(profile.binary_path)
+      await expect(
+        action === 'snapshot'
+          ? runtime.snapshotProfile(join(directory, 'user-data'), profile)
+          : runtime.openProfile(join(directory, 'user-data'), profile, commands()),
+      ).rejects.toThrow('PROFILE_ENGINE_UNSUPPORTED')
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(ensureBinary).not.toHaveBeenCalled()
+      expect(output).toBe('')
+    },
+  )
+
+  it.each(['launch', 'snapshot'])(
+    'rejects a different full package revision with the same display version before %s',
+    async (action) => {
+      await writeFile(
+        profile.binary_path,
+        `#!${process.execPath}\nconsole.log('Chromium 155.0.8059.39')\n`,
+      )
+      profile.kernel_version = '155.0.8059.39.3'
+      await expect(
+        action === 'snapshot'
+          ? runtime.snapshotProfile(join(directory, 'user-data'), profile)
+          : runtime.openProfile(join(directory, 'user-data'), profile, commands()),
+      ).rejects.toThrow('PROFILE_ENGINE_MISMATCH')
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(ensureBinary).not.toHaveBeenCalled()
+      expect(output).toBe('')
+    },
+  )
+
+  it.each(['launch', 'snapshot'])(
+    'rejects the old schema before %s without reading its binary or calling the SDK',
+    async (action) => {
+      const record = {
+        schema_version: 1,
+        id: profile.id,
+        binary_path: profile.binary_path,
+        binding: {
+          profile_id: profile.id,
+          channel_version: '155.0.8059.39.2',
+        },
+        proxy: null,
+      } as unknown as RuntimeWindow
+      vi.stubEnv('CLOAKBROWSER_LICENSE_KEY', '')
+      await expect(
+        action === 'snapshot'
+          ? runtime.snapshotProfile(join(directory, 'user-data'), record)
+          : runtime.openProfile(join(directory, 'user-data'), record, commands()),
+      ).rejects.toThrow('PROFILE_RECORD_INVALID')
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(resolveOnlineProxyGeo).not.toHaveBeenCalled()
+      expect(output).toBe('')
+    },
+  )
+
+  it.each([
+    ['schema', { schema_version: 1 }],
+    ['provider', { binding: { ...runtimeWindow().binding, provider_id: 'adspower' } }],
+    ['connection', { binding: { ...runtimeWindow().binding, connection_id: 'other' } }],
+    ['profile ID', { binding: { ...runtimeWindow().binding, profile_id: 'profile' } }],
+    [
+      'another profile ID',
+      {
+        binding: {
+          ...runtimeWindow().binding,
+          profile_id: '6cd8605b-ad6f-44e3-951a-110380c34483',
+        },
+      },
+    ],
+    [
+      'channel binding',
+      { binding: { profile_id: runtimeWindow().id, channel_version: '155.0.8059.39.2' } },
+    ],
+    [
+      'extra channel binding',
+      { binding: { ...runtimeWindow().binding, channel_version: '155.0.8059.39.2' } },
+    ],
+    ['missing kernel', { kernel_version: undefined }],
+    ['null kernel', { kernel_version: null }],
+    ['short kernel', { kernel_version: '155' }],
+    ['legacy kernel', { kernel_version: 'cloak:155.0.8059.39.2' }],
+    ['missing binary', { binary_path: undefined }],
+    ['null binary', { binary_path: null }],
+    ['relative binary', { binary_path: basename(runtimeWindow().binary_path) }],
+    ['missing settings', { settings: undefined }],
+    ['null settings', { settings: null }],
+    [
+      'missing seed',
+      { settings: { ...runtimeWindow().settings, fingerprintSeed: undefined } },
+    ],
+    ['null seed', { settings: { ...runtimeWindow().settings, fingerprintSeed: null } }],
+    ['zero seed', { settings: { ...runtimeWindow().settings, fingerprintSeed: 0 } }],
+    [
+      'fractional seed',
+      { settings: { ...runtimeWindow().settings, fingerprintSeed: 1.5 } },
+    ],
+    [
+      'out of range seed',
+      { settings: { ...runtimeWindow().settings, fingerprintSeed: 2_147_483_648 } },
+    ],
+    [
+      'snake case settings',
+      { settings: { ...runtimeWindow().settings, fingerprint_seed: 42 } },
+    ],
+    ['provider proxy', { proxy_mode: 'provider' }],
+    ['unknown proxy', { proxy_mode: 'automatic' }],
+    ['missing proxy mode', { proxy_mode: undefined }],
+    ['direct proxy mismatch', { proxy_mode: 'direct' }],
+    ['missing plugin reference', { proxy_mode: 'plugin' }],
+    ['invalid provider config', { provider_config: [] }],
+    ['missing metadata', { created_at: undefined }],
+    ['unknown record field', { version: '155.0.8059.39' }],
+  ])(
+    'rejects an invalid version 2 %s without launch side effects',
+    async (_name, overrides) => {
+      const record = { ...profile, ...overrides } as RuntimeWindow
+      vi.stubEnv('CLOAKBROWSER_LICENSE_KEY', '')
+      await expect(
+        runtime.openProfile(join(directory, 'user-data'), record, commands()),
+      ).rejects.toThrow('PROFILE_RECORD_INVALID')
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(resolveOnlineProxyGeo).not.toHaveBeenCalled()
+      expect(output).toBe('')
+    },
+  )
+
   it('waits for portable restoration before readiness or remote navigation', async () => {
     const path = join(directory, 'portable-state.json')
     await writeFile(
@@ -247,7 +445,7 @@ describe('profile context lifecycle', () => {
   })
 
   it('keeps a healthy context usable after start-page timeout and redacts navigation secrets', async () => {
-    profile.settings!.startUrl = 'https://start.example/private?session=do-not-log'
+    profile.settings.startUrl = 'https://start.example/private?session=do-not-log'
     running = runtime.openProfile(join(directory, 'user-data'), profile, commands())
     await vi.waitFor(() => expect(context.events).toContain('navigate'))
     context.navigation.reject(
@@ -337,13 +535,31 @@ describe('profile context lifecycle', () => {
   })
 
   it('does not launch a different binary version or claim readiness', async () => {
-    profile.binding.channel_version = '155.0.8059.39.3'
+    profile.kernel_version = '155.0.8059.39.3'
     await expect(
       runtime.openProfile(join(directory, 'user-data'), profile, commands()),
     ).rejects.toThrow('PROFILE_ENGINE_MISMATCH')
     expect(launchPersistentContext).not.toHaveBeenCalled()
     expect(output).toBe('')
   })
+
+  it.each(['154.0.8000.10', '155.0.8059.39.3'])(
+    'rejects a substituted executable reporting %s at the bound path',
+    async (version) => {
+      const original = structuredClone(profile)
+      await writeFile(
+        profile.binary_path,
+        `#!${process.execPath}\nconsole.log('Chromium ${version}')\n`,
+      )
+      await expect(
+        runtime.openProfile(join(directory, 'user-data'), profile, commands()),
+      ).rejects.toThrow('PROFILE_ENGINE_MISMATCH')
+      expect(profile).toEqual(original)
+      expect(launchPersistentContext).not.toHaveBeenCalled()
+      expect(resolveOnlineProxyGeo).not.toHaveBeenCalled()
+      expect(output).toBe('')
+    },
+  )
 
   it.each(['launch', 'snapshot'])(
     'requires activation before %s even with a cached binary',
@@ -381,6 +597,22 @@ describe('profile context lifecycle', () => {
 })
 
 describe('portable snapshot lifecycle', () => {
+  it('snapshots an unresolved plugin proxy offline and preserves its numeric endpoint', async () => {
+    profile.proxy_mode = 'plugin'
+    profile.proxy = null
+    profile.proxy_plugin = 'opaque/plugin-ref:v2'
+    profile.proxy_endpoint = 37
+    const original = structuredClone(profile)
+    await runtime.snapshotProfile(join(directory, 'user-data'), profile)
+    const options = vi.mocked(launchPersistentContext).mock.calls[0]![0]
+    expect(options.proxy).toBeUndefined()
+    expect(options.geoip).toBe(false)
+    expect(options.args).toContain('--fingerprint=123456789')
+    expect(resolveOnlineProxyGeo).not.toHaveBeenCalled()
+    expect(profile).toEqual(original)
+    expect(output).toBe('')
+  })
+
   it('recaptures a not-yet-opened imported profile without consuming its pending state', async () => {
     const path = join(directory, 'portable-state.json')
     const bytes = JSON.stringify({

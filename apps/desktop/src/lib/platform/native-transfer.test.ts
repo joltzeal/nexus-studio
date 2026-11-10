@@ -43,7 +43,7 @@ describe('native window transfer contracts', () => {
     }
     vi.mocked(invoke).mockResolvedValue({ ...status, journalPath: '/internal/path' })
     await expect(windowTransferRecovery()).resolves.toEqual(status)
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('profile_transfer_recovery_status', {})
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('window_transfer_recovery_status', {})
   })
 
   it('accepts a recovery status with nothing pending', async () => {
@@ -72,8 +72,8 @@ describe('native window transfer contracts', () => {
     vi.mocked(invoke).mockResolvedValueOnce('/tmp/a.nexuswindow').mockResolvedValue(null)
     await expect(pickTransferPath(true)).resolves.toBe('/tmp/a.nexuswindow')
     await expect(pickTransferPath(false)).resolves.toBeNull()
-    expect(invoke).toHaveBeenNthCalledWith(1, 'profile_transfer_pick', { save: true })
-    expect(invoke).toHaveBeenNthCalledWith(2, 'profile_transfer_pick', { save: false })
+    expect(invoke).toHaveBeenNthCalledWith(1, 'window_transfer_pick', { save: true })
+    expect(invoke).toHaveBeenNthCalledWith(2, 'window_transfer_pick', { save: false })
   })
 
   it('exports exact selected ids, password and native path without altering them', async () => {
@@ -81,7 +81,7 @@ describe('native window transfer contracts', () => {
     await expect(
       exportWindows(['a'], ' password ', '/tmp/a.nexuswindow'),
     ).resolves.toEqual({ ...report, path: '/tmp/a.nexuswindow' })
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('profile_transfer_export', {
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('window_transfer_export', {
       ids: ['a'],
       password: ' password ',
       path: '/tmp/a.nexuswindow',
@@ -97,16 +97,16 @@ describe('native window transfer contracts', () => {
       importWindows('/tmp/a.nexuswindow', 'password', 'copy'),
     ).resolves.toEqual(report)
     await importWindows('/tmp/a.nexuswindow', 'password', 'replace')
-    expect(invoke).toHaveBeenNthCalledWith(1, 'profile_transfer_inspect', {
+    expect(invoke).toHaveBeenNthCalledWith(1, 'window_transfer_inspect', {
       path: '/tmp/a.nexuswindow',
       password: 'password',
     })
-    expect(invoke).toHaveBeenNthCalledWith(2, 'profile_transfer_import', {
+    expect(invoke).toHaveBeenNthCalledWith(2, 'window_transfer_import', {
       path: '/tmp/a.nexuswindow',
       password: 'password',
       mode: 'copy',
     })
-    expect(invoke).toHaveBeenNthCalledWith(3, 'profile_transfer_import', {
+    expect(invoke).toHaveBeenNthCalledWith(3, 'window_transfer_import', {
       path: '/tmp/a.nexuswindow',
       password: 'password',
       mode: 'replace',
@@ -154,7 +154,7 @@ describe('native window transfer contracts', () => {
   it('uses an export password verbatim when inspecting its snapshot', async () => {
     vi.mocked(invoke).mockResolvedValue(inspection)
     await inspectTransfer('/tmp/a.nexuswindow', '        ')
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('profile_transfer_inspect', {
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('window_transfer_inspect', {
       path: '/tmp/a.nexuswindow',
       password: '        ',
     })
@@ -183,12 +183,12 @@ describe('native window transfer contracts', () => {
     await cancelWindowSync('job')
     await expect(importWindowSync('job', 'replace')).resolves.toEqual(report)
     expect(vi.mocked(invoke).mock.calls).toEqual([
-      ['profile_sync_offer', { ids: ['a'] }],
-      ['profile_sync_receive', { invitation: 'invitation', host: null }],
-      ['profile_sync_receive', { invitation: 'invitation', host: '192.0.2.1' }],
-      ['profile_sync_status', { id: 'job' }],
-      ['profile_sync_cancel', { id: 'job' }],
-      ['profile_sync_import', { id: 'job', mode: 'replace' }],
+      ['window_sync_offer', { ids: ['a'] }],
+      ['window_sync_receive', { invitation: 'invitation', host: null }],
+      ['window_sync_receive', { invitation: 'invitation', host: '192.0.2.1' }],
+      ['window_sync_status', { id: 'job' }],
+      ['window_sync_cancel', { id: 'job' }],
+      ['window_sync_import', { id: 'job', mode: 'replace' }],
     ])
   })
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { parseWindowConfig } from '@/demo/model'
-import type { NativeProfile } from '@/lib/platform/native-profiles'
-import { configOf } from './window-config'
+import type { BrowserWindow } from '@/lib/platform/windows'
+import { browserWindow } from '@/lib/platform/browser-test-support'
+import { configOf, parseWindowConfig } from './window-config'
 
 const CONFIG_KEYS = [
   'proxy',
@@ -13,15 +13,15 @@ const CONFIG_KEYS = [
   'startUrl',
 ]
 
-function profile(overrides: Partial<NativeProfile> = {}): NativeProfile {
+function profile(overrides: Partial<BrowserWindow> = {}): BrowserWindow {
   return {
+    ...browserWindow(),
     id: 'p1',
     name: 'Window',
     version: '155.0.1.2',
     proxy: null,
     proxyPlugin: null,
     proxyEndpoint: null,
-    running: false,
     groupId: null,
     settings: {
       platform: 'Vinted',
@@ -70,6 +70,50 @@ describe('window editor config', () => {
       protocol: 'http',
       server: 'http://host:8080',
     })
+    expect(configOf(profile({ proxy: 'https://host:8443' })).proxy).toEqual({
+      protocol: 'https',
+      server: 'https://host:8443',
+    })
+  })
+
+  it.each(['http', 'https', 'socks5'])(
+    'preserves the full authenticated %s URL through validation',
+    (protocol) => {
+      const server = `${protocol}://fixture%40user:fixture%3Apass@proxy.test:1080`
+      const config = configOf(profile({ proxy: server }))
+      expect(config.proxy.protocol).toBe(protocol)
+      expect(parseWindowConfig(config).proxy.server).toBe(server)
+    },
+  )
+
+  it.each([
+    ['http', 'http://fixture-user:fixture-pass@proxy.test:80/'],
+    ['https', 'https://fixture-user:fixture-pass@proxy.test:443'],
+    ['socks5', 'socks5://fixture-user:fixture-pass@[::1]:1080'],
+  ])('preserves explicit ports and URL syntax for %s', (protocol, server) => {
+    expect(
+      parseWindowConfig({ ...configOf(null), proxy: { protocol, server } }).proxy.server,
+    ).toBe(server)
+  })
+
+  it.each([
+    { proxy: { protocol: 'https', server: 'http://proxy.test:8080' } },
+    { proxy: { protocol: 'socks5h', server: 'socks5h://proxy.test:1080' } },
+    { proxy: { protocol: 'http', server: 'http://proxy.test' } },
+    { proxy: { protocol: 'http', server: 'http://proxy.test:0' } },
+    { proxy: { protocol: 'https', server: 'https://proxy.test:65536' } },
+    { proxy: { protocol: 'http', server: 'http://proxy.test:80/path' } },
+    { proxy: { protocol: 'http', server: 'http://proxy.test:80?route=x' } },
+    { proxy: { protocol: 'http', server: 'http://proxy.test:80#x' } },
+    { proxy: { protocol: 'direct', server: 'http://proxy.test:80' } },
+    { proxy: { protocol: 'direct', server: '', username: 'unexpected' } },
+    { unknownSetting: true },
+    { fingerprintSeed: 0 },
+    { timezone: 'Invalid/Region' },
+    { locale: 'invalid_locale' },
+    { startUrl: 'file:///private/data' },
+  ])('rejects invalid current form configuration: %j', (changes) => {
+    expect(() => parseWindowConfig({ ...configOf(null), ...changes })).toThrow()
   })
 
   it('keeps a plugin-resolved proxy on direct so the source select owns it', () => {

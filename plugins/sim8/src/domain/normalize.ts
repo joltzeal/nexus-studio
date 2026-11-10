@@ -1,3 +1,4 @@
+import { parseExpiry } from './expiry.js'
 import type {
   AllocationState,
   AppItem,
@@ -37,6 +38,13 @@ export function text(value: unknown): string {
   if (typeof value === 'string') return value.trim()
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   return ''
+}
+
+function normalizeNumberExpiry(row: Record<string, unknown>): string {
+  const at = parseExpiry(row['expire'])
+  return at === null
+    ? text(pick(row, ['end_time', 'endTime', 'expire_at']))
+    : new Date(at).toISOString()
 }
 
 export function num(value: unknown): number | null {
@@ -156,7 +164,7 @@ function purchasedFromRecord(
     appId: num(pick(row, ['app_id'])),
     cateId: num(pick(row, ['cate_id'])),
     type: num(pick(row, ['type'])),
-    endTime: text(pick(row, ['end_time', 'endTime', 'expire_at'])),
+    endTime: normalizeNumberExpiry(row),
     remark: text(pick(row, ['remark', 'note'])),
     status: num(pick(row, ['status'])),
     renew: num(pick(row, ['renew'])),

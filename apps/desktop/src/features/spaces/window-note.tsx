@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FieldError } from '@/components/ui/field'
 import { toast } from '@/components/ui/toast'
-import { updateNativeProfileNote } from '@/lib/platform/native-profiles'
+import { updateBrowserWindowNote } from '@/lib/platform/windows'
 
 export function WindowNote({
   id,
@@ -34,7 +34,7 @@ export function WindowNote({
     setSaving(true)
     setError(null)
     try {
-      const saved = await updateNativeProfileNote(id, draft)
+      const saved = await updateBrowserWindowNote(id, draft)
       onSaved(saved)
       setEditing(false)
       toast.success('备注已保存')

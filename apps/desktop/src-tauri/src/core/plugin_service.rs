@@ -110,13 +110,7 @@ pub async fn plugin_call(
     state: State<'_, Arc<PluginHost>>,
     input: CallInput,
 ) -> Result<Value, String> {
-    let capability = capability(&input.capability)?;
-    if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
-        return Err("代理连接解析仅供原生窗口启动调用".into());
-    }
-    if input.method.starts_with("transfer.") || capability == Capability::WindowSync {
-        return Err("窗口迁移与同步只能通过窗口管理调用".into());
-    }
+    let capability = webview_capability(&input)?;
     let deadline = Duration::from_millis(input.deadline_ms.unwrap_or(30_000).clamp(1_000, 120_000));
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
@@ -134,10 +128,35 @@ pub async fn plugin_call(
     .map_err(|_| "插件调用任务中断".to_string())?
 }
 
-/// Creates the host and the profile service, sharing one plugin host so window
+fn webview_capability(input: &CallInput) -> Result<Capability, String> {
+    let capability = capability(&input.capability)?;
+    if input.method == "window.detach" {
+        return Err("窗口关联清理仅供原生窗口删除流程调用".into());
+    }
+    if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
+        return Err("代理连接解析仅供原生窗口启动调用".into());
+    }
+    if input.method.starts_with("transfer.") || capability == Capability::WindowSync {
+        return Err("窗口迁移与同步只能通过窗口管理调用".into());
+    }
+    Ok(capability)
+}
+
+/// Creates the host and the window service, sharing one plugin host so window
 /// launches are gated by the same process that the plugin page talks to.
 pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let app_data = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&app_data)?;
+    let instance_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(app_data.join("workspace.lock"))?;
+    instance_lock
+        .try_lock()
+        .map_err(|_| std::io::Error::other("此工作区已在另一个 Nexus 实例中打开"))?;
+    app.manage(WorkspaceLock(instance_lock));
     let runtime = RuntimePaths::for_app(app).map_err(std::io::Error::other)?;
     let root = app_data.join("plugins");
     let network =
@@ -165,7 +184,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     // The store is polled in the background so a new plugin version shows up
     // without the user opening the plugin page.
     host.watch_market();
-    // Native recovery precedes profile loading. Plugin receipts are retried
+    // Native recovery precedes window loading. Plugin receipts are retried
     // through the transfer status command after the UI can open.
     super::transfer_service::recover_pending(&app_data).map_err(std::io::Error::other)?;
     let license_store =
@@ -178,7 +197,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         runtime.clone(),
     )
     .with_network(network.clone());
-    let profiles = super::profile_service::ProfileService::with_runtime(
+    let windows = super::window_service::WindowService::with_runtime(
         app_data.join("profiles"),
         Some(Arc::clone(&host)),
         license_store,
@@ -186,15 +205,50 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     )
     .map_err(std::io::Error::other)?
     .with_network(network);
-    let profiles = Arc::new(profiles);
+    let windows = Arc::new(windows);
     let transfer = super::transfer_service::TransferService::new(
-        Arc::clone(&profiles),
+        Arc::clone(&windows),
         Arc::clone(&host),
         app_data.join("transfers"),
     )
     .map_err(std::io::Error::other)?;
-    app.manage(profiles);
+    windows.watch_sessions();
+    app.manage(windows);
     app.manage(Arc::new(transfer));
     app.manage(Arc::new(license_service));
     Ok(())
+}
+
+/// Retains the operating-system lock for the application lifetime.
+struct WorkspaceLock(#[allow(dead_code)] std::fs::File);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn input(method: &str, capability: &str) -> CallInput {
+        CallInput {
+            id: "studio.vinted-accounts".into(),
+            capability: capability.into(),
+            method: method.into(),
+            payload: json!({"windowId":"fixture-window"}),
+            deadline_ms: None,
+        }
+    }
+
+    #[test]
+    fn generic_webview_rpc_rejects_the_host_private_window_cleanup_hook() {
+        for capability in ["account.pool", "proxy.provider"] {
+            assert!(webview_capability(&input("window.detach", capability)).is_err());
+        }
+        assert!(webview_capability(&input("vinted.accounts.unbind", "account.pool")).is_ok());
+    }
+
+    #[test]
+    fn generic_webview_rpc_keeps_transfer_and_proxy_resolution_private() {
+        assert!(webview_capability(&input("proxy.resolve", "proxy.provider")).is_err());
+        assert!(webview_capability(&input("transfer.export", "account.pool")).is_err());
+        assert!(webview_capability(&input("sync.offer", "window.sync")).is_err());
+    }
 }

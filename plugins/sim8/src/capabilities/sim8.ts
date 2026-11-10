@@ -18,6 +18,7 @@ import {
   text,
 } from '../domain/normalize.js'
 import { extractOtp } from '../domain/otp.js'
+import { expiryFromBody } from '../domain/expiry.js'
 import {
   findRecord,
   mergeRecords,
@@ -33,6 +34,8 @@ import {
   ChangeTokenInputSchema,
   ConfigSetInputSchema,
   EmptyInputSchema,
+  ExpiryDismissInputSchema,
+  ExpiryRefreshInputSchema,
   FilterCreateInputSchema,
   FilterDetailInputSchema,
   OrderNumInputSchema,
@@ -49,6 +52,8 @@ import type { PurchasedApi, RenewReport, SmsRead, SmsRecord } from '../domain/ty
 import type { DispatchContext } from '../rpc/protocol.js'
 import type { Logger } from '../rpc/redact.js'
 import { Sim8Client, normalizeBaseUrl, normalizeToken } from '../services/client.js'
+import { ExpiryService } from '../services/expiry.js'
+import { readRecordLink } from '../services/record-link.js'
 import type { PrivateStore } from '../store/private-store.js'
 import type { SecretVault } from '../store/secret-vault.js'
 
@@ -79,12 +84,13 @@ export const SIM8_METHODS = [
   'sim8.records.list',
   'sim8.records.remove',
   'sim8.records.clear',
+  'sim8.expiry.list',
+  'sim8.expiry.refresh',
+  'sim8.expiry.dismiss',
   // Reading a code off a record link.
   'sim8.sms.read',
 ] as const
 
-/** A record page is small; anything larger is a misconfigured link. */
-const MAX_SMS_BODY = 256 * 1024
 /**
  * The raw body travels back to the page for the "查看原文" panel. A single RPC
  * message is capped at 1 MiB and JSON escaping can double the size.
@@ -92,7 +98,6 @@ const MAX_SMS_BODY = 256 * 1024
 const MAX_SMS_PREVIEW = 64 * 1024
 /** A purchase of thousands of numbers cannot be rendered; the store keeps them. */
 const MAX_RESPONSE_RECORDS = 200
-const SMS_TIMEOUT_MS = 20_000
 /** Purchasing allocates numbers on the provider side, so it needs longer. */
 const BUY_TIMEOUT_MS = 60_000
 
@@ -125,6 +130,7 @@ export class Sim8Provider {
   private readonly now: () => Date
   private readonly fetchImpl: typeof fetch | null
   private readonly requestIdFactory: () => string
+  private readonly expiry: ExpiryService
 
   constructor(options: Sim8ProviderOptions) {
     this.store = options.store
@@ -133,6 +139,7 @@ export class Sim8Provider {
     this.now = options.now ?? (() => new Date())
     this.fetchImpl = options.fetchImpl ?? null
     this.requestIdFactory = options.requestIdFactory ?? randomUUID
+    this.expiry = new ExpiryService(options)
   }
 
   status(): Record<string, unknown> {
@@ -184,6 +191,18 @@ export class Sim8Provider {
         return await this.recordsRemove(context)
       case 'sim8.records.clear':
         return await this.recordsClear(context)
+      case 'sim8.expiry.list':
+        parseOrThrow(EmptyInputSchema, context.payload)
+        context.assertAlive()
+        return await this.expiry.list()
+      case 'sim8.expiry.refresh': {
+        const input = parseOrThrow(ExpiryRefreshInputSchema, context.payload)
+        return await this.expiry.refresh(input.tels, context)
+      }
+      case 'sim8.expiry.dismiss': {
+        const input = parseOrThrow(ExpiryDismissInputSchema, context.payload)
+        return await this.expiry.dismiss(input.tel, input.expiresAt, context)
+      }
       case 'sim8.sms.read':
         return await this.readSms(context)
       default:
@@ -609,23 +628,11 @@ export class Sim8Provider {
     }
     if (url === '') throw invalidRequest('这个号码还没有接码链接')
 
-    const doFetch = this.fetchImpl ?? globalThis.fetch
-    let response: Response
-    try {
-      response = await doFetch(url, {
-        redirect: 'follow',
-        headers: { accept: 'application/json,text/plain,text/html' },
-        signal: AbortSignal.timeout(SMS_TIMEOUT_MS),
-      })
-    } catch (error) {
-      throw unavailable('接码链接请求失败，请检查链接是否仍然有效', error)
-    }
-    if (!response.ok) {
-      throw unavailable(`接码链接返回 HTTP ${String(response.status)}`)
-    }
-    const body = (await response.text()).slice(0, MAX_SMS_BODY)
+    const { body, contentType } = await readRecordLink(
+      url,
+      this.fetchImpl ?? globalThis.fetch,
+    )
     context.assertAlive()
-    const contentType = response.headers.get('content-type') ?? ''
     const code = extractOtp(body, contentType)
     const result: SmsRead = {
       code,
@@ -633,14 +640,25 @@ export class Sim8Provider {
       truncated: body.length > MAX_SMS_PREVIEW,
       contentType,
       fetchedAt: this.now().toISOString(),
+      expiresAt: expiryFromBody(body),
     }
     if (tel !== '') {
       const record = findRecord(document.records, tel)
       if (record !== undefined) {
         await this.store.mutate((draft) => {
-          draft.records = draft.records.map((entry) =>
-            recordKey(entry.tel) === recordKey(tel) ? withLastRead(entry, result) : entry,
-          )
+          context.assertAlive()
+          draft.records = draft.records.map((entry) => {
+            if (
+              recordKey(entry.tel) !== recordKey(tel) ||
+              entry.api !== record.api ||
+              entry.addedAt !== record.addedAt
+            )
+              return entry
+            return withLastRead(
+              entry,
+              entry.endTime === record.endTime ? result : { ...result, expiresAt: null },
+            )
+          })
         })
       }
     }

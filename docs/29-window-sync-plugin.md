@@ -4,8 +4,11 @@
 这是使用 Node.js 24 内置 `net`、`crypto`、`fs` 的真实点对点 TCP 文件传输插件。
 传输对象是**主程序已经加密的、不透明归档文件**；插件不导出、解密、解包、导入或合并浏览器资料。
 主程序负责生成和导入加密快照，宿主负责插件安装、权限检查及独立进程托管。
-当前主程序快照 manifest 为版本 2，只支持新版内核，两台设备均需升级主程序。
-插件传输协议不变；旧格式文件不能通过同步绕过主程序的导入校验。
+当前主程序只接受 manifest3，窗口条目包含 `WindowRecord` v2、能力快照与精确内核包。
+快照仅支持内置 CloakBrowser；AdsPower、比特浏览器不支持整窗同步，不读取厂商目录。
+两端均需使用支持当前格式的主程序，manifest2 等旧格式没有导入适配器。
+插件 TCP v1 协议不变，便携站点状态仍为 schema1；这些版本与 manifest3 无关，
+同步不能绕过主程序的 Provider、记录或格式校验。
 
 ## 模块职责
 
@@ -49,12 +52,13 @@
 插件版本为 `1.0.0`，最低主程序版本为 `0.1.3`。
 Rust 宿主的 `CORE_VERSION` 使用 `env!("CARGO_PKG_VERSION")`，
 从 `apps/desktop/src-tauri/Cargo.toml` 的包版本读取当前核心版本，再与
-`minCoreVersion` 作 SemVer 比较。当前该包版本为 `0.1.3`；
-不再用旧的硬编码 `0.1.0` 误拒绝本插件。
+`minCoreVersion` 作 SemVer 比较。
+插件最低核心版本只用于宿主安装兼容性，不表示该版本主程序理解当前归档格式。
 
 SDK 与 Rust 宿主均声明 `window.sync` 能力。
-主程序通过 `profile_sync_offer`、`profile_sync_receive`、`profile_sync_status`、
-`profile_sync_cancel` 和 `profile_sync_import` 专用原生命令完成发送、接收与导入。
+主程序通过 `window_sync_offer`、`window_sync_receive`、`window_sync_status`、
+`window_sync_cancel` 和 `window_sync_import` 专用原生命令完成发送、接收与导入。
+这些命令由统一窗口迁移服务提供，不保留旧 `profile_*` 命令别名。
 WebView 的通用 `plugin_call` 拒绝 `window.sync`，归档路径由原生迁移服务管理，
 同步状态返回 UI 前会移除插件返回的内部文件路径。
 
@@ -67,17 +71,20 @@ offer 监听所有本地 IPv4 接口的随机 TCP 端口，receive 连接邀请�
 
 主程序与插件的调用边界：
 
-- 导出前要求关闭所选窗口，迁移期间阻止这些窗口启动、编辑或删除。
+- 导出前先整批检查 `binding.provider_id == cloakbrowser`，混入任何外部窗口即整批拒绝，
+  预检先于内置运行时、插件调用和目录复制。所选窗口须已关闭，迁移期间阻止启动、编辑或删除。
   主程序生成完整、已关闭写入的 AES-GCM 加密归档，并在 offer 完成或取消前保留源文件。
 - 生成 32 字节随机配对 secret，以 64 个小写十六进制字符传入。
   邀请包含该 secret；必须按敏感凭据处理，不进入日志、常规持久化或遥测。
 - 创建并控制接收文件的父目录；传入尚不存在的绝对文件路径。
   插件不创建父目录，不自动覆盖、解密、解包或导入目标。
 - 轮询任务，显示真实进度与错误，并在合适时调用 `sync.cancel`。
-  仅在接收状态为 `completed` 后，交由独立的主程序归档逻辑验证 AES-GCM 并导入。
+  仅在接收状态为 `completed` 后，交由独立的主程序归档逻辑验证 AES-GCM、
+  manifest3、v2 内置绑定与精确包，并由用户明确导入。
 - 按[窗口加密迁移](28-window-transfer.md)保留首次同步的源窗口 UUID；
   本机已有同 UUID 时，要求用户明确选择覆盖并关闭对应窗口。
   后续双向更新沿用稳定 UUID，冲突由用户确认完整快照覆盖，不由插件自动合并。
+  现有同 UUID 若为外部绑定则拒绝替换，不能借同步将厂商环境改成内置窗口。
 
 若发送前出现「浏览器数据中包含不可迁移的链接或特殊文件」，错误来自主程序生成快照时
 的浏览器目录复制，此时尚未调用插件的 `sync.offer`。根目录中的本机运行痕迹
@@ -271,63 +278,26 @@ stdin 结束或关闭、SIGTERM、SIGINT、取消与到期均释放相关监听/
 执行清理，可能留下 0600 的密文 `.part`，主程序应管理临时工作目录的恢复与清理。
 正常退出和 OS 回收连接也不构成 Windows 或真实跨设备网络验证证据。
 
-## 验证方式
+## 回归范围与证据边界
 
-使用固定 Node.js 24.18.0 和工作区依赖：
+插件的测试入口为 `src/transport.test.ts`、`src/process.test.ts` 与 `src/rpc.test.ts`。
+进程用例依赖已构建插件入口；运行前应显式准备构件，不能把未构建导致的失败
+解释为传输错误，也不能将已有 `dist` 当成当前源码的验证结果。
+本次文档更新不执行构建或这些测试。
 
-```bash
-rtk proxy env PATH=/Users/ameno/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/bin:/bin pnpm_config_verify_deps_before_run=false pnpm --filter @nexus/plugin-window-sync run build
-rtk proxy env PATH=/Users/ameno/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/bin:/bin pnpm_config_verify_deps_before_run=false /Users/ameno/.nvm/versions/node/v24.18.0/bin/node node_modules/vitest/vitest.mjs run plugins/window-sync/src --maxWorkers=1
-rtk proxy env PATH=/Users/ameno/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/bin:/bin pnpm_config_verify_deps_before_run=false /Users/ameno/.nvm/versions/node/v24.18.0/bin/node node_modules/typescript/bin/tsc -p plugins/window-sync/tsconfig.tests.json
-```
+传输回归应覆盖以下独立边界：
 
-先构建再测试；根 `pnpm run test` 会先运行 `build:packages`。
-进程用例使用已构建入口，启动两个真实 Node 进程，通过 stdio 完成握手并在 localhost
-传输文件。测试过程中不重复启动 TypeScript 编译器，也不改写共享 `dist`。
-大文件用例传输 8 MiB + 17 字节的稀疏文件，在第一个二进制写入处 cork 真实 TCP socket，
-确认写入回调未释放时发送进度不前进，待写数据及其底层 Buffer 均不超过 64 KiB。
-释放后检查双方完成状态及完整输出散列。
-背压和缓冲上限通过实际写入阻塞及底层 Buffer 大小断言，
-不依赖整进程 external-memory 采样或 GC 回收时机。
-另覆盖错误 secret、角色反射、签名元数据变化、错误 transferId、源文件修改、
-损坏/中断/超长数据、超长帧、空闲超时、目的地竞争、取消、到期和退出。
+- 有界帧、64 KiB 流式缓冲与真实背压，不能依赖整进程内存采样或 GC 时机。
+- 错误 secret、角色反射、签名元数据变化、错误 transferId、源文件修改、
+  损坏/中断/超长数据、空闲超时、目的地竞争、取消和到期。
+- 接收端完成但发送端尚未收到 `received` 回执时，双方状态可以不同；
+  只在收到并核验回执后把发送端标为完成。
+- stdin 关闭、信号退出、清理失败与部分文件残留，失败不得显示为取消成功。
+- 主程序整批拒绝外部窗口、manifest3/v2 校验、旧格式拒绝、同 UUID 冲突、
+  显式替换、精确内核、便携状态与插件收据补偿。
 
-独立进程用例用真实 TCP 转发器只扣留最终 `received` 回执，确定性验证：
-接收端已经完成时，发送端仍为 `transferring`；只有释放回执并独立轮询发送端后，
-才能断言发送端完成。stdio 响应使用事件唤醒；
-独立进程的任务轮询以 Vitest 用例的取消信号为边界。
-背压回归验证确认：跳过写入等待或使用整文件大小的发送 Buffer，都会使断言失败。
-
-## 验证记录与边界
-
-以下保留同步插件实现阶段的分项检查；包含后续代理、迁移恢复与内核绑定修复的
-最终聚合结果，以[质量与验证](09-quality-and-testing.md)顶部本轮记录为准。
-
-2026-10-23 在 macOS、固定 Node.js 24.18.0 上的验证记录：
-上述定向 Vitest 检查 3 个文件、36 个用例通过；
-生产源码与测试源码的严格 TypeScript 检查通过，插件 pnpm 构建及 manifest 输出通过。
-真实目录权限用例还验证部分文件删除失败时，状态和 `sync.cancel` 均明确报告错误。
-已构建工作区的根 Vitest 验证命令：
-
-```bash
-rtk proxy env PATH=/Users/ameno/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/bin:/bin pnpm_config_verify_deps_before_run=false /Users/ameno/.nvm/versions/node/v24.18.0/bin/node node_modules/vitest/vitest.mjs run
-rtk proxy env PATH=/Users/ameno/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/bin:/bin pnpm_config_verify_deps_before_run=false /Users/ameno/.nvm/versions/node/v24.18.0/bin/node node_modules/vitest/vitest.mjs run --maxWorkers=2
-```
-
-默认并发运行实际为 80 文件通过、2 文件跳过，776 用例通过、5 用例跳过；
-两 worker 运行实际为 80 文件通过、2 文件跳过，776 用例通过、5 用例跳过。
-历史 128 MiB 用例的超时在上述日期的检查中未再次触发；
-可重复验证的失败是旧发送完成断言在扣留真实回执时读到 `transferring`。
-该记录不将未复现的历史超时归因为已证实的生产死锁。
-
-同日早期原生 Rust 全量测试 **115 项通过**，覆盖 AES-GCM 加密归档导出与导入、
-两个 Rust 宿主通过真实同步插件完成 localhost **A → B → A**，
-以及迁移附件的插件收据处理。
-首次同步导入保留源窗口 UUID，两端拥有独立的本机资料；
-回传时同 UUID 的普通副本导入被拒绝，显式选择替换后才更新原窗口。
-这提供了原生归档、受管插件进程与双向同步链路的集成证据。
-
-尚未覆盖真实 LAN 双机、防火墙、多网卡选择、跨 NAT/VPN 可达路径、
-Windows 文件系统及进程退出、桌面 UI 完整交互和发行包运行时验收。
-localhost 与原生测试证据不能替代这些检查；
-完整工程验证记录见[质量与验证](09-quality-and-testing.md)。
+这些是需要核对的用例与验收范围，不是本轮通过记录。
+本次未执行 Rust、真实厂商 API、真实浏览器或 Windows 测试。
+localhost 用例不能替代真实 LAN 双机、防火墙、多网卡、跨 NAT/VPN 可达路径、
+Windows 文件系统及退出、桌面 UI 和发行运行时验收。
+实际执行结果与历史记录统一见[质量与验证](09-quality-and-testing.md)。

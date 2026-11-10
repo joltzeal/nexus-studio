@@ -1,8 +1,10 @@
-use super::group_store::{GroupStore, open_database};
+use super::browser::provider::{BUILTIN_CONNECTION_ID, BrowserCapabilities, BrowserProviderId};
+use super::database::open_database;
+use super::group_store::GroupStore;
 use super::plugin_host::{PluginHost, manifest::Capability};
-use super::profile_service::{AppOperationGuard, ProfileService};
-use super::profile_store::ProfileRecord;
 use super::transfer_archive;
+use super::window_service::{AppOperationGuard, WindowService};
+use super::window_store::{WindowRecord, WindowStore};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -21,7 +23,7 @@ const SYNC_PLUGIN: &str = "studio.window-sync";
 const MAX_WINDOWS: usize = 100;
 const MAX_MANIFEST: u64 = 16 * 1024 * 1024;
 const MAX_STATE: u64 = 128 * 1024 * 1024;
-const MANIFEST_VERSION: u8 = 2;
+const MANIFEST_VERSION: u8 = 3;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -34,7 +36,8 @@ struct PortableGroup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PortableWindow {
-    record: ProfileRecord,
+    record: WindowRecord,
+    capabilities: BrowserCapabilities,
     group: Option<PortableGroup>,
     kernel_version: String,
 }
@@ -97,7 +100,6 @@ struct Original {
 #[serde(rename_all = "camelCase")]
 struct ImportJournal {
     committed: bool,
-    #[serde(default)]
     native_rolled_back: bool,
     originals: Vec<Original>,
     groups: Vec<PortableGroup>,
@@ -112,7 +114,7 @@ struct ReceiveJob {
 }
 
 pub struct TransferService {
-    profiles: Arc<ProfileService>,
+    windows: Arc<WindowService>,
     host: Arc<PluginHost>,
     root: PathBuf,
     jobs: Mutex<HashMap<String, ReceiveJob>>,
@@ -132,6 +134,22 @@ fn now() -> u64 {
 
 fn canonical_id(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
+}
+
+fn require_builtin(records: &[WindowRecord]) -> Result<(), String> {
+    let unsupported: Vec<String> = records
+        .iter()
+        .filter(|record| record.binding.provider_id != BrowserProviderId::CloakBrowser)
+        .map(|record| format!("「{}」（{}）", record.name, record.id))
+        .collect();
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "以下窗口不支持完整迁移，整批操作已停止：{}；请使用对应浏览器的官方同步",
+            unsupported.join("、")
+        ))
+    }
 }
 
 fn json_file<T: serde::de::DeserializeOwned>(path: &Path, limit: u64) -> Result<T, String> {
@@ -260,7 +278,7 @@ fn copy_browser_directory(
 
 impl TransferService {
     pub fn new(
-        profiles: Arc<ProfileService>,
+        windows: Arc<WindowService>,
         host: Arc<PluginHost>,
         root: PathBuf,
     ) -> Result<Self, String> {
@@ -285,7 +303,7 @@ impl TransferService {
                 .map_err(|_| failure("无法设置迁移目录权限"))?;
         }
         Ok(Self {
-            profiles,
+            windows,
             host,
             root,
             jobs: Mutex::new(HashMap::new()),
@@ -293,9 +311,30 @@ impl TransferService {
         })
     }
 
-    fn snapshot(&self, record: &ProfileRecord, output: &Path) -> Result<(), String> {
+    fn transfer_records(&self, ids: &[String]) -> Result<Vec<WindowRecord>, String> {
+        if ids.is_empty()
+            || ids.len() > MAX_WINDOWS
+            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
+        {
+            return Err("请选择 1 至 100 个不同的窗口".into());
+        }
+        let records = ids
+            .iter()
+            .map(|id| {
+                self.windows
+                    .store
+                    .get(id)
+                    .map_err(|_| "所选窗口不存在或配置损坏".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        require_builtin(&records)?;
+        Ok(records)
+    }
+
+    fn snapshot(&self, record: &WindowRecord, output: &Path) -> Result<(), String> {
+        require_builtin(std::slice::from_ref(record))?;
         let user_data = self
-            .profiles
+            .windows
             .store
             .user_data_dir(&record.id)
             .map_err(|_| "窗口数据路径无效")?;
@@ -305,20 +344,20 @@ impl TransferService {
                 &json!({"schemaVersion":1,"storageState":{"cookies":[],"origins":[]}}),
             );
         }
-        let license_key = self.profiles.license_store.require_key()?;
-        let mut command = Command::new(&self.profiles.runtime.node);
-        if let Some(network) = &self.profiles.network {
+        let license_key = self.windows.builtin.license_store.require_key()?;
+        let mut command = Command::new(&self.windows.builtin.runtime.node);
+        if let Some(network) = &self.windows.builtin.network {
             network
                 .get()?
-                .apply_to_node(&mut command, &self.profiles.runtime.network_preload)?;
+                .apply_to_node(&mut command, &self.windows.builtin.runtime.network_preload)?;
         }
         command
-            .arg(&self.profiles.runtime.browser_script)
+            .arg(&self.windows.builtin.runtime.browser_script)
             .arg("snapshot")
             .arg(user_data)
             .env(
                 "CLOAKBROWSER_CACHE_DIR",
-                self.profiles.license_store.browser_cache_dir(),
+                self.windows.builtin.license_store.browser_cache_dir(),
             )
             .env("CLOAKBROWSER_LICENSE_KEY", license_key)
             .env("CLOAKBROWSER_AUTO_UPDATE", "false")
@@ -423,31 +462,26 @@ impl TransferService {
         if !path.is_absolute() {
             return Err("请选择本机的完整导出路径".into());
         }
-        if ids.is_empty()
-            || ids.len() > MAX_WINDOWS
-            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
-        {
-            return Err("请选择 1 至 100 个不同的窗口".into());
-        }
-        let _operation = self.profiles.lock_transfer_operation()?;
-        let _guard = self.profiles.lock_transfer(ids)?;
+        let _operation = self.windows.lock_transfer_operation()?;
+        self.transfer_records(ids)?;
+        let _guard = self.windows.lock_transfer(ids)?;
+        let records = self.transfer_records(ids)?;
         let working = tempfile::tempdir_in(&self.root).map_err(|_| failure("无法创建快照目录"))?;
-        let groups = GroupStore::new(self.profiles.store.database_path())?.list()?;
-        let kernels = self.profiles.kernels.installed()?;
+        let groups = GroupStore::new(self.windows.store.database_path())?.list()?;
+        let kernels = self.windows.builtin.kernels.installed()?;
         let mut windows = Vec::new();
         let mut warnings = Vec::new();
         let mut proxy_plugins: BTreeMap<String, Vec<i64>> = BTreeMap::new();
         let mut count = 0;
         let mut bytes = 0;
-        for id in ids {
-            let record = self
-                .profiles
-                .store
-                .get(id)
-                .map_err(|_| "所选窗口不存在或配置损坏")?;
+        for record in records {
+            let id = &record.id;
             let kernel = kernels
                 .iter()
-                .find(|kernel| Path::new(&kernel.binary_path) == record.binary_path)
+                .find(|kernel| {
+                    Some(Path::new(&kernel.binary_path)) == record.binary_path.as_deref()
+                        && record.kernel_version.as_deref() == Some(kernel.version.as_str())
+                })
                 .ok_or("无法确认窗口的精确内核版本，请恢复原有内核后再导出")?;
             if record.settings.fingerprint_seed.is_none() {
                 warnings.push(format!(
@@ -466,7 +500,7 @@ impl TransferService {
             self.snapshot(&record, &folder.join("portable-state.json"))?;
             copy_browser_tree(
                 &self
-                    .profiles
+                    .windows
                     .store
                     .user_data_dir(id)
                     .map_err(|_| "窗口路径无效")?,
@@ -475,7 +509,7 @@ impl TransferService {
                 &mut bytes,
             )?;
             let group_id = self
-                .profiles
+                .windows
                 .store
                 .group_id(id)
                 .map_err(|_| "无法读取窗口分组")?;
@@ -489,6 +523,7 @@ impl TransferService {
                 });
             windows.push(PortableWindow {
                 record,
+                capabilities: BrowserCapabilities::for_provider(BrowserProviderId::CloakBrowser),
                 group,
                 kernel_version: kernel.version.clone(),
             });
@@ -564,29 +599,38 @@ impl TransferService {
         if manifest.windows.is_empty() || manifest.windows.len() > MAX_WINDOWS {
             return Err("窗口文件数量不受支持".into());
         }
+        require_builtin(
+            &manifest
+                .windows
+                .iter()
+                .map(|window| window.record.clone())
+                .collect::<Vec<_>>(),
+        )?;
         let mut ids = HashSet::new();
         let mut plugins = HashSet::new();
         for window in &manifest.windows {
             let mut record = window.record.clone();
-            if window.kernel_version.len() > 48
+            if window.capabilities
+                != BrowserCapabilities::for_provider(BrowserProviderId::CloakBrowser)
+            {
+                return Err("窗口文件的迁移能力无效".into());
+            }
+            if record.binary_path.is_none()
+                || window.kernel_version.len() > 48
                 || !(4..=5).contains(&window.kernel_version.split('.').count())
                 || !window
                     .kernel_version
                     .split('.')
                     .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-                || !(window.kernel_version == record.binding.channel_version
-                    || window
-                        .kernel_version
-                        .rsplit_once('.')
-                        .is_some_and(|(chrome, _)| chrome == record.binding.channel_version))
+                || record.kernel_version.as_deref() != Some(window.kernel_version.as_str())
             {
                 return Err("窗口文件的精确内核版本或绑定无效".into());
             }
             if !canonical_id(&record.id) || !ids.insert(record.id.clone()) {
                 return Err("窗口文件包含重复或无效标识".into());
             }
-            record.binary_path = std::env::current_exe().map_err(|_| "无法确认本机路径")?;
-            self.profiles
+            record.binary_path = Some(std::env::current_exe().map_err(|_| "无法确认本机路径")?);
+            self.windows
                 .store
                 .validate_record(&record.id, &record)
                 .map_err(|_| "导入窗口的配置或内核绑定无效")?;
@@ -645,8 +689,8 @@ impl TransferService {
             })
             .collect();
         let output = super::kernel_service::run_preparation(
-            Command::new(&self.profiles.runtime.node)
-                .arg(&self.profiles.runtime.browser_script)
+            Command::new(&self.windows.builtin.runtime.node)
+                .arg(&self.windows.builtin.runtime.browser_script)
                 .arg("validate-state")
                 .args(&paths),
             Duration::from_secs(30),
@@ -679,7 +723,7 @@ impl TransferService {
     }
 
     pub fn inspect(&self, path: &Path, password: &str) -> Result<Value, String> {
-        let _operation = self.profiles.lock_transfer_operation()?;
+        let _operation = self.windows.lock_transfer_operation()?;
         let (_working, extracted) = self.extracted(path, password)?;
         let manifest = self.manifest(&extracted)?;
         let mut warnings = manifest.warnings;
@@ -702,7 +746,7 @@ impl TransferService {
         password: &str,
         mode: ImportMode,
     ) -> Result<TransferReport, String> {
-        let _activity = self.profiles.lock_transfer_operation()?;
+        let _activity = self.windows.lock_transfer_operation()?;
         let _operation = self.import_operation.lock().map_err(|_| "导入状态不可用")?;
         let (_working, extracted) = self.extracted(path, password)?;
         let manifest = self.manifest(&extracted)?;
@@ -711,8 +755,21 @@ impl TransferService {
         if cross_platform {
             warnings.push("跨操作系统导入已恢复可移植站点数据；系统指纹与原机器不同".into());
         }
-        let existing = self.profiles.store.list().map_err(|_| "无法读取本机窗口")?;
-        let installed = self.profiles.kernels.installed()?;
+        let existing = self.windows.store.list().map_err(|_| "无法读取本机窗口")?;
+        if matches!(mode, ImportMode::Replace) {
+            let replaced: Vec<WindowRecord> = existing
+                .iter()
+                .filter(|old| {
+                    manifest
+                        .windows
+                        .iter()
+                        .any(|window| window.record.id == old.id)
+                })
+                .cloned()
+                .collect();
+            require_builtin(&replaced)?;
+        }
+        let installed = self.windows.builtin.kernels.installed()?;
         let mut id_map = BTreeMap::new();
         let mut records = Vec::new();
         let mut binaries = HashMap::new();
@@ -728,10 +785,11 @@ impl TransferService {
                 );
             }
             if let Some(old) = existing.iter().find(|old| old.id == id)
-                && (old.binding.channel_version != record.binding.channel_version
+                && (old.binding != record.binding
+                    || old.kernel_version != record.kernel_version
                     || old.settings.fingerprint_seed != record.settings.fingerprint_seed
                     || !installed.iter().any(|kernel| {
-                        Path::new(&kernel.binary_path) == old.binary_path
+                        Some(Path::new(&kernel.binary_path)) == old.binary_path.as_deref()
                             && kernel.version == window.kernel_version
                     }))
             {
@@ -741,21 +799,40 @@ impl TransferService {
             if !binaries.contains_key(&package) {
                 binaries.insert(
                     package.clone(),
-                    self.profiles.kernels.exact_binary(&window.kernel_version)?,
+                    self.windows
+                        .builtin
+                        .kernels
+                        .exact_binary(&window.kernel_version)?,
                 );
             }
             let binary = &binaries[&package];
-            if binary.version != record.binding.channel_version {
+            if record
+                .provider_config
+                .get("displayVersion")
+                .and_then(Value::as_str)
+                .is_some_and(|version| version != binary.version)
+            {
                 return Err("目标内核与窗口原始版本不匹配，导入已停止".into());
             }
-            record.binary_path = binary.binary_path.clone();
+            record.binary_path = Some(binary.binary_path.clone());
             id_map.insert(record.id.clone(), id.clone());
             record.id = id.clone();
-            record.binding.profile_id = id;
+            record.binding.connection_id = BUILTIN_CONNECTION_ID.into();
+            record.binding.profile_id = id.clone();
+            if let Some(old) = existing.iter().find(|old| old.id == id) {
+                record.created_at = old.created_at;
+                record.sort_order = old.sort_order;
+            } else {
+                record.sort_order = self
+                    .windows
+                    .store
+                    .reserve_sort_order()
+                    .map_err(|_| "无法分配窗口排序序号")?;
+            }
             records.push(record);
         }
         let ids: Vec<String> = records.iter().map(|record| record.id.clone()).collect();
-        let _guard = self.profiles.lock_transfer(&ids)?;
+        let _guard = self.windows.lock_transfer(&ids)?;
         let catalog = self.host.catalog().map_err(|error| error.message())?;
         for plugin in &manifest.plugins {
             if !catalog.iter().any(|local| {
@@ -778,7 +855,7 @@ impl TransferService {
         }
         let operation = self.root.join("pending").join(Uuid::new_v4().to_string());
         fs::create_dir_all(operation.join("backup")).map_err(|_| failure("无法创建导入事务"))?;
-        let db = open_database(&self.profiles.store.database_path())?;
+        let db = open_database(&self.windows.store.database_path())?;
         let mut originals = Vec::new();
         for id in &ids {
             let old: Option<(String, Option<String>)> = db
@@ -795,7 +872,7 @@ impl TransferService {
                 group_id: old.and_then(|value| value.1),
             });
         }
-        let local_groups = GroupStore::new(self.profiles.store.database_path())?.list()?;
+        let local_groups = GroupStore::new(self.windows.store.database_path())?.list()?;
         let mut group_map = HashMap::new();
         let mut new_groups = Vec::new();
         for window in &manifest.windows {
@@ -883,7 +960,7 @@ impl TransferService {
                             .ok_or("窗口关联的代理未完整恢复")?,
                     );
                 }
-                self.profiles
+                self.windows
                     .store
                     .validate_record(&record.id, record)
                     .map_err(|_| "导入配置校验失败")?;
@@ -907,7 +984,7 @@ impl TransferService {
                 )
                 .map_err(|_| failure("无法恢复 Cookie 与站点数据"))?;
             }
-            let mut db = open_database(&self.profiles.store.database_path())?;
+            let mut db = open_database(&self.windows.store.database_path())?;
             let transaction = db.transaction().map_err(|_| "无法开始导入事务")?;
             for group in &journal.groups {
                 transaction
@@ -917,10 +994,10 @@ impl TransferService {
                     )
                     .map_err(|_| "无法导入分组")?;
             }
-            fs::create_dir_all(self.profiles.store.root())
+            fs::create_dir_all(self.windows.store.root())
                 .map_err(|_| failure("无法创建窗口目录"))?;
             for (index, record) in records.iter().enumerate() {
-                let target = self.profiles.store.root().join(&record.id);
+                let target = self.windows.store.root().join(&record.id);
                 if target.exists() {
                     fs::rename(&target, operation.join("backup").join(&record.id))
                         .map_err(|_| failure("无法备份原窗口"))?;
@@ -931,7 +1008,7 @@ impl TransferService {
                     .group
                     .as_ref()
                     .and_then(|group| group_map.get(&group.id));
-                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,?3)
+                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,(SELECT id FROM groups WHERE id=?3))
                     ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,group_id=excluded.group_id",
                     params![record.id,serde_json::to_string(record).map_err(|_| "无法编码窗口")?,group_id])
                     .map_err(|_| "无法保存导入窗口")?;
@@ -942,7 +1019,7 @@ impl TransferService {
                 journal.committed = false;
                 return Err(error);
             }
-            self.profiles.restore_imported(&records)?;
+            self.windows.restore_imported(&records)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -966,8 +1043,8 @@ impl TransferService {
 
     fn rollback(&self, operation: &Path, journal: &mut ImportJournal) -> Result<(), String> {
         let result = rollback_import(
-            &self.profiles.store.database_path(),
-            self.profiles.store.root(),
+            &self.windows.store.database_path(),
+            self.windows.store.root(),
             operation,
             journal,
             &self.host,
@@ -979,7 +1056,7 @@ impl TransferService {
                     .iter()
                     .map(|original| original.id.clone())
                     .collect();
-                self.profiles.block_recovery(&ids)?;
+                self.windows.block_recovery(&ids)?;
                 return Err(
                     "窗口资料恢复未完成，已暂停相关操作；请重启应用重试，原备份已保留".into(),
                 );
@@ -990,7 +1067,8 @@ impl TransferService {
     }
 
     pub fn offer(&self, ids: &[String]) -> Result<Value, String> {
-        let operation = self.profiles.lock_transfer_operation()?;
+        let operation = self.windows.lock_transfer_operation()?;
+        self.transfer_records(ids)?;
         if !self
             .host
             .catalog()
@@ -1041,7 +1119,7 @@ impl TransferService {
     }
 
     pub fn receive(&self, invitation: &str, host: Option<&str>) -> Result<Value, String> {
-        let operation = self.profiles.lock_transfer_operation()?;
+        let operation = self.windows.lock_transfer_operation()?;
         // Parsing and expiry validation are also enforced independently by the transport.
         let invitation_data = decode_invitation(invitation)?;
         let password = invitation_data
@@ -1094,7 +1172,7 @@ impl TransferService {
         for id in active_jobs {
             self.sync_status(&id).map_err(|_| "profiles_failed")?;
         }
-        self.profiles.lock_app_install()
+        self.windows.lock_app_install()
     }
 
     pub fn sync_status(&self, id: &str) -> Result<Value, String> {
@@ -1141,7 +1219,7 @@ impl TransferService {
     }
 
     pub fn sync_import(&self, id: &str, mode: ImportMode) -> Result<TransferReport, String> {
-        let _operation = self.profiles.lock_transfer_operation()?;
+        let _operation = self.windows.lock_transfer_operation()?;
         let status = self.sync_status(id)?;
         if status.get("state").and_then(Value::as_str) != Some("completed") {
             return Err("同步数据尚未完整接收".into());
@@ -1170,7 +1248,7 @@ impl TransferService {
     }
 
     pub fn recovery_status(&self) -> Result<Value, String> {
-        let _activity = self.profiles.lock_transfer_operation()?;
+        let _activity = self.windows.lock_transfer_operation()?;
         let _operation = self
             .import_operation
             .try_lock()
@@ -1271,12 +1349,25 @@ fn rollback_native(
     operation: &Path,
     journal: &ImportJournal,
 ) -> Result<(), String> {
+    let store = WindowStore::new(profiles.to_path_buf());
+    let mut originals = Vec::new();
+    for original in &journal.originals {
+        if !canonical_id(&original.id) {
+            return Err("导入恢复记录无效".into());
+        }
+        if let Some(record) = &original.record {
+            let record: WindowRecord =
+                serde_json::from_str(record).map_err(|_| "导入恢复记录格式不受支持")?;
+            store
+                .validate_record(&original.id, &record)
+                .map_err(|_| "导入恢复记录无效")?;
+            originals.push(record);
+        }
+    }
+    require_builtin(&originals)?;
     let mut db = open_database(db_path)?;
     let transaction = db.transaction().map_err(|_| "无法恢复导入前的资料")?;
     for original in &journal.originals {
-        if Uuid::parse_str(&original.id).is_err() {
-            return Err("导入恢复记录无效".into());
-        }
         let target = profiles.join(&original.id);
         let backup = operation.join("backup").join(&original.id);
         let staged = operation.join("new").join(&original.id);
@@ -1301,7 +1392,7 @@ fn rollback_native(
                 .as_ref()
                 .is_none_or(|(json, group)| json != record || group != &original.group_id)
             {
-                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,?3)
+                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,(SELECT id FROM groups WHERE id=?3))
                     ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,group_id=excluded.group_id",
                     params![original.id,record,original.group_id]).map_err(|_| "无法恢复原窗口资料")?;
             }
@@ -1324,8 +1415,7 @@ fn rollback_native(
     Ok(())
 }
 
-/// Run before ProfileService loads bindings: interrupted filesystem moves may
-/// otherwise look like corrupt or orphaned profiles.
+/// Run before WindowService loads bindings to restore interrupted filesystem moves.
 pub fn recover_pending(app_data: &Path) -> Result<usize, String> {
     let pending = app_data.join("transfers/pending");
     if !pending.exists() {
@@ -1390,7 +1480,7 @@ fn decode_invitation(invitation: &str) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn profile_transfer_recovery_status(
+pub async fn window_transfer_recovery_status(
     state: State<'_, Arc<TransferService>>,
 ) -> Result<Value, String> {
     let state = Arc::clone(&state);
@@ -1400,7 +1490,7 @@ pub async fn profile_transfer_recovery_status(
 }
 
 #[tauri::command]
-pub async fn profile_transfer_pick(
+pub async fn window_transfer_pick(
     app: tauri::AppHandle,
     save: bool,
 ) -> Result<Option<String>, String> {
@@ -1428,7 +1518,7 @@ pub async fn profile_transfer_pick(
 }
 
 #[tauri::command]
-pub async fn profile_transfer_export(
+pub async fn window_transfer_export(
     state: State<'_, Arc<TransferService>>,
     ids: Vec<String>,
     password: String,
@@ -1441,7 +1531,7 @@ pub async fn profile_transfer_export(
 }
 
 #[tauri::command]
-pub async fn profile_transfer_inspect(
+pub async fn window_transfer_inspect(
     state: State<'_, Arc<TransferService>>,
     path: String,
     password: String,
@@ -1453,7 +1543,7 @@ pub async fn profile_transfer_inspect(
 }
 
 #[tauri::command]
-pub async fn profile_transfer_import(
+pub async fn window_transfer_import(
     state: State<'_, Arc<TransferService>>,
     path: String,
     password: String,
@@ -1466,7 +1556,7 @@ pub async fn profile_transfer_import(
 }
 
 #[tauri::command]
-pub async fn profile_sync_offer(
+pub async fn window_sync_offer(
     state: State<'_, Arc<TransferService>>,
     ids: Vec<String>,
 ) -> Result<Value, String> {
@@ -1477,7 +1567,7 @@ pub async fn profile_sync_offer(
 }
 
 #[tauri::command]
-pub async fn profile_sync_receive(
+pub async fn window_sync_receive(
     state: State<'_, Arc<TransferService>>,
     invitation: String,
     host: Option<String>,
@@ -1489,7 +1579,7 @@ pub async fn profile_sync_receive(
 }
 
 #[tauri::command]
-pub async fn profile_sync_status(
+pub async fn window_sync_status(
     state: State<'_, Arc<TransferService>>,
     id: String,
 ) -> Result<Value, String> {
@@ -1500,7 +1590,7 @@ pub async fn profile_sync_status(
 }
 
 #[tauri::command]
-pub async fn profile_sync_cancel(
+pub async fn window_sync_cancel(
     state: State<'_, Arc<TransferService>>,
     id: String,
 ) -> Result<(), String> {
@@ -1511,7 +1601,7 @@ pub async fn profile_sync_cancel(
 }
 
 #[tauri::command]
-pub async fn profile_sync_import(
+pub async fn window_sync_import(
     state: State<'_, Arc<TransferService>>,
     id: String,
     mode: ImportMode,
@@ -1526,9 +1616,11 @@ pub async fn profile_sync_import(
 mod tests {
     use super::*;
     use crate::core::{
+        browser::provider::{BrowserBinding, ProxyMode, WindowOrigin},
         license_store::LicenseStore,
-        profile_store::{PreparedBinary, ProxySource, WindowSettings},
         runtime_paths::RuntimePaths,
+        window_service::UpdateWindowInput,
+        window_store::WindowSettings,
     };
 
     fn service(root: &Path) -> TransferService {
@@ -1542,11 +1634,55 @@ mod tests {
             &json!([{"version":"155.0.8059.39","binaryPath":binary}]),
         )
         .unwrap();
-        fs::write(&runner, format!(
-            "const fs=require('node:fs'); const inventory={}; const prepared={}; const action = process.argv[2]; if(action==='validate-state') process.stdout.write(JSON.stringify({{valid:true}})); else if(action==='version') process.stdout.write(JSON.stringify({{version:'155.0.8059.39',binary_path:process.argv[3]}})); else if(action==='inventory') process.stdout.write(JSON.stringify({{cacheDir:'.',platform:'darwin-arm64',installed:JSON.parse(fs.readFileSync(inventory,'utf8'))}})); else if(action==='prepare'){{if(!fs.existsSync(prepared))process.exit(42);const entry=JSON.parse(fs.readFileSync(prepared,'utf8'));fs.writeFileSync(inventory,JSON.stringify([entry]));process.stdout.write(JSON.stringify({{version:'155.0.8059.39',binary_path:entry.binaryPath}}));}} else if(action==='snapshot'){{process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({{schemaVersion:1,storageState:{{cookies:[{{name:'session',value:'portable-session',domain:'example.test',path:'/',expires:-1,httpOnly:true,secure:true,sameSite:'Lax'}}],origins:[]}}}})));}}",
-            serde_json::to_string(&inventory).unwrap(),
-            serde_json::to_string(&root.join("prepared-kernel.json")).unwrap()
-        )).unwrap();
+        fs::write(
+            &runner,
+            format!(
+                r#"
+const fs = require('node:fs');
+const inventory = {};
+const prepared = {};
+const action = process.argv[2];
+if (action === 'validate-state') {{
+  process.stdout.write(JSON.stringify({{valid:true}}));
+}} else if (action === 'version') {{
+  process.stdout.write(JSON.stringify({{version:'155.0.8059.39',binary_path:process.argv[3]}}));
+}} else if (action === 'inventory') {{
+  process.stdout.write(JSON.stringify({{
+    cacheDir:'.',platform:'darwin-arm64',installed:JSON.parse(fs.readFileSync(inventory,'utf8'))
+  }}));
+}} else if (action === 'prepare') {{
+  if (!fs.existsSync(prepared)) process.exit(42);
+  const entry = JSON.parse(fs.readFileSync(prepared,'utf8'));
+  fs.writeFileSync(inventory,JSON.stringify([entry]));
+  process.stdout.write(JSON.stringify({{version:'155.0.8059.39',binary_path:entry.binaryPath}}));
+}} else if (action === 'snapshot') {{
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {{ input += chunk; }});
+  process.stdin.on('end', () => {{
+    const record = JSON.parse(input);
+    const entry = JSON.parse(fs.readFileSync(inventory,'utf8'))[0];
+    if (record.schema_version !== 2 || record.binding.provider_id !== 'cloakbrowser'
+      || record.binding.connection_id !== 'builtin-cloakbrowser'
+      || record.binding.profile_id !== record.id || record.kernel_version !== entry.version
+      || record.binary_path !== entry.binaryPath || 'channel_id' in record.binding
+      || 'channel_version' in record.binding) throw Error('unexpected runtime window record');
+    process.stdout.write(JSON.stringify({{
+      schemaVersion:1,
+      storageState:{{
+        cookies:[{{name:'session',value:'portable-session',domain:'example.test',path:'/',
+          expires:-1,httpOnly:true,secure:true,sameSite:'Lax'}}],
+        origins:[]
+      }}
+    }}));
+  }});
+}}
+"#,
+                serde_json::to_string(&inventory).unwrap(),
+                serde_json::to_string(&root.join("prepared-kernel.json")).unwrap()
+            ),
+        )
+        .unwrap();
         let runtime = RuntimePaths {
             node: "node".into(),
             browser_script: runner,
@@ -1556,11 +1692,11 @@ mod tests {
         licenses
             .save_validated("synthetic-transfer-key", "pro", None)
             .unwrap();
-        let profiles = Arc::new(
-            ProfileService::with_runtime(root.join("profiles"), None, licenses, runtime).unwrap(),
+        let windows = Arc::new(
+            WindowService::with_runtime(root.join("profiles"), None, licenses, runtime).unwrap(),
         );
         let host = Arc::new(PluginHost::open(root.join("plugins"), Vec::new()).unwrap());
-        TransferService::new(profiles, host, root.join("transfers")).unwrap()
+        TransferService::new(windows, host, root.join("transfers")).unwrap()
     }
 
     fn kernel_package(service: &TransferService, version: &str) -> Value {
@@ -1575,31 +1711,380 @@ mod tests {
         .unwrap();
     }
 
-    fn window(service: &TransferService) -> ProfileRecord {
+    fn window(service: &TransferService) -> WindowRecord {
         let binary = service.root.parent().unwrap().join("browser");
-        let record = service
-            .profiles
-            .store
-            .create_with_settings(
-                "Window",
-                None,
-                None,
-                WindowSettings {
-                    fingerprint_seed: Some(12345),
-                    ..WindowSettings::default()
-                },
-                PreparedBinary {
-                    version: "155.0.8059.39".into(),
-                    binary_path: binary,
-                },
-            )
-            .unwrap();
-        let data = service.profiles.store.user_data_dir(&record.id).unwrap();
+        let inventory: Value = json_file(
+            &service.root.parent().unwrap().join("inventory.json"),
+            MAX_MANIFEST,
+        )
+        .unwrap();
+        let id = Uuid::new_v4().to_string();
+        let record = WindowRecord {
+            schema_version: 2,
+            id: id.clone(),
+            name: "Window".into(),
+            binding: BrowserBinding {
+                provider_id: BrowserProviderId::CloakBrowser,
+                connection_id: BUILTIN_CONNECTION_ID.into(),
+                profile_id: id,
+            },
+            binary_path: Some(binary),
+            kernel_version: Some(inventory[0]["version"].as_str().unwrap().into()),
+            proxy: None,
+            proxy_plugin: None,
+            proxy_endpoint: None,
+            proxy_mode: ProxyMode::Direct,
+            settings: WindowSettings {
+                fingerprint_seed: Some(12345),
+                ..WindowSettings::default()
+            },
+            origin: WindowOrigin::Created,
+            provider_config: json!({"displayVersion":"155.0.8059.39"}),
+            created_at: now() as i64,
+            last_opened_at: None,
+            sort_order: 1,
+        };
+        service.windows.store.insert(&record, None).unwrap();
+        let data = service.windows.store.user_data_dir(&record.id).unwrap();
         fs::create_dir_all(data.join("Default")).unwrap();
         fs::write(data.join("Default/Cookies"), b"machine-encrypted-database").unwrap();
         fs::create_dir_all(data.join("Default/Cache")).unwrap();
         fs::write(data.join("Default/Cache/discard"), b"cache").unwrap();
         record
+    }
+
+    fn update(record: &WindowRecord, name: &str) -> UpdateWindowInput {
+        UpdateWindowInput {
+            id: record.id.clone(),
+            name: name.into(),
+            proxy_mode: record.proxy_mode,
+            proxy: record.proxy.clone(),
+            proxy_plugin: record.proxy_plugin.clone(),
+            proxy_endpoint: record.proxy_endpoint,
+            settings: record.settings.clone(),
+            group_id: None,
+        }
+    }
+
+    fn external_window(service: &TransferService, provider: BrowserProviderId) -> WindowRecord {
+        let id = Uuid::new_v4().to_string();
+        let record = WindowRecord {
+            schema_version: 2,
+            id: id.clone(),
+            name: format!("External {provider:?}"),
+            binding: BrowserBinding {
+                provider_id: provider,
+                connection_id: Uuid::new_v4().to_string(),
+                profile_id: format!("vendor-{id}"),
+            },
+            binary_path: None,
+            kernel_version: None,
+            proxy: None,
+            proxy_plugin: None,
+            proxy_endpoint: None,
+            proxy_mode: ProxyMode::Provider,
+            settings: WindowSettings::default(),
+            origin: WindowOrigin::Attached,
+            provider_config: json!({}),
+            created_at: now() as i64,
+            last_opened_at: None,
+            sort_order: 2,
+        };
+        service.windows.store.insert(&record, None).unwrap();
+        record
+    }
+
+    fn forbid_runtime(service: &TransferService) -> PathBuf {
+        let marker = service.root.parent().unwrap().join("runtime-started");
+        fs::write(
+            &service.windows.builtin.runtime.browser_script,
+            format!(
+                "require('node:fs').writeFileSync({}, 'unexpected invocation');process.exit(42);",
+                serde_json::to_string(&marker).unwrap()
+            ),
+        )
+        .unwrap();
+        marker
+    }
+
+    fn use_real_validator(service: &TransferService) {
+        let runner = &service.windows.builtin.runtime.browser_script;
+        let fixture = fs::read_to_string(runner).unwrap();
+        fs::write(
+            runner,
+            format!(
+                r#"
+if (process.argv[2] === 'validate-state') {{
+  const result = require('node:child_process').spawnSync(
+    process.execPath, [{}, ...process.argv.slice(2)], {{stdio:'inherit'}}
+  );
+  if (result.error) throw result.error;
+  process.exitCode = result.status ?? 1;
+}} else {{
+{}
+}}
+"#,
+                serde_json::to_string(&RuntimePaths::development().browser_script).unwrap(),
+                fixture
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn external_windows_reject_the_full_export_and_sync_batch_before_runtime_or_plugins() {
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let builtin = window(&service);
+        let ads = external_window(&service, BrowserProviderId::AdsPower);
+        let bit = external_window(&service, BrowserProviderId::BitBrowser);
+        let marker = forbid_runtime(&service);
+        let ids = [builtin.id.clone(), ads.id.clone(), bit.id.clone()];
+        let path = root.path().join("unsupported.nexuswindow");
+        for result in [
+            service.export(&ids, "transfer-password", &path).map(|_| ()),
+            service.offer(&ids).map(|_| ()),
+        ] {
+            let error = result.unwrap_err();
+            assert!(error.contains("不支持完整迁移"));
+            assert!(error.contains(&ads.id));
+            assert!(error.contains(&bit.id));
+        }
+        assert!(!path.exists());
+        assert!(!marker.exists());
+        assert!(service.jobs.lock().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(service.root.join("exchange")).unwrap().count(),
+            0
+        );
+        assert!(service.windows.store.get(&builtin.id).is_ok());
+        for record in [ads, bit] {
+            assert!(!service.windows.store.root().join(record.id).exists());
+        }
+        assert!(service.windows.lock_app_install().is_ok());
+    }
+
+    #[test]
+    fn external_snapshots_are_rejected_before_local_directory_access() {
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let marker = forbid_runtime(&service);
+        for provider in [BrowserProviderId::AdsPower, BrowserProviderId::BitBrowser] {
+            let record = external_window(&service, provider);
+            let output = root.path().join(format!("{}.json", record.id));
+            assert!(
+                service
+                    .snapshot(&record, &output)
+                    .unwrap_err()
+                    .contains("不支持完整迁移")
+            );
+            assert!(!output.exists());
+            assert!(!service.windows.store.root().join(record.id).exists());
+        }
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn external_manifest_items_reject_the_full_batch_before_portable_state_or_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let builtin = window(&service);
+        let external = external_window(&service, BrowserProviderId::AdsPower);
+        let contents = root.path().join("contents");
+        write_json(
+            &contents.join("manifest.json"),
+            &Manifest {
+                schema_version: MANIFEST_VERSION,
+                source_platform: std::env::consts::OS.into(),
+                source_arch: std::env::consts::ARCH.into(),
+                created_at: now(),
+                windows: vec![
+                    PortableWindow {
+                        record: builtin,
+                        capabilities: BrowserCapabilities::for_provider(
+                            BrowserProviderId::CloakBrowser,
+                        ),
+                        group: None,
+                        kernel_version: "155.0.8059.39".into(),
+                    },
+                    PortableWindow {
+                        record: external.clone(),
+                        capabilities: BrowserCapabilities::for_provider(
+                            BrowserProviderId::AdsPower,
+                        ),
+                        group: None,
+                        kernel_version: "155.0.8059.39".into(),
+                    },
+                ],
+                plugins: Vec::new(),
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        let marker = forbid_runtime(&service);
+        let error = service.manifest(&contents).err().unwrap();
+        assert!(error.contains("不支持完整迁移"));
+        assert!(error.contains(&external.id));
+        let path = root.path().join("external.nexuswindow");
+        transfer_archive::pack(&contents, &path, "transfer-password").unwrap();
+        for mode in [ImportMode::Copy, ImportMode::Replace, ImportMode::Preserve] {
+            let error = service
+                .import(&path, "transfer-password", mode)
+                .unwrap_err();
+            assert!(error.contains("不支持完整迁移"));
+        }
+        assert!(!marker.exists());
+        assert_eq!(
+            fs::read_dir(service.root.join("pending")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn manifest_three_rejects_old_records_and_invalid_transfer_bindings_before_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let source = service(root.path());
+        let record = window(&source);
+        let path = root.path().join("valid.nexuswindow");
+        source
+            .export(std::slice::from_ref(&record.id), "transfer-password", &path)
+            .unwrap();
+        let contents = root.path().join("contents");
+        transfer_archive::unpack(&path, &contents, "transfer-password").unwrap();
+        let manifest_path = contents.join("manifest.json");
+        let manifest: Value = json_file(&manifest_path, MAX_MANIFEST).unwrap();
+        assert_eq!(manifest["schemaVersion"], 3);
+        assert_eq!(manifest["windows"][0]["record"]["schema_version"], 2);
+        assert_eq!(manifest["windows"][0]["capabilities"]["transfer"], true);
+        let marker = forbid_runtime(&source);
+        for (field, replacement) in [
+            ("schema_version", json!(1)),
+            ("kernel_version", json!("155.0.8059.40")),
+            (
+                "binding",
+                json!({
+                    "profile_id": record.id,
+                    "channel_id": "cloak:155.0.8059.39",
+                    "channel_version": "155.0.8059.39",
+                }),
+            ),
+        ] {
+            let mut changed = manifest.clone();
+            changed["windows"][0]["record"][field] = replacement;
+            write_json(&manifest_path, &changed).unwrap();
+            assert!(
+                source.manifest(&contents).is_err(),
+                "accepted invalid {field}"
+            );
+        }
+        let mut changed = manifest;
+        changed["windows"][0]["capabilities"]["transfer"] = json!(false);
+        write_json(&manifest_path, &changed).unwrap();
+        assert!(
+            source
+                .manifest(&contents)
+                .err()
+                .unwrap()
+                .contains("迁移能力")
+        );
+        assert!(!marker.exists());
+        assert_eq!(source.windows.store.get(&record.id).unwrap(), record);
+    }
+
+    #[test]
+    fn replace_rejects_an_existing_external_binding_before_kernel_or_directory_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = service(&root.path().join("source"));
+        let target = service(&root.path().join("target"));
+        let record = window(&source);
+        let path = root.path().join("builtin.nexuswindow");
+        source
+            .export(std::slice::from_ref(&record.id), "transfer-password", &path)
+            .unwrap();
+        let mut external = external_window(&target, BrowserProviderId::BitBrowser);
+        target.windows.store.delete(&external.id).unwrap();
+        external.id = record.id.clone();
+        target.windows.store.insert(&external, None).unwrap();
+        let marker = target.root.parent().unwrap().join("kernel-started");
+        fs::write(
+            &target.windows.builtin.runtime.browser_script,
+            format!(
+                "if(process.argv[2]==='validate-state')process.stdout.write('{{\"valid\":true}}');else{{require('node:fs').writeFileSync({},'unexpected invocation');process.exit(42);}}",
+                serde_json::to_string(&marker).unwrap()
+            ),
+        )
+        .unwrap();
+        let error = target
+            .import(&path, "transfer-password", ImportMode::Replace)
+            .unwrap_err();
+        assert!(error.contains("不支持完整迁移"));
+        assert!(error.contains(&external.id));
+        assert!(!marker.exists());
+        assert_eq!(target.windows.store.get(&external.id).unwrap(), external);
+        assert!(!target.windows.store.root().join(&record.id).exists());
+        assert_eq!(
+            fs::read_dir(target.root.join("pending")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn recovery_rejects_old_or_external_records_before_mutating_any_window() {
+        let root = tempfile::tempdir().unwrap();
+        let service = service(root.path());
+        let first = window(&service);
+        let second = window(&service);
+        let external = external_window(&service, BrowserProviderId::AdsPower);
+        let mut old = serde_json::to_value(&second).unwrap();
+        old["schema_version"] = json!(1);
+        let operation = service.root.join("unused-operation");
+        for (id, record) in [
+            (second.id.clone(), old.to_string()),
+            (
+                external.id.clone(),
+                serde_json::to_string(&external).unwrap(),
+            ),
+        ] {
+            let journal = ImportJournal {
+                committed: false,
+                native_rolled_back: false,
+                originals: vec![
+                    Original {
+                        id: first.id.clone(),
+                        record: None,
+                        group_id: None,
+                    },
+                    Original {
+                        id,
+                        record: Some(record),
+                        group_id: None,
+                    },
+                ],
+                groups: Vec::new(),
+                receipts: Vec::new(),
+            };
+            assert!(
+                rollback_native(
+                    &service.windows.store.database_path(),
+                    service.windows.store.root(),
+                    &operation,
+                    &journal
+                )
+                .is_err()
+            );
+            assert_eq!(service.windows.store.get(&first.id).unwrap(), first);
+            assert_eq!(service.windows.store.get(&second.id).unwrap(), second);
+            assert_eq!(service.windows.store.get(&external.id).unwrap(), external);
+            assert!(
+                service
+                    .windows
+                    .store
+                    .user_data_dir(&first.id)
+                    .unwrap()
+                    .join("Default/Cookies")
+                    .exists()
+            );
+        }
     }
 
     #[test]
@@ -1613,7 +2098,7 @@ mod tests {
             .export(std::slice::from_ref(&record.id), "fixture-password", &path)
             .unwrap();
         let marker = root.path().join("preparation-started");
-        let runner = &target.profiles.runtime.browser_script;
+        let runner = &target.windows.builtin.runtime.browser_script;
         fs::write(
             runner,
             format!(
@@ -1623,7 +2108,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let guard = target.profiles.lock_app_install().unwrap();
+        let guard = target.windows.lock_app_install().unwrap();
         assert!(
             target
                 .import(&path, "fixture-password", ImportMode::Copy)
@@ -1633,7 +2118,7 @@ mod tests {
             !marker.exists(),
             "import executed a bundled runtime during installation"
         );
-        assert!(target.profiles.store.list().unwrap().is_empty());
+        assert!(target.windows.store.list().unwrap().is_empty());
         assert!(target.inspect(&path, "fixture-password").is_err());
         drop(guard);
         assert!(target.inspect(&path, "fixture-password").is_ok());
@@ -1712,12 +2197,12 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             service.receive(&invitation, None).unwrap();
             let path = service.jobs.lock().unwrap()["receive-fixture"].path.clone();
             assert_eq!(
-                service.profiles.lock_app_install().err(),
+                service.windows.lock_app_install().err(),
                 Some("running_windows")
             );
             write_json(&status, &json!({"state": terminal})).unwrap();
             service.sync_status("receive-fixture").unwrap();
-            let guard = service.profiles.lock_app_install().unwrap();
+            let guard = service.windows.lock_app_install().unwrap();
             assert!(service.receive(&invitation, None).is_err());
             // Completed packages remain available for explicit import after a failed install.
             assert!(path.exists());
@@ -1728,11 +2213,11 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let record = window(&service);
         service.offer(std::slice::from_ref(&record.id)).unwrap();
         assert_eq!(
-            service.profiles.lock_app_install().err(),
+            service.windows.lock_app_install().err(),
             Some("running_windows")
         );
         service.sync_cancel("offer-fixture").unwrap();
-        assert!(service.profiles.lock_app_install().is_ok());
+        assert!(service.windows.lock_app_install().is_ok());
     }
 
     #[test]
@@ -1924,11 +2409,15 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let source = service(&root.path().join("source"));
         let target = service(&root.path().join("target"));
         let record = window(&source);
-        let user_data = source.profiles.store.user_data_dir(&record.id).unwrap();
+        let user_data = source.windows.store.user_data_dir(&record.id).unwrap();
         write_site_storage(&user_data);
-        std::os::unix::fs::symlink(&record.binary_path, user_data.join("Last Browser")).unwrap();
         std::os::unix::fs::symlink(
-            &record.binding.channel_version,
+            record.binary_path.as_ref().unwrap(),
+            user_data.join("Last Browser"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            record.kernel_version.as_ref().unwrap(),
             user_data.join("RunningChromeVersion"),
         )
         .unwrap();
@@ -1944,7 +2433,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             .import(&archive, "transfer-password", ImportMode::Preserve)
             .unwrap();
         assert_eq!(report.ids.as_slice(), std::slice::from_ref(&record.id));
-        let imported = target.profiles.store.user_data_dir(&record.id).unwrap();
+        let imported = target.windows.store.user_data_dir(&record.id).unwrap();
         assert_site_storage(&imported);
         for relative in ["Last Browser", "RunningChromeVersion", "Default/Cache"] {
             assert!(fs::symlink_metadata(imported.join(relative)).is_err());
@@ -1978,14 +2467,29 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             .unwrap();
         assert_eq!(report.window_count, 1);
         assert_ne!(report.ids[0], record.id);
-        let imported = target.profiles.store.get(&report.ids[0]).unwrap();
+        let imported = target.windows.store.get(&report.ids[0]).unwrap();
         assert_eq!(imported.settings, record.settings);
+        assert_eq!(imported.schema_version, 2);
+        assert_eq!(imported.kernel_version, record.kernel_version);
         assert_eq!(
-            imported.binding.channel_version,
-            record.binding.channel_version
+            imported.binding.provider_id,
+            BrowserProviderId::CloakBrowser
         );
+        assert_eq!(imported.binding.connection_id, BUILTIN_CONNECTION_ID);
+        assert_eq!(imported.binding.profile_id, imported.id);
+        assert_eq!(imported.origin, record.origin);
+        assert_eq!(imported.provider_config, record.provider_config);
+        assert_eq!(imported.created_at, record.created_at);
+        assert_eq!(imported.last_opened_at, record.last_opened_at);
+        assert!(imported.sort_order > 0);
         assert_ne!(imported.binary_path, record.binary_path);
-        let folder = target.profiles.store.root().join(&report.ids[0]);
+        let second = target
+            .import(&path, "transfer-password", ImportMode::Copy)
+            .unwrap();
+        let second = target.windows.store.get(&second.ids[0]).unwrap();
+        assert!(second.sort_order > imported.sort_order);
+        assert_eq!(target.windows.store.list().unwrap()[0].id, second.id);
+        let folder = target.windows.store.root().join(&report.ids[0]);
         assert_eq!(
             fs::read(folder.join("user-data/Default/Cookies")).unwrap(),
             b"machine-encrypted-database"
@@ -1996,7 +2500,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 .unwrap()
                 .contains("portable-session")
         );
-        assert!(source.profiles.store.get(&record.id).is_ok());
+        assert!(source.windows.store.get(&record.id).is_ok());
     }
 
     #[test]
@@ -2018,11 +2522,12 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let imported = target
             .import(&path, "transfer-password", ImportMode::Copy)
             .unwrap();
-        let imported = target.profiles.store.get(&imported.ids[0]).unwrap();
-        assert_eq!(imported.binding.channel_version, "155.0.8059.39");
+        let imported = target.windows.store.get(&imported.ids[0]).unwrap();
+        assert_eq!(imported.kernel_version.as_deref(), Some("155.0.8059.39.2"));
+        assert_eq!(imported.provider_config["displayVersion"], "155.0.8059.39");
         assert_eq!(
             imported.binary_path,
-            target.root.parent().unwrap().join("browser")
+            Some(target.root.parent().unwrap().join("browser"))
         );
     }
 
@@ -2032,24 +2537,26 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let service = service(root.path());
         let contents = root.path().join("contents");
         fs::create_dir(&contents).unwrap();
-        write_json(
-            &contents.join("manifest.json"),
-            &json!({"schemaVersion": 1, "windows": []}),
-        )
-        .unwrap();
         let marker = root.path().join("runtime-started");
         fs::write(
-            &service.profiles.runtime.browser_script,
+            &service.windows.builtin.runtime.browser_script,
             format!(
                 "require('node:fs').writeFileSync({}, 'unexpected invocation');",
                 serde_json::to_string(&marker).unwrap(),
             ),
         )
         .unwrap();
-        let error = service.manifest(&contents).err().unwrap();
-        assert!(error.contains("重新导出"));
+        for version in [0, 1, 2, 4] {
+            write_json(
+                &contents.join("manifest.json"),
+                &json!({"schemaVersion": version, "windows": []}),
+            )
+            .unwrap();
+            let error = service.manifest(&contents).err().unwrap();
+            assert!(error.contains("重新导出"));
+        }
         assert!(!marker.exists());
-        assert!(service.profiles.store.list().unwrap().is_empty());
+        assert!(service.windows.store.list().unwrap().is_empty());
     }
 
     #[test]
@@ -2066,12 +2573,12 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 &archive,
             )
             .unwrap();
-        target.profiles.license_store.remove().unwrap();
+        target.windows.builtin.license_store.remove().unwrap();
         let error = target
             .import(&archive, "transfer-password", ImportMode::Copy)
             .unwrap_err();
         assert!(error.contains("激活码"));
-        assert!(target.profiles.store.list().unwrap().is_empty());
+        assert!(target.windows.store.list().unwrap().is_empty());
         assert_eq!(
             fs::read_dir(target.root.join("pending")).unwrap().count(),
             0
@@ -2101,7 +2608,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 "a matching Chrome display version must not substitute another SDK revision",
             );
         assert!(error.contains("精确内核"));
-        assert!(target.profiles.store.list().unwrap().is_empty());
+        assert!(target.windows.store.list().unwrap().is_empty());
     }
 
     #[test]
@@ -2130,13 +2637,13 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             .unwrap();
         assert_eq!(
             target
-                .profiles
+                .windows
                 .store
                 .get(&report.ids[0])
                 .unwrap()
-                .binding
-                .channel_version,
-            "155.0.8059.39"
+                .kernel_version
+                .as_deref(),
+            Some("155.0.8059.39.2")
         );
     }
 
@@ -2158,9 +2665,8 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         transfer_archive::unpack(&original, &extracted, "transfer-password").unwrap();
         let manifest_path = extracted.join("manifest.json");
         let mut manifest: Value = json_file(&manifest_path, MAX_MANIFEST).unwrap();
-        let binding = &mut manifest["windows"][0]["record"]["binding"];
-        binding["channel_version"] = json!("155.0.8059.39.2");
-        binding["channel_id"] = json!("cloak:155.0.8059.39.2");
+        manifest["windows"][0]["record"]["provider_config"]["displayVersion"] =
+            json!("155.0.8059.39.2");
         write_json(&manifest_path, &manifest).unwrap();
         let malformed = root.path().join("wrong-display.nexuswindow");
         transfer_archive::pack(&extracted, &malformed, "transfer-password").unwrap();
@@ -2184,7 +2690,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 .import(&malformed, "transfer-password", ImportMode::Copy)
                 .expect_err("the imported binding must match the binary's actual --version");
             assert!(error.contains("版本"));
-            assert!(target.profiles.store.list().unwrap().is_empty());
+            assert!(target.windows.store.list().unwrap().is_empty());
             assert_eq!(
                 fs::read_dir(target.root.join("pending")).unwrap().count(),
                 0
@@ -2211,18 +2717,18 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             &kernel_package(&target, "155.0.8059.39.2"),
         )
         .unwrap();
-        let data = target.profiles.store.user_data_dir(&record.id).unwrap();
+        let data = target.windows.store.user_data_dir(&record.id).unwrap();
         fs::write(data.join("Default/Cookies"), b"keep-local-session").unwrap();
+        let extracted = root.path().join("edited");
+        transfer_archive::unpack(&path, &extracted, "transfer-password").unwrap();
+        let manifest_path = extracted.join("manifest.json");
+        let mut manifest: Value = json_file(&manifest_path, MAX_MANIFEST).unwrap();
         for version in ["155.0.8059.39.3", "155.0.8059.39.4"] {
-            set_kernel_package(&source, version);
+            manifest["windows"][0]["kernelVersion"] = json!(version);
+            manifest["windows"][0]["record"]["kernel_version"] = json!(version);
+            write_json(&manifest_path, &manifest).unwrap();
             let changed = root.path().join(format!("{version}.nexuswindow"));
-            source
-                .export(
-                    std::slice::from_ref(&record.id),
-                    "transfer-password",
-                    &changed,
-                )
-                .unwrap();
+            transfer_archive::pack(&extracted, &changed, "transfer-password").unwrap();
             let error = target
                 .import(&changed, "transfer-password", ImportMode::Replace)
                 .expect_err("an existing window's exact kernel package is immutable");
@@ -2262,9 +2768,9 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         target
             .import(&path, "transfer-password", ImportMode::Replace)
             .unwrap();
-        let data = target.profiles.store.user_data_dir(&record.id).unwrap();
+        let data = target.windows.store.user_data_dir(&record.id).unwrap();
         fs::write(data.join("Default/Cookies"), b"local-newer-session").unwrap();
-        let db = open_database(&target.profiles.store.database_path()).unwrap();
+        let db = open_database(&target.windows.store.database_path()).unwrap();
         db.execute_batch("CREATE TRIGGER fail_import BEFORE INSERT ON profile_records BEGIN SELECT RAISE(ABORT, 'fixture'); END;").unwrap();
         assert!(
             target
@@ -2277,7 +2783,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         );
         assert_eq!(
             target
-                .profiles
+                .windows
                 .store
                 .get(&record.id)
                 .unwrap()
@@ -2292,52 +2798,236 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     }
 
     #[test]
+    fn replace_keeps_a_group_deleted_after_journaling_absent_on_commit_and_rollback() {
+        for reject_import in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let service = service(root.path());
+            let exported = window(&service);
+            let groups = GroupStore::new(service.windows.store.database_path()).unwrap();
+            let group = groups.create("Original group", "").unwrap();
+            service
+                .windows
+                .store
+                .save(&exported, Some(&group.id))
+                .unwrap();
+
+            let package = root.path().join("group-deletion-fixture");
+            fs::create_dir_all(package.join("dist")).unwrap();
+            write_json(
+                &package.join("nexus.plugin.json"),
+                &json!({
+                    "apiVersion":1,
+                    "id":"studio.group-deletion-fixture",
+                    "version":"1.0.0",
+                    "name":"Group deletion fixture",
+                    "minCoreVersion":"0.1.0",
+                    "capabilities":["account.pool"],
+                    "permissions":{
+                        "networkDomains":[],
+                        "wantsBrowserAccess":false,
+                        "storage":"private",
+                        "secrets":[]
+                    }
+                }),
+            )
+            .unwrap();
+            fs::write(
+                package.join("package.json"),
+                r#"{"name":"group-deletion-fixture","main":"dist/index.cjs"}"#,
+            )
+            .unwrap();
+            let entered = root.path().join("plugin-import-entered");
+            let resume = root.path().join("resume-plugin-import");
+            fs::write(
+                package.join("dist/index.cjs"),
+                format!(
+                    r#"
+const fs = require('node:fs');
+const entered = {};
+const resume = {};
+const rejectImport = {};
+const send = value => process.stdout.write(JSON.stringify(value) + '\n');
+const identity = {{protocolVersion:1,pluginId:'studio.group-deletion-fixture',
+  version:'1.0.0',capabilities:['account.pool']}};
+const reply = (request, result) => send({{protocolVersion:1,
+  requestId:request.requestId,ok:true,result}});
+send({{...identity,type:'hello',apiVersion:1}});
+require('node:readline').createInterface({{input:process.stdin}}).on('line', line => {{
+  const request = JSON.parse(line);
+  if (request.type === 'handshake') {{
+    send({{...identity,type:'ready',status:{{}},
+      methods:['transfer.export','transfer.import','transfer.rollback','transfer.commit']}});
+  }} else if (request.method === 'transfer.import') {{
+    fs.writeFileSync(entered,'entered');
+    const deadline = Date.now() + 15000;
+    const timer = setInterval(() => {{
+      if (!fs.existsSync(resume) && Date.now() < deadline) return;
+      clearInterval(timer);
+      if (rejectImport || !fs.existsSync(resume)) {{
+        send({{protocolVersion:1,requestId:request.requestId,ok:false,
+          error:{{code:'INVALID_REQUEST',message:'fixture import rejected',retryable:false}}}});
+      }} else {{
+        reply(request,{{receipt:request.payload.transactionId}});
+      }}
+    }},10);
+  }} else {{
+    reply(request,{{}});
+  }}
+}});
+"#,
+                    serde_json::to_string(&entered).unwrap(),
+                    serde_json::to_string(&resume).unwrap(),
+                    reject_import
+                ),
+            )
+            .unwrap();
+            service.host.install(&package).unwrap();
+            let path = root.path().join("window.nexuswindow");
+            service
+                .export(
+                    std::slice::from_ref(&exported.id),
+                    "transfer-password",
+                    &path,
+                )
+                .unwrap();
+            let mut original = exported.clone();
+            original.name = "Local original".into();
+            service
+                .windows
+                .store
+                .save(&original, Some(&group.id))
+                .unwrap();
+            let cookies = service
+                .windows
+                .store
+                .user_data_dir(&original.id)
+                .unwrap()
+                .join("Default/Cookies");
+            fs::write(&cookies, b"local-newer-session").unwrap();
+
+            let (result, journal) = std::thread::scope(|scope| {
+                let importing =
+                    scope.spawn(|| service.import(&path, "transfer-password", ImportMode::Replace));
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !entered.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(entered.exists(), "import did not reach the plugin barrier");
+                let operation = fs::read_dir(service.root.join("pending"))
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                let journal: ImportJournal =
+                    json_file(&operation.join("journal.json"), MAX_MANIFEST).unwrap();
+                // Both saved originals and the import's group map still name this group.
+                let deleted = groups.delete(&group.id);
+                fs::write(&resume, b"resume").unwrap();
+                let result = importing.join().unwrap();
+                deleted.unwrap();
+                (result, journal)
+            });
+            assert_eq!(
+                journal.originals[0].group_id.as_deref(),
+                Some(group.id.as_str())
+            );
+            assert!(journal.groups.is_empty());
+            assert!(!journal.committed);
+            assert!(!journal.native_rolled_back);
+            if reject_import {
+                let error = result.unwrap_err();
+                assert!(error.contains("fixture import rejected"), "{error}");
+            } else {
+                assert_eq!(result.unwrap().ids, vec![original.id.clone()]);
+            }
+            let expected_record = if reject_import { &original } else { &exported };
+            let expected_cookies: &[u8] = if reject_import {
+                b"local-newer-session"
+            } else {
+                b"machine-encrypted-database"
+            };
+            assert_eq!(
+                &service.windows.store.get(&original.id).unwrap(),
+                expected_record
+            );
+            assert_eq!(fs::read(&cookies).unwrap(), expected_cookies);
+            assert!(groups.list().unwrap().is_empty());
+            assert_eq!(service.windows.store.group_id(&original.id).unwrap(), None);
+            assert_eq!(
+                fs::read_dir(service.root.join("pending")).unwrap().count(),
+                0
+            );
+            assert!(
+                service
+                    .windows
+                    .lock_transfer(std::slice::from_ref(&original.id))
+                    .is_ok()
+            );
+
+            let profiles = service.windows.store.root().to_owned();
+            let licenses = service.windows.builtin.license_store.clone();
+            let runtime = service.windows.builtin.runtime.clone();
+            drop(service);
+            assert_eq!(recover_pending(root.path()).unwrap(), 0);
+            let restarted = WindowService::with_runtime(profiles, None, licenses, runtime).unwrap();
+            assert_eq!(&restarted.store.get(&original.id).unwrap(), expected_record);
+            assert_eq!(fs::read(&cookies).unwrap(), expected_cookies);
+            assert_eq!(restarted.store.group_id(&original.id).unwrap(), None);
+            assert!(
+                GroupStore::new(restarted.store.database_path())
+                    .unwrap()
+                    .list()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn transfer_guard_excludes_launch_edit_delete_and_releases_after_completion() {
         let root = tempfile::tempdir().unwrap();
         let service = service(root.path());
         let record = window(&service);
         let guard = service
-            .profiles
+            .windows
             .lock_transfer(std::slice::from_ref(&record.id))
             .unwrap();
-        assert!(
+        let error = service
+            .windows
+            .update(update(&record, "Blocked edit"))
+            .unwrap_err();
+        assert_eq!(error.code, "profile_busy");
+        assert_eq!(
             service
-                .profiles
-                .launch(&record.id)
+                .windows
+                .start_window(&record.id)
                 .unwrap_err()
-                .contains("迁移")
+                .message,
+            error.message
         );
-        assert!(
+        assert_eq!(
             service
-                .profiles
-                .delete(&record.id)
+                .windows
+                .delete_window(&record.id, true)
                 .unwrap_err()
-                .contains("迁移")
+                .message,
+            error.message
         );
-        assert!(
+        assert_eq!(
             service
-                .profiles
-                .update(
-                    &record.id,
-                    record.name.clone(),
-                    ProxySource::direct(),
-                    record.settings.clone(),
-                    None
-                )
+                .windows
+                .update_note(&record.id, "Blocked note")
                 .unwrap_err()
-                .contains("迁移")
+                .code,
+            error.code
         );
         drop(guard);
-        service
-            .profiles
-            .update(
-                &record.id,
-                "Renamed".into(),
-                ProxySource::direct(),
-                record.settings.clone(),
-                None,
-            )
-            .unwrap();
+        service.windows.update(update(&record, "Renamed")).unwrap();
+        assert_eq!(
+            service.windows.store.get(&record.id).unwrap().name,
+            "Renamed"
+        );
     }
 
     #[test]
@@ -2363,8 +3053,8 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         };
         write_json(&operation.join("journal.json"), &journal).unwrap();
         recover_pending(root.path()).unwrap();
-        assert!(service.profiles.store.list().unwrap().is_empty());
-        assert!(!service.profiles.store.root().join(&record.id).exists());
+        assert!(service.windows.store.list().unwrap().is_empty());
+        assert!(!service.windows.store.root().join(&record.id).exists());
         assert!(!operation.exists());
     }
 
@@ -2406,8 +3096,8 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             .unwrap();
         }
         assert!(recover_pending(root.path()).is_ok());
-        assert!(service.profiles.store.list().unwrap().is_empty());
-        assert!(!service.profiles.store.root().join(record.id).exists());
+        assert!(service.windows.store.list().unwrap().is_empty());
+        assert!(!service.windows.store.root().join(record.id).exists());
         assert_eq!(
             fs::read_dir(service.root.join("pending")).unwrap().count(),
             2
@@ -2421,7 +3111,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     fn malformed_portable_state_never_replaces_an_existing_browser_environment() {
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
-        let mut target = service(&root.path().join("target"));
+        let target = service(&root.path().join("target"));
         let record = window(&source);
         let original = root.path().join("original.nexuswindow");
         source
@@ -2434,7 +3124,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         target
             .import(&original, "transfer-password", ImportMode::Replace)
             .unwrap();
-        let data = target.profiles.store.user_data_dir(&record.id).unwrap();
+        let data = target.windows.store.user_data_dir(&record.id).unwrap();
         fs::write(data.join("Default/Cookies"), b"newer-local-cookie").unwrap();
         let extracted = root.path().join("edited");
         transfer_archive::unpack(&original, &extracted, "transfer-password").unwrap();
@@ -2448,10 +3138,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         .unwrap();
         let malformed = root.path().join("malformed.nexuswindow");
         transfer_archive::pack(&extracted, &malformed, "transfer-password").unwrap();
-        Arc::get_mut(&mut target.profiles)
-            .unwrap()
-            .runtime
-            .browser_script = RuntimePaths::development().browser_script;
+        use_real_validator(&target);
         assert!(
             target
                 .import(&malformed, "transfer-password", ImportMode::Replace)
@@ -2471,16 +3158,13 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     fn complete_portable_state_is_accepted_by_the_real_runtime_validator() {
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("source"));
-        let mut target = service(&root.path().join("target"));
+        let target = service(&root.path().join("target"));
         let record = window(&source);
         let path = root.path().join("valid.nexuswindow");
         source
             .export(std::slice::from_ref(&record.id), "transfer-password", &path)
             .unwrap();
-        Arc::get_mut(&mut target.profiles)
-            .unwrap()
-            .runtime
-            .browser_script = RuntimePaths::development().browser_script;
+        use_real_validator(&target);
         let report = target
             .import(&path, "transfer-password", ImportMode::Copy)
             .unwrap();
@@ -2514,6 +3198,9 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 created_at: now(),
                 windows: vec![PortableWindow {
                     record,
+                    capabilities: BrowserCapabilities::for_provider(
+                        BrowserProviderId::CloakBrowser,
+                    ),
                     group: None,
                     kernel_version: "155.0.8059.39".into(),
                 }],
@@ -2536,7 +3223,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let service = service(root.path());
         let record = window(&service);
         let guard = service
-            .profiles
+            .windows
             .lock_transfer(std::slice::from_ref(&record.id))
             .unwrap();
         let operation = service
@@ -2563,43 +3250,37 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         drop(guard);
         assert!(
             service
-                .profiles
+                .windows
                 .lock_transfer(std::slice::from_ref(&record.id))
                 .is_err(),
             "an undurable native rollback must prevent a new migration for the same ID"
         );
         assert!(
             service
-                .profiles
-                .update(
-                    &record.id,
-                    "Later edit".into(),
-                    ProxySource::direct(),
-                    record.settings.clone(),
-                    None
-                )
+                .windows
+                .update(update(&record, "Later edit"))
                 .is_err(),
             "later edits would otherwise be overwritten by replaying the old journal"
         );
-        assert!(service.profiles.delete(&record.id).is_err());
-        assert!(service.profiles.launch(&record.id).is_err());
+        assert!(service.windows.delete_window(&record.id, true).is_err());
+        assert!(service.windows.start_window(&record.id).is_err());
+        assert!(
+            service
+                .windows
+                .update_note(&record.id, "Later note")
+                .is_err()
+        );
         assert_eq!(service.recovery_status().unwrap()["pending"], 1);
         recover_pending(root.path()).unwrap();
-        let restarted = ProfileService::with_runtime(
-            service.profiles.store.root().to_owned(),
+        let restarted = WindowService::with_runtime(
+            service.windows.store.root().to_owned(),
             None,
-            service.profiles.license_store.clone(),
-            service.profiles.runtime.clone(),
+            service.windows.builtin.license_store.clone(),
+            service.windows.builtin.runtime.clone(),
         )
         .unwrap();
         restarted
-            .update(
-                &record.id,
-                "After durable recovery".into(),
-                ProxySource::direct(),
-                record.settings,
-                None,
-            )
+            .update(update(&record, "After durable recovery"))
             .unwrap();
         assert_eq!(
             restarted.store.get(&record.id).unwrap().name,
@@ -2612,25 +3293,19 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let root = tempfile::tempdir().unwrap();
         let service = service(root.path());
         let record = window(&service);
-        let groups = GroupStore::new(service.profiles.store.database_path()).unwrap();
+        let groups = GroupStore::new(service.windows.store.database_path()).unwrap();
         let adopted = groups.create("Imported group", "").unwrap();
         let edited = groups.create("Initial name", "").unwrap();
         let unused = groups.create("Unused", "").unwrap();
         service
-            .profiles
+            .windows
             .store
-            .update_with_group(
-                &record.id,
-                &record.name,
-                ProxySource::direct(),
-                record.settings,
-                Some(&adopted.id),
-            )
+            .save(&record, Some(&adopted.id))
             .unwrap();
         groups.update(&edited.id, "User edited", "keep").unwrap();
         rollback_native(
-            &service.profiles.store.database_path(),
-            service.profiles.store.root(),
+            &service.windows.store.database_path(),
+            service.windows.store.root(),
             &service.root.join("unused-operation"),
             &ImportJournal {
                 committed: false,
@@ -2650,7 +3325,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         .unwrap();
         assert!(
             service
-                .profiles
+                .windows
                 .store
                 .group_id(&record.id)
                 .unwrap()
@@ -2690,31 +3365,24 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         write_json(&operation.join("journal.json"), &journal).unwrap();
         assert!(
             rollback_import(
-                &service.profiles.store.database_path(),
-                service.profiles.store.root(),
+                &service.windows.store.database_path(),
+                service.windows.store.root(),
                 &operation,
                 &mut journal,
                 &service.host
             )
             .is_err()
         );
-        service
-            .profiles
-            .store
-            .update(
-                &record.id,
-                "Edited after recovery",
-                ProxySource::direct(),
-                record.settings,
-            )
-            .unwrap();
+        let mut edited = record.clone();
+        edited.name = "Edited after recovery".into();
+        service.windows.store.save(&edited, None).unwrap();
         let mut persisted: ImportJournal =
             json_file(&operation.join("journal.json"), MAX_MANIFEST).unwrap();
         assert!(persisted.native_rolled_back);
         assert!(
             rollback_import(
-                &service.profiles.store.database_path(),
-                service.profiles.store.root(),
+                &service.windows.store.database_path(),
+                service.windows.store.root(),
                 &operation,
                 &mut persisted,
                 &service.host
@@ -2722,7 +3390,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             .is_err()
         );
         assert_eq!(
-            service.profiles.store.get(&record.id).unwrap().name,
+            service.windows.store.get(&record.id).unwrap().name,
             "Edited after recovery"
         );
     }
@@ -2757,16 +3425,11 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         )
         .unwrap();
         let record = window(&source);
-        source
-            .profiles
-            .store
-            .update(
-                &record.id,
-                &record.name,
-                ProxySource::plugin("studio.proxy-pool".into(), Some(source_id)),
-                record.settings.clone(),
-            )
-            .unwrap();
+        let mut proxied = record.clone();
+        proxied.proxy_plugin = Some("studio.proxy-pool".into());
+        proxied.proxy_endpoint = Some(source_id);
+        proxied.proxy_mode = ProxyMode::Plugin;
+        source.windows.store.save(&proxied, None).unwrap();
         let saved = call(&source.host, "studio.vinted-accounts", Capability::AccountPool, "vinted.accounts.save",
             json!({"loginMethod":"email","account":"shop@example.test","password":"private-account-password",
                 "phone":"","emailOtpUrl":"","smsOtpUrl":"","note":"Shop","status":"active","homepageUrl":""})).unwrap();
@@ -2785,7 +3448,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let imported = target
             .import(&path, "transfer-password", ImportMode::Copy)
             .unwrap();
-        let target_record = target.profiles.store.get(&imported.ids[0]).unwrap();
+        let target_record = target.windows.store.get(&imported.ids[0]).unwrap();
         assert_ne!(target_record.proxy_endpoint, Some(source_id));
         let resolved = target
             .host
@@ -2852,25 +3515,25 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let imported = target.sync_import(id, ImportMode::Copy).unwrap();
         assert_eq!(imported.window_count, 1);
         assert_eq!(record.id, imported.ids[0]);
-        assert!(source.profiles.store.get(&record.id).is_ok());
-        let copied = target.profiles.store.get(&imported.ids[0]).unwrap();
+        assert!(source.windows.store.get(&record.id).is_ok());
+        let copied = target.windows.store.get(&imported.ids[0]).unwrap();
         assert_eq!(copied.settings, record.settings);
         assert!(
             target
-                .profiles
+                .windows
                 .store
                 .root()
                 .join(&copied.id)
                 .join("portable-state.json")
                 .is_file()
         );
-        let target_data = target.profiles.store.user_data_dir(&copied.id).unwrap();
+        let target_data = target.windows.store.user_data_dir(&copied.id).unwrap();
         fs::write(target_data.join("Default/Cookies"), b"changed-on-b").unwrap();
         assert_ne!(
             fs::read(target_data.join("Default/Cookies")).unwrap(),
             fs::read(
                 source
-                    .profiles
+                    .windows
                     .store
                     .user_data_dir(&record.id)
                     .unwrap()
@@ -2908,7 +3571,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         assert_eq!(
             fs::read(
                 source
-                    .profiles
+                    .windows
                     .store
                     .user_data_dir(&record.id)
                     .unwrap()

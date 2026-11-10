@@ -19,7 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import type { NativeProfile } from '@/lib/platform/native-profiles'
+import type { BrowserWindow } from '@/lib/platform/windows'
 import {
   exportWindows,
   importWindows,
@@ -42,7 +42,7 @@ export function FileTransferDialog({
   onClose,
 }: {
   kind: 'export' | 'import'
-  windows: NativeProfile[]
+  windows: BrowserWindow[]
   operating: ReadonlySet<string>
   onImported: () => Promise<void>
   onClose: () => void

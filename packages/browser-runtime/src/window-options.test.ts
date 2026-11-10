@@ -1,85 +1,109 @@
 import { describe, expect, it } from 'vitest'
+import { runtimeWindow } from '../fixtures/runtime-window.js'
 import { browserOptionsForWindow } from './profile-runtime.js'
 
 describe('window browser options', () => {
   it('blocks a plugin window if its resolved connection never reaches the adapter', () => {
     expect(() =>
-      browserOptionsForWindow('/data/profile', {
-        proxy: null,
-        proxy_plugin: 'studio.proxy-pool',
-      }),
+      browserOptionsForWindow(
+        '/data/profile',
+        runtimeWindow({
+          proxy: null,
+          proxy_plugin: 'studio.proxy-pool',
+          proxy_mode: 'plugin',
+        }),
+      ),
     ).toThrow('PROFILE_PROXY_MISSING')
   })
 
   it('passes the selected connection and authentication to the browser', () => {
     const proxy = 'socks5://account:p%40ss@selected.example:1080'
     expect(
-      browserOptionsForWindow('/data/profile', {
-        proxy,
-        proxy_plugin: 'studio.proxy-pool',
-      }).proxy,
+      browserOptionsForWindow(
+        '/data/profile',
+        runtimeWindow({
+          proxy,
+          proxy_plugin: 'studio.proxy-pool',
+          proxy_mode: 'plugin',
+        }),
+      ).proxy,
     ).toBe(proxy)
   })
 
-  it('enables GeoIP for proxied profiles without saved settings', () => {
+  it('enables online IP matching for a proxy with the saved preference', () => {
     expect(
-      browserOptionsForWindow('/data/profile', {
-        proxy: 'http://account:password@proxy.example:8080',
-      }).geoip,
+      browserOptionsForWindow(
+        '/data/profile',
+        runtimeWindow({
+          proxy: 'http://account:password@proxy.example:8080',
+          proxy_mode: 'manual',
+        }),
+      ).geoip,
     ).toBe(true)
   })
 
   it('ignores the auto GeoIP preference on a direct connection', () => {
     expect(
-      browserOptionsForWindow('/data/profile', {
-        proxy: null,
-        settings: {
-          platform: '',
-          note: '',
-          geoip: true,
-          timezone: '',
-          locale: '',
-          viewport: 'default',
-          fingerprintSeed: null,
-          startUrl: '',
-        },
-      }).geoip,
+      browserOptionsForWindow(
+        '/data/profile',
+        runtimeWindow({
+          proxy: null,
+          settings: {
+            platform: '',
+            note: '',
+            geoip: true,
+            timezone: '',
+            locale: '',
+            viewport: 'default',
+            fingerprintSeed: 123456789,
+            startUrl: '',
+          },
+        }),
+      ).geoip,
     ).not.toBe(true)
   })
 
   it('honors an explicitly disabled GeoIP preference with a proxy', () => {
     expect(
-      browserOptionsForWindow('/data/profile', {
-        proxy: 'socks5://proxy.example:1080',
-        settings: {
-          platform: '',
-          note: '',
-          geoip: false,
-          timezone: '',
-          locale: '',
-          viewport: 'default',
-          fingerprintSeed: null,
-          startUrl: '',
-        },
-      }).geoip,
+      browserOptionsForWindow(
+        '/data/profile',
+        runtimeWindow({
+          proxy: 'socks5://proxy.example:1080',
+          proxy_mode: 'manual',
+          settings: {
+            platform: '',
+            note: '',
+            geoip: false,
+            timezone: '',
+            locale: '',
+            viewport: 'default',
+            fingerprintSeed: 123456789,
+            startUrl: '',
+          },
+        }),
+      ).geoip,
     ).not.toBe(true)
   })
 
   it('maps saved settings into the persistent browser launch', () => {
     expect(
-      browserOptionsForWindow('/data/profile', {
-        proxy: 'socks5://proxy.local:1080',
-        settings: {
-          platform: 'Vinted',
-          note: '',
-          geoip: true,
-          timezone: 'America/New_York',
-          locale: 'en-US',
-          viewport: '1440x900',
-          fingerprintSeed: 42,
-          startUrl: 'https://www.vinted.com',
-        },
-      }),
+      browserOptionsForWindow(
+        '/data/profile',
+        runtimeWindow({
+          proxy: 'socks5://proxy.local:1080',
+          proxy_mode: 'manual',
+          settings: {
+            platform: 'Vinted',
+            note: '',
+            geoip: true,
+            timezone: 'America/New_York',
+            locale: 'en-US',
+            viewport: '1440x900',
+            fingerprintSeed: 42,
+            startUrl: 'https://www.vinted.com',
+          },
+        }),
+      ),
     ).toEqual({
       userDataDir: '/data/profile',
       headless: false,

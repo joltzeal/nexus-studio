@@ -31,7 +31,7 @@ import {
   updateGroup,
   type WindowGroup,
 } from '@/lib/platform/native-groups'
-import { listNativeProfiles, type NativeProfile } from '@/lib/platform/native-profiles'
+import { listBrowserWindows, type BrowserWindow } from '@/lib/platform/windows'
 
 function message(cause: unknown): string {
   return typeof cause === 'string'
@@ -44,7 +44,7 @@ function message(cause: unknown): string {
 export function GroupsPage() {
   const native = nativeGroupsAvailable()
   const [groups, setGroups] = useState<WindowGroup[]>([])
-  const [windows, setWindows] = useState<NativeProfile[]>([])
+  const [windows, setWindows] = useState<BrowserWindow[]>([])
   const [editing, setEditing] = useState<WindowGroup | 'new' | null>(null)
   const [viewing, setViewing] = useState<WindowGroup | null>(null)
   const [deleting, setDeleting] = useState<WindowGroup | null>(null)
@@ -53,7 +53,7 @@ export function GroupsPage() {
   const load = useCallback(async () => {
     const [nextGroups, nextWindows] = await Promise.all([
       listGroups(),
-      listNativeProfiles(),
+      listBrowserWindows(),
     ])
     setGroups(nextGroups)
     setWindows(nextWindows)
@@ -62,7 +62,7 @@ export function GroupsPage() {
   useEffect(() => {
     if (!native) return
     let active = true
-    void Promise.all([listGroups(), listNativeProfiles()]).then(
+    void Promise.all([listGroups(), listBrowserWindows()]).then(
       ([nextGroups, nextWindows]) => {
         if (!active) return
         setGroups(nextGroups)
@@ -114,7 +114,7 @@ export function GroupsPage() {
           新建分组
         </Button>
       </div>
-      {!native ? <p className="native-profiles-hint">请在桌面应用中管理分组。</p> : null}
+      {!native ? <p className="browser-windows-hint">请在桌面应用中管理分组。</p> : null}
       {error ? <FieldError role="alert">{error}</FieldError> : null}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {groups.map((group) => (

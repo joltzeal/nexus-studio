@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, RefreshCw, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { listNativeProfiles } from '@/lib/platform/native-profiles'
+import { listBrowserWindows } from '@/lib/platform/windows'
 import { getConfig, listPickerProxies } from './api'
 import { indexProxyUsage, proxyUsageLabel, type ProxyUsageState } from './proxy-usage'
 import { addressOf, flagOf, matchesProxyQuery, message, type ProxyRow } from './types'
@@ -99,7 +99,7 @@ export function ProxyPicker({
         if (active) setError(message(cause))
       },
     )
-    void Promise.all([listNativeProfiles(), config]).then(
+    void Promise.all([listBrowserWindows(), config]).then(
       ([profiles, poolConfig]) => {
         if (!active) return
         setUsage({

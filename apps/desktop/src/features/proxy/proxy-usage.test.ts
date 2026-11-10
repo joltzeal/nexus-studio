@@ -1,3 +1,4 @@
+import { browserWindow } from '@/lib/platform/browser-test-support'
 import { describe, expect, it } from 'vitest'
 import {
   indexProxyUsage,
@@ -90,8 +91,13 @@ describe('proxy endpoint usage', () => {
 
   it('counts saved bindings for both stopped and running windows', () => {
     const profiles = [
-      { ...profile('stopped', 7), running: false },
-      { ...profile('running', 7), running: true },
+      browserWindow({ id: 'stopped', proxyPlugin: PROXY_PLUGIN_ID, proxyEndpoint: 7 }),
+      browserWindow({
+        id: 'running',
+        state: 'running',
+        proxyPlugin: PROXY_PLUGIN_ID,
+        proxyEndpoint: 7,
+      }),
     ]
     expect(indexProxyUsage(profiles, null).get('7')?.others).toHaveLength(2)
   })

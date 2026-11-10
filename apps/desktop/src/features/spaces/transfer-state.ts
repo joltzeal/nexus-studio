@@ -1,3 +1,4 @@
+import type { BrowserWindow } from '@nexus/contracts/browser'
 import type { SyncStatus, TransferRecoveryStatus } from '@/lib/platform/native-transfer'
 
 export function toggleSelection(
@@ -14,11 +15,15 @@ export function toggleSelection(
 }
 
 export function selectionError(
-  windows: { id: string; running: boolean }[],
+  windows: Pick<BrowserWindow, 'id' | 'name' | 'state' | 'providerId'>[],
   operating: ReadonlySet<string> = new Set(),
 ): string | null {
   if (!windows.length) return '请先选择需要迁移的已关闭窗口。'
-  if (windows.some((window) => window.running)) return '请先关闭所有选中的窗口。'
+  const unsupported = windows.filter((window) => window.providerId !== 'cloakbrowser')
+  if (unsupported.length)
+    return `以下窗口不支持完整迁移：${unsupported.map((window) => window.name).join('、')}。请使用官方浏览器的同步功能。`
+  if (windows.some((window) => window.state !== 'stopped'))
+    return '请先确认所有选中的窗口已关闭；未知状态不能迁移。'
   if (windows.some((window) => operating.has(window.id))) {
     return '选中的窗口正在操作，请等待操作结束后重试。'
   }

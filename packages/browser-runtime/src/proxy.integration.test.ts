@@ -8,7 +8,7 @@ import type { Duplex } from 'node:stream'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
-import { parseBrowserVersion } from './profile-runtime.js'
+import { installedRuntimeWindow } from '../fixtures/runtime-window.js'
 
 const binary = process.env.NEXUS_TEST_BROWSER_BINARY
 const cache = process.env.NEXUS_TEST_BROWSER_CACHE
@@ -180,9 +180,16 @@ it
         ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`
         : ''
       const proxy = `socks5://${credentials}127.0.0.1:${address.port}`
-      const version = parseBrowserVersion(
-        (await promisify(execFile)(binary!, ['--version'])).stdout,
-      )
+      const record = await installedRuntimeWindow(binary!, cache!)
+      record.proxy = proxy
+      record.proxy_mode = 'manual'
+      record.settings = {
+        ...record.settings,
+        geoip: matching,
+        timezone: manual ? 'America/New_York' : '',
+        locale: manual ? 'fr-FR' : '',
+        startUrl: `http://${hostname}/through-proxy`,
+      }
       const userData = join(directory, 'user-data')
       const preload = join(directory, 'no-database.mjs')
       await writeFile(
@@ -193,9 +200,11 @@ it
         process.env.NEXUS_TEST_RUNTIME_NODE ?? process.execPath,
         [
           '--import',
+          fileURLToPath(new URL('../fixtures/source-loader.mjs', import.meta.url)),
+          '--import',
           preload,
           process.env.NEXUS_TEST_RUNTIME_RUNNER ??
-            fileURLToPath(new URL('../dist/profile-runner.js', import.meta.url)),
+            fileURLToPath(new URL('./profile-runner.ts', import.meta.url)),
           'launch',
           userData,
         ],
@@ -219,25 +228,7 @@ it
         child!.once('close', resolve)
       })
       timer = setTimeout(() => child!.kill(), 25_000)
-      child.stdin.write(
-        JSON.stringify({
-          schema_version: 1,
-          id: 'synthetic',
-          binary_path: binary!,
-          binding: { profile_id: 'synthetic', channel_version: version },
-          proxy,
-          settings: {
-            platform: '',
-            note: '',
-            geoip: matching,
-            timezone: manual ? 'America/New_York' : '',
-            locale: manual ? 'fr-FR' : '',
-            viewport: 'default',
-            fingerprintSeed: null,
-            startUrl: `http://${hostname}/through-proxy`,
-          },
-        }) + '\n',
-      )
+      child.stdin.write(JSON.stringify(record) + '\n')
       await expect
         .poll(() => requests, { timeout: 10_000 })
         .toContainEqual(expect.stringContaining('GET /through-proxy HTTP/1.1'))

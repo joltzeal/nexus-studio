@@ -2,26 +2,79 @@
 
 ## 当前实现
 
-桌面窗口页的“创建窗口”直接创建真实 CloakBrowser Profile；“打开”才启动持久上下文。
-Rust 保存绑定和调度，Node.js 适配器
-调用官方 JS 包装层。新建默认请求最新稳定内核，也可选择已安装的完整包版本；
-设置支持提前下载指定版本。下载、启动和浏览器快照均需激活码，
-受管缓存路径和原版本绑定在启动前校验；内核策略见[浏览器内核](27-browser-kernels.md)。
-窗口的代理来源可以是手动地址或代理插件；
-代理插件由插件宿主解析，失败时阻断启动，见[插件宿主](17-plugin-host.md)。
-原有 localStorage 演示窗口不会自动迁移或出现在原生列表。
-`packages/browser-runtime` 包含独立健康协议与真实 Profile 适配器；
+桌面窗口统一通过 `WindowService` 管理，按
+`BrowserBinding { provider_id, connection_id, profile_id }` 分派到内置 CloakBrowser、
+AdsPower 或比特浏览器。Nexus UUID 是业务窗口和插件关联的 `windowId`，
+厂商环境 ID 仅保存在绑定中。`origin: created | attached` 区分创建与接管，
+接管不会复制厂商目录，也不会自动启动环境。
+
+内置 Provider 通过受管 Node.js 适配器调用官方 JS 包装层；
+外部 Provider 只调用厂商桌面应用的 Local API，不经过内置 SDK、激活码或内核缓存。
+`browser_window_create`、`browser_window_update`、`browser_window_start` 等命令
+共用统一 DTO，不保留旧 `profile_*` 命令别名。
+
+## 外部连接与能力
+
+在浏览器接入设置中保存本机 API 地址、可选 API Key、默认厂商分组与账户/工作区说明，
+探测可达后人工确认当前范围。当前 AdsPower 和比特浏览器探测都返回空 `scopeId`；
+连通成功和用户填写的说明都不能证明稳定的厂商账户身份。
+保存连接、应用重启或外部观察失败后需要重新确认，确认前阻断写操作。
+切换账户或工作区应新建连接，历史窗口不改绑；同一 Provider 同时只启用一个连接。
+
+API endpoint 只接受 loopback HTTP(S) 根地址，不接受凭据、查询或 fragment。
+请求固定到校验后的 loopback 地址，拒绝重定向、绕过应用/系统代理，并禁用自动重放。
+AdsPower 支持可选 Bearer API Key；当前比特浏览器适配器不接受 API Key 配置。
+发现环境和厂商分组使用 `browser_profile_discover`、`browser_group_list`，
+接管使用 `browser_window_attach`；Nexus 分组关系与厂商默认分组不是同一概念。
+
+| 能力                       | 内置 CloakBrowser            | AdsPower                        | 比特浏览器                             |
+| -------------------------- | ---------------------------- | ------------------------------- | -------------------------------------- |
+| 创建、启动、停止、删除环境 | 受管实现                     | 已有 Local API 适配，待真实验收 | 已有 Local API 适配，待真实验收        |
+| 接管已有环境               | 不提供外部接管               | 按连接发现并登记                | 按连接发现并登记                       |
+| 编辑厂商配置               | 支持受限配置，身份字段不可变 | 未验证，不可用；在厂商应用编辑  | 已有部分更新路径，未知字段和指纹需保留 |
+| 插件代理                   | 原生解析并在失败时阻断       | 未验证，不可用                  | 已有映射路径，待真实验收               |
+| 指纹种子                   | Nexus 数字种子，创建后固定   | 厂商管理，不接受 Nexus 种子     | 厂商管理，不接受 Nexus 种子            |
+| 内核选择                   | 完整包版本，创建后固定       | 厂商管理                        | 厂商管理                               |
+| 加密导出与同步             | manifest3 内置快照           | 不支持                          | 不支持                                 |
+
+AdsPower 的 `update` 和 `proxyPlugin` 能力均已在适配器关闭，
+不能因通用接口存在这些字段就将其显示或承诺为可用。
+编辑与插件代理须在真实验证完成后才能开放，不能通过覆盖完整指纹来实现未经验证的更新。
+通用能力字段仅描述适配范围，不能替代真实厂商、版本和平台验收。
+
+外部窗口的运行状态来自 Local API 观察。`unknown` 不等于 `stopped`，
+`missing` 不触发插件关联删除；断开时保留历史身份，不按名称寻找替代环境。
+解除 Nexus 关联和删除厂商环境分别由 `deleteEnvironment` 表达。
+退出或更新 Nexus 不自动停止厂商环境。创建响应不明时通过持久操作 ID 协调，
+不能盲目重试，细节见[核心后端](12-core-backend.md)。
+
+## 内置运行时输入
+
+以下快照、出口匹配、代理桥接和就绪协议仅适用于内置 CloakBrowser。
+新建默认请求最新稳定内核，也可选择已安装的完整包版本；
+下载、启动和浏览器快照需要内置激活码，内核策略见[浏览器内核](27-browser-kernels.md)。
+`CloakBrowserProvider` 持有授权、内核、网络和运行时资源；
+`packages/browser-runtime` 包含独立健康协议与真实持久上下文适配器。
 `profile-runner` 处理内核准备、清单、授权校验、启动、便携状态校验与导出。
+该名称是内部 CLI，不是旧 Tauri 命令兼容入口。
+
+`launch` 和 `snapshot` 的 stdin 直接接收 `WindowRecord` v2：
+必须有 `schema_version: 2` 和内置 Provider/连接绑定，`proxy_endpoint` 为整数或 `null`，
+`settings` 按当前 schema 校验。`kernel_version` 保存完整包版本，
+可选 `provider_config.displayVersion` 单独保存 Chrome 显示版本。
+旧记录、缺失字段的默认补写和外部绑定都不能作为运行时兼容输入。
+只有既有 SQLite 数据在应用启动初始化时执行一次 SQL 升级，见[本地数据](07-data-storage.md)。
+
 `profile-runner version <binaryPath>` 离线执行指定内核的 `--version`，
 以 `{ "version": "...", "binary_path": "..." }` 返回实际显示版本和输入路径。
 二进制探测有 10 秒截止，原生调用另设 20 秒上限，不启动 Profile 或访问激活服务。
-迁移用它核对本机缓存内核与窗口绑定，完整内核包修订号另由清单核对。
+迁移用它核对本机缓存内核与窗口显示版本，完整内核包修订号另与记录及清单核对。
 Manager 只作产品与隔离行为参考，不作为本应用的运行依赖。
 
 ## 窗口加密转移的便携状态契约
 
 `profile-runner snapshot <userDataDir>` 从 stdin 首行读取与 `launch` 相同的
-NativeProfile JSON，核对绑定内核后用该内核启动 headless 持久上下文，
+`WindowRecord` v2 JSON，核对内置绑定和精确内核后用该内核启动 headless 持久上下文，
 调用 `context.storageState({ indexedDB: true, opfs: true })`，
 关闭浏览器后仅向 stdout 输出一行：
 
@@ -29,7 +82,12 @@ NativeProfile JSON，核对绑定内核后用该内核启动 headless 持久上�
 { "schemaVersion": 1, "storageState": { "cookies": [], "origins": [] } }
 ```
 
-主程序负责原始 `user-data` 目录复制与加密归档。导入主程序将上面的完整对象写入
+主程序在导出或同步的任何运行时、插件和目录操作前检查整批 Provider；
+混入任一外部窗口即拒绝整批，不读取厂商目录。
+快照 manifest 只接受版本 3，携带 v2 记录和能力快照，旧 manifest 没有导入适配器。
+这里的便携站点状态仍为 `schemaVersion: 1`，与 manifest 和记录版本无关。
+
+主程序负责内置原始 `user-data` 目录复制与加密归档。导入主程序将上面的完整对象写入
 `<userDataDir>/../portable-state.json`；Node 适配器在下一次正常 `launch` 时读取并恢复，
 成功后删除便携状态文件，失败则保留文件并阻断启动。该文件是含会话数据的明文，
 仅用于受管 Profile 的导入，不应进入日志、源码或非加密导出文件。
@@ -73,11 +131,10 @@ encoded-value 格式补全索引、键和值。覆盖 `0`、`false`、`null`、�
 非有限数字、Date、BigInt、ArrayBuffer/TypedArray、Map、Set 与循环引用；
 Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败，不退化成空对象。
 
-历史临时 Profile 的 Cookie、localStorage、IndexedDB 和 OPFS 实测保留在
-[质量与验证](09-quality-and-testing.md)。这些旧内核结果不作为当前最新内核的验收证据；
-本次重构未执行真实内核、跨机器或跨 macOS/Windows 的登录恢复验证。
+历史执行结果统一见[质量与验证](09-quality-and-testing.md)，不作为当前重构的通过记录。
+本次文档更新未执行 Rust、真实内核、厂商 API、跨机器或 Windows 登录恢复验证。
 
-## 配置来源与映射
+## 内置配置来源与映射
 
 配置选项参考 CloakBrowser 官方
 [JS README 的 Launch、Persistent Context、Fingerprint Management 部分](https://github.com/CloakHQ/CloakBrowser/blob/main/js/README.md)。
@@ -86,7 +143,7 @@ Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败�
 | 窗口字段           | 官方能力                                                    | 当前处理                               |
 | ------------------ | ----------------------------------------------------------- | -------------------------------------- |
 | 独立窗口           | `launchPersistentContext({ userDataDir, headless: false })` | 原生 Profile 独立目录，显式打开后启动  |
-| HTTP / SOCKS5 代理 | `proxy`                                                     | 手动无凭据地址；插件代理解析失败则阻断 |
+| HTTP / SOCKS5 代理 | `proxy`                                                     | 手动地址或插件解析；代理失败则阻断     |
 | 出口自动匹配       | `timezone`、`locale`、`--fingerprint-webrtc-ip`             | 在线查询；有代理且未显式关闭时启用     |
 | 时区、语言         | `timezone`、`locale`                                        | 手工覆盖；空值使用在线结果或包装层默认 |
 | 尺寸               | `viewport`                                                  | 默认或两个常用尺寸                     |
@@ -97,12 +154,13 @@ Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败�
 官方建议保留种子产生的一致参数组合；因此本页不开放任意参数注入。
 自定义参数进入插件能力与版本兼容性评估后再设计，避免混合不一致指纹。
 
-## 代理启动与就绪时序
+## 内置代理启动与就绪时序
 
 适配器核对 `--version` 后同时传递绑定路径与 `browserVersion`，
 避免 SDK 在只有本地路径时将代理鉴权功能按未知版本处理。
 正常代理启动保留完整连接 URL、认证信息与出口自动匹配，不在失败时回退直连。
-窗口持久字段仍叫 `geoip`，缺少 settings 时默认开启；直连不进行在线匹配。
+当前持久字段为 `settings.geoip`，新建默认开启；v2 读取不接受缺失 settings，
+直连不进行在线匹配。
 适配器通过窗口代理依次请求 `https://ipwho.is/?fields=ip,success,country_code,timezone.id`
 与备用 `https://api.ip.sb/geoip`，取得出口 IP、IANA 时区和国家代码；
 语言由国家代码经 Node Intl Locale 推断，手工时区和语言优先。
@@ -122,12 +180,11 @@ Blob、CryptoKey、DataView 等不受该格式支持的类型明确导出失败�
 不调用 SDK 的 GeoIP 解析、不读取或下载 GeoLite2 数据库。
 指纹种子参数保留，现有窗口内核绑定不变。
 
-原来的 SDK 路径会在新机器上下载约 70 MB 数据库；旧测试预填了开发机数据库，
-掩盖了空缓存下因下载不可用导致的启动失败。该依赖已从启动路径移除，
+SDK GeoIP 数据库依赖已从本应用启动路径移除，
 `mmdb-lib` 和 `socks-proxy-agent` 不再是应用显式生产依赖，
 并通过工作区 `ignoredOptionalDependencies` 排除 SDK 的这两个可选依赖。
-SQLite/迁移契约中的 `geoip` 字段仅保留为兼容旧数据的自动匹配开关名称，
-不再表示启用 SDK 数据库功能；页面统一称“出口 IP 自动匹配”。
+SQLite 和迁移契约中的 `geoip` 是当前自动匹配开关，
+不表示启用 SDK 数据库功能；页面统一称“出口 IP 自动匹配”。
 staging 与安装包 smoke 检查 SDK 的 `playwright-core`，
 以及运行时的 `undici`、`socks`，缺失时报 `BROWSER_RUNTIME_DEPENDENCY_MISSING`。
 SDK 启动阶段保留 60 秒上限及网络取消信号，迟到的上下文也会关闭。
@@ -166,9 +223,10 @@ SDK 启动阶段保留 60 秒上限及网络取消信号，迟到的上下文也
 SOCKS5 地址校验接受普通 `socks5://host:port` 的空 path（含 IPv4/IPv6），
 仍拒绝真实 URL 路径，避免合法代理在原生校验处被误拒绝。
 
-## 后续生命周期与安全边界
+## 生命周期与安全边界
 
-Rust 核心负责 profile 路径、独占锁、进程生命周期、错误与重试；Node.js 适配器封装官方 SDK。
+内置 Provider 负责受管目录和进程，`WindowService` 负责业务锁、状态与操作协调；
+Node.js 适配器封装内置官方 SDK。外部环境由厂商应用持有，通过 Local API 控制和观察。
 不同 Profile 的启动和停止可并行；Nexus 不自行猜测或固定 CloakBrowser 并发席位。
 官方包装层未公开可信席位数时，超额由 CloakBrowser 启动错误裁决并反馈给用户。
 UI 只接受稳定 DTO，不持有进程句柄或调试端口。启动前生成不可变、经过验证的快照；
@@ -185,7 +243,7 @@ CloakBrowser 二进制版本、并发配额及再分发许可由所选版本和�
 macOS、Windows 分别进行启动、隔离、持久化、代理阻断及崩溃恢复验证。
 本地表单、协议健康检查、前端构建均不能代替这些运行验证。
 
-## 浏览器沙箱
+## 内置浏览器沙箱
 
-本次移除的是旧内核接入和兼容代码，未调整 SDK 与 Playwright 的沙箱参数。
+统一窗口重构不代表 SDK 与 Playwright 的沙箱参数已完成新的安全验证。
 若修改默认启动参数，需在受支持内核的 macOS 和 Windows 临时 Profile 上单独验证。

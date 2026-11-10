@@ -89,6 +89,63 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 })
 "#;
 
+const ACCOUNT_PLUGIN_JS: &str = r#"
+const fs = require('node:fs')
+const path = require('node:path')
+const readline = require('node:readline')
+const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'nexus.plugin.json'), 'utf8'))
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixture.json'), 'utf8'))
+if (fixture.failStart) process.exit(2)
+const storage = process.env.NEXUS_PLUGIN_STORAGE_DIR
+const statePath = path.join(storage, 'accounts.json')
+const callsPath = path.join(storage, 'detach-calls.jsonl')
+const state = fs.existsSync(statePath)
+  ? JSON.parse(fs.readFileSync(statePath, 'utf8'))
+  : {
+      accounts: [{ id: 'account-1', password: 'keep-password', phone: '+33 123456' }],
+      proxy: { configHandle: 'fixture:proxy:7' },
+      bindings: [
+        { windowId: 'window-1', accountId: 'account-1' },
+        { windowId: 'window-2', accountId: 'account-1' },
+      ],
+    }
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\n')
+send({
+  type: 'hello', protocolVersion: 1, pluginId: manifest.id,
+  version: manifest.version, apiVersion: manifest.apiVersion,
+  capabilities: manifest.capabilities,
+})
+readline.createInterface({ input: process.stdin }).on('line', (message) => {
+  const request = JSON.parse(message)
+  if (request.type === 'handshake') {
+    send({
+      type: 'ready', protocolVersion: 1, pluginId: manifest.id,
+      version: manifest.version, capabilities: manifest.capabilities,
+      methods: fixture.methods ?? ['window.detach'], status: {},
+    })
+    return
+  }
+  if (request.type === 'cancel') return
+  fs.appendFileSync(callsPath, JSON.stringify({
+    capability: request.capability, method: request.method, payload: request.payload,
+  }) + '\n')
+  if (fixture.error) {
+    send({ protocolVersion: 1, requestId: request.requestId, ok: false, error: fixture.error })
+    return
+  }
+  let result
+  if (Object.hasOwn(fixture, 'response')) {
+    result = fixture.response
+  } else {
+    const before = state.bindings.length
+    state.bindings = state.bindings.filter((binding) => binding.windowId !== request.payload.windowId)
+    fs.writeFileSync(statePath, JSON.stringify(state))
+    result = { windowId: request.payload.windowId, unbound: before !== state.bindings.length }
+  }
+  send({ protocolVersion: 1, requestId: request.requestId, ok: true, result })
+})
+"#;
+
 /// Every test that starts a real Node process competes for the same machine.
 /// Four at a time keeps the suite quick without making the 15 s handshake
 /// budget depend on how loaded the box happens to be.
@@ -135,6 +192,59 @@ fn write_package(directory: &Path, manifest: &str, configured: bool) -> PathBuf 
         .unwrap();
     }
     directory.to_path_buf()
+}
+
+fn write_account_package(directory: &Path, id: &str, fixture: serde_json::Value) -> PathBuf {
+    let manifest = MANIFEST
+        .replace("test.fixture-plugin", id)
+        .replace("proxy.provider", "account.pool");
+    let source = write_package(directory, &manifest, false);
+    fs::write(source.join("dist/index.js"), ACCOUNT_PLUGIN_JS).unwrap();
+    fs::write(
+        source.join("dist/fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    source
+}
+
+fn install_account_fixture(
+    host: &PluginHost,
+    source_root: &Path,
+    id: &str,
+    fixture: serde_json::Value,
+) {
+    let source = write_account_package(&source_root.join(id), id, fixture);
+    host.install(&source).unwrap();
+}
+
+fn account_fixture_calls(host: &PluginHost, id: &str) -> Vec<serde_json::Value> {
+    let file = host
+        .find(id)
+        .unwrap()
+        .storage_directory(host.root())
+        .join("detach-calls.jsonl");
+    if !file.exists() {
+        return Vec::new();
+    }
+    fs::read_to_string(file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn set_fixture_enabled(host: &PluginHost, id: &str, enabled: bool) {
+    host.stop(id);
+    let mut document = host.snapshot().unwrap();
+    document
+        .plugins
+        .iter_mut()
+        .find(|plugin| plugin.id == id)
+        .unwrap()
+        .enabled = enabled;
+    host.persist(&document).unwrap();
+    *host.registry.lock().unwrap() = document;
 }
 
 #[test]
@@ -547,10 +657,8 @@ fn supervisor_restarts_a_plugin_that_exits() {
 }
 
 #[test]
-fn a_disabled_registry_entry_is_adopted_on_open() {
+fn a_disabled_registry_entry_and_its_grants_are_preserved_on_open() {
     let _slot = NodeSlot::acquire();
-    // Registries written by a build that still had a manual enable step must
-    // not stay inert: opening the host enables and grants them.
     let temporary = tempfile::tempdir().unwrap();
     let source = write_package(&temporary.path().join("source"), MANIFEST, false);
     let candidate = inspect(&source, CandidateSource::Development)
@@ -579,13 +687,324 @@ fn a_disabled_registry_entry_is_adopted_on_open() {
 
     let host = PluginHost::open(root, Vec::new()).unwrap();
     let view = host.view_of("test.fixture-plugin").unwrap();
-    assert!(view.enabled);
-    assert_eq!(view.granted, vec!["proxy.provider".to_string()]);
+    assert!(!view.enabled);
+    assert!(view.granted.is_empty());
     let persisted = store.load().unwrap();
-    assert!(persisted.plugins[0].enabled);
+    assert!(!persisted.plugins[0].enabled);
+    assert!(persisted.plugins[0].granted_capabilities.is_empty());
+    assert!(persisted.plugins[0].granted_domains.is_empty());
+    host.shutdown();
+}
+
+#[test]
+fn window_binding_targets_include_installed_disabled_unsupported_and_failed_account_pools() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let available = write_account_package(
+        &temporary.path().join("available"),
+        "test.available-accounts",
+        serde_json::json!({}),
+    );
+    let host = PluginHost::open(
+        temporary.path().join("host"),
+        vec![(available, CandidateSource::Development)],
+    )
+    .unwrap();
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        "test.z-accounts",
+        serde_json::json!({ "failStart": true }),
+    );
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        "test.a-accounts",
+        serde_json::json!({ "methods": [] }),
+    );
+    set_fixture_enabled(&host, "test.a-accounts", false);
+    let proxy = write_package(&temporary.path().join("proxy"), MANIFEST, false);
+    host.install(&proxy).unwrap();
+
     assert_eq!(
-        persisted.plugins[0].granted_domains,
-        vec!["example.com".to_string()]
+        host.window_binding_plugins().unwrap(),
+        vec!["test.a-accounts".to_string(), "test.z-accounts".to_string()]
+    );
+    assert!(
+        host.catalog()
+            .unwrap()
+            .iter()
+            .any(|plugin| plugin.id == "test.available-accounts" && plugin.state == "available")
+    );
+    assert!(!host.view_of("test.a-accounts").unwrap().enabled);
+    assert!(account_fixture_calls(&host, "test.a-accounts").is_empty());
+    assert!(account_fixture_calls(&host, "test.z-accounts").is_empty());
+    host.shutdown();
+}
+
+#[test]
+fn window_detach_starts_a_stopped_plugin_and_retries_after_host_restart() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("host");
+    let host = PluginHost::open(root.clone(), Vec::new()).unwrap();
+    let id = "test.accounts";
+    install_account_fixture(&host, temporary.path(), id, serde_json::json!({}));
+    let targets = host.window_binding_plugins().unwrap();
+    host.stop(id);
+    assert!(!host.processes.lock().unwrap().contains_key(id));
+
+    host.detach_window_bindings("window-1", &targets).unwrap();
+    assert_eq!(host.view_of(id).unwrap().state, "running");
+    let state_path = host
+        .find(id)
+        .unwrap()
+        .storage_directory(host.root())
+        .join("accounts.json");
+    let expected = serde_json::json!({
+        "accounts": [{ "id": "account-1", "password": "keep-password", "phone": "+33 123456" }],
+        "proxy": { "configHandle": "fixture:proxy:7" },
+        "bindings": [{ "windowId": "window-2", "accountId": "account-1" }],
+    });
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(state, expected);
+    host.shutdown();
+
+    let reopened = PluginHost::open(root, Vec::new()).unwrap();
+    reopened
+        .detach_window_bindings("window-1", &targets)
+        .unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(state, expected);
+    let request = serde_json::json!({
+        "capability": "account.pool",
+        "method": "window.detach",
+        "payload": { "windowId": "window-1" },
+    });
+    assert_eq!(
+        account_fixture_calls(&reopened, id),
+        vec![request.clone(), request]
+    );
+    reopened.shutdown();
+}
+
+#[test]
+fn window_detach_keeps_a_disabled_target_disabled_until_it_is_explicitly_restored() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("host");
+    let host = PluginHost::open(root.clone(), Vec::new()).unwrap();
+    let id = "test.accounts";
+    install_account_fixture(&host, temporary.path(), id, serde_json::json!({}));
+    let targets = host.window_binding_plugins().unwrap();
+    set_fixture_enabled(&host, id, false);
+    host.shutdown();
+
+    let reopened = PluginHost::open(root, Vec::new()).unwrap();
+    assert_eq!(reopened.window_binding_plugins().unwrap(), targets);
+    assert_eq!(
+        reopened
+            .detach_window_bindings("window-1", &targets)
+            .unwrap_err(),
+        super::HostError::Permission(PermissionError::NotEnabled)
+    );
+    assert!(!reopened.find(id).unwrap().enabled);
+    assert!(!reopened.store.load().unwrap().plugins[0].enabled);
+    assert!(!reopened.processes.lock().unwrap().contains_key(id));
+    assert!(account_fixture_calls(&reopened, id).is_empty());
+
+    set_fixture_enabled(&reopened, id, true);
+    reopened
+        .detach_window_bindings("window-1", &targets)
+        .unwrap();
+    assert_eq!(account_fixture_calls(&reopened, id).len(), 1);
+    reopened.shutdown();
+}
+
+#[test]
+fn window_detach_checks_method_support_after_starting_a_stopped_target() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+    let id = "test.accounts";
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        id,
+        serde_json::json!({ "methods": [] }),
+    );
+    let targets = host.window_binding_plugins().unwrap();
+    host.stop(id);
+
+    assert_eq!(
+        host.detach_window_bindings("window-1", &targets)
+            .unwrap_err(),
+        super::HostError::Permission(PermissionError::MethodNotDeclared)
+    );
+    assert_eq!(host.view_of(id).unwrap().state, "running");
+    assert!(account_fixture_calls(&host, id).is_empty());
+    host.shutdown();
+}
+
+#[test]
+fn window_detach_propagates_plugin_failure_and_retries_only_the_saved_targets() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        "test.a-accounts",
+        serde_json::json!({}),
+    );
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        "test.b-accounts",
+        serde_json::json!({
+            "error": {
+                "code": "UNAVAILABLE",
+                "message": "cleanup unavailable",
+                "retryable": true,
+            },
+        }),
+    );
+    let targets = host.window_binding_plugins().unwrap();
+    let error = host
+        .detach_window_bindings("window-1", &targets)
+        .unwrap_err();
+    assert!(matches!(
+        &error,
+        super::HostError::Process(ProcessError::Plugin(_))
+    ));
+    assert_eq!(error.code(), "UNAVAILABLE");
+    assert_eq!(error.message(), "cleanup unavailable");
+    assert!(error.retryable());
+
+    // A later installation must not change an in-flight deletion's saved targets.
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        "test.new-accounts",
+        serde_json::json!({}),
+    );
+    set_fixture_enabled(&host, "test.new-accounts", false);
+    host.stop("test.b-accounts");
+    fs::write(
+        host.find("test.b-accounts")
+            .unwrap()
+            .directory
+            .join("dist/fixture.json"),
+        "{}",
+    )
+    .unwrap();
+    host.detach_window_bindings("window-1", &targets).unwrap();
+    assert_eq!(account_fixture_calls(&host, "test.a-accounts").len(), 2);
+    assert_eq!(account_fixture_calls(&host, "test.b-accounts").len(), 2);
+    assert!(account_fixture_calls(&host, "test.new-accounts").is_empty());
+    assert!(!host.find("test.new-accounts").unwrap().enabled);
+    host.shutdown();
+}
+
+#[test]
+fn window_detach_rejects_malformed_or_mismatched_results_without_echoing_data() {
+    let _slot = NodeSlot::acquire();
+    for response in [
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!({}),
+        serde_json::json!({ "windowId": "window-1" }),
+        serde_json::json!({ "unbound": true }),
+        serde_json::json!({ "windowId": "private-foreign-window", "unbound": true }),
+        serde_json::json!({ "windowId": "window-1", "unbound": null }),
+        serde_json::json!({ "windowId": "window-1", "unbound": "false" }),
+        serde_json::json!({ "windowId": "window-1", "unbound": 1 }),
+        serde_json::json!({ "windowId": "window-1", "unbound": true, "password": "keep-password" }),
+    ] {
+        let temporary = tempfile::tempdir().unwrap();
+        let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+        install_account_fixture(
+            &host,
+            temporary.path(),
+            "test.accounts",
+            serde_json::json!({ "response": response }),
+        );
+        let targets = host.window_binding_plugins().unwrap();
+        let error = host
+            .detach_window_bindings("window-1", &targets)
+            .unwrap_err();
+        assert_eq!(error.code(), "PROTOCOL_ERROR");
+        assert!(!error.message().contains("private-foreign-window"));
+        assert!(!error.message().contains("keep-password"));
+        host.shutdown();
+    }
+}
+
+#[test]
+fn window_detach_returns_a_start_failure_for_an_installed_target() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+    let id = "test.accounts";
+    install_account_fixture(
+        &host,
+        temporary.path(),
+        id,
+        serde_json::json!({ "failStart": true }),
+    );
+    let targets = host.window_binding_plugins().unwrap();
+    assert_eq!(targets, vec![id.to_string()]);
+    assert!(matches!(
+        host.detach_window_bindings("window-1", &targets),
+        Err(super::HostError::Process(_))
+    ));
+    assert!(account_fixture_calls(&host, id).is_empty());
+    host.shutdown();
+}
+
+#[test]
+fn window_detach_skips_a_saved_target_only_after_it_is_uninstalled() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let source = write_account_package(
+        &temporary.path().join("source"),
+        "test.accounts",
+        serde_json::json!({}),
+    );
+    let host = PluginHost::open(
+        temporary.path().join("host"),
+        vec![(source.clone(), CandidateSource::Development)],
+    )
+    .unwrap();
+    host.install(&source).unwrap();
+    let targets = host.window_binding_plugins().unwrap();
+    host.uninstall("test.accounts").unwrap();
+    assert!(source.exists());
+    assert!(host.window_binding_plugins().unwrap().is_empty());
+    assert_eq!(host.catalog().unwrap()[0].state, "available");
+    host.detach_window_bindings("window-1", &targets).unwrap();
+    host.shutdown();
+}
+
+#[test]
+fn window_detach_does_not_skip_an_installed_target_that_dropped_the_capability() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+    let id = "test.accounts";
+    install_account_fixture(&host, temporary.path(), id, serde_json::json!({}));
+    let targets = host.window_binding_plugins().unwrap();
+    let replacement = write_package(
+        &temporary.path().join("replacement"),
+        &MANIFEST.replace("test.fixture-plugin", id),
+        false,
+    );
+    host.install(&replacement).unwrap();
+    assert!(host.window_binding_plugins().unwrap().is_empty());
+    assert_eq!(
+        host.detach_window_bindings("window-1", &targets)
+            .unwrap_err(),
+        super::HostError::Permission(PermissionError::CapabilityUndeclared)
     );
     host.shutdown();
 }

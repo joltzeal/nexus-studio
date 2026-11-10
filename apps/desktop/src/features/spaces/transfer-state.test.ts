@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { browserWindow } from '@/lib/platform/browser-test-support'
 import type { SyncStatus } from '@/lib/platform/native-transfer'
 import {
   canImportReceived,
@@ -23,11 +24,11 @@ describe('window snapshot selection', () => {
 
   it('blocks a stale selection if a selected window has started or is busy', () => {
     expect(selectionError([])).toContain('选择')
-    expect(selectionError([{ id: 'a', running: true }])).toContain('关闭')
-    expect(selectionError([{ id: 'a', running: false }], new Set(['a']))).toContain(
-      '操作',
+    expect(selectionError([browserWindow({ id: 'a', state: 'running' })])).toContain(
+      '关闭',
     )
-    expect(selectionError([{ id: 'a', running: false }])).toBeNull()
+    expect(selectionError([browserWindow({ id: 'a' })], new Set(['a']))).toContain('操作')
+    expect(selectionError([browserWindow({ id: 'a' })])).toBeNull()
   })
 
   it('requires an eight character password and exact confirmation', () => {
@@ -275,4 +276,14 @@ describe('transfer recovery observation', () => {
     expect(onError).not.toHaveBeenCalled()
     stopRetry()
   })
+})
+
+it('rejects the entire external transfer selection and names unsupported windows', () => {
+  expect(
+    selectionError([
+      browserWindow(),
+      browserWindow({ id: 'ads', name: 'Ads shop', providerId: 'adspower' }),
+    ]),
+  ).toContain('Ads shop')
+  expect(selectionError([browserWindow({ state: 'unknown' })])).toContain('未知状态')
 })

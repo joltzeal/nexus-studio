@@ -2,88 +2,105 @@
 
 ## 当前架构
 
-当前交付 React 页面、Tauri 2 桌面壳与原生窗口管理。
-窗口管理页通过 Tauri command 创建原生 Profile 并写入应用数据目录，
-并通过受管 Node 子进程调用官方 CloakBrowser JS 包装层。
-插件由 `core::plugin_host` 托管为独立 Node.js 子进程，见[插件宿主](17-plugin-host.md)。
-SQLite 目前只保存 CloakBrowser 授权记录，业务数据尚未迁入。
-浏览器预览与桌面壳加载同一前端，各自使用所在来源的本地存储。
-React、TypeScript、Vite、Tailwind 4 与 shadcn/ui 构成当前页面技术栈。
-Node.js 是开发工具链和 CloakBrowser 适配子进程的运行环境；
-当前原生 Profile 命令由 Rust 管理，页面不直接调用 Node。
+桌面端通过 React → 平台适配层 → Tauri command → Rust `WindowService`
+统一管理内置 CloakBrowser、AdsPower 和比特浏览器窗口。
+窗口、分组、浏览器连接、操作记录和会话观察由 Rust 写入 SQLite；
+外观和工作区偏好仍使用当前来源的 localStorage。
+浏览器预览加载同一前端，但不能执行原生命令，也不以演示数据替代原生调用失败。
+
+`WindowService` 负责业务窗口、连接范围、操作协调、插件关联和迁移互斥，
+按绑定分派到 `BrowserProvider`。内置 `CloakBrowserProvider` 持有授权、运行时、
+内核缓存、应用网络配置和受管浏览器会话，通过 Node.js 适配器调用官方 SDK。
+AdsPower、比特浏览器适配器通过各自桌面应用的 Local API 操作环境，
+不使用内置 Node 浏览器运行时，也不复制厂商资料目录。
+插件由独立的 `core::plugin_host` 托管为 Node.js 子进程。
+
+```mermaid
+flowchart TD
+  UI["React 页面"] --> Platform["平台适配层与 contracts"]
+  Platform --> Commands["Tauri commands"]
+  Commands --> Windows["WindowService"]
+  Windows --> Store["WindowStore / SQLite"]
+  Windows --> Builtin["CloakBrowserProvider"]
+  Builtin --> Runtime["受管 Node / browser-runtime / 内置内核"]
+  Windows --> External["AdsPower / BitBrowser Provider"]
+  External --> API["厂商桌面应用 Local API"]
+  Windows --> Plugins["PluginHost / 独立插件进程"]
+```
 
 ## 目录职责
 
-| 目录                       | 当前职责                                      | 后续职责             |
-| -------------------------- | --------------------------------------------- | -------------------- |
-| `apps/desktop/src`         | 九个主页面、原生窗口调用、主题与偏好存储      | 扩展平台适配器       |
-| `apps/desktop/src-tauri`   | Tauri 壳、Profile 调度、SQLite 授权与插件宿主 | 更多业务 SQLite 数据 |
-| `packages/contracts`       | 共享类型与校验契约                            | 扩展真实跨边界 DTO   |
-| `packages/plugin-sdk`      | manifest 与能力声明契约                       | 真实插件宿主公开接口 |
-| `packages/browser-runtime` | CloakBrowser Profile 与授权 SDK 适配          | 受管发行运行时       |
-| `docs`                     | 当前演示边界与长期设计                        | 随真实能力同步更新   |
+| 目录                                                | 当前职责                                          |
+| --------------------------------------------------- | ------------------------------------------------- |
+| `apps/desktop/src`                                  | 页面、连接和能力入口、统一窗口 DTO 与平台调用     |
+| `apps/desktop/src-tauri/src/core/window_service.rs` | 窗口编排、状态、操作恢复、迁移和安装互斥          |
+| `apps/desktop/src-tauri/src/core/window_store.rs`   | `WindowRecord` v2 校验与持久化                    |
+| `apps/desktop/src-tauri/src/core/browser`           | Provider、连接、Local API、操作和观察记录         |
+| `apps/desktop/src-tauri/src/core/database.rs`       | SQLite 初始化与唯一一次既有数据库升级             |
+| `packages/contracts`                                | 共享 DTO 与边界结构校验                           |
+| `packages/plugin-sdk`                               | 插件 manifest、能力和迁移接口契约                 |
+| `packages/browser-runtime`                          | 仅供内置浏览器使用的 schema2 运行时与便携状态处理 |
 
-共享包通过公开导出使用，不反向依赖桌面页面。
-包存在、包构建成功与页面接入是不同状态，不能互相替代。
+共享包通过公开导出使用，不反向依赖桌面页面。前端调用位于
+`lib/platform/windows.ts`、`browser-connections.ts` 和 `native-transfer.ts`。
+手写契约不等于自动生成的跨语言绑定；类型检查也不等于真实厂商运行验证。
 
-## 当前页面数据流
+## 窗口身份与连接范围
 
-```text
-浏览器预览 / Tauri WebView
-          |
-React 页面与前端状态
-          |
-窗口/插件命令 → Rust → Profile 目录/插件宿主
-偏好与旧分组 → 当前来源的 localStorage
+所有浏览器共用 `WindowRecord.schema_version = 2`。Nexus UUID 是业务窗口标识，
+也是账号等插件关联使用的 `windowId`。`BrowserBinding` 保存
+`provider_id`、`connection_id`、`profile_id`；最后一项才是 Provider 的环境标识。
+不能拿厂商环境 ID 替换 Nexus UUID，或仅凭名称把窗口重新绑定到其他账户。
 
-contracts / plugin-sdk：保留契约
-browser-runtime：独立健康协议与原生 Profile 适配进程
-Rust core：磁盘绑定与调度；原生 Profile 通过 Tauri 命令接入
-```
+内置接入固定为 `builtin-cloakbrowser`。外部连接保存本机 API 地址、可选 API Key、
+默认厂商分组、账户或工作区说明及确认状态。同一 Provider 同时只启用一个连接，
+停用的历史连接及其窗口绑定仍保留。切换厂商账户或工作区应建立新连接。
 
-窗口资料来自原生 Profile；分组和偏好沿用本地数据；插件状态来自宿主检查。
-紧凑侧栏提供窗口管理、分组管理、插件中心、代理池、地址生成器、共享货源、AI 生图、Vinted 账号、Vinted 监控、应用设置十个入口。
-顶栏以面包屑和主题切换 表达位置与模式，窗口页由 Table 与工具栏组织。
-窗口详情和编辑通过 Dialog 展示，删除由确认弹窗保护；仅“打开”操作启动引擎。
-插件中心在桌面应用中安装并托管插件进程，装上即启用、退出自动重启；非桌面环境只显示 manifest 声明。
-页面不得因独立健康检查返回成功而显示真实浏览器已连接。
-localStorage 失败应显示真实保存错误，不能宣称已写入数据库。
+API 可达只证明服务响应，当前外部探测不提供稳定的账户范围 ID。
+用户必须人工确认正在使用的账户或工作区；说明文字是用户声明，不是已核验身份。
+修改连接、应用重新启动或外部观察失败后需要重新确认，确认前阻断外部写操作。
 
-## 长期目标架构
+## 能力与生命周期
 
-未来其他业务数据可沿 React → 平台适配器 → Tauri command → Rust → SQLite 接入；
-当前原生 Profile 仍使用独立磁盘记录而非 SQLite 表。
-Rust 核心实现了引擎通道、代次快照、profile 独占、容量预留和代理能力端口；
-另有磁盘绑定记录与开发环境的真实浏览器子进程。尚无可信许可容量来源和
-完整发行包，详见[核心后端](12-core-backend.md)与[原生 Profile](13-native-profiles.md)。
-Rust 是业务 SQLite 唯一所有者，Node.js 与插件不直接写入数据库。
-Rust 监督 Node.js 浏览器适配进程，适配器封装真实引擎 SDK。
-受信任 TypeScript 插件未来由单独进程承载，通过宿主公开能力调用。
-Manager 仅作为参考，不成为服务、数据库或模块依赖。
-不引入 Python、FastAPI 或 Docker 作为桌面业务运行前提。
-当前演示 localStorage 不自动迁移为长期数据库或真实 profile。
+页面和后端按 Provider 能力控制创建、编辑、接管、代理、指纹、内核与转移入口，
+不能因使用统一 DTO 就推定功能对所有浏览器相同。
+AdsPower 编辑和插件代理在验证完成前不可用；具体能力及限制见
+[浏览器接入](05-browser-integration.md)。外部环境的指纹和内核由厂商管理，
+不接受 Nexus 数字指纹种子或内置内核选择。
 
-## 协议与错误规划
+窗口状态为 `stopped`、`starting`、`running`、`stopping`、`unknown`、`missing`。
+API 失败进入未知语义，不能显示为已停止；环境缺失也不自动删除插件关联。
+外部环境可由厂商应用启动，Nexus 的观察记录不代表拥有其进程。
+退出或更新 Nexus 不应自动关闭第三方环境；解除 Nexus 关联与删除厂商环境是独立选择。
 
-保留协议包真实支持的健康与能力描述，不添加虚构浏览器会话结果。
-跨进程接口应明确版本、请求关联、结构校验、成功结果与错误类别。
-超时、进程退出、协议不兼容和取消需要各自确定的收敛行为。
-未来 Rust 可恢复错误使用 `Result`，对 UI 暴露稳定错误类别。
-内部路径、凭据与原始敏感堆栈不直接作为用户错误文本。
-当前前端保存错误与未来引擎错误分别建模，不能共用误导性 ready 状态。
+内置浏览器在启动前生成不可变配置快照，并持有窗口独占锁。
+代理是必需项时，解析、鉴权或连接失败必须阻断启动，不自动直连。
+内置运行时的 `NEXUS_READY`、插件握手的 `ready` 和外部 API 观察各有独立含义，
+不能互相替代。创建等写操作先保存操作记录；结果不明时显式协调，不盲目重放请求。
+状态查询使用操作版本避免迟到结果覆盖新会话。恢复中的启动确认运行后仍保留占用，
+迁移和安装分别先持有互锁再核对当前状态。无法自动确认的外部结果提供明确的人工关联或结束，
+保留原操作和窗口身份；配置恢复依据提交时的字段散列，不依赖插件后来变化的默认代理。
 
-## 类型与适配方向
+## 数据与格式边界
 
-前端通过明确适配层访问存储，便于以后替换数据来源。
-接入 Rust 时再引入从 Rust 或 schema 生成 TypeScript 绑定的确定性流程。
-当前不宣称手写 contracts 已形成自动生成的跨语言绑定。
-生成工具落地后固定命令、来源和校验方式，禁止手工改写产物。
-新增业务 schema 随真实功能引入，不预建完整账号或环境模型。
+Rust 是业务 SQLite 的唯一所有者；React、Node 适配器与插件不直接写入主程序数据库。
+`profile_records` 是保留的内部表名，其 JSON 已统一为窗口记录 v2。
+仅在启动初始化时，对既有 SQLite 数据执行一次 SQL 升级；
+正常读取不再接受旧记录、扫描旧目录或导入旧 `profile.json`。
+公开窗口命令使用 `browser_window_*`，迁移与同步使用 `window_transfer_*`、
+`window_sync_*`，不保留旧 `profile_*` 命令别名或运行时兼容读取器。
 
-## 关联设计
+加密窗口快照仅接受 manifest3，内部携带 v2 记录和能力快照。
+整批导出前检查 Provider，任何外部窗口都会使整批失败；
+同步插件只传输同一加密文件，不能绕过内置浏览器限制或旧格式拒绝规则。
+加密容器、便携站点状态和同步传输各自维护版本，不能与 manifest 版本混用。
 
-页面结构与模拟操作见[演示页面](11-demo-pages.md)。
-当前 localStorage 与未来 SQLite 的边界见[本地数据](07-data-storage.md)。
-引擎快照、profile 锁与代理规则见[浏览器接入](05-browser-integration.md)。
-真实插件信任模型见[插件系统](06-plugin-system.md)。
-发布目标与实际证据分别见[分发](08-distribution.md)和[质量矩阵](09-quality-and-testing.md)。
+## 证据与后续边界
+
+本模块描述当前源码分层与契约，不宣称本次执行了 Rust、真实厂商或 Windows 测试。
+受信任插件进程及 manifest 权限检查不构成操作系统沙箱。
+数据库和插件私有存储的明文边界见[本地数据](07-data-storage.md)，
+运行时及代理规则见[浏览器接入](05-browser-integration.md)，
+操作恢复见[核心后端](12-core-backend.md)，加密快照见[窗口加密迁移](28-window-transfer.md)。
+实际检查结果统一记录于[质量与验证](09-quality-and-testing.md)。
+Manager 仅作参考，不成为服务、数据库或模块依赖。

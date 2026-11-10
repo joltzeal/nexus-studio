@@ -68,9 +68,9 @@ vi.mock('@/features/sim8/accounts-bridge', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/features/sim8/accounts-bridge')>()),
   updateContact: vi.fn(),
 }))
-vi.mock('@/lib/platform/native-profiles', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/platform/native-profiles')>()),
-  nativeProfilesAvailable: () => true,
+vi.mock('@/lib/platform/windows', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/platform/windows')>()),
+  browserWindowsAvailable: () => true,
 }))
 vi.mock('@/components/ui/toast', () => ({
   toast: { success: vi.fn(), error: vi.fn() },

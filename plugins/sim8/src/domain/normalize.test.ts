@@ -26,6 +26,19 @@ describe('number normalization', () => {
 })
 
 describe('purchase payloads', () => {
+  it('prefers a valid expire and falls back to the order date when expire is invalid', () => {
+    const at = Date.parse('2026-11-03T10:00:00Z')
+    for (const expire of [at / 1000, String(at), '2026-11-03T18:00:00+08:00']) {
+      expect(normalizePurchased({ tel: '123', expire })[0]?.endTime).toBe(
+        new Date(at).toISOString(),
+      )
+    }
+    expect(
+      normalizePurchased({ tel: '123', expire: 0, end_time: '2026-11-04 12:00:00' })[0]
+        ?.endTime,
+    ).toBe('2026-11-04 12:00:00')
+  })
+
   it('reads the documented list shape', () => {
     const items = normalizePurchased({
       ordernum: 'ORD-1',

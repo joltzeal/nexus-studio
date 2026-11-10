@@ -134,14 +134,14 @@ function importMode(mode: ImportMode): ImportMode {
 }
 
 export async function windowTransferRecovery(): Promise<TransferRecoveryStatus> {
-  return call('profile_transfer_recovery_status', {}, (value) => {
+  return call('window_transfer_recovery_status', {}, (value) => {
     const row = object(value)
     return { pending: count(row.pending), warnings: texts(row.warnings) }
   })
 }
 
 export async function pickTransferPath(save: boolean): Promise<string | null> {
-  return call('profile_transfer_pick', { save }, (value) =>
+  return call('window_transfer_pick', { save }, (value) =>
     value === null ? null : text(value),
   )
 }
@@ -153,14 +153,10 @@ export async function exportWindows(
 ): Promise<ExportReport> {
   selection(ids)
   if (Array.from(password).length < 8) throw new Error('导出密码至少需要 8 个字符。')
-  return call(
-    'profile_transfer_export',
-    { ids, password, path: text(path) },
-    (value) => ({
-      ...report(value),
-      path: text(object(value).path),
-    }),
-  )
+  return call('window_transfer_export', { ids, password, path: text(path) }, (value) => ({
+    ...report(value),
+    path: text(object(value).path),
+  }))
 }
 
 export async function inspectTransfer(
@@ -168,7 +164,7 @@ export async function inspectTransfer(
   password: string,
 ): Promise<TransferInspection> {
   return call(
-    'profile_transfer_inspect',
+    'window_transfer_inspect',
     { path: text(path), password: snapshotPassword(password) },
     (value) => {
       const row = object(value)
@@ -203,7 +199,7 @@ export async function importWindows(
   mode: ImportMode,
 ): Promise<TransferReport> {
   return call(
-    'profile_transfer_import',
+    'window_transfer_import',
     { path: text(path), password: snapshotPassword(password), mode: importMode(mode) },
     report,
   )
@@ -211,7 +207,7 @@ export async function importWindows(
 
 export async function offerWindowSync(ids: string[]): Promise<SyncOffer> {
   selection(ids)
-  return call('profile_sync_offer', { ids }, (value) => {
+  return call('window_sync_offer', { ids }, (value) => {
     const row = object(value)
     const expiresAt = count(row.expiresAt)
     if (!expiresAt) invalid()
@@ -225,7 +221,7 @@ export async function offerWindowSync(ids: string[]): Promise<SyncOffer> {
 }
 
 export async function windowSyncStatus(id: string): Promise<SyncStatus> {
-  return call('profile_sync_status', { id: text(id) }, (value) => {
+  return call('window_sync_status', { id: text(id) }, (value) => {
     const row = object(value)
     const state = row.state
     if (
@@ -249,7 +245,7 @@ export async function windowSyncStatus(id: string): Promise<SyncStatus> {
 }
 
 export async function cancelWindowSync(id: string): Promise<void> {
-  return call('profile_sync_cancel', { id: text(id) }, () => undefined)
+  return call('window_sync_cancel', { id: text(id) }, () => undefined)
 }
 
 export async function receiveWindowSync(
@@ -257,7 +253,7 @@ export async function receiveWindowSync(
   host: string | null,
 ): Promise<{ jobId: string }> {
   return call(
-    'profile_sync_receive',
+    'window_sync_receive',
     { invitation: text(invitation), host: host?.trim() || null },
     (value) => ({ jobId: text(object(value).jobId) }),
   )
@@ -267,5 +263,5 @@ export async function importWindowSync(
   id: string,
   mode: ImportMode,
 ): Promise<TransferReport> {
-  return call('profile_sync_import', { id: text(id), mode: importMode(mode) }, report)
+  return call('window_sync_import', { id: text(id), mode: importMode(mode) }, report)
 }

@@ -6,6 +6,12 @@ export {
   definePluginManifest,
 } from './manifest.js'
 export type { PluginCapability, PluginManifest, PluginPermissions } from './manifest.js'
+export {
+  WINDOW_DETACH_METHOD,
+  WindowDetachInputSchema,
+  WindowDetachResultSchema,
+} from './lifecycle.js'
+export type { WindowDetachInput, WindowDetachResult } from './lifecycle.js'
 export type {
   AddressGenerator,
   AccountPool,

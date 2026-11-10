@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 import { invalidRequest } from './errors.js'
+import { EXPIRY_BATCH_SIZE } from './expiry.js'
 
 /** A single line-delimited RPC message must stay under the host's 1 MiB cap. */
 export const MAX_TEXT_CHARS = 512 * 1024
@@ -115,6 +116,15 @@ export const RecordsListInputSchema = z.strictObject({
 })
 
 export const RecordTelInputSchema = z.strictObject({ tel })
+
+export const ExpiryRefreshInputSchema = z.strictObject({
+  tels: z.array(tel).min(1).max(EXPIRY_BATCH_SIZE),
+})
+
+export const ExpiryDismissInputSchema = z.strictObject({
+  tel,
+  expiresAt: z.iso.datetime(),
+})
 
 export const EmptyInputSchema = z.strictObject({})
 

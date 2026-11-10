@@ -66,6 +66,21 @@ export interface SmsRead {
   truncated: boolean
   contentType: string
   fetchedAt: string
+  expiresAt?: string | null
+}
+
+export interface ExpiryState {
+  attemptedAt: string | null
+  checkedAt: string | null
+  dismissedOn: string | null
+  dismissedFor: string | null
+}
+
+export interface ExpirySnapshot {
+  items: { tel: string; expiresAt: string; checkedAt: string | null }[]
+  pendingTels: string[]
+  failed: number
+  storageDurable: boolean
 }
 
 /**
@@ -77,6 +92,7 @@ export interface SmsRecord extends PurchasedApi {
   addedAt: string
   updatedAt: string
   lastRead: SmsRead | null
+  expiry?: ExpiryState | null
 }
 
 export interface OrderItem {

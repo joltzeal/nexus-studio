@@ -22,7 +22,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toast'
 import { listPlugins, type PluginView } from '@/lib/platform/native-plugins'
-import type { NativeProfile } from '@/lib/platform/native-profiles'
+import type { BrowserWindow } from '@/lib/platform/windows'
 import {
   cancelWindowSync,
   importWindowSync,
@@ -62,7 +62,7 @@ export function WindowSyncDialog({
   onClose,
 }: {
   open: boolean
-  windows: NativeProfile[]
+  windows: BrowserWindow[]
   operating: ReadonlySet<string>
   onImported: () => Promise<void>
   onClose: () => void

@@ -17,7 +17,11 @@ use self::market::{Catalog, MarketError, MarketStore, StoreSettings};
 use self::permissions::PermissionError;
 use self::process::{PluginProcess, ProcessError, ReadyInfo};
 use self::registry::{InstalledPlugin, RegistryDocument, RegistryError, RegistryStore};
-use super::plugins::ProxyReference;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyReference {
+    pub config_handle: String,
+    pub secret_ref: Option<String>,
+}
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -263,10 +267,6 @@ impl PluginHost {
             supervisor: Mutex::new(None),
             dev_roots,
         };
-        // Installations written by an older build may still be disabled or carry
-        // a partial grant. There is no manual enable step any more, so they are
-        // adopted on open instead of being left inert.
-        let _ = host.adopt_installed();
         Ok(host)
     }
 
@@ -290,30 +290,6 @@ impl PluginHost {
             self.forget_attempt(&id);
         }
         self.supervise_once();
-    }
-
-    /// Every installed plugin is enabled and holds the full grant its manifest
-    /// declares. Installation is the only decision point.
-    fn adopt_installed(&self) -> Result<(), HostError> {
-        let mut document = self.snapshot()?;
-        let mut changed = false;
-        for entry in &mut document.plugins {
-            let declared = permissions::grantable(entry);
-            if !entry.enabled || entry.granted_capabilities != declared {
-                entry.enabled = true;
-                entry.granted_capabilities = declared;
-                entry.granted_domains = entry.manifest.permissions.network_domains.clone();
-                changed = true;
-            }
-        }
-        if !changed {
-            return Ok(());
-        }
-        self.persist(&document)?;
-        if let Ok(mut current) = self.registry.lock() {
-            *current = document;
-        }
-        Ok(())
     }
 
     pub fn root(&self) -> &Path {
@@ -984,6 +960,58 @@ impl PluginHost {
         process
             .call(capability, method, payload, deadline)
             .map_err(HostError::Process)
+    }
+
+    /// Persist these installed account-pool IDs before remotely deleting a window.
+    /// Disabled, stopped and unavailable plugins remain cleanup targets.
+    pub fn window_binding_plugins(&self) -> Result<Vec<String>, HostError> {
+        let mut ids: Vec<String> = self
+            .snapshot()?
+            .plugins
+            .into_iter()
+            .filter(|plugin| plugin.manifest.declares(Capability::AccountPool))
+            .map(|plugin| plugin.id)
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Retry the deletion's saved targets; only an uninstalled target is skipped.
+    /// Any error requires the caller to retain its confirmed deletion tombstone.
+    pub fn detach_window_bindings(
+        &self,
+        window_id: &str,
+        target_plugin_ids: &[String],
+    ) -> Result<(), HostError> {
+        for id in target_plugin_ids {
+            let plugin = match self.find(id) {
+                Ok(plugin) => plugin,
+                Err(HostError::NotInstalled) => continue,
+                Err(error) => return Err(error),
+            };
+            if !plugin.enabled {
+                return Err(HostError::Permission(PermissionError::NotEnabled));
+            }
+            // `call` starts a stopped process before checking its advertised methods.
+            let result = self.call(
+                id,
+                Capability::AccountPool,
+                "window.detach",
+                json!({ "windowId": window_id }),
+                DEFAULT_CALL_DEADLINE,
+            )?;
+            let valid = result.as_object().is_some_and(|object| {
+                object.len() == 2
+                    && object.get("windowId").and_then(Value::as_str) == Some(window_id)
+                    && object.get("unbound").and_then(Value::as_bool).is_some()
+            });
+            if !valid {
+                return Err(HostError::Process(ProcessError::Protocol(
+                    "invalid window.detach result".into(),
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Window launch gate. A required proxy that cannot be resolved is an
