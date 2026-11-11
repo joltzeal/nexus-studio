@@ -35,6 +35,8 @@ import type {
 import type { DispatchContext } from '../rpc/protocol.js'
 import type { Logger } from '../rpc/redact.js'
 import type { AccountStore } from '../store/account-store.js'
+import type { OrderSource } from '../services/order-source.js'
+import { AccountOrderWatch, ORDER_WATCH_METHODS } from './order-watch.js'
 import {
   TRANSFER_METHODS,
   exportAccounts,
@@ -54,6 +56,7 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.bindings',
   WINDOW_DETACH_METHOD,
   ...TRANSFER_METHODS,
+  ...ORDER_WATCH_METHODS,
 ] as const
 
 /** One JSON document holds everything, so growth must stay bounded. */
@@ -80,6 +83,8 @@ export interface AccountPoolOptions {
   idFactory?: () => string
   /** Injected so a test can answer an inbox link without a network. */
   fetchImpl?: typeof fetch
+  orderSourceFactory?: () => OrderSource
+  orderCheckDelayMs?: number
 }
 
 /** Identity for duplicate detection: the same login on the same method. */
@@ -108,6 +113,7 @@ export interface AccountBindingView extends BindingRecord {
 export class AccountPool implements AccountPoolContract {
   readonly id = 'account.pool'
   readonly name = 'Vinted 账号池'
+  readonly orders: AccountOrderWatch
 
   private readonly store: AccountStore
   private readonly logger: Logger
@@ -121,6 +127,18 @@ export class AccountPool implements AccountPoolContract {
     this.now = options.now ?? (() => new Date())
     this.idFactory = options.idFactory ?? randomUUID
     this.fetchImpl = options.fetchImpl ?? null
+    this.orders = new AccountOrderWatch({
+      store: options.store,
+      logger: options.logger,
+      now: this.now,
+      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      ...(options.orderSourceFactory === undefined
+        ? {}
+        : { sourceFactory: options.orderSourceFactory }),
+      ...(options.orderCheckDelayMs === undefined
+        ? {}
+        : { checkDelayMs: options.orderCheckDelayMs }),
+    })
   }
 
   status(): Record<string, unknown> {
@@ -131,6 +149,9 @@ export class AccountPool implements AccountPoolContract {
   }
 
   async call(context: DispatchContext): Promise<unknown> {
+    if (ORDER_WATCH_METHODS.some((method) => method === context.method)) {
+      return this.orders.call(context)
+    }
     switch (context.method) {
       case 'transfer.export':
         return exportAccounts(this.store, context)

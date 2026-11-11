@@ -37,7 +37,7 @@ jobs:
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
           node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移服务商、密钥、识图和生图模型及请求设置，保留生成记录。"
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移采集代理、密码及默认代理，采集运行期间阻止导入。"
-          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套主程序 0.1.20：统一窗口生命周期清理，删除窗口时幂等解除账号关联；修复安装后的 SDK 生命周期入口。账号资料保留。"
+          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "已有 Vinted 主页的账号自动查询商品已售状态，支持 Bark 提醒、暂停与立即查询，持久化完整基线和推送记录，并支持迁移查询与 Bark 设置。"
           node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.21：支持离线迁移 API 地址和 Token，导入后清理旧账户缓存。"
           node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移默认代理及密码、风险检查设置及 API Key。"
           node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移 Google Maps Key，凭据写入失败时保留原配置。"
@@ -108,6 +108,7 @@ jobs:
               'vinted.url.inspect',
             ],
             'vinted-accounts': [
+              ...configurationMethods,
               'vinted.accounts.list',
               'vinted.accounts.save',
               'vinted.accounts.remove',
@@ -122,6 +123,12 @@ jobs:
               'transfer.import',
               'transfer.rollback',
               'transfer.commit',
+              'vinted.accounts.orders.settings.get',
+              'vinted.accounts.orders.settings.save',
+              'vinted.accounts.orders.bark.test',
+              'vinted.accounts.orders.list',
+              'vinted.accounts.orders.run',
+              'vinted.accounts.orders.enabled',
             ],
             sim8: [
               ...configurationMethods,

@@ -3,6 +3,7 @@ import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
 import type { PluginManifest } from '@nexus/plugin-sdk'
+import type { OrderSource } from './services/order-source.js'
 
 import manifest from '../nexus.plugin.js'
 import { ACCOUNT_METHODS, AccountPool } from './capabilities/accounts.js'
@@ -55,6 +56,14 @@ export type {
   AccountTransferReceiptInput,
 } from './domain/transfer.js'
 export type { PluginManifest }
+export { AccountOrderWatch, ORDER_WATCH_METHODS } from './capabilities/order-watch.js'
+export { VintedOrderSource, parseHomepage } from './services/order-source.js'
+export type { OrderSource, SnapshotItem } from './services/order-source.js'
+export type {
+  OrderWatchSettings,
+  OrderCandidate,
+  OrderWatchRecord,
+} from './domain/order-watch.js'
 
 export interface VintedAccountsPluginOptions {
   /** Private directory owned by the host; omitted means a non-durable memory store. */
@@ -66,6 +75,8 @@ export interface VintedAccountsPluginOptions {
   idFactory?: () => string
   /** Overrides `globalThis.fetch`; used by tests to answer an inbox link. */
   fetchImpl?: typeof fetch
+  orderSourceFactory?: () => OrderSource
+  orderCheckDelayMs?: number
 }
 
 export interface VintedAccountsPluginInstance {
@@ -97,11 +108,18 @@ export function createVintedAccountsPlugin(
     now,
     ...(options.idFactory === undefined ? {} : { idFactory: options.idFactory }),
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+    ...(options.orderSourceFactory === undefined
+      ? {}
+      : { orderSourceFactory: options.orderSourceFactory }),
+    ...(options.orderCheckDelayMs === undefined
+      ? {}
+      : { orderCheckDelayMs: options.orderCheckDelayMs }),
   })
 
   let stop: () => void = () => undefined
+  const input = options.input ?? process.stdin
   const server = createPluginServer({
-    input: options.input ?? process.stdin,
+    input,
     output: options.output ?? process.stdout,
     manifest,
     methods: ACCOUNT_METHODS,
@@ -115,7 +133,11 @@ export function createVintedAccountsPlugin(
       if (options.input === undefined) process.exit(1)
     },
   })
-  stop = () => server.stop()
+  stop = () => {
+    server.stop()
+    void plugin.orders.stop()
+  }
+  input.once('end', stop)
 
   return {
     server,
@@ -123,9 +145,7 @@ export function createVintedAccountsPlugin(
     store,
     logger,
     redactor,
-    stop: () => {
-      server.stop()
-    },
+    stop,
   }
 }
 
@@ -135,6 +155,7 @@ export function startVintedAccountsPlugin(
 ): VintedAccountsPluginInstance {
   const instance = createVintedAccountsPlugin(options)
   instance.server.start()
+  instance.plugin.orders.start()
   return instance
 }
 

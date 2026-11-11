@@ -32,6 +32,7 @@ export interface ServerOptions {
 interface CallState {
   cancelled: boolean
   settled: boolean
+  controller: AbortController
 }
 
 const CONTROL_TYPES = new Set(['handshake', 'cancel'])
@@ -135,11 +136,16 @@ export function createPluginServer(options: ServerOptions): PluginServer {
     }
 
     usedRequestIds.add(requestId)
-    const state: CallState = { cancelled: false, settled: false }
+    const state: CallState = {
+      cancelled: false,
+      settled: false,
+      controller: new AbortController(),
+    }
     inFlight.set(requestId, state)
     const deadlineAt = Date.now() + request.deadlineMs
 
     const assertAlive = (): void => {
+      state.controller.signal.throwIfAborted()
       if (state.cancelled) throw cancelled()
       if (Date.now() > deadlineAt) throw timedOut('调用超过截止时间，结果作废')
     }
@@ -147,6 +153,7 @@ export function createPluginServer(options: ServerOptions): PluginServer {
     const timer = setTimeout(() => {
       if (state.settled) return
       state.settled = true
+      state.controller.abort(timedOut('调用超过截止时间，结果作废'))
       inFlight.delete(requestId)
       fail(requestId, 'TIMEOUT', '调用超过截止时间，结果作废', true)
       options.logger.warn('调用超时', { requestId, method: request.method })
@@ -161,6 +168,7 @@ export function createPluginServer(options: ServerOptions): PluginServer {
           payload: request.payload,
           deadlineAt,
           assertAlive,
+          signal: state.controller.signal,
         })
         if (state.settled) {
           // Late results after timeout or cancellation never reach the host.
@@ -242,6 +250,7 @@ export function createPluginServer(options: ServerOptions): PluginServer {
       return
     }
     state.cancelled = true
+    state.controller.abort(cancelled())
     if (!state.settled) {
       state.settled = true
       inFlight.delete(requestId)
@@ -309,6 +318,7 @@ export function createPluginServer(options: ServerOptions): PluginServer {
       stopped = true
       for (const [requestId, state] of inFlight) {
         if (state.settled) continue
+        state.controller.abort(cancelled('插件已停止'))
         state.settled = true
         fail(requestId, 'CANCELLED', '插件已停止', false)
       }

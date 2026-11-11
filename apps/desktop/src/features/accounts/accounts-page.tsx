@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Copy,
   Download,
   Loader2,
@@ -64,6 +65,7 @@ import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-b
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { AccountEditor } from './account-editor'
+import { OrderWatchPanel } from './order-watch-panel'
 import {
   ACCOUNT_PAGE_SIZES,
   EMPTY_ACCOUNT_FILTERS,
@@ -106,6 +108,17 @@ export interface AccountsPageProps {
 
 export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const running = hostAvailable && plugin !== null && plugin.state === 'running'
+  const supportsOrderWatch =
+    running && plugin.methods.includes('vinted.accounts.orders.list')
+  const orderWatchIdentity = supportsOrderWatch
+    ? JSON.stringify([
+        plugin.id,
+        plugin.version,
+        plugin.source,
+        plugin.status?.pid ?? null,
+      ])
+    : null
+  const [openOrderWatch, setOpenOrderWatch] = useState<string | null>(null)
   const [data, setData] = useState<AccountList | null>(null)
   const [filters, setFilters] = useState<AccountFilters>({ ...EMPTY_ACCOUNT_FILTERS })
   const [page, setPage] = useState(1)
@@ -297,6 +310,15 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           Vinted 账号
         </h1>
         <div className="section-actions">
+          {supportsOrderWatch ? (
+            <Button
+              variant="outline"
+              onClick={() => setOpenOrderWatch(orderWatchIdentity)}
+            >
+              <ClipboardList data-icon="inline-start" />
+              订单查询
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             disabled={!running || refreshing}
@@ -682,6 +704,15 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           </div>
         </>
       )}
+
+      <OrderWatchPanel
+        open={orderWatchIdentity !== null && openOrderWatch === orderWatchIdentity}
+        onOpenChange={(open) => {
+          if (!open) setOpenOrderWatch(null)
+        }}
+        plugin={plugin}
+        accounts={accounts}
+      />
 
       {batchAccounts ? (
         <BatchWindowDialog

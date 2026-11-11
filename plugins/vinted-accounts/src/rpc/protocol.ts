@@ -75,6 +75,8 @@ export interface DispatchContext {
   deadlineAt: number
   /** Throws TIMEOUT or CANCELLED when the call may no longer touch state. */
   assertAlive: () => void
+  /** Production RPC cancellation, deadline and server shutdown. */
+  signal?: AbortSignal
 }
 
 export type Dispatch = (context: DispatchContext) => Promise<unknown>

@@ -4,7 +4,6 @@ import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { AccountInput, AccountRecord, BindingRecord } from '../domain/types.js'
@@ -46,9 +45,21 @@ async function directory() {
 }
 
 async function rpc(storageDirectory: string) {
+  const entry = new URL('../../dist/src/index.js', import.meta.url).href
   const child = spawn(
     process.execPath,
-    [fileURLToPath(new URL('../../dist/src/index.js', import.meta.url))],
+    [
+      '--input-type=module',
+      '--eval',
+      `import { startVintedAccountsPlugin } from ${JSON.stringify(entry)};
+       startVintedAccountsPlugin({
+         storageDirectory: process.env.NEXUS_PLUGIN_STORAGE_DIR,
+         orderSourceFactory: () => ({
+           scan: async () => [],
+           check: async () => ({ sold: false, error: null }),
+         }),
+       });`,
+    ],
     { env: { ...process.env, NEXUS_PLUGIN_STORAGE_DIR: storageDirectory } },
   )
   children.push(child)

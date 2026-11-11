@@ -5,8 +5,10 @@
 
 ## 当前事实
 
-配套 `0.1.20` 的插件版本为 `1.0.2`，最低主程序 `0.1.20`；
-新增宿主私有 `window.detach`，仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
+当前源码插件版本为 `1.1.0`，最低主程序 `0.1.21`。
+新增已有主页账号的自动已售查询、Bark 推送与配置迁移，详情见
+[订单查询与 Bark 提醒](38-vinted-account-order-watch.md)。
+宿主私有 `window.detach` 仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
 发行构件与商店上传的实际状态分别记录在[质量记录](09-quality-and-testing.md)。
 
 插件包位于 `plugins/vinted-accounts`，实现 `account.pool` 能力的方法、
@@ -29,7 +31,9 @@
 - 密码明文存在插件私有目录（文件权限 0600），宿主不加密、不代管。
   页面在表格里不显示密码，只在编辑弹窗里回读，默认隐藏。
 - 保存与关联不执行账号登录。用户显式读取验证码时，插件请求账号已保存的
-  邮箱或手机接码链接；`networkDomains` 与 `secrets` 仍为空，
+  邮箱或手机接码链接；自动订单查询访问 Vinted 用户主页与商品页面，
+  明确确认已售后才请求用户配置的 Bark 服务。清单声明已知 Vinted 和默认 Bark 域名，
+  `secrets` 为空，
   `wantsBrowserAccess: false`，这些声明不代表网络沙箱。
 - Nexus 主应用 `0.1.17` 在窗口行的手机号旁提供「等待验证码」；
   复用现有 `vinted.accounts.list` / `vinted.accounts.otp`，不新增 RPC 或
@@ -46,6 +50,7 @@ plugins/vinted-accounts/
 │   ├── capabilities/     # account.pool 方法表
 │   ├── domain/           # 类型、zod 校验、表格解析、表头映射与错误码
 │   ├── rpc/              # 协议、服务端、脱敏日志（与其他插件同源，按包自包含）
+│   ├── services/         # 完整衣柜查询、商品页已售核查与 Bark 推送
 │   └── store/            # 私有 JSON 文档（accounts / bindings）
 └── dist/                 # 构建产物：dist/src/index.js 与 dist/nexus.plugin.json
 ```

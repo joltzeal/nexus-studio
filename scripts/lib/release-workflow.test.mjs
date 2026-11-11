@@ -71,6 +71,7 @@ const requiredMethods = {
     'vinted.url.inspect',
   ],
   'vinted-accounts': [
+    ...configurationMethods,
     'vinted.accounts.list',
     'vinted.accounts.save',
     'vinted.accounts.remove',
@@ -85,6 +86,12 @@ const requiredMethods = {
     'transfer.import',
     'transfer.rollback',
     'transfer.commit',
+    'vinted.accounts.orders.settings.get',
+    'vinted.accounts.orders.settings.save',
+    'vinted.accounts.orders.bark.test',
+    'vinted.accounts.orders.list',
+    'vinted.accounts.orders.run',
+    'vinted.accounts.orders.enabled',
   ],
   sim8: [
     ...configurationMethods,

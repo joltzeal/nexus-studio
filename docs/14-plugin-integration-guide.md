@@ -334,6 +334,9 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
   删除或解除关联必须使用明确的业务操作，不借列表缺失自动清空关联。
 
 当前实现为 `studio.vinted-accounts`（细节见 [Vinted 账号池插件](24-vinted-accounts-plugin.md)）。
+其 `1.1.0` 增加插件内部的公开衣柜查询与 Bark 推送，沿用 `account.pool`，
+不向宿主添加交易订单能力或要求浏览器访问权限。新增 RPC、自动任务、配置迁移与
+公开页面证据的边界见[账号订单查询](38-vinted-account-order-watch.md)。
 
 账号池还需要实现宿主专用的 `window.detach` 方法。输入为 `{ windowId: string }`，
 返回为 `{ windowId: string, unbound: boolean }`；

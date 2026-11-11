@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-vinted-accounts",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
-  "description": "Nexus Vinted account pool plugin: credential records, CSV/XLSX import and window bindings",
+  "description": "Nexus Vinted account pool plugin: credential records, CSV/XLSX import, window bindings, order-watch and Bark notifications",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -28,6 +28,8 @@
   },
   "dependencies": {
     "@nexus/plugin-sdk": "workspace:*",
+    "htmlparser2": "10.0.0",
+    "tough-cookie": "6.0.2",
     "zod": "4.4.3"
   }
 }

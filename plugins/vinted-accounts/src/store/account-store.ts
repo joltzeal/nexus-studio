@@ -4,6 +4,12 @@ import { z } from 'zod'
 
 import { unavailable } from '../domain/errors.js'
 import {
+  OrderWatchStateSchema,
+  emptyOrderWatchState,
+  reconcileOrderRecords,
+  type OrderWatchState,
+} from '../domain/order-watch.js'
+import {
   AccountTransferReceiptSchema,
   type AccountTransferReceipt,
 } from '../domain/transfer.js'
@@ -14,6 +20,7 @@ export interface StoreDocument {
   accounts: AccountRecord[]
   bindings: BindingRecord[]
   transferReceipts: AccountTransferReceipt[]
+  orderWatch: OrderWatchState
 }
 
 export interface AccountStore {
@@ -55,10 +62,17 @@ const documentSchema = z.looseObject({
   accounts: z.array(accountSchema),
   bindings: z.array(bindingSchema),
   transferReceipts: z.array(AccountTransferReceiptSchema).default([]),
+  orderWatch: OrderWatchStateSchema.default(emptyOrderWatchState),
 })
 
 export function emptyDocument(): StoreDocument {
-  return { schemaVersion: 1, accounts: [], bindings: [], transferReceipts: [] }
+  return {
+    schemaVersion: 1,
+    accounts: [],
+    bindings: [],
+    transferReceipts: [],
+    orderWatch: emptyOrderWatchState(),
+  }
 }
 
 function parseDocument(text: string): StoreDocument {
@@ -89,6 +103,10 @@ class MemoryStore implements AccountStore {
     const run = async (): Promise<T> => {
       const draft = structuredClone(this.document)
       const result = await apply(draft)
+      draft.orderWatch.records = reconcileOrderRecords(
+        draft.accounts,
+        draft.orderWatch.records,
+      )
       this.document = draft
       return result
     }
@@ -102,6 +120,7 @@ class FileStore implements AccountStore {
   readonly kind = 'file' as const
   readonly durable = true
   private document: StoreDocument | null = null
+  private loading: Promise<void> | null = null
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly file: string) {}
@@ -116,6 +135,10 @@ class FileStore implements AccountStore {
       await this.load()
       const draft = structuredClone(this.document ?? emptyDocument())
       const result = await apply(draft)
+      draft.orderWatch.records = reconcileOrderRecords(
+        draft.accounts,
+        draft.orderWatch.records,
+      )
       await this.persist(draft)
       this.document = draft
       return result
@@ -127,6 +150,15 @@ class FileStore implements AccountStore {
 
   private async load(): Promise<void> {
     if (this.document !== null) return
+    const loading = (this.loading ??= this.loadDocument())
+    try {
+      await loading
+    } finally {
+      if (this.loading === loading) this.loading = null
+    }
+  }
+
+  private async loadDocument(): Promise<void> {
     try {
       this.document = parseDocument(await readFile(this.file, 'utf8'))
     } catch (error) {
