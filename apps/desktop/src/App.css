@@ -360,15 +360,14 @@
   min-width: 0;
   min-height: 0;
   width: 100%;
-  max-width: 1600px;
   padding: 20px;
-  margin-inline: auto;
   overflow: auto;
 }
 .app-main > [data-slot='tabs-content'] {
   display: flex;
   flex: 1;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 .page-heading {
@@ -793,7 +792,8 @@
   min-width: 120px;
   max-width: 100%;
 }
-.accounts-pagination {
+.accounts-pagination,
+.window-pagination {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -802,10 +802,15 @@
   padding: 8px 12px;
   border-top: 1px solid var(--border);
 }
-.accounts-pagination-controls {
+.accounts-pagination-controls,
+.window-pagination-controls {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.window-pagination-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .otp-code {
   display: inline-flex;

@@ -13,6 +13,10 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowUpRight,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Ellipsis,
   Loader2,
   PanelsTopLeft,
@@ -131,6 +135,8 @@ import { AccountSmsWaitButton } from './account-sms-wait-button'
 import { smsWaits } from '@/features/accounts/sms-wait-runtime'
 import { Sim8ExpiryNotice } from '@/features/sim8/expiry-notice'
 
+const WINDOW_PAGE_SIZES = [20, 50, 100] as const
+
 function message(error: unknown): string {
   return typeof error === 'string'
     ? error
@@ -170,13 +176,16 @@ export function SpacesPage() {
   )
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
   const [groups, setGroups] = useState<WindowGroup[]>([])
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<(typeof WINDOW_PAGE_SIZES)[number]>(20)
   const [filters, setFilters] = useState<
     Record<string, { group: string; account: string; query: string }>
   >({})
   const filterKey = connectionId ?? providerId
   const currentFilters = filters[filterKey] ?? { group: 'all', account: 'all', query: '' }
   const { group: groupFilter, account: accountFilter, query } = currentFilters
-  const setGroupFilter = (group: string) =>
+  const setGroupFilter = (group: string) => {
+    setPage(1)
     setFilters((current) => ({
       ...current,
       [filterKey]: {
@@ -184,7 +193,9 @@ export function SpacesPage() {
         group,
       },
     }))
-  const setAccountFilter = (account: string) =>
+  }
+  const setAccountFilter = (account: string) => {
+    setPage(1)
     setFilters((current) => ({
       ...current,
       [filterKey]: {
@@ -192,7 +203,9 @@ export function SpacesPage() {
         account,
       },
     }))
-  const setQuery = (query: string) =>
+  }
+  const setQuery = (query: string) => {
+    setPage(1)
     setFilters((current) => ({
       ...current,
       [filterKey]: {
@@ -200,6 +213,7 @@ export function SpacesPage() {
         query,
       },
     }))
+  }
   const [editing, setEditing] = useState<string | 'new' | null>(null)
   const [batchCreating, setBatchCreating] = useState(false)
   const [viewing, setViewing] = useState<string | null>(null)
@@ -284,6 +298,7 @@ export function SpacesPage() {
         connectionSnapshot.current = snapshot
         viewEpoch.current += 1
         selectionScope.current = null
+        setPage(1)
         setSelectedIds(new Set())
         setEditing(null)
         setBatchCreating(false)
@@ -317,6 +332,7 @@ export function SpacesPage() {
     selectionScope.current =
       connections.find((entry) => entry.providerId === value && entry.enabled)?.id ?? null
     setProviderId(value as BrowserProviderId)
+    setPage(1)
     setSelectedIds(new Set())
     setEditing(null)
     setBatchCreating(false)
@@ -548,12 +564,15 @@ export function SpacesPage() {
   }
 
   async function refreshAfterImport() {
+    const epoch = viewEpoch.current
     const [, currentGroups] = await withDeadline(
       Promise.all([load(), listGroups()]),
       10_000,
       '刷新窗口和分组超时',
     )
+    if (epoch !== viewEpoch.current) return
     setGroups(currentGroups)
+    setPage(1)
     setSelectedIds(new Set())
     await withDeadline(refreshBindings(), 10_000, '刷新账号关联超时')
   }
@@ -681,12 +700,17 @@ export function SpacesPage() {
         .includes(query.toLowerCase()) &&
       matchesAccountFilter(window.id),
   )
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize))
+  const currentPage = Math.min(page, pageCount)
+  if (currentPage !== page) setPage(currentPage)
+  const pageOffset = (currentPage - 1) * pageSize
+  const pageWindows = visible.slice(pageOffset, pageOffset + pageSize)
   const selected = connectionWindows.find((window) => window.id === viewing)
   const transferWindows = connectionWindows.filter((window) => selectedIds.has(window.id))
-  const selectableIds = visible
+  const selectableIds = pageWindows
     .filter((window) => window.state === 'stopped' && !operatingWindows.has(window.id))
     .map((window) => window.id)
-  const selectedVisibleCount = selectableIds.filter((id) => selectedIds.has(id)).length
+  const selectedPageCount = selectableIds.filter((id) => selectedIds.has(id)).length
   const target = connectionWindows.find((window) => window.id === deleting)
   const running = connectionWindows.filter((window) => window.state === 'running').length
   const proxied = connectionWindows.filter((window) => hasProxy(window)).length
@@ -911,12 +935,12 @@ export function SpacesPage() {
             <TableRow>
               <TableHead className="w-10">
                 <Checkbox
-                  aria-label="全选当前筛选下的已关闭窗口"
+                  aria-label="全选本页已关闭窗口"
                   disabled={!native || selectableIds.length === 0}
                   checked={
-                    selectedVisibleCount === 0
+                    selectedPageCount === 0
                       ? false
-                      : selectedVisibleCount === selectableIds.length
+                      : selectedPageCount === selectableIds.length
                         ? true
                         : 'indeterminate'
                   }
@@ -941,7 +965,7 @@ export function SpacesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {visible.map((window) => {
+            {pageWindows.map((window) => {
               const account = bindingOf(window.id)
               const linked =
                 account === null
@@ -1344,6 +1368,81 @@ export function SpacesPage() {
             </EmptyHeader>
           </Empty>
         ) : null}
+        <nav className="window-pagination" aria-label="窗口列表分页">
+          <span className="result-count" role="status" aria-live="polite">
+            共 {visible.length} 个窗口
+            {visible.length > 0
+              ? ` · 第 ${pageOffset + 1}–${pageOffset + pageWindows.length} 条`
+              : null}
+          </span>
+          <div className="window-pagination-controls">
+            <Select
+              value={String(pageSize)}
+              onValueChange={(value) => {
+                const size = WINDOW_PAGE_SIZES.find((entry) => String(entry) === value)
+                if (size === undefined) return
+                setPageSize(size)
+                setPage(1)
+              }}
+            >
+              <SelectTrigger aria-label="每页窗口数" className="w-28">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {WINDOW_PAGE_SIZES.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      每页 {size}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <span className="result-count">
+              第 {currentPage} / {pageCount} 页
+            </span>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="首页"
+              title="首页"
+              disabled={currentPage === 1}
+              onClick={() => setPage(1)}
+            >
+              <ChevronsLeft aria-hidden="true" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="上一页"
+              title="上一页"
+              disabled={currentPage === 1}
+              onClick={() => setPage(currentPage - 1)}
+            >
+              <ChevronLeft aria-hidden="true" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="下一页"
+              title="下一页"
+              disabled={currentPage === pageCount}
+              onClick={() => setPage(currentPage + 1)}
+            >
+              <ChevronRight aria-hidden="true" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="末页"
+              title="末页"
+              disabled={currentPage === pageCount}
+              onClick={() => setPage(pageCount)}
+            >
+              <ChevronsRight aria-hidden="true" />
+            </Button>
+          </div>
+        </nav>
       </div>
 
       {batchCreating && connection ? (
@@ -1352,6 +1451,11 @@ export function SpacesPage() {
           onClose={() => setBatchCreating(false)}
           onSettled={async (items) => {
             applyWindows((current) => mergeBatchWindows(current, items))
+            if (
+              selectionScope.current === connection.id &&
+              items.some((item) => item.window !== null)
+            )
+              setPage(1)
             await load()
           }}
         />
@@ -1410,6 +1514,7 @@ export function SpacesPage() {
                     ...current.filter((window) => window.id !== saved.id),
                   ]),
                 )
+                if (epoch === viewEpoch.current) setPage(1)
               } else {
                 if ('kernelVersion' in input)
                   throw new Error('窗口编辑不能修改既有内核绑定。')
@@ -1605,6 +1710,8 @@ export function SpacesPage() {
                   ...attached,
                 ]),
               )
+              if (selectionScope.current === connection.id && attached.length > 0)
+                setPage(1)
               void load().catch((cause: unknown) => setError(message(cause)))
             }}
           />

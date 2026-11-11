@@ -42,6 +42,7 @@ import {
 import type { WindowGroup } from '@/lib/platform/native-groups'
 import {
   createBrowserWindow,
+  deleteBrowserWindow,
   listBrowserWindows,
   listBrowserOperations,
   reconcileBrowserOperation,
@@ -55,6 +56,8 @@ import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { ProxyGateDialog } from './proxy-gate'
 import { SpacesPage } from './spaces-page'
 import { WindowEditor } from './window-editor'
+import { BatchWindowDialog } from './batch-window-dialog'
+import { TransferToolbar } from './transfer-toolbar'
 import { flushPromises } from '@/features/settings/kernel-test-support'
 import { checkWindowProxy, type ProxyCheckOutcome } from './window-proxy'
 
@@ -162,6 +165,7 @@ vi.mock('@/lib/platform/windows', async (importOriginal) => ({
     name: 'created',
   })),
   updateBrowserWindow: vi.fn(async () => undefined),
+  deleteBrowserWindow: vi.fn(async () => undefined),
   reconcileBrowserOperation: vi.fn(),
   listBrowserOperations: vi.fn(),
 }))
@@ -390,6 +394,11 @@ beforeEach(() => {
     .mockImplementation(async () => state.profileReadResponse ?? state.windows)
   vi.mocked(startBrowserWindow).mockReset().mockResolvedValue(undefined)
   vi.mocked(stopBrowserWindow).mockReset().mockResolvedValue(undefined)
+  vi.mocked(deleteBrowserWindow)
+    .mockReset()
+    .mockImplementation(async (id) => {
+      state.windows = state.windows.filter((window) => window.id !== id)
+    })
   vi.mocked(createBrowserWindow)
     .mockReset()
     .mockImplementation(async () => profile('created'))
@@ -420,7 +429,7 @@ async function mountedPage(waitForAccounts = true) {
   }
   await vi.waitFor(() => {
     const tree = render()
-    expect(visibleWindowNames(tree)).toHaveLength(state.windows.length)
+    expect(visibleWindowNames(tree)).toHaveLength(Math.min(20, state.windows.length))
     if (
       waitForAccounts &&
       state.plugin?.state === 'running' &&
@@ -693,7 +702,7 @@ describe('window management', () => {
         /\bdisabled=""/,
       )
     }
-    expect(html).toContain('全选当前筛选下的已关闭窗口')
+    expect(html).toContain('全选本页已关闭窗口')
     expect(html).toContain('已选 0')
     expect(html).toContain('尚未启用浏览器接入')
   })
@@ -758,6 +767,250 @@ describe('window management', () => {
       )
     },
   )
+})
+
+describe('window list pagination', () => {
+  beforeEach(() => {
+    state.accounts[0] = account({ status: 'blocked' })
+    state.windows = Array.from({ length: 66 }, (_, index) => ({
+      ...profile(`window-${String(index + 1).padStart(2, '0')}`),
+      groupId: index < 5 ? 'group-1' : null,
+    }))
+    state.bindings = state.windows
+      .slice(0, 5)
+      .map((window) => bind(window.id, state.accounts[0]!))
+    state.windows.reverse()
+  })
+
+  function pageButton(tree: ReactNode, label: string) {
+    const button = components(tree, Button).find(
+      (node) => node.props['aria-label'] === label,
+    )
+    expect(button, `Missing pagination button: ${label}`).toBeDefined()
+    return button!
+  }
+
+  function clickPage(page: Awaited<ReturnType<typeof mountedPage>>, label: string) {
+    const button = pageButton(page.render(), label)
+    expect(button.props.disabled).toBe(false)
+    button.props.onClick?.({} as never)
+  }
+
+  function pageSelection(tree: ReactNode) {
+    return components(tree, Checkbox).find(
+      (node) => node.props['aria-label'] === '全选本页已关闭窗口',
+    )!
+  }
+
+  function selectedWindowNames(tree: ReactNode) {
+    return components(tree, TransferToolbar)[0]!.props.windows.map(
+      (window) => window.name,
+    )
+  }
+
+  it('splits the newest-first list into bounded pages without duplicates or missing rows', async () => {
+    const page = await mountedPage()
+    expect(visibleWindowNames(page.render())).toEqual(
+      Array.from(
+        { length: 20 },
+        (_, index) => `window-${String(index + 1).padStart(2, '0')}`,
+      ),
+    )
+    expect(pageButton(page.render(), '上一页').props.disabled).toBe(true)
+    expect(pageButton(page.render(), '首页').props.disabled).toBe(true)
+    clickPage(page, '下一页')
+    expect(visibleWindowNames(page.render())).toEqual(
+      Array.from({ length: 20 }, (_, index) => `window-${index + 21}`),
+    )
+    clickPage(page, '末页')
+    expect(visibleWindowNames(page.render())).toEqual([
+      'window-61',
+      'window-62',
+      'window-63',
+      'window-64',
+      'window-65',
+      'window-66',
+    ])
+    expect(pageButton(page.render(), '下一页').props.disabled).toBe(true)
+    expect(pageButton(page.render(), '末页').props.disabled).toBe(true)
+    clickPage(page, '上一页')
+    expect(visibleWindowNames(page.render())[0]).toBe('window-41')
+    clickPage(page, '首页')
+    expect(visibleWindowNames(page.render())[0]).toBe('window-01')
+  })
+
+  it('selects only eligible rows on the current page while preserving selections from other pages and filters', async () => {
+    state.windows = state.windows.map((window) =>
+      window.id === 'window-02' ? { ...window, state: 'running' } : window,
+    )
+    const page = await mountedPage()
+    pageSelection(page.render()).props.onCheckedChange?.(true)
+    expect(selectedWindowNames(page.render())).toHaveLength(19)
+    expect(selectedWindowNames(page.render())).not.toContain('window-02')
+    expect(selectedWindowNames(page.render())).not.toContain('window-21')
+    clickPage(page, '下一页')
+    expect(pageSelection(page.render()).props.checked).toBe(false)
+    components(page.render(), Checkbox)
+      .find((node) => node.props['aria-label'] === '选择窗口 window-21')!
+      .props.onCheckedChange?.(true)
+    expect(pageSelection(page.render()).props.checked).toBe('indeterminate')
+    clickPage(page, '上一页')
+    expect(pageSelection(page.render()).props.checked).toBe(true)
+    pageSelection(page.render()).props.onCheckedChange?.(false)
+    expect(selectedWindowNames(page.render())).toEqual(['window-21'])
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('group-1')
+    expect(selectedWindowNames(page.render())).toEqual(['window-21'])
+    expect(pageSelection(page.render()).props.checked).toBe(false)
+  })
+
+  it.each(['search', 'group', 'account'])(
+    'returns to page one when changing the %s filter',
+    async (filter) => {
+      const page = await mountedPage()
+      clickPage(page, '末页')
+      if (filter === 'search') {
+        components(page.render(), Input)
+          .find((node) => node.props['aria-label'] === '搜索窗口')!
+          .props.onChange?.({
+            target: { value: 'window-0' },
+          } as ChangeEvent<HTMLInputElement>)
+      } else {
+        filterControl(
+          page.render(),
+          filter === 'group' ? '筛选分组' : '筛选账号状态',
+        ).props.onValueChange?.(filter === 'group' ? 'group-1' : 'blocked')
+      }
+      expect(visibleWindowNames(page.render())[0]).toBe('window-01')
+      expect(visibleWindowNames(page.render())).toHaveLength(filter === 'search' ? 9 : 5)
+      expect(pageButton(page.render(), '上一页').props.disabled).toBe(true)
+    },
+  )
+
+  it('resets to the first page when changing page size and keeps the last partial page', async () => {
+    const page = await mountedPage()
+    clickPage(page, '末页')
+    filterControl(page.render(), '每页窗口数').props.onValueChange?.('50')
+    expect(visibleWindowNames(page.render())).toHaveLength(50)
+    expect(visibleWindowNames(page.render())[0]).toBe('window-01')
+    clickPage(page, '下一页')
+    expect(visibleWindowNames(page.render())).toHaveLength(16)
+    expect(visibleWindowNames(page.render())[0]).toBe('window-51')
+    filterControl(page.render(), '每页窗口数').props.onValueChange?.('100')
+    expect(visibleWindowNames(page.render())).toHaveLength(66)
+    expect(pageButton(page.render(), '下一页').props.disabled).toBe(true)
+  })
+
+  it('clamps after deleting the last row on a page and does not restore the invalid page on refresh', async () => {
+    state.windows = state.windows.filter((window) => Number(window.name.slice(-2)) <= 21)
+    const page = await mountedPage()
+    clickPage(page, '下一页')
+    components(page.render(), Button)
+      .find((node) => node.props['aria-label'] === '删除 window-21')!
+      .props.onClick?.({} as never)
+    components(page.render(), AlertDialogAction)[0]!.props.onClick?.({
+      preventDefault() {},
+    } as never)
+    await vi.waitFor(() => {
+      expect(visibleWindowNames(page.render())).toHaveLength(20)
+      expect(visibleWindowNames(page.render())[0]).toBe('window-01')
+    })
+    state.windows.push({ ...profile('older'), createdAt: 1 })
+    components(page.render(), Button)
+      .find((node) => Children.toArray(node.props.children).includes('刷新'))!
+      .props.onClick?.({} as never)
+    await flushPromises()
+    expect(visibleWindowNames(page.render())[0]).toBe('window-01')
+    expect(pageButton(page.render(), '上一页').props.disabled).toBe(true)
+  })
+
+  it.each(['single', 'batch'])(
+    'returns to the newest page after %s creation',
+    async (kind) => {
+      const page = await mountedPage()
+      clickPage(page, '末页')
+      const saved = { ...profile('created'), createdAt: 20 }
+      if (kind === 'single') {
+        vi.mocked(createBrowserWindow).mockResolvedValueOnce(saved)
+        components(page.render(), Button)
+          .find((node) => Children.toArray(node.props.children).includes('创建窗口'))!
+          .props.onClick?.({} as never)
+        await components(page.render(), WindowEditor)[0]!.props.onSave({
+          name: 'created',
+          proxyMode: 'direct',
+          proxy: null,
+          proxyPlugin: null,
+          proxyEndpoint: null,
+          settings: saved.settings,
+          groupId: null,
+          kernelVersion: null,
+        })
+      } else {
+        components(page.render(), Button)
+          .find((node) => Children.toArray(node.props.children).includes('批量创建'))!
+          .props.onClick?.({} as never)
+        state.windows.push(saved)
+        await components(page.render(), BatchWindowDialog)[0]!.props.onSettled([
+          {
+            key: '0',
+            name: saved.name,
+            seed: 42,
+            operationId: 'test-create',
+            input: null,
+            account: null,
+            window: saved,
+            status: 'complete',
+            error: null,
+            duplicateWindowIds: [],
+          },
+        ])
+      }
+      expect(visibleWindowNames(page.render())[0]).toBe('created')
+      expect(pageButton(page.render(), '上一页').props.disabled).toBe(true)
+    },
+  )
+
+  it('resets pagination and clears selection when switching browser connections', async () => {
+    state.connections.push(browserConnection({ id: 'ads', providerId: 'adspower' }))
+    state.windows.push(
+      ...Array.from({ length: 25 }, (_, index) =>
+        browserWindow({
+          id: `ads-${index}`,
+          name: `ads-${index}`,
+          connectionId: 'ads',
+          providerId: 'adspower',
+          createdAt: 100 - index,
+          sortOrder: index,
+        }),
+      ),
+    )
+    const page = await mountedPage()
+    pageSelection(page.render()).props.onCheckedChange?.(true)
+    clickPage(page, '末页')
+    components(page.render(), Tabs)
+      .find((node) => node.props.value === 'cloakbrowser')!
+      .props.onValueChange?.('adspower')
+    expect(visibleWindowNames(page.render())[0]).toBe('ads-0')
+    expect(visibleWindowNames(page.render())).toHaveLength(20)
+    expect(selectedWindowNames(page.render())).toEqual([])
+    clickPage(page, '下一页')
+    components(page.render(), Tabs)
+      .find((node) => node.props.value === 'adspower')!
+      .props.onValueChange?.('cloakbrowser')
+    expect(visibleWindowNames(page.render())[0]).toBe('window-01')
+  })
+
+  it('renders empty results on the first page with both directions disabled', async () => {
+    const page = await mountedPage()
+    clickPage(page, '末页')
+    components(page.render(), Input)
+      .find((node) => node.props['aria-label'] === '搜索窗口')!
+      .props.onChange?.({
+        target: { value: 'no match' },
+      } as ChangeEvent<HTMLInputElement>)
+    expect(visibleWindowNames(page.render())).toEqual([])
+    expect(pageButton(page.render(), '上一页').props.disabled).toBe(true)
+    expect(pageButton(page.render(), '下一页').props.disabled).toBe(true)
+  })
 })
 
 describe('account binding view guards', () => {
