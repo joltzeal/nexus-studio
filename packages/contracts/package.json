@@ -7,6 +7,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     "./browser": "./src/browser.ts",
+    "./configuration": "./src/configuration.ts",
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -15,6 +16,8 @@
   "files": [
     "dist",
     "src/browser.ts",
+    "src/configuration.ts",
+    "src/preferences.ts",
     "fixtures"
   ],
   "sideEffects": false,

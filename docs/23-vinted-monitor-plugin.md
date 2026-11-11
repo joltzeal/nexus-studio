@@ -5,6 +5,8 @@
 接入规则见[插件对接规范](14-plugin-integration-guide.md)，宿主规则见
 [插件宿主](17-plugin-host.md)，应用网络边界见[应用代理](26-application-network-proxy.md)。
 
+当前版本 `1.1.3` 要求主程序 `0.1.21`，加入采集代理及默认代理配置迁移。
+
 `1.1.2` 配套主程序 `0.1.19` 的原页生图弹窗；页面适配器随主程序分发，
 仅更新插件不能替换旧主程序的跳转逻辑。采集、存储与 20 个 RPC 方法保持兼容。
 `1.1.1` 修复匿名会话与衣柜请求地址，保留 `1.1.0` 的存储和 RPC 契约。
@@ -308,3 +310,11 @@ rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_con
 本地未执行 build、Rust 编译/测试/Clippy、安装包、签名或 Windows 检查；
 `1.1.1` 后续远程构建、正式插件包实网复验及商店发布证据见
 [质量记录](09-quality-and-testing.md)。
+
+## 设置配置迁移
+
+新增通用 `configuration.export / configuration.validate / configuration.import` 三个 RPC，
+通过插件原有能力调用，统一接入「应用设置 → 配置迁移」。
+迁移独立采集代理列表、实际密码和默认采集代理；
+监控定义、商品、商家与执行记录不包含在配置文件中。采集运行中拒绝导入。
+文件、校验和失败写入规则见[配置导入导出](37-configuration-transfer.md)。

@@ -35,24 +35,25 @@ import {
 import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { browserError } from '@/lib/platform/browser-api'
 import {
-  activateBrowserConnection,
   BROWSER_PROVIDERS,
-  confirmBrowserConnection,
   listBrowserConnections,
   listBrowserProviderGroups,
-  probeBrowserConnection,
-  saveBrowserConnection,
   type BrowserConnection,
-  type BrowserConnectionProbe,
   type BrowserProviderId,
   type ProviderGroup,
   type SaveBrowserConnectionInput,
 } from '@/lib/platform/browser-connections'
+import {
+  browserConnectionDefaults,
+  connectBrowser,
+} from '@/lib/platform/browser-connection-setup'
 
 export function BrowserConnectionsPage() {
   const native = browserWindowsAvailable()
   const [connections, setConnections] = useState<BrowserConnection[]>([])
-  const [editing, setEditing] = useState<BrowserConnection | 'new' | null>(null)
+  const [editing, setEditing] = useState<
+    BrowserConnection | 'adspower' | 'bitbrowser' | null
+  >(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const listRequest = useRef(0)
@@ -88,7 +89,7 @@ export function BrowserConnectionsPage() {
         ),
       saved,
     ])
-    setEditing(saved)
+    setEditing(null)
   }
   return (
     <section className="collection-page" aria-label="浏览器接入设置">
@@ -96,7 +97,7 @@ export function BrowserConnectionsPage() {
         <div>
           <h2 className="page-heading">浏览器接入</h2>
           <p className="page-description">
-            每种浏览器启用一个账户或工作区接入；历史接入保留原窗口绑定。
+            内置浏览器可直接使用，也可连接本机已登录的其他浏览器。
           </p>
         </div>
         <div className="section-actions">
@@ -107,9 +108,18 @@ export function BrowserConnectionsPage() {
           >
             刷新
           </Button>
-          <Button disabled={!native} onClick={() => setEditing('new')}>
-            新增接入
-          </Button>
+          {BROWSER_PROVIDERS.filter((provider) => provider.id !== 'cloakbrowser').map(
+            (provider) => (
+              <Button
+                key={provider.id}
+                variant="outline"
+                disabled={!native}
+                onClick={() => setEditing(provider.id as 'adspower' | 'bitbrowser')}
+              >
+                连接 {provider.name}
+              </Button>
+            ),
+          )}
         </div>
       </div>
       {!native ? <p role="status">请在 Nexus 桌面应用中管理浏览器接入。</p> : null}
@@ -118,7 +128,7 @@ export function BrowserConnectionsPage() {
         <TableHeader>
           <TableRow>
             <TableHead>浏览器</TableHead>
-            <TableHead>名称 / 作用域</TableHead>
+            <TableHead>连接名称</TableHead>
             <TableHead>状态</TableHead>
             <TableHead className="text-right">操作</TableHead>
           </TableRow>
@@ -132,22 +142,26 @@ export function BrowserConnectionsPage() {
               <TableCell>
                 {connection.name}
                 <small className="block text-muted-foreground">
-                  {connection.scopeLabel || '作用域未确认'}
+                  {connection.endpoint || '随 Nexus 提供'}
                 </small>
               </TableCell>
               <TableCell>
                 <Badge variant={connection.enabled ? 'default' : 'secondary'}>
-                  {connection.enabled
-                    ? '已启用'
-                    : connection.scopeConfirmed
-                      ? '未启用'
-                      : '待确认作用域'}
+                  {connection.providerId === 'cloakbrowser'
+                    ? '已内置'
+                    : !connection.scopeConfirmed
+                      ? '待连接'
+                      : connection.enabled
+                        ? '已连接'
+                        : '未启用'}
                 </Badge>
               </TableCell>
               <TableCell className="text-right">
-                <Button variant="outline" onClick={() => setEditing(connection)}>
-                  管理接入
-                </Button>
+                {connection.providerId !== 'cloakbrowser' ? (
+                  <Button variant="outline" onClick={() => setEditing(connection)}>
+                    {connection.scopeConfirmed && connection.enabled ? '设置' : '连接'}
+                  </Button>
+                ) : null}
               </TableCell>
             </TableRow>
           ))}
@@ -156,15 +170,24 @@ export function BrowserConnectionsPage() {
       <Dialog
         open={editing !== null}
         onOpenChange={(open) => {
-          if (!open) setEditing(null)
+          if (!open) {
+            setEditing(null)
+            setAttempt((value) => value + 1)
+          }
         }}
       >
         {editing === null ? null : (
           <BrowserConnectionEditor
-            key={editing === 'new' ? 'new' : `${editing.id}:${editing.revision}`}
-            connection={editing === 'new' ? null : editing}
+            key={
+              typeof editing === 'string' ? editing : `${editing.id}:${editing.revision}`
+            }
+            connection={typeof editing === 'string' ? null : editing}
+            {...(typeof editing === 'string' ? { initialProvider: editing } : {})}
             onUpdated={updated}
-            onClose={() => setEditing(null)}
+            onClose={() => {
+              setEditing(null)
+              setAttempt((value) => value + 1)
+            }}
           />
         )}
       </Dialog>
@@ -174,44 +197,46 @@ export function BrowserConnectionsPage() {
 
 export function BrowserConnectionEditor({
   connection,
+  initialProvider = 'adspower',
   onUpdated,
   onClose,
 }: {
   connection: BrowserConnection | null
+  initialProvider?: Exclude<BrowserProviderId, 'cloakbrowser'>
   onUpdated: (connection: BrowserConnection) => void
   onClose: () => void
 }) {
-  const [input, setInput] = useState<SaveBrowserConnectionInput>(() => ({
-    ...(connection ? { id: connection.id } : {}),
-    providerId: connection?.providerId ?? 'adspower',
-    name: connection?.name ?? '',
-    endpoint: connection?.endpoint ?? '',
-    apiKey: connection?.apiKey ?? null,
-    defaultGroupId: connection?.defaultGroupId ?? null,
-    scopeLabel: connection?.scopeLabel ?? '',
-  }))
-  const [dirty, setDirty] = useState(false)
-  const [probe, setProbe] = useState<BrowserConnectionProbe | null>(null)
+  const [input, setInput] = useState<SaveBrowserConnectionInput>(() =>
+    connection
+      ? {
+          id: connection.id,
+          providerId: connection.providerId,
+          name: connection.name,
+          endpoint: connection.endpoint,
+          apiKey: connection.apiKey,
+          defaultGroupId: connection.defaultGroupId,
+          scopeLabel: connection.scopeLabel,
+        }
+      : browserConnectionDefaults(initialProvider),
+  )
   const [groups, setGroups] = useState<ProviderGroup[]>([])
   const [groupError, setGroupError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
-  const [groupAttempt, setGroupAttempt] = useState(0)
+  const [advanced, setAdvanced] = useState(false)
   const busy = useRef(false)
-  const dirtyRef = useRef(false)
   const generation = useRef(0)
+  const remembered = useRef<BrowserConnection | null>(connection)
   useEffect(() => {
     generation.current += 1
     return () => {
       generation.current += 1
     }
   }, [connection?.id, connection?.revision])
-  const savedConnectionId = connection?.id
-  const savedProviderId = connection?.providerId
   useEffect(() => {
-    if (!savedConnectionId || savedProviderId === 'cloakbrowser') return
+    if (!advanced || !input.id) return
     let active = true
-    void listBrowserProviderGroups(savedConnectionId).then(
+    void listBrowserProviderGroups(input.id).then(
       (items) => {
         if (active) {
           setGroups(items)
@@ -225,24 +250,43 @@ export function BrowserConnectionEditor({
     return () => {
       active = false
     }
-  }, [savedConnectionId, savedProviderId, connection?.revision, groupAttempt])
+  }, [advanced, input.id])
 
   function patch(changes: Partial<SaveBrowserConnectionInput>) {
     if (busy.current) return
-    dirtyRef.current = true
     setInput((current) => ({ ...current, ...changes }))
-    setDirty(true)
-    setProbe(null)
     setError(null)
   }
-  async function run(action: () => Promise<void>) {
+  async function connect(event: FormEvent) {
+    event.preventDefault()
     if (busy.current) return
     const request = generation.current
     busy.current = true
     setPending(true)
     setError(null)
     try {
-      await action()
+      const saved = await connectBrowser(
+        {
+          ...input,
+          ...(remembered.current ? { id: remembered.current.id } : {}),
+          scopeLabel: remembered.current?.scopeLabel || input.name.trim(),
+        },
+        (saved) => {
+          if (request !== generation.current) return
+          remembered.current = saved
+          setInput({
+            id: saved.id,
+            providerId: saved.providerId,
+            name: saved.name,
+            endpoint: saved.endpoint,
+            apiKey: saved.apiKey,
+            defaultGroupId: saved.defaultGroupId,
+            scopeLabel: saved.scopeLabel,
+          })
+        },
+        remembered.current,
+      )
+      if (request === generation.current) onUpdated(saved)
     } catch (cause) {
       if (request === generation.current) setError(browserError(cause).message)
     } finally {
@@ -250,91 +294,84 @@ export function BrowserConnectionEditor({
       if (request === generation.current) setPending(false)
     }
   }
-  const builtin = input.providerId === 'cloakbrowser'
-  async function save(event: FormEvent) {
-    event.preventDefault()
-    const request = generation.current
-    await run(async () => {
-      const saved = await saveBrowserConnection(input)
-      if (request !== generation.current) return
-      dirtyRef.current = false
-      setDirty(false)
-      setProbe(null)
-      onUpdated(saved)
-    })
-  }
-  async function check() {
-    if (!connection || dirtyRef.current) return
-    const request = generation.current
-    await run(async () => {
-      const result = await probeBrowserConnection(connection.id)
-      if (request !== generation.current) return
-      setProbe(result)
-      if (result.connected) setGroupAttempt((value) => value + 1)
-    })
-  }
-  async function confirm() {
-    if (!connection || dirtyRef.current || !probe?.connected || !input.scopeLabel.trim())
-      return
-    const request = generation.current
-    await run(async () => {
-      const saved = await confirmBrowserConnection(connection.id, input.scopeLabel.trim())
-      if (request === generation.current) onUpdated(saved)
-    })
-  }
-  async function activate() {
-    if (!connection?.scopeConfirmed || dirtyRef.current) return
-    const request = generation.current
-    await run(async () => {
-      const saved = await activateBrowserConnection(connection.id)
-      if (request === generation.current) onUpdated(saved)
-    })
-  }
   return (
-    <DialogContent className="window-editor" showCloseButton={!pending}>
+    <DialogContent
+      className="window-editor"
+      showCloseButton={!pending}
+      onEscapeKeyDown={(event) => {
+        if (pending) event.preventDefault()
+      }}
+      onInteractOutside={(event) => {
+        if (pending) event.preventDefault()
+      }}
+    >
       <DialogHeader>
-        <DialogTitle>浏览器接入</DialogTitle>
+        <DialogTitle>连接浏览器</DialogTitle>
         <DialogDescription>
-          请先安装、登录官方浏览器并启用本机 API。接入密钥按当前桌面存储方式明文保存。
+          在官方应用中登录并开启本机 API，然后点击连接。
         </DialogDescription>
       </DialogHeader>
-      <form id="browser-connection-form" onSubmit={(event) => void save(event)}>
+      <form id="browser-connection-form" onSubmit={(event) => void connect(event)}>
         <FieldGroup>
           <Field>
             <FieldLabel>浏览器</FieldLabel>
             <Select
               value={input.providerId}
-              disabled={pending || connection !== null}
-              onValueChange={(value) =>
-                patch({ providerId: value as BrowserProviderId, defaultGroupId: null })
-              }
+              disabled={pending || !!input.id}
+              onValueChange={(value) => {
+                if (value === 'adspower' || value === 'bitbrowser') {
+                  setInput(browserConnectionDefaults(value))
+                  setGroups([])
+                  setGroupError(null)
+                  setError(null)
+                }
+              }}
             >
               <SelectTrigger aria-label="浏览器提供方">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {BROWSER_PROVIDERS.filter(
-                  (row) => connection || row.id !== 'cloakbrowser',
-                ).map((row) => (
-                  <SelectItem key={row.id} value={row.id}>
-                    {row.name}
-                  </SelectItem>
-                ))}
+                {BROWSER_PROVIDERS.filter((row) => row.id !== 'cloakbrowser').map(
+                  (row) => (
+                    <SelectItem key={row.id} value={row.id}>
+                      {row.name}
+                    </SelectItem>
+                  ),
+                )}
               </SelectContent>
             </Select>
           </Field>
-          <Field>
-            <FieldLabel htmlFor="connection-name">接入名称</FieldLabel>
-            <Input
-              id="connection-name"
-              required
-              value={input.name}
-              disabled={pending}
-              onChange={(event) => patch({ name: event.target.value })}
-            />
-          </Field>
-          {!builtin ? (
-            <>
+          {input.providerId === 'adspower' ? (
+            <Field>
+              <FieldLabel htmlFor="connection-key">API Key（可选）</FieldLabel>
+              <Input
+                id="connection-key"
+                type="password"
+                autoComplete="off"
+                value={input.apiKey ?? ''}
+                disabled={pending}
+                onChange={(event) => patch({ apiKey: event.target.value || null })}
+              />
+            </Field>
+          ) : null}
+          <details
+            className="rounded-md border px-3 py-2 text-sm"
+            open={advanced}
+            onToggle={(event) => setAdvanced(event.currentTarget.open)}
+          >
+            <summary className="cursor-pointer text-muted-foreground">更多设置</summary>
+            <FieldGroup className="mt-3">
+              <Field>
+                <FieldLabel htmlFor="connection-name">连接名称</FieldLabel>
+                <Input
+                  id="connection-name"
+                  required
+                  maxLength={80}
+                  value={input.name}
+                  disabled={pending}
+                  onChange={(event) => patch({ name: event.target.value })}
+                />
+              </Field>
               <Field>
                 <FieldLabel htmlFor="connection-endpoint">本机 API 地址</FieldLabel>
                 <Input
@@ -342,26 +379,14 @@ export function BrowserConnectionEditor({
                   required
                   value={input.endpoint}
                   disabled={pending}
-                  placeholder="官方应用显示的本机 API 地址"
                   onChange={(event) => patch({ endpoint: event.target.value })}
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="connection-key">API Key（可选）</FieldLabel>
-                <Input
-                  id="connection-key"
-                  type="password"
-                  autoComplete="off"
-                  value={input.apiKey ?? ''}
-                  disabled={pending}
-                  onChange={(event) => patch({ apiKey: event.target.value || null })}
-                />
-              </Field>
-              <Field>
-                <FieldLabel>新建环境的官方分组</FieldLabel>
+                <FieldLabel>默认浏览器分组</FieldLabel>
                 <Select
                   value={input.defaultGroupId ?? '__none'}
-                  disabled={pending || !connection}
+                  disabled={pending || !input.id}
                   onValueChange={(value) =>
                     patch({ defaultGroupId: value === '__none' ? null : value })
                   }
@@ -370,7 +395,7 @@ export function BrowserConnectionEditor({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__none">不指定分组</SelectItem>
+                    <SelectItem value="__none">默认分组</SelectItem>
                     {input.defaultGroupId &&
                     !groups.some((row) => row.id === input.defaultGroupId) ? (
                       <SelectItem value={input.defaultGroupId}>
@@ -384,80 +409,19 @@ export function BrowserConnectionEditor({
                     ))}
                   </SelectContent>
                 </Select>
-                <FieldDescription>
-                  从官方 API 读取，与 Nexus 的业务分组独立。
-                </FieldDescription>
-                {groupError ? (
-                  <FieldError>
-                    {groupError}
-                    <Button
-                      type="button"
-                      variant="link"
-                      disabled={pending}
-                      onClick={() => setGroupAttempt((value) => value + 1)}
-                    >
-                      重读分组
-                    </Button>
-                  </FieldError>
-                ) : null}
+                {groupError ? <FieldDescription>{groupError}</FieldDescription> : null}
               </Field>
-            </>
-          ) : null}
-          <Field>
-            <FieldLabel htmlFor="connection-scope">账户 / 工作区名称</FieldLabel>
-            <Input
-              id="connection-scope"
-              value={input.scopeLabel}
-              disabled={pending}
-              onChange={(event) => patch({ scopeLabel: event.target.value })}
-            />
-            <FieldDescription>
-              切换官方账户时请新建接入，已有窗口的作用域绑定保持固定。
-            </FieldDescription>
-          </Field>
-          {dirty ? (
-            <p className="text-xs text-muted-foreground">
-              配置已更改，请先保存，再检测和确认当前账户作用域。
-            </p>
-          ) : null}
-          {probe ? (
-            <p role="status">
-              {probe.message}
-              {probe.scopeId
-                ? ` · 作用域 ${probe.scopeId}`
-                : ' · 官方未提供作用域 ID，请人工核对账户 / 工作区名称'}
-            </p>
-          ) : null}
+            </FieldGroup>
+          </details>
           {error ? <FieldError role="alert">{error}</FieldError> : null}
         </FieldGroup>
       </form>
-      <DialogFooter className="flex-wrap">
+      <DialogFooter>
         <Button variant="ghost" disabled={pending} onClick={onClose}>
-          关闭
-        </Button>
-        <Button
-          variant="outline"
-          disabled={pending || dirty || !connection}
-          onClick={() => void check()}
-        >
-          检测连接
-        </Button>
-        <Button
-          variant="outline"
-          disabled={pending || dirty || !probe?.connected || !input.scopeLabel.trim()}
-          onClick={() => void confirm()}
-        >
-          确认作用域
-        </Button>
-        <Button
-          variant="outline"
-          disabled={pending || dirty || !connection?.scopeConfirmed || connection.enabled}
-          onClick={() => void activate()}
-        >
-          启用此接入
+          取消
         </Button>
         <Button type="submit" form="browser-connection-form" disabled={pending}>
-          保存配置
+          {pending ? '连接中…' : '连接并启用'}
         </Button>
       </DialogFooter>
     </DialogContent>

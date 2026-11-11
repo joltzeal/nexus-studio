@@ -11,6 +11,8 @@ pub fn run() {
         .setup(core::plugin_service::initialize)
         .invoke_handler(tauri::generate_handler![
             core::external_url::external_url_open,
+            core::configuration_service::configuration_file_export,
+            core::configuration_service::configuration_file_import,
             core::window_service::browser_window_list,
             core::window_service::browser_window_create,
             core::window_service::browser_window_update,

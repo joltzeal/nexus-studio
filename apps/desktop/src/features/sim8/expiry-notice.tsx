@@ -19,10 +19,7 @@ export function ExpiryReminderRows({
   onDismiss: (item: ExpiryReminder) => void
 }) {
   return (
-    <ul
-      className="max-h-48 w-full divide-y overflow-y-auto"
-      aria-label="即将到期的 SIM8 号码"
-    >
+    <ul className="max-h-48 w-full divide-y overflow-y-auto" aria-label="即将到期的号码">
       {items.map((item) => {
         const remaining = Math.max(
           1,
@@ -80,19 +77,7 @@ export function Sim8ExpiryNotice({
   ...associations
 }: ExpiryAssociationProps & { refreshKey: number; now: number }) {
   const expiry = useNumberExpiry(refreshKey)
-  if (expiry.availability === 'hidden') return null
-  if (expiry.availability === 'upgrade')
-    return (
-      <p className="text-xs text-muted-foreground" role="status">
-        更新 SIM8 插件后可接收号码到期提醒。
-      </p>
-    )
-  if (expiry.availability === 'unavailable')
-    return (
-      <p className="text-xs text-muted-foreground" role="status">
-        SIM8 暂不可用，号码到期提醒尚未更新。
-      </p>
-    )
+  if (expiry.availability !== 'ready') return null
   const { snapshot } = expiry
   const items = snapshot?.items.filter((item) => Date.parse(item.expiresAt) > now) ?? []
   const failed = snapshot?.failed ?? 0
@@ -101,9 +86,7 @@ export function Sim8ExpiryNotice({
     <Alert role="status">
       <Clock3 aria-hidden="true" />
       <AlertTitle className="flex items-center justify-between gap-2">
-        <span>
-          {items.length ? `号码即将到期 · ${items.length}` : 'SIM8 号码到期检查'}
-        </span>
+        <span>{items.length ? `号码即将到期 · ${items.length}` : '号码到期检查'}</span>
         <Button
           variant="ghost"
           size="xs"
@@ -133,9 +116,7 @@ export function Sim8ExpiryNotice({
           </p>
         ) : null}
         {snapshot?.storageDurable === false ? (
-          <p className="text-xs">
-            本次关闭提醒仅在当前运行期间有效，插件未启用持久存储。
-          </p>
+          <p className="text-xs">“今天不再提醒”仅对本次使用有效。</p>
         ) : null}
         {expiry.error ? (
           <p className="text-xs text-destructive" role="alert">

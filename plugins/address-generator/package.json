@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-address-generator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Nexus address generator plugin: public address lookup, map picks and synthetic profiles",
   "type": "module",

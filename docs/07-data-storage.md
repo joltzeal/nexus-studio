@@ -122,6 +122,8 @@ SQLite 或 localStorage 实际写入成功后才能提示保存成功；失败�
 Unix 数据库权限限制为当前用户，Windows 仍依赖应用数据目录 ACL；
 不能把这些边界描述为 Keychain 或加密密钥保管已完成。
 归档 AES-GCM 加密只保护导出容器，不改变本机存储的明文性质。
+设置中的[配置迁移](37-configuration-transfer.md)使用独立明文 JSON，包含所选插件的实际密钥；
+插件通过统一配置 RPC 自行读写，不复制整个 SQLite、插件目录或浏览器记录。
 秘密不进入日志、源码、演示夹具或 localStorage；终端用户无需 `.env`。
 
 ## 验证边界

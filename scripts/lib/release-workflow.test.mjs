@@ -17,8 +17,14 @@ const root = resolve(import.meta.dirname, '../..')
 const workflow = readFileSync(resolve(root, '.github/workflows/release.yml'), 'utf8')
 const directories = []
 
+const configurationMethods = [
+  'configuration.export',
+  'configuration.validate',
+  'configuration.import',
+]
 const requiredMethods = {
   'ai-image': [
+    ...configurationMethods,
     'image.plans.create',
     'image.plans.get',
     'image.providers.list',
@@ -42,6 +48,7 @@ const requiredMethods = {
     'image.generate',
   ],
   'vinted-monitor': [
+    ...configurationMethods,
     'vinted.monitors.list',
     'vinted.monitors.save',
     'vinted.monitors.remove',
@@ -80,6 +87,7 @@ const requiredMethods = {
     'transfer.commit',
   ],
   sim8: [
+    ...configurationMethods,
     'sim8.config.get',
     'sim8.config.set',
     'sim8.profile',
@@ -104,6 +112,46 @@ const requiredMethods = {
     'sim8.expiry.refresh',
     'sim8.expiry.dismiss',
     'sim8.sms.read',
+  ],
+  'proxy-pool': [
+    ...configurationMethods,
+    'proxy.list',
+    'proxy.get',
+    'proxy.create',
+    'proxy.update',
+    'proxy.delete',
+    'proxy.import',
+    'proxy.strategy.decodo',
+    'proxy.check',
+    'proxy.probe',
+    'proxy.exportUrls',
+    'proxy.resolve',
+    'proxy.describe',
+    'proxy.groups.list',
+    'proxy.groups.create',
+    'proxy.config.get',
+    'proxy.config.set',
+    'proxy.subscriptions.list',
+    'proxy.subscriptions.get',
+    'proxy.subscriptions.create',
+    'proxy.subscriptions.update',
+    'proxy.subscriptions.delete',
+    'proxy.subscriptions.preview',
+    'proxy.subscriptions.export',
+    'proxy.subscriptions.download',
+    'proxy.subscriptions.link',
+    'proxy.subscriptions.resetToken',
+    'proxy.subscriptions.append',
+  ],
+  'address-generator': [
+    ...configurationMethods,
+    'address.catalog',
+    'address.generate',
+    'address.profile',
+    'address.csv',
+    'address.export',
+    'address.config.get',
+    'address.config.set',
   ],
 }
 
@@ -289,6 +337,10 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       '@nexus/plugin-vinted-accounts...',
       '--filter',
       '@nexus/plugin-sim8...',
+      '--filter',
+      '@nexus/plugin-proxy-pool...',
+      '--filter',
+      '@nexus/plugin-address-generator...',
       'build',
     ])
     expect(commands.slice(1).map((args) => args.slice(0, 3))).toEqual([
@@ -296,6 +348,8 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       ['node', 'scripts/pack-plugin.mjs', 'plugins/vinted-monitor'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/vinted-accounts'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/sim8'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/proxy-pool'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/address-generator'],
       ['node', 'scripts/build-market.mjs', '--out'],
     ])
     const market = readFileSync(output, 'utf8').match(/^directory=(.+)$/m)?.[1]
@@ -358,7 +412,9 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
   it('does not accept a method name that only contains the required name', () => {
     const data = fixture()
     const plugin = data.plugins[0]
-    plugin.report.methods = ['image.plans.createLegacy', 'image.plans.get']
+    plugin.report.methods = plugin.report.methods.map((method) =>
+      method === 'image.plans.create' ? 'image.plans.createLegacy' : method,
+    )
     writeJson(`${plugin.file}.report.json`, plugin.report)
     const result = data.verify()
     expect(result.status, result.stdout).toBe(1)

@@ -114,7 +114,9 @@ describe('provider transport configuration', () => {
       modelConfigVersion: 2,
       transportSettingsVersion: 1,
     })
-    expect(AI_IMAGE_METHODS).toHaveLength(21)
+    expect(AI_IMAGE_METHODS.filter((method) => method.startsWith('image.'))).toHaveLength(
+      21,
+    )
   })
 
   it('preserves omitted settings on edit and accepts explicit resets independently', async () => {

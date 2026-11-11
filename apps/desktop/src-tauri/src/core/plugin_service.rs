@@ -136,7 +136,13 @@ fn webview_capability(input: &CallInput) -> Result<Capability, String> {
     if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
         return Err("代理连接解析仅供原生窗口启动调用".into());
     }
-    if input.method.starts_with("transfer.") || capability == Capability::WindowSync {
+    let configuration = matches!(
+        input.method.as_str(),
+        "configuration.export" | "configuration.validate" | "configuration.import"
+    );
+    if input.method.starts_with("transfer.")
+        || (capability == Capability::WindowSync && !configuration)
+    {
         return Err("窗口迁移与同步只能通过窗口管理调用".into());
     }
     Ok(capability)
@@ -250,5 +256,13 @@ mod tests {
         assert!(webview_capability(&input("proxy.resolve", "proxy.provider")).is_err());
         assert!(webview_capability(&input("transfer.export", "account.pool")).is_err());
         assert!(webview_capability(&input("sync.offer", "window.sync")).is_err());
+        for method in [
+            "configuration.export",
+            "configuration.validate",
+            "configuration.import",
+        ] {
+            assert!(webview_capability(&input(method, "window.sync")).is_ok());
+        }
+        assert!(webview_capability(&input("configuration.sync.offer", "window.sync")).is_err());
     }
 }

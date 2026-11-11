@@ -1,3 +1,4 @@
+import proxyManifest from '@nexus/plugin-proxy-pool/manifest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
@@ -12,7 +13,7 @@ describe('plugin center without a host', () => {
     expect(html).toContain('代理池')
     expect(html).toContain('studio.proxy-pool')
     expect(html).toContain('proxy.provider')
-    expect(html).toContain('v1.0.0')
+    expect(html).toContain(`v${proxyManifest.version}`)
     expect(html).toContain('仅桌面应用')
     // SIM8 is the bundled plugin that owns the verification capability; the
     // demo row used to be the only place it appeared.

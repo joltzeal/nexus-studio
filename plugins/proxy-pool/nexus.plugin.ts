@@ -5,9 +5,9 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.proxy-pool',
-  version: '1.0.2',
+  version: '1.0.3',
   name: '代理池',
-  minCoreVersion: '0.1.0',
+  minCoreVersion: '0.1.21',
   capabilities: ['proxy.provider'],
   permissions: {
     // Exit-IP detection and IP reputation. No wildcard, no dynamic hosts.

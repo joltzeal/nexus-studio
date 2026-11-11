@@ -5,6 +5,8 @@
 
 ## 当前事实
 
+插件版本为 `1.0.3`，要求主程序 `0.1.21`，加入默认代理和风险检测配置迁移。
+
 插件包位于 `plugins/proxy-pool`，已实现 manifest、`proxy.provider` 能力方法、
 私有存储适配、密钥引用边界与逐行 JSON RPC 服务端。
 
@@ -267,3 +269,11 @@ rtk proxy cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --l
 另有库存/密钥分步失败与取消的补偿测试；运行前必须先构建本插件，
 不能用旧 `dist` 的通过结果代表新源码已经验证。
 这些结果不代表真实代理链路已经可用，也不代表 Windows 行为。
+
+## 设置配置迁移
+
+新增通用 `configuration.export / configuration.validate / configuration.import` 三个 RPC，
+通过插件原有能力调用，统一接入「应用设置 → 配置迁移」。
+迁移默认代理的完整连接参数与密码、风险检测开关、缓存时间和 API Key；
+其余库存、订阅与检测记录不包含在设置配置文件中。
+文件、校验和失败写入规则见[配置导入导出](37-configuration-transfer.md)。

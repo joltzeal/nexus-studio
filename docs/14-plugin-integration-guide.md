@@ -55,6 +55,10 @@ AdsPower 编辑和插件代理能力已关闭，验证前不可用，见[浏览�
 - `PluginManifest`、`PluginPermissions`、`PluginCapability`：manifest 类型。
 - 七类能力接口：`ProxyProvider`、`AddressGenerator`、`SupplyCatalog`、`PlatformAdapter`、`VerificationProvider`、`ImageProvider`、`EnvironmentConfigurator`。
 - `ProxyResolution`：代理解析结果，只允许返回不透明配置句柄和可选密钥引用。
+- `@nexus/plugin-sdk/configuration`：版本化配置导出、只读校验和导入，
+  使用 `createConfigurationTransfer` 与 `CONFIGURATION_METHODS` 接入；
+  带引用凭据的导入可用 `withConfigurationSecrets` 在文档提交前保留旧值。
+  协议、各插件范围和文件上限见[配置导入导出](37-configuration-transfer.md)。
 
 当前 `ProxyProvider.resolve()`、`AddressGenerator` 与 `SupplyCatalog` 已有实现路径。
 抽象能力接口不能代替具体 RPC 契约；账号池、接码、图片与监控等实际方法以各模块文档为准。

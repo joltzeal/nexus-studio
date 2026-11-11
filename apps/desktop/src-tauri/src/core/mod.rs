@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod configuration_service;
 pub mod database;
 pub mod external_url;
 pub mod group_store;

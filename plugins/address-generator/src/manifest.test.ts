@@ -34,6 +34,9 @@ describe('address generator manifest', () => {
 
   it('names the methods it actually implements', () => {
     expect([...ADDRESS_METHODS]).toEqual([
+      'configuration.export',
+      'configuration.validate',
+      'configuration.import',
       'address.catalog',
       'address.generate',
       'address.profile',

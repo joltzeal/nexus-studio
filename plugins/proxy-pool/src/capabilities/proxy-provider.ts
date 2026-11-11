@@ -1,3 +1,5 @@
+import { CONFIGURATION_METHODS } from '@nexus/plugin-sdk/configuration'
+import { configurationTransfer } from '../configuration.js'
 import type { ProxyProvider, ProxyResolution } from '@nexus/plugin-sdk'
 
 import { buildConnectionUrl, buildRedactedUrl } from '../domain/credentials.js'
@@ -59,6 +61,7 @@ import type { SecretVault } from '../store/secret-vault.js'
 import { ProxyTransfer, TRANSFER_METHODS } from '../services/transfer.js'
 
 export const PROXY_METHODS = [
+  ...CONFIGURATION_METHODS,
   'proxy.list',
   'proxy.get',
   'proxy.create',
@@ -112,6 +115,7 @@ function referenceFor(row: EndpointRecord): ProxyResolution {
 export class ProxyPool implements ProxyProvider {
   readonly id = 'proxy.provider'
   readonly name = '代理池'
+  private readonly configuration: ReturnType<typeof configurationTransfer>
   private readonly store: PrivateStore
   private readonly vault: SecretVault
   private readonly logger: Logger
@@ -122,6 +126,7 @@ export class ProxyPool implements ProxyProvider {
   constructor(dependencies: ProxyPoolDependencies) {
     this.store = dependencies.store
     this.vault = dependencies.vault
+    this.configuration = configurationTransfer(this.store, this.vault)
     this.logger = dependencies.logger
     this.checkDeps = dependencies.check
     this.now = dependencies.now ?? (() => new Date())
@@ -179,6 +184,8 @@ export class ProxyPool implements ProxyProvider {
   }
 
   async call(context: DispatchContext): Promise<unknown> {
+    if (CONFIGURATION_METHODS.some((method) => method === context.method))
+      return this.configuration.call(context)
     const { method, payload } = context
     switch (method) {
       case 'transfer.export':

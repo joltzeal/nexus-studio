@@ -31,3 +31,14 @@ export type {
   WindowTransferImport,
   WindowTransferReceipt,
 } from './transfer.js'
+export {
+  CONFIGURATION_METHODS,
+  ConfigurationDocumentSchema,
+  createConfigurationTransfer,
+  withConfigurationSecrets,
+} from './configuration.js'
+export type {
+  ConfigurationContext,
+  ConfigurationDocument,
+  ConfigurationTransfer,
+} from './configuration.js'

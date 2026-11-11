@@ -3,7 +3,8 @@
 本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
 宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
 当前工作区在已发布的上传格式校验、Vinted 原图本机 JPEG 转换及商品资料预填基础上，
-将模型配置收敛为识图、生图两项。插件版本为 `1.4.3`，要求主程序 `0.1.18` 或更高版本；
+将模型配置收敛为识图、生图两项。插件版本为 `1.4.4`，要求主程序 `0.1.21` 或更高版本，
+加入服务商、密钥、模型及请求设置的配置迁移；
 主程序与插件需配套更新，实际发布结果见[插件商店](25-plugin-market.md)。
 
 `1.3.0` 新增服务商实际生图测试与通道错误诊断。
@@ -20,7 +21,7 @@
 
 ## 当前能力
 
-插件提供 `image.provider` 的 21 个 RPC 方法，支持 `openai` 与 `openai_compatible`。
+插件提供 `image.provider` 的 21 个 `image.*` 业务 RPC 方法，支持 `openai` 与 `openai_compatible`。
 生图只走 `/images/generations` 与 `/images/edits`；识图使用 `/chat/completions`。
 不支持网站自动化生图、chat 多模态出图或异步轮询型供应商通道。
 
@@ -466,3 +467,11 @@ macOS 通常为 `~/Downloads/Nexus AI/`，Windows 使用系统登记的 Download
 识图到生图的请求顺序、场景方案复用、旧数据和原模型重试。
 实际命令与结果以[质量与验证](09-quality-and-testing.md)为准。
 没有调用真实付费模型，也未运行本地构建、打包、Rust、Windows 或签名验证。
+
+## 设置配置迁移
+
+新增通用 `configuration.export / configuration.validate / configuration.import` 三个 RPC，
+通过插件原有能力调用，统一接入「应用设置 → 配置迁移」。
+迁移服务商、实际 Key、识图/生图模型、响应方式、超时和最近选择；
+生成记录、场景任务、图片文件和本机路径保持独立。
+文件、校验和失败写入规则见[配置导入导出](37-configuration-transfer.md)。

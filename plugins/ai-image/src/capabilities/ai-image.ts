@@ -1,3 +1,5 @@
+import { CONFIGURATION_METHODS } from '@nexus/plugin-sdk/configuration'
+import { configurationTransfer } from '../configuration.js'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -77,6 +79,7 @@ import type { PrivateStore, StoreDocument } from '../store/private-store.js'
 import type { ImageStore } from '../store/image-files.js'
 
 export const AI_IMAGE_METHODS = [
+  ...CONFIGURATION_METHODS,
   'image.providers.list',
   'image.providers.save',
   'image.providers.remove',
@@ -152,6 +155,7 @@ export class AiImage {
   readonly id = 'image.provider'
   readonly name = 'AI 生图'
 
+  private readonly configuration: ReturnType<typeof configurationTransfer>
   private readonly store: PrivateStore
   private readonly images: ImageStore
   private readonly logger: Logger
@@ -166,6 +170,7 @@ export class AiImage {
 
   constructor(options: AiImageOptions) {
     this.store = options.store
+    this.configuration = configurationTransfer(this.store)
     this.images = options.images
     this.logger = options.logger
     this.now = options.now ?? (() => new Date())
@@ -184,6 +189,8 @@ export class AiImage {
   }
 
   async call(context: DispatchContext): Promise<unknown> {
+    if (CONFIGURATION_METHODS.some((method) => method === context.method))
+      return this.configuration.call(context)
     switch (context.method) {
       case 'image.providers.list':
         return await this.listProviders(context)

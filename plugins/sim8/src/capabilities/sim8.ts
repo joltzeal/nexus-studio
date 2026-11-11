@@ -1,3 +1,5 @@
+import { CONFIGURATION_METHODS } from '@nexus/plugin-sdk/configuration'
+import { configurationTransfer } from '../configuration.js'
 import { randomUUID } from 'node:crypto'
 
 import { invalidRequest, notConfigured, unavailable } from '../domain/errors.js'
@@ -58,6 +60,7 @@ import type { PrivateStore } from '../store/private-store.js'
 import type { SecretVault } from '../store/secret-vault.js'
 
 export const SIM8_METHODS = [
+  ...CONFIGURATION_METHODS,
   // Configuration and identity.
   'sim8.config.get',
   'sim8.config.set',
@@ -124,6 +127,7 @@ export class Sim8Provider {
   readonly id = 'verification.provider'
   readonly name = 'SIM8 接码'
 
+  private readonly configuration: ReturnType<typeof configurationTransfer>
   private readonly store: PrivateStore
   private readonly vault: SecretVault
   private readonly logger: Logger
@@ -135,6 +139,7 @@ export class Sim8Provider {
   constructor(options: Sim8ProviderOptions) {
     this.store = options.store
     this.vault = options.vault
+    this.configuration = configurationTransfer(this.store, this.vault)
     this.logger = options.logger
     this.now = options.now ?? (() => new Date())
     this.fetchImpl = options.fetchImpl ?? null
@@ -150,6 +155,8 @@ export class Sim8Provider {
   }
 
   async call(context: DispatchContext): Promise<unknown> {
+    if (CONFIGURATION_METHODS.some((method) => method === context.method))
+      return this.configuration.call(context)
     switch (context.method) {
       case 'sim8.config.get':
         return await this.configGet(context)

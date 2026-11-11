@@ -5,7 +5,9 @@
 
 ## 当前事实
 
-插件包位于 `plugins/address-generator`，实现 `address.generator` 能力的 7 个方法、
+插件版本为 `1.0.1`，要求主程序 `0.1.21`，加入 Google Maps Key 配置迁移。
+
+插件包位于 `plugins/address-generator`，实现 `address.generator` 能力的 7 个 `address.*` 业务方法、
 私有存储、密钥库边界与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/addresses`。
 
 - 公开地址来自 OpenStreetMap 的 Overpass 接口，由插件进程发起，页面不直接访问上游。
@@ -148,3 +150,10 @@ CSV 公式注入防护、密钥保存与清除、能力方法表与错误码；
 最后一条会启动真实 `node` 进程，把本插件从 `dist` 安装进宿主（安装即启动），
 再调用 `address.catalog`，同时验证用 `proxy.provider` 调用会被拒绝。
 这些结果不证明上游地址质量，也不代表 Windows 行为。
+
+## 设置配置迁移
+
+新增通用 `configuration.export / configuration.validate / configuration.import` 三个 RPC，
+通过插件原有能力调用，统一接入「应用设置 → 配置迁移」。
+迁移 Google Maps Key，不包含查询缓存、生成地址或 CSV 文件。
+文件、校验和失败写入规则见[配置导入导出](37-configuration-transfer.md)。

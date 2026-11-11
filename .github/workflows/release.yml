@@ -26,19 +26,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' build
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' build
       - name: Verify AI requests and application transport
-        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-accounts/src plugins/sim8/src packages/plugin-sdk/src packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
+        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
       - name: Pack companion plugins
         id: plugin-market
         shell: bash
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "Export images to system Downloads/Nexus AI, including redirected Windows Downloads; keeps English listing output and realistic casual smartphone photos."
-          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.19：从商品打开 AI 生图弹窗时保留当前页面，提交后继续浏览商品；筛选、分页和商品来源保持不变。采集数据和 RPC 保持兼容。"
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移服务商、密钥、识图和生图模型及请求设置，保留生成记录。"
+          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移采集代理、密码及默认代理，采集运行期间阻止导入。"
           node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套主程序 0.1.20：统一窗口生命周期清理，删除窗口时幂等解除账号关联；修复安装后的 SDK 生命周期入口。账号资料保留。"
-          node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.20：读取接码链接 expire，在到期前七天提供每日提醒，支持今天不再提醒及续费后重新计算。"
+          node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.21：支持离线迁移 API 地址和 Token，导入后清理旧账户缓存。"
+          node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移默认代理及密码、风险检查设置及 API Key。"
+          node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移 Google Maps Key，凭据写入失败时保留原配置。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
         shell: bash
@@ -52,8 +54,14 @@ jobs:
           import { readFileSync, readdirSync } from 'node:fs'
           import { join, resolve, sep } from 'node:path'
 
+          const configurationMethods = [
+            'configuration.export',
+            'configuration.validate',
+            'configuration.import',
+          ]
           const required = {
             'ai-image': [
+              ...configurationMethods,
               'image.plans.create',
               'image.plans.get',
               'image.providers.list',
@@ -77,6 +85,7 @@ jobs:
               'image.generate',
             ],
             'vinted-monitor': [
+              ...configurationMethods,
               'vinted.monitors.list',
               'vinted.monitors.save',
               'vinted.monitors.remove',
@@ -115,6 +124,7 @@ jobs:
               'transfer.commit',
             ],
             sim8: [
+              ...configurationMethods,
               'sim8.config.get',
               'sim8.config.set',
               'sim8.profile',
@@ -139,6 +149,46 @@ jobs:
               'sim8.expiry.refresh',
               'sim8.expiry.dismiss',
               'sim8.sms.read',
+            ],
+            'proxy-pool': [
+              ...configurationMethods,
+              'proxy.list',
+              'proxy.get',
+              'proxy.create',
+              'proxy.update',
+              'proxy.delete',
+              'proxy.import',
+              'proxy.strategy.decodo',
+              'proxy.check',
+              'proxy.probe',
+              'proxy.exportUrls',
+              'proxy.resolve',
+              'proxy.describe',
+              'proxy.groups.list',
+              'proxy.groups.create',
+              'proxy.config.get',
+              'proxy.config.set',
+              'proxy.subscriptions.list',
+              'proxy.subscriptions.get',
+              'proxy.subscriptions.create',
+              'proxy.subscriptions.update',
+              'proxy.subscriptions.delete',
+              'proxy.subscriptions.preview',
+              'proxy.subscriptions.export',
+              'proxy.subscriptions.download',
+              'proxy.subscriptions.link',
+              'proxy.subscriptions.resetToken',
+              'proxy.subscriptions.append',
+            ],
+            'address-generator': [
+              ...configurationMethods,
+              'address.catalog',
+              'address.generate',
+              'address.profile',
+              'address.csv',
+              'address.export',
+              'address.config.get',
+              'address.config.set',
             ],
           }
           const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
@@ -244,13 +294,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Nexus v__VERSION__'
           releaseBody: |
-            - 统一内置浏览器、AdsPower 和比特浏览器接入，窗口管理使用提供方页签。
-            - 重构窗口调度、持久化操作与恢复流程，移除旧窗口接口及历史导入格式。
-            - SIM8 新增号码到期前七天的每日提醒，支持当天关闭提醒。
-            - 修复 SQLite 类型、插件安装启动和跨平台检查问题。
+            - 浏览器接入合并为“连接并启用”，提供默认本机地址，额外选项收进更多设置。
+            - 设置新增配置迁移，支持外观、工作区、应用代理和五个插件的配置导入导出。
+            - 配置导入先校验再逐项应用，失败项目可重试，密钥随配置明文迁移。
+            - 窗口首页移除插件升级和不可用提示，保留实际号码到期提醒。
 
-            配套 Vinted 账号池 1.0.2、SIM8 1.0.2 通过插件商店独立安装。
-            历史窗口数据库在首次启动时备份并升级；旧格式导出文件需在旧版处理。
+            配套 AI 生图 1.4.4、Vinted 监控 1.1.3、SIM8 1.0.3、代理池 1.0.3、地址生成器 1.0.1 通过插件商店独立安装。
+            配置文件包含选中的密钥和代理密码，请妥善保存。
             macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
           uploadUpdaterJson: true

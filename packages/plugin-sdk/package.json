@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./configuration": {
+      "types": "./dist/configuration.d.ts",
+      "import": "./dist/configuration.js"
+    },
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
       "import": "./dist/lifecycle.js"

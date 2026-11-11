@@ -1,3 +1,5 @@
+import { CONFIGURATION_METHODS } from '@nexus/plugin-sdk/configuration'
+import { configurationTransfer } from '../configuration.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -26,6 +28,7 @@ import type { PrivateStore } from '../store/private-store.js'
 import type { SecretVault } from '../store/secret-vault.js'
 
 export const ADDRESS_METHODS = [
+  ...CONFIGURATION_METHODS,
   'address.catalog',
   'address.generate',
   'address.profile',
@@ -62,6 +65,7 @@ export class AddressGenerator {
   readonly id = 'address.generator'
   readonly name = '地址生成器'
 
+  private readonly configuration: ReturnType<typeof configurationTransfer>
   private readonly store: PrivateStore
   private readonly vault: SecretVault
   private readonly lookup: PublicAddressService
@@ -73,6 +77,7 @@ export class AddressGenerator {
   constructor(options: AddressGeneratorOptions) {
     this.store = options.store
     this.vault = options.vault
+    this.configuration = configurationTransfer(this.store, this.vault)
     this.lookup = options.lookup
     this.logger = options.logger
     this.now = options.now ?? (() => new Date())
@@ -85,6 +90,8 @@ export class AddressGenerator {
   }
 
   async call(context: DispatchContext): Promise<unknown> {
+    if (CONFIGURATION_METHODS.some((method) => method === context.method))
+      return this.configuration.call(context)
     switch (context.method) {
       case 'address.catalog':
         context.assertAlive()

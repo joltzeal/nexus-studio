@@ -5,9 +5,9 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.sim8',
-  version: '1.0.2',
+  version: '1.0.3',
   name: 'SIM8 接码',
-  minCoreVersion: '0.1.20',
+  minCoreVersion: '0.1.21',
   // Numbers and their verification codes are a verification source, so the host
   // sees this plugin next to any other provider of the same capability.
   capabilities: ['verification.provider'],

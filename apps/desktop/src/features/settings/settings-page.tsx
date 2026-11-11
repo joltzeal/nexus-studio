@@ -6,6 +6,7 @@ import { LicenseSettingsPage } from '@/features/settings/license-settings-page'
 import { KernelSettingsPage } from '@/features/settings/kernel-settings-page'
 import { NetworkProxyPage } from '@/features/settings/network-proxy-page'
 import { BrowserConnectionsPage } from './browser-connections-page'
+import { ConfigurationPage } from './configuration-page'
 
 export function SettingsPage() {
   return (
@@ -21,6 +22,7 @@ export function SettingsPage() {
         <TabsTrigger value="license">激活码</TabsTrigger>
         <TabsTrigger value="kernels">浏览器内核</TabsTrigger>
         <TabsTrigger value="proxy">应用代理</TabsTrigger>
+        <TabsTrigger value="configuration">配置迁移</TabsTrigger>
         <TabsTrigger value="about">关于 Nexus</TabsTrigger>
       </TabsList>
       <TabsContent value="appearance">
@@ -40,6 +42,9 @@ export function SettingsPage() {
       </TabsContent>
       <TabsContent value="proxy">
         <NetworkProxyPage />
+      </TabsContent>
+      <TabsContent value="configuration">
+        <ConfigurationPage />
       </TabsContent>
       <TabsContent value="about">
         <AboutPage />

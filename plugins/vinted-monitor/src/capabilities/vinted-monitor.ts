@@ -1,3 +1,5 @@
+import { CONFIGURATION_METHODS } from '@nexus/plugin-sdk/configuration'
+import { configurationTransfer } from '../configuration.js'
 import { randomUUID } from 'node:crypto'
 import { invalidRequest } from '../domain/errors.js'
 import { proxyHost, proxyView, selectProxy, validateProxy } from '../domain/proxies.js'
@@ -46,6 +48,7 @@ import {
 import type { PrivateStore, StoreDocument } from '../store/private-store.js'
 
 export const VINTED_METHODS = [
+  ...CONFIGURATION_METHODS,
   'vinted.monitors.list',
   'vinted.monitors.save',
   'vinted.monitors.remove',
@@ -100,6 +103,7 @@ function requireMonitor(document: StoreDocument, id: string): MonitorRecord {
 export class VintedMonitor {
   readonly id = 'monitor.collector'
   readonly name = 'Vinted 商品监控'
+  private readonly configuration: ReturnType<typeof configurationTransfer>
   private readonly store: PrivateStore
   private readonly logger: Logger
   private readonly client: VintedClient
@@ -112,6 +116,7 @@ export class VintedMonitor {
   private ticking = false
   constructor(options: VintedMonitorOptions) {
     this.store = options.store
+    this.configuration = configurationTransfer(this.store, () => this.active.size === 0)
     this.logger = options.logger
     this.client = options.client ?? new VintedClient()
     this.now = options.now ?? (() => new Date())
@@ -126,6 +131,8 @@ export class VintedMonitor {
     }
   }
   async call(context: DispatchContext): Promise<unknown> {
+    if (CONFIGURATION_METHODS.some((method) => method === context.method))
+      return this.configuration.call(context)
     await this.ensureReconciled()
     context.assertAlive()
     const payload = context.payload

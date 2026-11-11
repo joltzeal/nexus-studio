@@ -29,6 +29,8 @@
 外部 provider 则调用厂商的本机管理 API。
 窗口由 `WindowStore` 保存为 schema 2，绑定包含 `provider_id`、`connection_id` 和
 `profile_id`；插件业务关联始终使用 Nexus 窗口 UUID，不使用厂商环境 ID。
+配置迁移复用已授予的插件能力和 `ready.methods` 检查；宿主不读取插件私有配置文件，
+统一方法见[配置导入导出](37-configuration-transfer.md)。
 
 数据根目录为 `app_data_dir/plugins`：
 

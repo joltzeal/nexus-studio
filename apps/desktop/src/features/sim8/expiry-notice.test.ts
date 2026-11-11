@@ -6,7 +6,10 @@ import type { Account, BindingView } from '@/features/accounts/types'
 import { components } from '@/features/settings/kernel-test-support'
 import { browserWindow } from '@/lib/platform/browser-test-support'
 import { expiryAssociations } from './expiry-associations'
-import { ExpiryReminderRows } from './expiry-notice'
+import { ExpiryReminderRows, Sim8ExpiryNotice } from './expiry-notice'
+import { useNumberExpiry } from './use-number-expiry'
+
+vi.mock('./use-number-expiry', () => ({ useNumberExpiry: vi.fn() }))
 
 const accounts = [
   { id: 'a', account: 'a@example.test', phone: '+1 (415) 555-0100' },
@@ -28,6 +31,26 @@ const windows = [
 const item = { tel: '+14155550100', expiresAt: '2026-11-03T10:00:00Z', checkedAt: null }
 
 describe('window expiry notice', () => {
+  it.each(['hidden', 'upgrade', 'unavailable'] as const)(
+    'keeps plugin availability messages off the window homepage (%s)',
+    (availability) => {
+      vi.mocked(useNumberExpiry).mockReturnValue({
+        availability,
+      } as ReturnType<typeof useNumberExpiry>)
+      expect(
+        renderToStaticMarkup(
+          createElement(Sim8ExpiryNotice, {
+            refreshKey: 0,
+            now: Date.now(),
+            accounts,
+            bindings,
+            windows,
+          }),
+        ),
+      ).toBe('')
+    },
+  )
+
   it('shows one number with all its accounts/windows and supports dismissing that number', () => {
     const onDismiss = vi.fn()
     const props = {
