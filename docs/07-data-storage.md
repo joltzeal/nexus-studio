@@ -56,6 +56,11 @@ React、Node 适配器和插件不直接打开主程序业务库。
 内部表名 `profile_records` 保留，基本列仍是 `id`、`record_json`、`group_id`。
 `record_json` 已是 v2 记录；保留表名不表示仍支持旧 Profile 服务或旧命令。
 分组删除通过外键清空分组关系，不删除窗口。
+批量移动由 `browser_window_move_group` 处理，输入为当前 `connectionId`、唯一窗口 UUID 列表与可空 `groupId`。
+服务取得全部窗口锁，检查接入范围与待核对操作后，通过 `GroupStore::assign_many`
+在一个 `IMMEDIATE` SQLite 事务内写入关系；目标分组或任一窗口缺失则整体回滚。
+只更新 `group_id`，不重写 `record_json`、不调用厂商 API、不影响浏览器目录。
+成功返回与请求一致的连接、窗口列表和目标分组，前端校验回执后才报告成功。
 
 多浏览器数据增加以下表和索引：
 

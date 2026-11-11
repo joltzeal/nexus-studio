@@ -1,5 +1,5 @@
 use super::database::open_database;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -91,13 +91,33 @@ impl GroupStore {
     }
 
     pub fn assign(&self, profile_id: &str, group_id: Option<&str>) -> Result<(), String> {
-        Uuid::parse_str(profile_id).map_err(|_| "窗口标识无效")?;
+        self.assign_many(&[profile_id.to_owned()], group_id)
+    }
+
+    pub fn assign_many(
+        &self,
+        profile_ids: &[String],
+        group_id: Option<&str>,
+    ) -> Result<(), String> {
+        if profile_ids.is_empty() {
+            return Err("请先选择窗口".into());
+        }
+        let mut unique = std::collections::HashSet::new();
+        for id in profile_ids {
+            Uuid::parse_str(id).map_err(|_| "窗口标识无效")?;
+            if !unique.insert(id) {
+                return Err("窗口不能重复".into());
+            }
+        }
         if let Some(id) = group_id {
             Uuid::parse_str(id).map_err(|_| "分组标识无效")?;
         }
-        let db = open_database(&self.path)?;
+        let mut db = open_database(&self.path)?;
+        let transaction = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| "无法设置窗口分组")?;
         if let Some(id) = group_id {
-            let exists: Option<i32> = db
+            let exists: Option<i32> = transaction
                 .query_row("SELECT 1 FROM groups WHERE id = ?1", [id], |row| row.get(0))
                 .optional()
                 .map_err(|_| "无法检查分组")?;
@@ -105,15 +125,18 @@ impl GroupStore {
                 return Err("分组不存在".into());
             }
         }
-        let changed = db
-            .execute(
-                "UPDATE profile_records SET group_id = ?2 WHERE id = ?1",
-                params![profile_id, group_id],
-            )
-            .map_err(|_| "无法设置窗口分组")?;
-        if changed == 0 {
-            return Err("窗口不存在".into());
+        for profile_id in profile_ids {
+            let changed = transaction
+                .execute(
+                    "UPDATE profile_records SET group_id = ?2 WHERE id = ?1",
+                    params![profile_id, group_id],
+                )
+                .map_err(|_| "无法设置窗口分组")?;
+            if changed == 0 {
+                return Err("窗口不存在".into());
+            }
         }
+        transaction.commit().map_err(|_| "无法保存窗口分组")?;
         Ok(())
     }
 }

@@ -17,6 +17,7 @@ pub fn run() {
             core::window_service::browser_window_create,
             core::window_service::browser_window_update,
             core::window_service::browser_window_update_note,
+            core::window_service::browser_window_move_group,
             core::window_service::browser_window_delete,
             core::window_service::browser_window_start,
             core::window_service::browser_window_stop,

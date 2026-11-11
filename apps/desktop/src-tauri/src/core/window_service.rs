@@ -52,6 +52,13 @@ pub struct UpdateWindowInput {
     pub settings: WindowSettings,
     pub group_id: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MoveWindowsGroupInput {
+    pub connection_id: String,
+    pub ids: Vec<String>,
+    pub group_id: Option<String>,
+}
 #[derive(Debug, Deserialize)]
 #[serde(
     tag = "action",
@@ -965,6 +972,31 @@ impl WindowService {
             return Err(uncertain());
         }
         self.store.update_note(id, note).map_err(failure)
+    }
+    pub fn move_group(&self, input: MoveWindowsGroupInput) -> BrowserResult<MoveWindowsGroupInput> {
+        if input.ids.is_empty() || input.ids.iter().collect::<HashSet<_>>().len() != input.ids.len()
+        {
+            return Err(BrowserError::new("invalid_config", "请选择不重复的窗口"));
+        }
+        self.connections.get(&input.connection_id)?;
+        let mut guards = Vec::with_capacity(input.ids.len());
+        for id in &input.ids {
+            guards.push(self.hold(id)?);
+            if self.operations.window_pending(id)? {
+                return Err(uncertain());
+            }
+            if self.store.get(id).map_err(failure)?.binding.connection_id != input.connection_id {
+                return Err(BrowserError::new(
+                    "scope_mismatch",
+                    "所选窗口不属于当前浏览器接入",
+                ));
+            }
+        }
+        super::group_store::GroupStore::new(self.store.database_path())
+            .map_err(failure)?
+            .assign_many(&input.ids, input.group_id.as_deref())
+            .map_err(failure)?;
+        Ok(input)
     }
     pub(crate) fn delete_window(&self, id: &str, delete_environment: bool) -> BrowserResult<()> {
         let _guard = self.hold(id)?;
@@ -1918,6 +1950,21 @@ pub async fn browser_window_update_note(
     tauri::async_runtime::spawn_blocking(move || state.update_note(&id, &note))
         .await
         .map_err(|_| BrowserError::new("task_interrupted", "浏览器操作任务中断，请重新检查结果"))?
+}
+#[tauri::command]
+pub async fn browser_window_move_group(
+    state: State<'_, Arc<WindowService>>,
+    input: MoveWindowsGroupInput,
+) -> BrowserResult<MoveWindowsGroupInput> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.move_group(input))
+        .await
+        .map_err(|_| {
+            BrowserError::new(
+                "task_interrupted",
+                "分组移动任务中断，请刷新窗口列表检查结果",
+            )
+        })?
 }
 #[tauri::command]
 pub async fn browser_window_delete(

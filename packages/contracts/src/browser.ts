@@ -76,6 +76,14 @@ export const UpdateBrowserWindowInputSchema = z.strictObject({
   id,
   ...editableFields,
 })
+export const MoveBrowserWindowsGroupInputSchema = z.strictObject({
+  connectionId: id,
+  ids: z
+    .array(z.uuid())
+    .min(1)
+    .refine((ids) => new Set(ids).size === ids.length, '窗口不能重复'),
+  groupId: z.uuid().nullable(),
+})
 
 export const BrowserConnectionSchema = z.strictObject({
   id,
@@ -152,6 +160,9 @@ export type BrowserCapabilities = z.infer<typeof BrowserCapabilitiesSchema>
 export type BrowserWindow = z.infer<typeof BrowserWindowSchema>
 export type CreateBrowserWindowInput = z.infer<typeof CreateBrowserWindowInputSchema>
 export type UpdateBrowserWindowInput = z.infer<typeof UpdateBrowserWindowInputSchema>
+export type MoveBrowserWindowsGroupInput = z.infer<
+  typeof MoveBrowserWindowsGroupInputSchema
+>
 export type BrowserConnection = z.infer<typeof BrowserConnectionSchema>
 export type SaveBrowserConnectionInput = z.infer<typeof SaveBrowserConnectionInputSchema>
 export type BrowserConnectionProbe = z.infer<typeof BrowserConnectionProbeSchema>

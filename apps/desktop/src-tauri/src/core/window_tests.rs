@@ -880,6 +880,75 @@ fn invalid_group_assignment_preserves_existing_membership() {
 }
 
 #[test]
+fn batch_group_assignment_is_atomic_and_persists_without_changing_browser_records() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("nexus.sqlite");
+    let groups = GroupStore::new(path.clone()).unwrap();
+    let first = groups.create("First", "").unwrap();
+    let second = groups.create("Second", "").unwrap();
+    let store = WindowStore::new(root.path().join("profiles"));
+    let a = record(root.path());
+    let mut b = record(root.path());
+    b.id = uuid::Uuid::new_v4().to_string();
+    b.binding.profile_id = b.id.clone();
+    store.insert(&a, Some(&first.id)).unwrap();
+    store.insert(&b, None).unwrap();
+    let ids = vec![a.id.clone(), b.id.clone()];
+    groups.assign_many(&ids, Some(&second.id)).unwrap();
+    let reopened = WindowStore::new(root.path().join("profiles"));
+    for window in [&a, &b] {
+        assert_eq!(
+            reopened.group_id(&window.id).unwrap().as_deref(),
+            Some(second.id.as_str())
+        );
+        assert_eq!(reopened.get(&window.id).unwrap(), *window);
+    }
+    let counts = GroupStore::new(path).unwrap().list().unwrap();
+    assert_eq!(counts[0].window_count, 0);
+    assert_eq!(counts[1].window_count, 2);
+    groups.assign_many(&ids, None).unwrap();
+    assert_eq!(reopened.group_id(&a.id).unwrap(), None);
+    assert_eq!(reopened.group_id(&b.id).unwrap(), None);
+}
+
+#[test]
+fn rejected_batch_group_assignments_leave_every_membership_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let groups = GroupStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let first = groups.create("First", "").unwrap();
+    let second = groups.create("Second", "").unwrap();
+    let store = WindowStore::new(root.path().join("profiles"));
+    let window = record(root.path());
+    store.insert(&window, Some(&first.id)).unwrap();
+    for (ids, target) in [
+        (vec![], Some(second.id.clone())),
+        (
+            vec![window.id.clone(), window.id.clone()],
+            Some(second.id.clone()),
+        ),
+        (
+            vec![window.id.clone(), uuid::Uuid::new_v4().to_string()],
+            Some(second.id.clone()),
+        ),
+        (
+            vec![window.id.clone(), "invalid".into()],
+            Some(second.id.clone()),
+        ),
+        (
+            vec![window.id.clone()],
+            Some(uuid::Uuid::new_v4().to_string()),
+        ),
+        (vec![window.id.clone()], Some("invalid".into())),
+    ] {
+        assert!(groups.assign_many(&ids, target.as_deref()).is_err());
+        assert_eq!(
+            store.group_id(&window.id).unwrap().as_deref(),
+            Some(first.id.as_str())
+        );
+    }
+}
+
+#[test]
 fn deleted_groups_do_not_block_confirmed_create_or_update_commits() {
     for kind in ["create", "update"] {
         let root = tempfile::tempdir().unwrap();

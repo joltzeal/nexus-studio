@@ -4,6 +4,7 @@ import {
   BrowserErrorSchema,
   BrowserWindowSchema,
   CreateBrowserWindowInputSchema,
+  MoveBrowserWindowsGroupInputSchema,
   RemoteProfileSchema,
   ResolveBrowserOperationInputSchema,
   UpdateBrowserWindowInputSchema,
@@ -53,6 +54,30 @@ const input = {
 }
 
 describe('browser boundary contracts', () => {
+  it('requires a scoped, nonempty and unique batch of window UUIDs for moving groups', () => {
+    const move = {
+      connectionId: 'ads-1',
+      ids: [input.operationId],
+      groupId: 'ddaa515f-1af3-4a5b-9405-73a18f54ac8d',
+    }
+    expect(MoveBrowserWindowsGroupInputSchema).toBeDefined()
+    expect(MoveBrowserWindowsGroupInputSchema.parse(move)).toEqual(move)
+    expect(
+      MoveBrowserWindowsGroupInputSchema.parse({ ...move, groupId: null }).groupId,
+    ).toBeNull()
+    for (const invalid of [
+      { ...move, connectionId: '' },
+      { ...move, ids: [] },
+      { ...move, ids: [input.operationId, input.operationId] },
+      { ...move, ids: ['vendor-profile'] },
+      { ...move, groupId: 'ungrouped' },
+      { ...move, groupId: undefined },
+      { ...move, settings },
+    ]) {
+      expect(MoveBrowserWindowsGroupInputSchema.safeParse(invalid).success).toBe(false)
+    }
+  })
+
   it('accepts only explicitly confirmed association and abandonment resolutions', () => {
     expect(ResolveBrowserOperationInputSchema).toBeDefined()
     const associate = {

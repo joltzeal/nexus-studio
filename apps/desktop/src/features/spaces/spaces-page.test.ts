@@ -45,6 +45,7 @@ import {
   deleteBrowserWindow,
   listBrowserWindows,
   listBrowserOperations,
+  moveBrowserWindowsGroup,
   reconcileBrowserOperation,
   startBrowserWindow,
   stopBrowserWindow,
@@ -81,6 +82,7 @@ const state = vi.hoisted(() => ({
   bindResponse: { bound: true, duplicates: [] as string[] },
   bindPendingResponse: null as Promise<{ bound: boolean; duplicates: string[] }> | null,
   realLaunch: false,
+  startingIds: [] as string[],
   profileReadResponse: null as Promise<BrowserWindow[]> | null,
 }))
 
@@ -165,6 +167,7 @@ vi.mock('@/lib/platform/windows', async (importOriginal) => ({
     name: 'created',
   })),
   updateBrowserWindow: vi.fn(async () => undefined),
+  moveBrowserWindowsGroup: vi.fn(async (input) => input),
   deleteBrowserWindow: vi.fn(async () => undefined),
   reconcileBrowserOperation: vi.fn(),
   listBrowserOperations: vi.fn(),
@@ -196,7 +199,7 @@ vi.mock('./use-window-launch', async (importOriginal) => {
             gate: null,
             closeGate: () => undefined,
             operatingWindows: new Set(),
-            startingWindows: new Set(),
+            startingWindows: new Set(state.startingIds),
             unconfirmedWindows: new Set(),
           },
   }
@@ -388,12 +391,16 @@ beforeEach(() => {
   state.bindResponse = { bound: true, duplicates: [] }
   state.bindPendingResponse = null
   state.realLaunch = false
+  state.startingIds = []
   state.profileReadResponse = null
   vi.mocked(listBrowserWindows)
     .mockReset()
     .mockImplementation(async () => state.profileReadResponse ?? state.windows)
   vi.mocked(startBrowserWindow).mockReset().mockResolvedValue(undefined)
   vi.mocked(stopBrowserWindow).mockReset().mockResolvedValue(undefined)
+  vi.mocked(moveBrowserWindowsGroup)
+    .mockReset()
+    .mockImplementation(async (input) => input)
   vi.mocked(deleteBrowserWindow)
     .mockReset()
     .mockImplementation(async (id) => {
@@ -429,7 +436,12 @@ async function mountedPage(waitForAccounts = true) {
   }
   await vi.waitFor(() => {
     const tree = render()
-    expect(visibleWindowNames(tree)).toHaveLength(Math.min(20, state.windows.length))
+    expect(visibleWindowNames(tree)).toHaveLength(
+      Math.min(
+        20,
+        state.windows.filter((window) => window.connectionId === 'builtin').length,
+      ),
+    )
     if (
       waitForAccounts &&
       state.plugin?.state === 'running' &&
@@ -702,7 +714,7 @@ describe('window management', () => {
         /\bdisabled=""/,
       )
     }
-    expect(html).toContain('全选本页已关闭窗口')
+    expect(html).toContain('全选本页窗口')
     expect(html).toContain('已选 0')
     expect(html).toContain('尚未启用浏览器接入')
   })
@@ -798,7 +810,7 @@ describe('window list pagination', () => {
 
   function pageSelection(tree: ReactNode) {
     return components(tree, Checkbox).find(
-      (node) => node.props['aria-label'] === '全选本页已关闭窗口',
+      (node) => node.props['aria-label'] === '全选本页窗口',
     )!
   }
 
@@ -841,7 +853,7 @@ describe('window list pagination', () => {
 
   it('selects only eligible rows on the current page while preserving selections from other pages and filters', async () => {
     state.windows = state.windows.map((window) =>
-      window.id === 'window-02' ? { ...window, state: 'running' } : window,
+      window.id === 'window-02' ? { ...window, state: 'starting' } : window,
     )
     const page = await mountedPage()
     pageSelection(page.render()).props.onCheckedChange?.(true)
@@ -1010,6 +1022,242 @@ describe('window list pagination', () => {
     expect(visibleWindowNames(page.render())).toEqual([])
     expect(pageButton(page.render(), '上一页').props.disabled).toBe(true)
     expect(pageButton(page.render(), '下一页').props.disabled).toBe(true)
+  })
+})
+
+describe('batch window grouping', () => {
+  function button(tree: ReactNode, label: string) {
+    const found = components(tree, Button).find((node) =>
+      Children.toArray(node.props.children).includes(label),
+    )
+    expect(found, `Missing button: ${label}`).toBeDefined()
+    return found!
+  }
+
+  function select(tree: ReactNode, name: string) {
+    const checkbox = components(tree, Checkbox).find(
+      (node) => node.props['aria-label'] === `选择窗口 ${name}`,
+    )!
+    expect(checkbox.props.disabled).toBe(false)
+    checkbox.props.onCheckedChange?.(true)
+  }
+
+  function submit(tree: ReactNode) {
+    const form = elements(tree).find(
+      (node) => node.type === 'form' && node.props['aria-label'] === '批量移动分组',
+    )
+    expect(form).toBeDefined()
+    return (form!.props.onSubmit as (event: FormEvent) => Promise<void>)({
+      preventDefault() {},
+    } as FormEvent)
+  }
+
+  beforeEach(() => {
+    state.groups = [
+      { id: 'group-1', name: '常用', note: '', windowCount: 2 },
+      { id: 'group-2', name: '备用', note: '', windowCount: 0 },
+    ]
+    state.windows = state.windows.map((window) => ({ ...window, groupId: 'group-1' }))
+  })
+
+  it('moves stopped and running windows together without changing browser configuration', async () => {
+    const page = await mountedPage()
+    expect(button(page.render(), '移动分组').props.disabled).toBe(true)
+    select(page.render(), 'first')
+    select(page.render(), 'second')
+    const before = state.windows.map((window) => ({ ...window }))
+    button(page.render(), '移动分组').props.onClick?.({} as never)
+    filterControl(page.render(), '目标分组').props.onValueChange?.('group-2')
+    await submit(page.render())
+    expect(moveBrowserWindowsGroup).toHaveBeenCalledExactlyOnceWith({
+      connectionId: 'builtin',
+      ids: ['first', 'second'],
+      groupId: 'group-2',
+    })
+    expect(updateBrowserWindow).not.toHaveBeenCalled()
+    expect(components(page.render(), TransferToolbar)[0]!.props.windows).toEqual([])
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('group-2')
+    expect(visibleWindowNames(page.render())).toEqual(['first', 'second'])
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('group-1')
+    expect(visibleWindowNames(page.render())).toEqual(['third'])
+    expect(state.windows).toEqual(before)
+    expect(toast.success).toHaveBeenCalledWith('已移动 2 个窗口')
+  })
+
+  it('keeps a frozen cross-page selection and supports moving to ungrouped', async () => {
+    state.windows = Array.from({ length: 25 }, (_, index) => ({
+      ...profile(`window-${index + 1}`),
+      groupId: 'group-1',
+    }))
+    const page = await mountedPage()
+    select(page.render(), 'window-1')
+    components(page.render(), Button)
+      .find((node) => node.props['aria-label'] === '下一页')!
+      .props.onClick?.({} as never)
+    select(page.render(), 'window-21')
+    button(page.render(), '移动分组').props.onClick?.({} as never)
+    filterControl(page.render(), '目标分组').props.onValueChange?.('ungrouped')
+    await submit(page.render())
+    expect(moveBrowserWindowsGroup).toHaveBeenCalledExactlyOnceWith({
+      connectionId: 'builtin',
+      ids: ['window-1', 'window-21'],
+      groupId: null,
+    })
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('ungrouped')
+    expect(visibleWindowNames(page.render())).toEqual(['window-1', 'window-21'])
+  })
+
+  it('preserves the dialog, destination and selection on an atomic move failure', async () => {
+    const page = await mountedPage()
+    select(page.render(), 'first')
+    button(page.render(), '移动分组').props.onClick?.({} as never)
+    filterControl(page.render(), '目标分组').props.onValueChange?.('group-2')
+    vi.mocked(moveBrowserWindowsGroup).mockRejectedValueOnce(new Error('分组不存在'))
+    await submit(page.render())
+    expect(filterControl(page.render(), '目标分组').props.value).toBe('group-2')
+    expect(
+      components(page.render(), FieldError).some(
+        (node) => node.props.children === '分组不存在',
+      ),
+    ).toBe(true)
+    expect(components(page.render(), TransferToolbar)[0]!.props.windows).toHaveLength(1)
+    expect(toast.success).not.toHaveBeenCalled()
+    await submit(page.render())
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('group-2')
+    expect(visibleWindowNames(page.render())).toEqual(['first'])
+  })
+
+  it('prevents duplicate submissions and closing the dialog while a move is pending', async () => {
+    let resolve!: (input: {
+      connectionId: string
+      ids: string[]
+      groupId: string | null
+    }) => void
+    vi.mocked(moveBrowserWindowsGroup).mockReturnValueOnce(
+      new Promise((done) => (resolve = done)),
+    )
+    const page = await mountedPage()
+    select(page.render(), 'first')
+    button(page.render(), '移动分组').props.onClick?.({} as never)
+    const tree = page.render()
+    const pending = submit(tree)
+    await submit(tree)
+    expect(moveBrowserWindowsGroup).toHaveBeenCalledOnce()
+    const dialog = components(page.render(), Dialog).find((node) =>
+      elements(node).some((child) => child.props['aria-label'] === '批量移动分组'),
+    )!
+    dialog.props.onOpenChange?.(false)
+    expect(filterControl(page.render(), '目标分组').props.disabled).toBe(true)
+    resolve(vi.mocked(moveBrowserWindowsGroup).mock.calls[0]![0])
+    await pending
+    expect(button(page.render(), '移动分组').props.disabled).toBe(true)
+  })
+
+  it('does not clear a new connection selection when an earlier move finishes', async () => {
+    state.connections.push(browserConnection({ id: 'ads', providerId: 'adspower' }))
+    const other = browserWindow({
+      id: 'ads-window',
+      name: 'ads-window',
+      connectionId: 'ads',
+      providerId: 'adspower',
+    })
+    state.windows.push(other)
+    let resolve!: (input: {
+      connectionId: string
+      ids: string[]
+      groupId: string | null
+    }) => void
+    vi.mocked(moveBrowserWindowsGroup).mockReturnValueOnce(
+      new Promise((done) => (resolve = done)),
+    )
+    const page = await mountedPage()
+    select(page.render(), 'first')
+    button(page.render(), '移动分组').props.onClick?.({} as never)
+    filterControl(page.render(), '目标分组').props.onValueChange?.('group-2')
+    const pending = submit(page.render())
+    components(page.render(), Tabs)
+      .find((node) => node.props.value === 'cloakbrowser')!
+      .props.onValueChange?.('adspower')
+    select(page.render(), 'ads-window')
+    resolve(vi.mocked(moveBrowserWindowsGroup).mock.calls[0]![0])
+    await pending
+    expect(
+      components(page.render(), TransferToolbar)[0]!.props.windows.map((row) => row.id),
+    ).toEqual(['ads-window'])
+    expect(visibleWindowNames(page.render())).toEqual(['ads-window'])
+    expect(toast.success).not.toHaveBeenCalled()
+    components(page.render(), Tabs)
+      .find((node) => node.props.value === 'adspower')!
+      .props.onValueChange?.('cloakbrowser')
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('group-2')
+    expect(visibleWindowNames(page.render())).toEqual(['first'])
+  })
+
+  it('does not allow starting or stopping windows to be newly selected', async () => {
+    state.windows[0] = { ...state.windows[0]!, state: 'starting' }
+    state.windows[1] = { ...state.windows[1]!, state: 'stopping' }
+    const page = await mountedPage()
+    const boxes = components(page.render(), Checkbox)
+    expect(
+      boxes.find((node) => node.props['aria-label'] === '选择窗口 first')!.props.disabled,
+    ).toBe(true)
+    expect(
+      boxes.find((node) => node.props['aria-label'] === '选择窗口 second')!.props
+        .disabled,
+    ).toBe(true)
+    boxes
+      .find((node) => node.props['aria-label'] === '全选本页窗口')!
+      .props.onCheckedChange?.(true)
+    expect(
+      components(page.render(), TransferToolbar)[0]!.props.windows.map((row) => row.id),
+    ).toEqual(['third'])
+  })
+
+  it('uses the same startup guard for row selection, page selection and moving groups', async () => {
+    const page = await mountedPage()
+    select(page.render(), 'first')
+    state.startingIds = ['first']
+    expect(button(page.render(), '移动分组').props.disabled).toBe(true)
+    expect(
+      components(page.render(), Checkbox).find(
+        (node) => node.props['aria-label'] === '选择窗口 first',
+      )!.props.disabled,
+    ).toBe(true)
+    button(page.render(), '清除选择').props.onClick?.({} as never)
+    components(page.render(), Checkbox)
+      .find((node) => node.props['aria-label'] === '全选本页窗口')!
+      .props.onCheckedChange?.(true)
+    expect(
+      components(page.render(), TransferToolbar)[0]!.props.windows.map((row) => row.id),
+    ).toEqual(['second', 'third'])
+  })
+
+  it('does not let a refresh begun before a successful move restore old memberships', async () => {
+    const page = await mountedPage()
+    const stale = state.windows
+    let finishRead!: (windows: BrowserWindow[]) => void
+    vi.mocked(listBrowserWindows).mockReturnValueOnce(
+      new Promise((done) => (finishRead = done)),
+    )
+    refreshButton(page.render()).props.onClick?.({} as never)
+    select(page.render(), 'first')
+    button(page.render(), '移动分组').props.onClick?.({} as never)
+    filterControl(page.render(), '目标分组').props.onValueChange?.('group-2')
+    vi.mocked(moveBrowserWindowsGroup).mockImplementationOnce(async (input) => {
+      state.windows = state.windows.map((window) =>
+        input.ids.includes(window.id) ? { ...window, groupId: input.groupId } : window,
+      )
+      return input
+    })
+    await submit(page.render())
+    filterControl(page.render(), '筛选分组').props.onValueChange?.('group-2')
+    expect(visibleWindowNames(page.render())).toEqual(['first'])
+    finishRead(stale)
+    await vi.waitFor(() => {
+      expect(listBrowserWindows).toHaveBeenCalledTimes(3)
+      expect(visibleWindowNames(page.render())).toEqual(['first'])
+      expect(refreshButton(page.render()).props.disabled).toBe(false)
+    })
   })
 })
 

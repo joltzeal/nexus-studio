@@ -306,6 +306,90 @@ fn native_fixture() -> (
 }
 
 #[test]
+fn batch_group_moves_are_local_even_when_an_external_browser_is_running_or_offline() {
+    let (_root, service, provider, connection) = fixture();
+    let a = service.create(input(&connection)).unwrap();
+    let b = service.create(input(&connection)).unwrap();
+    provider
+        .profiles
+        .lock()
+        .unwrap()
+        .insert(a.provider_profile_id.clone(), WindowState::Running);
+    provider.offline.store(true, Ordering::SeqCst);
+    let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
+    let group = groups.create("Moved", "").unwrap();
+    let before = service.store.get(&a.id).unwrap();
+    let request = MoveWindowsGroupInput {
+        connection_id: connection,
+        ids: vec![a.id.clone(), b.id.clone()],
+        group_id: Some(group.id.clone()),
+    };
+    let receipt = service.move_group(request.clone()).unwrap();
+    assert_eq!(receipt.ids, request.ids);
+    assert_eq!(receipt.connection_id, request.connection_id);
+    assert_eq!(receipt.group_id, request.group_id);
+    assert_eq!(groups.list().unwrap()[0].window_count, 2);
+    assert_eq!(service.store.get(&a.id).unwrap(), before);
+    assert_eq!(provider.updates.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn batch_group_moves_reject_cross_connection_busy_and_pending_windows_before_writing() {
+    let (_root, service, _provider, connection) = fixture();
+    let a = service.create(input(&connection)).unwrap();
+    let b = service.create(input(&connection)).unwrap();
+    let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
+    let group = groups.create("Target", "").unwrap();
+    let request = MoveWindowsGroupInput {
+        connection_id: connection.clone(),
+        ids: vec![a.id.clone(), b.id.clone()],
+        group_id: Some(group.id.clone()),
+    };
+    {
+        let _held = service.hold(&b.id).unwrap();
+        assert_eq!(
+            service.move_group(request.clone()).unwrap_err().code,
+            "profile_busy"
+        );
+        assert_eq!(service.store.group_id(&a.id).unwrap(), None);
+    }
+    assert_eq!(
+        service
+            .move_group(MoveWindowsGroupInput {
+                connection_id: BUILTIN_CONNECTION_ID.into(),
+                ..request.clone()
+            })
+            .unwrap_err()
+            .code,
+        "scope_mismatch"
+    );
+    let operation = service
+        .operations
+        .prepare(
+            &uuid::Uuid::new_v4().to_string(),
+            &b.id,
+            &connection,
+            "update",
+            json!({}),
+        )
+        .unwrap();
+    assert_eq!(
+        service.move_group(request.clone()).unwrap_err().code,
+        "operation_uncertain"
+    );
+    assert_eq!(service.store.group_id(&a.id).unwrap(), None);
+    assert_eq!(groups.list().unwrap()[0].window_count, 0);
+    let mut operation = operation;
+    service
+        .operations
+        .phase(&mut operation, "failed", None)
+        .unwrap();
+    service.move_group(request).unwrap();
+    assert_eq!(groups.list().unwrap()[0].window_count, 2);
+}
+
+#[test]
 fn external_creation_does_not_require_builtin_license_and_retries_use_one_vendor_profile() {
     let (_root, service, provider, connection) = fixture();
     provider.create_timeout.store(true, Ordering::SeqCst);

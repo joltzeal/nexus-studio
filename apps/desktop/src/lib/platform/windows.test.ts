@@ -5,6 +5,7 @@ import {
   deleteBrowserWindow,
   listBrowserWindows,
   listBrowserOperations,
+  moveBrowserWindowsGroup,
   reconcileBrowserOperation,
   resolveBrowserOperation,
   startBrowserWindow,
@@ -18,6 +19,59 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: () => true })
 beforeEach(() => vi.resetAllMocks())
 
 describe('browser window API', () => {
+  it('moves only the selected group relation and confirms the entire batch receipt', async () => {
+    expect(moveBrowserWindowsGroup).toBeTypeOf('function')
+    const input = {
+      connectionId: 'builtin',
+      ids: [
+        '15b41684-b179-46c9-a1b8-e1b66812dc33',
+        'ddaa515f-1af3-4a5b-9405-73a18f54ac8d',
+      ],
+      groupId: null,
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(input)
+    await expect(moveBrowserWindowsGroup(input)).resolves.toEqual(input)
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('browser_window_move_group', {
+      input,
+    })
+    for (const receipt of [
+      { ...input, ids: input.ids.slice(0, 1) },
+      { ...input, ids: [...input.ids].reverse() },
+      { ...input, groupId: input.ids[0] },
+      { ...input, connectionId: 'other' },
+      null,
+    ]) {
+      vi.mocked(invoke).mockResolvedValueOnce(receipt)
+      await expect(moveBrowserWindowsGroup(input)).rejects.toThrow()
+    }
+  })
+
+  it('rejects invalid move selections before IPC and preserves database failures', async () => {
+    expect(moveBrowserWindowsGroup).toBeTypeOf('function')
+    const input = {
+      connectionId: 'builtin',
+      ids: ['15b41684-b179-46c9-a1b8-e1b66812dc33'],
+      groupId: null,
+    }
+    for (const invalid of [
+      { ...input, ids: [] },
+      { ...input, ids: [...input.ids, ...input.ids] },
+      { ...input, groupId: 'all' },
+    ]) {
+      await expect(moveBrowserWindowsGroup(invalid)).rejects.toThrow()
+    }
+    expect(invoke).not.toHaveBeenCalled()
+    vi.mocked(invoke).mockRejectedValueOnce({
+      code: 'busy',
+      message: '窗口正在处理其他操作',
+      retryable: true,
+    })
+    await expect(moveBrowserWindowsGroup(input)).rejects.toMatchObject({
+      code: 'busy',
+      retryable: true,
+    })
+  })
+
   it('resolves an explicit association using its persisted operation UUID', async () => {
     expect(resolveBrowserOperation).toBeTypeOf('function')
     const input = {

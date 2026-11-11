@@ -15,7 +15,6 @@ function markup(
       windows,
       operating: new Set<string>(),
       onImported: async () => undefined,
-      onClear: () => undefined,
     }),
   )
 }

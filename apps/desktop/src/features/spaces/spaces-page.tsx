@@ -18,6 +18,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Ellipsis,
+  FolderInput,
   Loader2,
   PanelsTopLeft,
   Pencil,
@@ -114,6 +115,7 @@ import {
   listBrowserWindows,
   browserWindowsAvailable,
   orderBrowserWindows,
+  moveBrowserWindowsGroup,
   updateBrowserWindow,
   type BrowserWindow,
 } from '@/lib/platform/windows'
@@ -222,6 +224,15 @@ export function SpacesPage() {
   const deletingRequest = useRef(false)
   const [deletePending, setDeletePending] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [groupMove, setGroupMove] = useState<{
+    connectionId: string
+    ids: string[]
+    epoch: number
+    destination: string
+  } | null>(null)
+  const [groupMovePending, setGroupMovePending] = useState(false)
+  const [groupMoveError, setGroupMoveError] = useState<string | null>(null)
+  const groupMoveRequest = useRef(false)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accountPlugin, setAccountPlugin] = useState<PluginView | null>(null)
@@ -300,6 +311,7 @@ export function SpacesPage() {
         selectionScope.current = null
         setPage(1)
         setSelectedIds(new Set())
+        setGroupMove(null)
         setEditing(null)
         setBatchCreating(false)
         setViewing(null)
@@ -334,6 +346,7 @@ export function SpacesPage() {
     setProviderId(value as BrowserProviderId)
     setPage(1)
     setSelectedIds(new Set())
+    setGroupMove(null)
     setEditing(null)
     setBatchCreating(false)
     setViewing(null)
@@ -577,6 +590,48 @@ export function SpacesPage() {
     await withDeadline(refreshBindings(), 10_000, '刷新账号关联超时')
   }
 
+  async function moveSelectedGroup(event: FormEvent) {
+    event.preventDefault()
+    if (
+      !native ||
+      !groupMove ||
+      groupMove.epoch !== viewEpoch.current ||
+      groupMoveRequest.current
+    )
+      return
+    const snapshot = groupMove
+    groupMoveRequest.current = true
+    setGroupMovePending(true)
+    setGroupMoveError(null)
+    try {
+      const result = await moveBrowserWindowsGroup({
+        connectionId: snapshot.connectionId,
+        ids: snapshot.ids,
+        groupId: snapshot.destination === 'ungrouped' ? null : snapshot.destination,
+      })
+      if (!windowReads.current.active) return
+      const moved = new Set(result.ids)
+      // A completed local write remains true even if the user changed browser tabs.
+      applyWindows((current) =>
+        current.map((window) =>
+          window.connectionId === result.connectionId && moved.has(window.id)
+            ? { ...window, groupId: result.groupId }
+            : window,
+        ),
+      )
+      if (snapshot.epoch !== viewEpoch.current) return
+      setSelectedIds((current) => toggleSelection(current, result.ids, false))
+      setGroupMove(null)
+      toast.success(`已移动 ${result.ids.length} 个窗口`)
+    } catch (cause) {
+      if (windowReads.current.active && snapshot.epoch === viewEpoch.current)
+        setGroupMoveError(message(cause))
+    } finally {
+      groupMoveRequest.current = false
+      if (windowReads.current.active) setGroupMovePending(false)
+    }
+  }
+
   useEffect(() => {
     if (!accountsRunning) return
     void refreshBindings().catch(() => undefined)
@@ -686,6 +741,15 @@ export function SpacesPage() {
     return accounts.find((entry) => entry.id === id)?.account ?? id
   }
 
+  function isWindowBusy(window: BrowserWindow): boolean {
+    return (
+      operatingWindows.has(window.id) ||
+      window.state === 'starting' ||
+      window.state === 'stopping' ||
+      (window.state !== 'running' && startingWindows.has(window.id))
+    )
+  }
+
   const connectionWindows = windows.filter(
     (window) => window.connectionId === connectionId,
   )
@@ -706,9 +770,10 @@ export function SpacesPage() {
   const pageOffset = (currentPage - 1) * pageSize
   const pageWindows = visible.slice(pageOffset, pageOffset + pageSize)
   const selected = connectionWindows.find((window) => window.id === viewing)
-  const transferWindows = connectionWindows.filter((window) => selectedIds.has(window.id))
+  const selectedWindows = connectionWindows.filter((window) => selectedIds.has(window.id))
+  const selectionBusy = selectedWindows.some(isWindowBusy)
   const selectableIds = pageWindows
-    .filter((window) => window.state === 'stopped' && !operatingWindows.has(window.id))
+    .filter((window) => !isWindowBusy(window))
     .map((window) => window.id)
   const selectedPageCount = selectableIds.filter((id) => selectedIds.has(id)).length
   const target = connectionWindows.find((window) => window.id === deleting)
@@ -797,38 +862,40 @@ export function SpacesPage() {
           请在 Nexus 桌面应用中创建和打开窗口；网页预览无法访问本机浏览器。
         </p>
       ) : null}
-      {error ? <FieldError role="alert">{error}</FieldError> : null}
-      <Sim8ExpiryNotice
-        refreshKey={expiryRefreshKey}
-        now={now}
-        accounts={accountsReady ? accounts : null}
-        bindings={accountsReady ? bindings : []}
-        windows={windows}
-      />
-      {native && connectionId ? (
-        <BrowserOperationRecovery
-          key={connectionId}
-          connectionId={connectionId}
-          providerId={providerId}
+      <div className="window-notices">
+        {error ? <FieldError role="alert">{error}</FieldError> : null}
+        <Sim8ExpiryNotice
           refreshKey={expiryRefreshKey}
-          onRecovered={(window) => {
-            if (window)
-              applyWindows((current) =>
-                orderBrowserWindows([
-                  window,
-                  ...current.filter((item) => item.id !== window.id),
-                ]),
-              )
-            void load().catch((cause: unknown) => setError(message(cause)))
-          }}
+          now={now}
+          accounts={accountsReady ? accounts : null}
+          bindings={accountsReady ? bindings : []}
+          windows={windows}
         />
-      ) : null}
-      <TransferRecoveryNotice
-        status={recovery.status}
-        error={recovery.error}
-        checking={recovery.checking}
-        onRetry={recovery.retry}
-      />
+        {native && connectionId ? (
+          <BrowserOperationRecovery
+            key={connectionId}
+            connectionId={connectionId}
+            providerId={providerId}
+            refreshKey={expiryRefreshKey}
+            onRecovered={(window) => {
+              if (window)
+                applyWindows((current) =>
+                  orderBrowserWindows([
+                    window,
+                    ...current.filter((item) => item.id !== window.id),
+                  ]),
+                )
+              void load().catch((cause: unknown) => setError(message(cause)))
+            }}
+          />
+        ) : null}
+        <TransferRecoveryNotice
+          status={recovery.status}
+          error={recovery.error}
+          checking={recovery.checking}
+          onRetry={recovery.retry}
+        />
+      </div>
 
       {native ? (
         <div className="space-stats" aria-label="窗口概览">
@@ -853,76 +920,116 @@ export function SpacesPage() {
         </div>
       ) : null}
 
-      <div className="collection-toolbar flex-wrap">
-        <span className="result-count">{visible.length} 个窗口</span>
-        <div className="search-field">
-          <Search aria-hidden="true" />
-          <Input
-            aria-label="搜索窗口"
-            placeholder="搜索名称、平台或备注"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
+      <div className="window-list-toolbar">
+        <div className="window-list-filters" role="group" aria-label="筛选窗口">
+          <div className="search-field">
+            <Search aria-hidden="true" />
+            <Input
+              aria-label="搜索窗口"
+              placeholder="搜索名称、平台或备注"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          {native ? (
+            <>
+              <Select value={groupFilter} onValueChange={setGroupFilter}>
+                <SelectTrigger aria-label="筛选分组" className="w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="all">全部分组</SelectItem>
+                    <SelectItem value="ungrouped">未分组</SelectItem>
+                    {groups.map((group) => (
+                      <SelectItem key={group.id} value={group.id}>
+                        {group.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Select
+                value={accountsReady ? accountFilter : 'all'}
+                onValueChange={setAccountFilter}
+                disabled={!accountsReady}
+              >
+                <SelectTrigger
+                  aria-label="筛选账号状态"
+                  className="w-36"
+                  title={
+                    accountsReady
+                      ? undefined
+                      : accountsRunning
+                        ? '账号资料暂不可用，请刷新后筛选'
+                        : '账号插件不可用，暂不筛选账号状态'
+                  }
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="all">全部账号状态</SelectItem>
+                    {ACCOUNT_STATUSES.map((status) => (
+                      <SelectItem key={status} value={status}>
+                        {STATUS_LABELS[status]}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="unbound">未关联账号</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </>
+          ) : null}
+          <span className="result-count">{visible.length} 个窗口</span>
+        </div>
+        <div className="window-list-actions" role="group" aria-label="窗口批量操作">
+          <span className="result-count" aria-live="polite">
+            已选 {selectedWindows.length}
+          </span>
+          {selectedWindows.length ? (
+            <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
+              清除选择
+            </Button>
+          ) : null}
+          <Button
+            variant="outline"
+            disabled={
+              !native ||
+              !connectionId ||
+              selectedWindows.length === 0 ||
+              selectionBusy ||
+              groupMovePending
+            }
+            onClick={() => {
+              if (
+                !connectionId ||
+                selectedWindows.length === 0 ||
+                selectionBusy ||
+                groupMoveRequest.current
+              )
+                return
+              setGroupMoveError(null)
+              setGroupMove({
+                connectionId,
+                ids: selectedWindows.map((window) => window.id),
+                epoch: viewEpoch.current,
+                destination: 'ungrouped',
+              })
+            }}
+          >
+            <FolderInput data-icon="inline-start" />
+            移动分组
+          </Button>
+          <TransferToolbar
+            key={`${filterKey}:${connection?.revision ?? 0}`}
+            native={native}
+            connection={connection}
+            windows={selectedWindows}
+            operating={operatingWindows}
+            onImported={refreshAfterImport}
           />
         </div>
-        {native ? (
-          <>
-            <Select value={groupFilter} onValueChange={setGroupFilter}>
-              <SelectTrigger aria-label="筛选分组" className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="all">全部分组</SelectItem>
-                  <SelectItem value="ungrouped">未分组</SelectItem>
-                  {groups.map((group) => (
-                    <SelectItem key={group.id} value={group.id}>
-                      {group.name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select
-              value={accountsReady ? accountFilter : 'all'}
-              onValueChange={setAccountFilter}
-              disabled={!accountsReady}
-            >
-              <SelectTrigger
-                aria-label="筛选账号状态"
-                className="w-36"
-                title={
-                  accountsReady
-                    ? undefined
-                    : accountsRunning
-                      ? '账号资料暂不可用，请刷新后筛选'
-                      : '账号插件不可用，暂不筛选账号状态'
-                }
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="all">全部账号状态</SelectItem>
-                  {ACCOUNT_STATUSES.map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {STATUS_LABELS[status]}
-                    </SelectItem>
-                  ))}
-                  <SelectItem value="unbound">未关联账号</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </>
-        ) : null}
-        <TransferToolbar
-          key={`${filterKey}:${connection?.revision ?? 0}`}
-          native={native}
-          connection={connection}
-          windows={transferWindows}
-          operating={operatingWindows}
-          onImported={refreshAfterImport}
-          onClear={() => setSelectedIds(new Set())}
-        />
       </div>
 
       <div className="space-table-panel">
@@ -935,7 +1042,7 @@ export function SpacesPage() {
             <TableRow>
               <TableHead className="w-10">
                 <Checkbox
-                  aria-label="全选本页已关闭窗口"
+                  aria-label="全选本页窗口"
                   disabled={!native || selectableIds.length === 0}
                   checked={
                     selectedPageCount === 0
@@ -980,8 +1087,7 @@ export function SpacesPage() {
                 (window.state !== 'running' && startingWindows.has(window.id))
               const checkingProxy =
                 gate?.window.id === window.id && gate.stage.stage === 'checking'
-              const busy =
-                operatingWindows.has(window.id) || starting || window.state === 'stopping'
+              const busy = isWindowBusy(window)
               const unconfirmed =
                 unconfirmedWindows.has(window.id) ||
                 window.state === 'unknown' ||
@@ -998,7 +1104,7 @@ export function SpacesPage() {
                     <Checkbox
                       aria-label={`选择窗口 ${window.name}`}
                       checked={selectedIds.has(window.id)}
-                      disabled={window.state !== 'stopped' || busy}
+                      disabled={!native || busy}
                       onCheckedChange={(checked) =>
                         selectionScope.current === window.connectionId &&
                         setSelectedIds((current) =>
@@ -1444,6 +1550,87 @@ export function SpacesPage() {
           </div>
         </nav>
       </div>
+
+      <Dialog
+        open={groupMove !== null}
+        onOpenChange={(open) => {
+          if (!open && !groupMoveRequest.current) setGroupMove(null)
+        }}
+      >
+        {groupMove ? (
+          <DialogContent
+            className="sm:max-w-sm"
+            showCloseButton={!groupMovePending}
+            onEscapeKeyDown={(event) => {
+              if (groupMoveRequest.current) event.preventDefault()
+            }}
+            onInteractOutside={(event) => {
+              if (groupMoveRequest.current) event.preventDefault()
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>移动分组</DialogTitle>
+              <DialogDescription>
+                将已选的 {groupMove.ids.length} 个窗口移动到所选分组。
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              className="grid gap-4"
+              aria-label="批量移动分组"
+              onSubmit={moveSelectedGroup}
+            >
+              <Field>
+                <FieldLabel htmlFor="window-move-group">目标分组</FieldLabel>
+                <Select
+                  value={groupMove.destination}
+                  disabled={groupMovePending}
+                  onValueChange={(destination) => {
+                    if (!groupMoveRequest.current)
+                      setGroupMove((current) =>
+                        current ? { ...current, destination } : current,
+                      )
+                  }}
+                >
+                  <SelectTrigger id="window-move-group" aria-label="目标分组">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="ungrouped">未分组</SelectItem>
+                      {groups.map((group) => (
+                        <SelectItem key={group.id} value={group.id}>
+                          {group.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                {groupMoveError ? (
+                  <FieldError role="alert">{groupMoveError}</FieldError>
+                ) : null}
+              </Field>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={groupMovePending}
+                  onClick={() => {
+                    if (!groupMoveRequest.current) setGroupMove(null)
+                  }}
+                >
+                  取消
+                </Button>
+                <Button type="submit" disabled={groupMovePending}>
+                  {groupMovePending ? (
+                    <Loader2 data-icon="inline-start" className="animate-spin" />
+                  ) : null}
+                  {groupMovePending ? '移动中…' : '确认移动'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        ) : null}
+      </Dialog>
 
       {batchCreating && connection ? (
         <BatchWindowDialog

@@ -53,26 +53,32 @@ AdsPower 可配置 Bearer API Key；当前比特浏览器适配器拒绝不支�
 
 当前入口在 `src-tauri/src/lib.rs` 注册，输入对象使用 camelCase：
 
-| 命令                                                         | 主要输入与用途                                               |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| `browser_window_list`                                        | `{ connectionId? }`，统一窗口与当前观察状态                  |
-| `browser_window_create`                                      | `{ input }`，含稳定 `operationId`、`connectionId` 和窗口配置 |
-| `browser_window_update`                                      | `{ input }`，含 `id` 和可编辑配置，不接受新绑定或内核        |
-| `browser_window_update_note`                                 | `{ id, note }`，保存本机窗口备注                             |
-| `browser_window_start` / `browser_window_stop`               | `{ id }`                                                     |
-| `browser_window_delete`                                      | `{ id, deleteEnvironment }`，区分解除关联与删除环境          |
-| `browser_connection_list/save/probe/confirm/activate`        | 连接管理、连通探测与人工范围确认                             |
-| `browser_profile_discover` / `browser_group_list`            | `{ connectionId }`，发现厂商环境和厂商分组                   |
-| `browser_window_attach`                                      | `{ connectionId, profileIds }`，将外部环境登记为业务窗口     |
-| `browser_operation_list` / `browser_operation_reconcile`     | 待处理操作查询与按操作 ID 协调                               |
-| `browser_operation_resolve`                                  | `{ input }`，明确确认后关联创建结果或人工结束结果不明的操作  |
-| `window_transfer_pick/recovery_status/export/inspect/import` | 本机加密快照和恢复状态                                       |
-| `window_sync_offer/receive/status/cancel/import`             | 通过同步插件传输快照并显式导入                               |
-| `kernel_status` / `kernel_check_latest` / `kernel_download`  | 仅内置浏览器的内核清单、查询和准备                           |
+| 命令                                                         | 主要输入与用途                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------- |
+| `browser_window_list`                                        | `{ connectionId? }`，统一窗口与当前观察状态                   |
+| `browser_window_create`                                      | `{ input }`，含稳定 `operationId`、`connectionId` 和窗口配置  |
+| `browser_window_update`                                      | `{ input }`，含 `id` 和可编辑配置，不接受新绑定或内核         |
+| `browser_window_update_note`                                 | `{ id, note }`，保存本机窗口备注                              |
+| `browser_window_move_group`                                  | `{ input: { connectionId, ids, groupId } }`，原子移动本机分组 |
+| `browser_window_start` / `browser_window_stop`               | `{ id }`                                                      |
+| `browser_window_delete`                                      | `{ id, deleteEnvironment }`，区分解除关联与删除环境           |
+| `browser_connection_list/save/probe/confirm/activate`        | 连接管理、连通探测与人工范围确认                              |
+| `browser_profile_discover` / `browser_group_list`            | `{ connectionId }`，发现厂商环境和厂商分组                    |
+| `browser_window_attach`                                      | `{ connectionId, profileIds }`，将外部环境登记为业务窗口      |
+| `browser_operation_list` / `browser_operation_reconcile`     | 待处理操作查询与按操作 ID 协调                                |
+| `browser_operation_resolve`                                  | `{ input }`，明确确认后关联创建结果或人工结束结果不明的操作   |
+| `window_transfer_pick/recovery_status/export/inspect/import` | 本机加密快照和恢复状态                                        |
+| `window_sync_offer/receive/status/cancel/import`             | 通过同步插件传输快照并显式导入                                |
+| `kernel_status` / `kernel_check_latest` / `kernel_download`  | 仅内置浏览器的内核清单、查询和准备                            |
 
 表中的斜线表示同前缀的多个独立命令。旧 `profile_*` 命令和别名已退出公开接口。
 内部 `binding.profile_id`、SQL 表 `profile_records` 与 Node `profile-runner`
 名称仍有实际用途，不代表旧命令兼容层。
+
+批量移动分组是独立的本机元数据写入：允许运行中窗口，支持 `groupId: null` 解除分组。
+逐窗取得已有互斥锁并检查待核对操作和连接范围，再用单个 SQLite 事务整批提交。
+不调用 Provider 配置接口，也不提交完整窗口设置；成功回执包含完整原请求，
+前端不能把部分结果或其他接入的回执当作保存成功。
 
 ## 写操作与结果不明
 

@@ -3,10 +3,12 @@ import {
   BrowserOperationSchema,
   BrowserWindowSchema,
   CreateBrowserWindowInputSchema,
+  MoveBrowserWindowsGroupInputSchema,
   ResolveBrowserOperationInputSchema,
   UpdateBrowserWindowInputSchema,
   type BrowserWindow,
   type CreateBrowserWindowInput,
+  type MoveBrowserWindowsGroupInput,
   type ResolveBrowserOperationInput,
   type UpdateBrowserWindowInput,
 } from '@nexus/contracts/browser'
@@ -16,6 +18,7 @@ export type {
   BrowserWindow,
   CreateBrowserWindowInput,
   UpdateBrowserWindowInput,
+  MoveBrowserWindowsGroupInput,
   ResolveBrowserOperationInput,
   WindowSettings,
   WindowState,
@@ -67,6 +70,24 @@ export async function updateBrowserWindowNote(id: string, input: string) {
   const saved = await invokeBrowser('browser_window_update_note', { id, note })
   if (typeof saved !== 'string' || saved !== note) {
     throw new Error('备注保存结果未确认，请刷新窗口列表后重试。')
+  }
+  return saved
+}
+
+export async function moveBrowserWindowsGroup(input: MoveBrowserWindowsGroupInput) {
+  const request = MoveBrowserWindowsGroupInputSchema.parse(input)
+  const saved = await readBrowser(
+    MoveBrowserWindowsGroupInputSchema,
+    'browser_window_move_group',
+    { input: request },
+  )
+  if (
+    saved.connectionId !== request.connectionId ||
+    saved.groupId !== request.groupId ||
+    saved.ids.length !== request.ids.length ||
+    saved.ids.some((id, index) => id !== request.ids[index])
+  ) {
+    throw new Error('分组移动结果未确认，请刷新窗口列表后重试。')
   }
   return saved
 }

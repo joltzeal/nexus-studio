@@ -13,14 +13,12 @@ export function TransferToolbar({
   windows,
   operating,
   onImported,
-  onClear,
 }: {
   native: boolean
   connection: BrowserConnection | null
   windows: BrowserWindow[]
   operating: ReadonlySet<string>
   onImported: () => Promise<void>
-  onClear: () => void
 }) {
   const [active, setActive] = useState<'export' | 'import' | 'sync' | null>(null)
   const [syncOpened, setSyncOpened] = useState(false)
@@ -36,12 +34,6 @@ export function TransferToolbar({
   const issue = unsupported ?? selectionError(windows, operating)
   return (
     <div className="flex flex-wrap items-center gap-2" role="group" aria-label="窗口迁移">
-      <span className="result-count">已选 {windows.length}</span>
-      {windows.length ? (
-        <Button variant="ghost" size="sm" onClick={onClear}>
-          清除选择
-        </Button>
-      ) : null}
       <Button
         variant="outline"
         disabled={!native || issue !== null}
