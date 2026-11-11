@@ -65,6 +65,34 @@ UI 使用受控数据，不能替代 Vinted 当前响应格式、所选代理和
 新的查询与 Bark 设置面板需随后续主程序发行才会出现在已安装应用中。
 提交、CI 构件与实际 R2 回读证据在完成后追加。
 
+### 1.1.0 远端构件与 R2 发布
+
+实现提交 `571d60127fc59b60c5aee29d9304e53f98c82f0a` 已原子推送至
+`main`、`codex/fix-macos-node-runtime` 和 `plugin-vinted-accounts@1.1.0`。
+独立 Accounts plugin release 运行 `43021164096` 成功，
+取得 artifact `13855715222`：`plugin-market-plugin-vinted-accounts@1.1.0`。
+ZIP 大小 347536 字节、SHA-256 为
+`0388c7578a97f74e26e2795ecfdf5572c215b7ccc6fdcca07157c20399df875e`，
+与 GitHub artifact 元数据一致，压缩内容与下载展开文件逐字节相同。
+
+插件包 `plugins/studio.vinted-accounts/1.1.0.nexuspkg` 大小 348936 字节、
+SHA-256 为 `3a26b616ce469306ea1e920e7130842165a296859528d1ed322933c69afdd4c1`。
+包内四个文件摘要、包与目录清单一致性通过；本机实际执行下载包，
+取得全部 23 个 RPC 方法与 `storageDurable: true`。本机没有重新构建或打包。
+
+2026-11-11 20:39（Asia/Shanghai）完成 R2 `nexus-studio-market` 发布：
+
+- 先确认新版本对象不存在，再上传新包；R2 与公开下载字节均与 CI 包一致。
+- 合并前确认线上目录未被并行修改，仅替换账号池 `1.0.2` 为 `1.1.0`。
+- 目录保留八项，其他七个条目完全一致，保留历史对象。
+- 包使用一年 immutable 缓存，目录使用 60 秒缓存；R2 与公开目录回读均与合并文件一致。
+
+记录位于 `/tmp/nexus-accounts-1.1.0-43021164096/` 的
+`artifact-transport-verification.json`、`package-verification.json`、
+`publication.json` 及合并前后目录和远端回读文件。
+本轮没有桌面发行标签，新面板尚未随主程序发布；
+公开页面查询与真实 Bark 推送的验证边界仍按前文说明。
+
 ## 2026-11-11 0.1.23 页面留白、工具栏与批量分组
 
 修复前在 2560 × 1440 页面复现：号码到期检查与统计区间距为 0，
