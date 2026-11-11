@@ -4,6 +4,7 @@ import type { Account } from '@/features/accounts/types'
 import {
   attachNumber,
   indexAccountPhones,
+  listAccountTargets,
   mergeAccountNumber,
   updateContact,
 } from './accounts-bridge'
@@ -14,6 +15,8 @@ const state = vi.hoisted(() => ({
   saved: null as Account | null,
   saveError: null as Error | null,
   listError: null as Error | null,
+  listErrorPage: null as number | null,
+  changedRevisionPage: null as number | null,
   saveResponses: [] as Promise<{ item: Account; created: boolean }>[],
 }))
 
@@ -27,7 +30,18 @@ vi.mock('@/lib/platform/native-plugins', () => ({
     state.calls.push({ method, payload })
     if (method === 'vinted.accounts.list') {
       if (state.listError) return Promise.reject(state.listError)
-      return Promise.resolve({ items: state.items })
+      const { page, pageSize } = payload as { page: number; pageSize: number }
+      if (state.listErrorPage === page)
+        return Promise.reject(new Error('later account page unavailable'))
+      return Promise.resolve({
+        items: state.items.slice((page - 1) * pageSize, page * pageSize),
+        total: state.items.length,
+        bindings: [],
+        page,
+        pageSize,
+        revision: (state.changedRevisionPage === page ? 'b' : 'a').repeat(64),
+        storageDurable: true,
+      })
     }
     if (method === 'vinted.accounts.save') {
       if (state.saveError) return Promise.reject(state.saveError)
@@ -120,6 +134,8 @@ describe('contact updates', () => {
     state.saved = null
     state.saveError = null
     state.listError = null
+    state.listErrorPage = null
+    state.changedRevisionPage = null
     state.saveResponses = []
   })
 
@@ -166,7 +182,7 @@ describe('contact updates', () => {
 
     expect(result).toEqual(state.saved)
     expect(state.calls).toEqual([
-      { method: 'vinted.accounts.list', payload: {} },
+      { method: 'vinted.accounts.list', payload: { page: 1, pageSize: 16 } },
       {
         method: 'vinted.accounts.save',
         payload: {
@@ -399,6 +415,62 @@ describe('contact updates', () => {
     ).rejects.toThrow('accounts unavailable')
     expect(state.calls.map((entry) => entry.method)).toEqual(['vinted.accounts.list'])
   })
+
+  it('finds phone owners and updates a target beyond the first account page', async () => {
+    state.items = Array.from({ length: 35 }, (_, index) =>
+      account({
+        id: `account-${index}`,
+        account: `seller-${index}@example.test`,
+        phone: `+33123${index}`,
+      }),
+    )
+    const targets = await listAccountTargets()
+    expect(targets).toHaveLength(35)
+    expect(targets[targets.length - 1]).toMatchObject({
+      id: 'account-34',
+      phone: '+3312334',
+    })
+    expect(indexAccountPhones(targets).get('3312334')?.[0]?.id).toBe('account-34')
+    state.calls = []
+    state.saved = {
+      ...state.items[34]!,
+      smsOtpUrl: 'https://sms.example.test/new',
+    }
+    await expect(
+      updateContact('account-34', { smsOtpUrl: 'https://sms.example.test/new' }),
+    ).resolves.toEqual(state.saved)
+    expect(state.calls.map((entry) => entry.method)).toEqual([
+      'vinted.accounts.list',
+      'vinted.accounts.list',
+      'vinted.accounts.list',
+      'vinted.accounts.save',
+    ])
+    expect(state.calls[state.calls.length - 1]?.payload).toMatchObject({
+      id: 'account-34',
+      account: 'seller-34@example.test',
+      password: state.items[34]!.password,
+      phone: '+3312334',
+      smsOtpUrl: 'https://sms.example.test/new',
+    })
+  })
+
+  it.each(['read failure', 'changed revision'] as const)(
+    'refuses partial targets and contact writes after a later-page %s',
+    async (failure) => {
+      state.items = Array.from({ length: 20 }, (_, index) =>
+        account({ id: `account-${index}`, account: `seller-${index}@example.test` }),
+      )
+      if (failure === 'read failure') state.listErrorPage = 2
+      else state.changedRevisionPage = 2
+      await expect(listAccountTargets()).rejects.toThrow()
+      await expect(
+        attachNumber('account-0', '+33123', 'https://sms.example.test/new'),
+      ).rejects.toThrow()
+      expect(state.calls.some((entry) => entry.method === 'vinted.accounts.save')).toBe(
+        false,
+      )
+    },
+  )
 })
 
 describe('account phone occupancy', () => {

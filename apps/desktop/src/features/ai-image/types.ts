@@ -14,6 +14,20 @@ export const DEFAULT_IMAGE_RESPONSE_MODE = 'auto'
 export type ProviderKind = 'openai' | 'openai_compatible'
 export type ImageResponseMode = 'auto' | 'stream' | 'json'
 export type RecordStatus = 'running' | 'success' | 'failed'
+export type RecordKind = 'batch' | 'scene' | 'single' | 'provider-test'
+export interface RecordHistoryFilters {
+  query?: string
+  kind?: RecordKind
+  activity?: 'queued' | 'active'
+}
+export const HISTORY_UPDATE_HINT = '请更新 AI 生图插件后使用批次搜索与筛选。'
+export const RECORD_KINDS: { value: RecordKind | 'all'; label: string }[] = [
+  { value: 'all', label: '全部任务' },
+  { value: 'scene', label: '多视角批次' },
+  { value: 'batch', label: '多图批次' },
+  { value: 'single', label: '单图任务' },
+  { value: 'provider-test', label: '模型测试' },
+]
 export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
 export type GenerationMode = 'generate' | 'edit'
 export type ImageSize = '1024x1024' | '1024x1536' | '1536x1024' | 'auto'
@@ -215,6 +229,7 @@ export interface RecordPage {
   pageSize: number
   storageDurable: boolean
   sourceFilter?: { sourcePluginId: string; sourceItemId: string }
+  historyFilters?: RecordHistoryFilters
 }
 
 export const PROVIDER_KINDS: { value: ProviderKind; label: string; hint: string }[] = [
@@ -256,6 +271,7 @@ export function statusText(record: RecordProgress): string {
     if (record.status === 'failed')
       return `${progress.completed > 0 ? '部分完成' : '失败'} · ${fraction}`
     if (record.status === 'success') return `已完成 · ${fraction}`
+    if (record.stage === 'queued') return `排队中 · ${fraction}`
     return `正在生成视角 · ${fraction}`
   }
   if (record.status === 'success') return '已生成'

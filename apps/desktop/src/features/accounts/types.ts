@@ -1,8 +1,42 @@
+import type { Profile } from '@/features/addresses/types'
+
 export const ACCOUNTS_PLUGIN_ID = 'studio.vinted-accounts'
 export const ACCOUNTS_CAPABILITY = 'account.pool'
 
 export type LoginMethod = 'email' | 'google' | 'apple' | 'facebook'
 export type AccountStatus = 'active' | 'pending' | 'limited' | 'blocked'
+
+export interface AssignedAccountAddress extends Profile {
+  linkedAt: string
+}
+
+/** A target picker never needs credentials, contact details or window bindings. */
+export interface AccountAddressTarget {
+  id: string
+  account: string
+  status: AccountStatus
+  address: AssignedAccountAddress | null
+}
+
+export interface AccountAddressTargetsInput {
+  query?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface AccountAddressTargetList {
+  items: AccountAddressTarget[]
+  total: number
+  page: number
+  pageSize: number
+  storageDurable: boolean
+}
+
+export interface AccountAddressSetResult {
+  address: AssignedAccountAddress | null
+  updatedAt: string
+  storageDurable: boolean
+}
 
 export interface Account {
   id: string
@@ -15,6 +49,7 @@ export interface Account {
   note: string
   status: AccountStatus
   homepageUrl: string
+  address?: AssignedAccountAddress | null
   createdAt: string
   updatedAt: string
 }
@@ -41,6 +76,13 @@ export interface AccountList {
   total: number
   bindings: Binding[]
   storageDurable: boolean
+}
+
+/** The RPC returns one revision-checked page; listAccounts aggregates all pages. */
+export interface AccountPage extends AccountList {
+  page: number
+  pageSize: number
+  revision: string
 }
 
 export interface AccountInput {

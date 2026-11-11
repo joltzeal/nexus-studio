@@ -14,6 +14,8 @@ import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Dialog } from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
 import {
@@ -25,6 +27,8 @@ import { PluginGate } from '@/features/plugins/plugin-gate'
 import { AddressCard } from './address-card'
 import { AddressMap } from './address-map'
 import { AddressSettingsSheet } from './address-settings-sheet'
+import { LinkAddressAccountDialog } from './link-account-dialog'
+import { SavedAddressesPanel } from './saved-addresses-panel'
 import {
   csvOf,
   exportCsv,
@@ -32,6 +36,7 @@ import {
   getCatalog,
   getMapsConfig,
   profileFromPick,
+  saveAddress,
 } from './api'
 import {
   ADDRESS_PLUGIN_ID,
@@ -39,6 +44,7 @@ import {
   addressKey,
   message,
   profileText,
+  profileData,
   type AddressCatalog,
   type AddressRecord,
   type MapsConfig,
@@ -68,8 +74,13 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
   const [notice, setNotice] = useState<string | null>(null)
   const [exportedPath, setExportedPath] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [linking, setLinking] = useState<Profile | null>(null)
+  const [resultTab, setResultTab] = useState('generated')
+  const [savedRevision, setSavedRevision] = useState(0)
+  const [savedKeys, setSavedKeys] = useState<Set<string>>(() => new Set())
 
   const running = plugin !== null && plugin.state === 'running'
+  const supportsSaved = plugin?.methods.includes('address.saved.list') === true
 
   useEffect(() => {
     if (!running) return
@@ -128,6 +139,7 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
     try {
       const result = await generateProfiles(country, cityId, requested)
       setItems(result.items)
+      setResultTab('generated')
       if (result.found < result.requested) {
         setNotice(`该区域仅找到 ${result.found} 条完整且不重复的地址。`)
       } else if (result.cached) {
@@ -150,7 +162,8 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
     }
   }, [])
 
-  function addPick(profile: Profile) {
+  async function addPick(profile: Profile) {
+    if (busy) return
     setError(null)
     setNotice(null)
     if (items.length >= MAX_RESULTS) {
@@ -161,8 +174,40 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
       setError('这个地址已经在结果里。')
       return
     }
-    setItems((current) => [...current, profile])
-    toast.success('已添加选点地址')
+    setBusy(true)
+    try {
+      const saved = await saveAddress(profile)
+      setItems((current) => [...current, profileData(saved.item)])
+      setSavedKeys((current) => new Set(current).add(addressKey(saved.item)))
+      setSavedRevision((value) => value + 1)
+      setResultTab('generated')
+      toast.success(
+        saved.storageDurable ? '选点地址已保存' : '选点地址已添加，本次仅在内存中保存',
+      )
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function persistProfile(profile: Profile) {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const saved = await saveAddress(profile)
+      setItems((current) =>
+        current.map((item) => (item.id === profile.id ? profileData(saved.item) : item)),
+      )
+      setSavedKeys((current) => new Set(current).add(addressKey(saved.item)))
+      setSavedRevision((value) => value + 1)
+      toast.success(saved.storageDurable ? '地址已保存' : '地址本次仅在内存中保存')
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function copy(text: string) {
@@ -219,7 +264,7 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
           </h1>
           <p className="page-description">
             从 OpenStreetMap 公开地址生成收货资料，或在 Google 地图上选点。
-            生成结果只保存在当前页面，不会写入插件存储。
+            选定的地址可保存，并关联到账号池中的账号。
           </p>
         </div>
         <div className="section-actions">
@@ -338,7 +383,7 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
                 city={city}
                 busy={busy}
                 onPrepare={prepare}
-                onAdd={addPick}
+                onAdd={(profile) => void addPick(profile)}
                 onCopied={(ok) => {
                   if (ok) {
                     setError(null)
@@ -375,78 +420,137 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
         </p>
       )}
 
-      <section className="address-results" aria-busy={busy} aria-label="生成结果">
-        <div className="address-results-head">
-          <span>
-            生成结果 <span className="address-muted">({items.length})</span>
-          </span>
-          <div className="address-results-actions">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={items.length === 0}
-              onClick={() => void copy(items.map(profileText).join('\n\n'))}
-            >
-              <Copy data-icon="inline-start" />
-              复制全部
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={items.length === 0}
-              onClick={() => void copyCsv()}
-            >
-              <Copy data-icon="inline-start" />
-              复制 CSV
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={items.length === 0}
-              onClick={() => void writeCsv()}
-            >
-              <Download data-icon="inline-start" />
-              写入 CSV 文件
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={items.length === 0 || busy}
-              onClick={() => {
-                setItems([])
-                setNotice(null)
-                setError(null)
-                setExportedPath(null)
-              }}
-            >
-              <Trash2 data-icon="inline-start" />
-              清空结果
-            </Button>
-          </div>
-        </div>
-        {items.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>还没有结果</EmptyTitle>
-              <EmptyDescription>
-                选择国家和城市后点「生成地址」，或切换到「地图选点」逐个添加。
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <div className="address-grid">
-            {items.map((profile) => (
-              <AddressCard
-                key={profile.id}
-                profile={profile}
-                busy={busy}
-                onCopy={(text) => void copy(text)}
-                onDelete={remove}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      <Tabs value={resultTab} onValueChange={setResultTab} className="min-w-0">
+        <TabsList aria-label="地址列表">
+          <TabsTrigger value="generated">生成结果</TabsTrigger>
+          <TabsTrigger value="saved" disabled={!supportsSaved}>
+            已保存地址
+          </TabsTrigger>
+        </TabsList>
+        {!supportsSaved ? (
+          <p className="address-hint">
+            请在插件中心更新地址生成器，以保存地址并关联账号。
+          </p>
+        ) : null}
+        <TabsContent value="generated">
+          <section className="address-results" aria-busy={busy} aria-label="生成结果">
+            <div className="address-results-head">
+              <span>
+                生成结果 <span className="address-muted">({items.length})</span>
+              </span>
+              <div className="address-results-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={items.length === 0}
+                  onClick={() => void copy(items.map(profileText).join('\n\n'))}
+                >
+                  <Copy data-icon="inline-start" />
+                  复制全部
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={items.length === 0}
+                  onClick={() => void copyCsv()}
+                >
+                  <Copy data-icon="inline-start" />
+                  复制 CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={items.length === 0}
+                  onClick={() => void writeCsv()}
+                >
+                  <Download data-icon="inline-start" />
+                  写入 CSV 文件
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={items.length === 0 || busy}
+                  onClick={() => {
+                    setItems([])
+                    setNotice(null)
+                    setError(null)
+                    setExportedPath(null)
+                  }}
+                >
+                  <Trash2 data-icon="inline-start" />
+                  清空结果
+                </Button>
+              </div>
+            </div>
+            {items.length === 0 ? (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyTitle>还没有结果</EmptyTitle>
+                  <EmptyDescription>
+                    选择国家和城市后点「生成地址」，或切换到「地图选点」逐个添加。
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <div className="address-grid">
+                {items.map((profile) => (
+                  <AddressCard
+                    key={profile.id}
+                    profile={profile}
+                    busy={busy}
+                    saved={savedKeys.has(addressKey(profile))}
+                    onCopy={(text) => void copy(text)}
+                    onDelete={remove}
+                    {...(supportsSaved
+                      ? {
+                          onSave: (item: Profile) => void persistProfile(item),
+                          onLink: setLinking,
+                        }
+                      : {})}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </TabsContent>
+        <TabsContent value="saved">
+          <SavedAddressesPanel
+            refreshToken={savedRevision}
+            onCopy={(text) => void copy(text)}
+            onLink={setLinking}
+            onRemoved={(profile) =>
+              setSavedKeys((current) => {
+                const next = new Set(current)
+                next.delete(addressKey(profile))
+                return next
+              })
+            }
+          />
+        </TabsContent>
+      </Tabs>
+
+      <Dialog
+        open={linking !== null}
+        onOpenChange={(open) => {
+          if (!open) setLinking(null)
+        }}
+      >
+        {linking ? (
+          <LinkAddressAccountDialog
+            profile={linking}
+            onClose={() => setLinking(null)}
+            onSaved={(saved) => {
+              setItems((current) =>
+                current.map((item) =>
+                  addressKey(item) === addressKey(saved) ? saved : item,
+                ),
+              )
+              setSavedKeys((current) => new Set(current).add(addressKey(saved)))
+              setSavedRevision((value) => value + 1)
+            }}
+          />
+        ) : null}
+      </Dialog>
 
       {settingsOpen ? (
         <AddressSettingsSheet

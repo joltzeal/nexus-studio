@@ -42,6 +42,7 @@ import { CompareSlider } from './compare-slider'
 import { RecordImage } from './record-image'
 import { SourceLink } from './source-link'
 import { ScenePlanRecord } from './scene-plan-record'
+import { BatchSummary } from './batch-summary'
 import { selectedRecordMedia } from './selection'
 import { RecordSession } from './record-session'
 import {
@@ -147,6 +148,8 @@ function RecordDetailContent({
     record === null
       ? []
       : [
+          ['批次 / 任务标识', record.id],
+          ...(record.scenePlan ? [['场景方案标识', record.scenePlan.plan.id]] : []),
           ['提交时间', formatTime(record.createdAt)],
           ['耗时', formatDuration(record.durationMs)],
           ['方式', record.mode === 'edit' ? '改图（带参考图）' : '文生图'],
@@ -495,6 +498,7 @@ function RecordDetailContent({
             </section>
 
             <section className="ai-detail-side" aria-label="记录信息">
+              <BatchSummary record={record} />
               {record.source ? <SourceLink source={record.source} /> : null}
               {record.scenePlan ? <ScenePlanRecord scene={record.scenePlan} /> : null}
               {record.error === null ? null : (

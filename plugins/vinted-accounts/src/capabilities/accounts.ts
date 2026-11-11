@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { z } from 'zod'
 
 import type { AccountPool as AccountPoolContract } from '@nexus/plugin-sdk'
 import {
@@ -9,6 +10,10 @@ import {
 } from '@nexus/plugin-sdk/lifecycle'
 
 import { invalidRequest, unavailable } from '../domain/errors.js'
+import {
+  AccountAddressSetInputSchema,
+  AccountAddressTargetsInputSchema,
+} from '../domain/address.js'
 import {
   TEMPLATE_HEADERS,
   normalizeHomepage,
@@ -32,7 +37,11 @@ import type {
   ImportReport,
   TemplateFile,
 } from '../domain/types.js'
-import type { DispatchContext } from '../rpc/protocol.js'
+import {
+  DEFAULT_MAX_LINE_BYTES,
+  PROTOCOL_VERSION,
+  type DispatchContext,
+} from '../rpc/protocol.js'
 import type { Logger } from '../rpc/redact.js'
 import type { AccountStore } from '../store/account-store.js'
 import type { OrderSource } from '../services/order-source.js'
@@ -54,6 +63,8 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.bind',
   'vinted.accounts.unbind',
   'vinted.accounts.bindings',
+  'vinted.accounts.address.targets',
+  'vinted.accounts.address.set',
   WINDOW_DETACH_METHOD,
   ...TRANSFER_METHODS,
   ...ORDER_WATCH_METHODS,
@@ -63,6 +74,15 @@ export const ACCOUNT_METHODS = [
 export const MAX_ACCOUNTS = 2000
 /** A broken export can produce a thousand identical errors; show the first few. */
 export const MAX_IMPORT_ERRORS = 50
+
+// Full records include three 2048-character URLs and an address. JSON escaping
+// can cost six bytes per character; leave room for each account's window bindings.
+const ACCOUNT_PAGE_SIZE = 16
+const AccountListInputSchema = z.strictObject({
+  page: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).default(1),
+  pageSize: z.number().int().min(1).max(ACCOUNT_PAGE_SIZE).default(ACCOUNT_PAGE_SIZE),
+  revision: z.string().min(1).max(128).optional(),
+})
 
 const CSV_MIME = 'text/csv;charset=utf-8'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -163,6 +183,10 @@ export class AccountPool implements AccountPoolContract {
         return finishAccountsTransfer(this.store, context, false)
       case 'vinted.accounts.list':
         return await this.listAccounts(context)
+      case 'vinted.accounts.address.targets':
+        return await this.listAddressTargets(context)
+      case 'vinted.accounts.address.set':
+        return await this.setAddress(context)
       case 'vinted.accounts.save':
         return await this.saveAccount(context)
       case 'vinted.accounts.remove':
@@ -190,14 +214,61 @@ export class AccountPool implements AccountPoolContract {
   }
 
   private async listAccounts(context: DispatchContext): Promise<unknown> {
+    const parsed = AccountListInputSchema.safeParse(
+      context.payload === undefined ? {} : context.payload,
+    )
+    if (!parsed.success) throw invalidRequest('账号列表分页参数无效')
+    const input = parsed.data
+    context.assertAlive()
     const document = await this.store.read()
     context.assertAlive()
-    return {
-      items: document.accounts,
-      total: document.accounts.length,
-      bindings: document.bindings,
-      storageDurable: this.store.durable,
+    // Canonical object keys keep the content revision stable across store reopens.
+    // Array order remains significant because it determines page membership.
+    const revision = createHash('sha256')
+      .update(
+        JSON.stringify(
+          { accounts: document.accounts, bindings: document.bindings },
+          (_key, value: unknown) =>
+            value !== null && typeof value === 'object' && !Array.isArray(value)
+              ? Object.fromEntries(
+                  Object.entries(value).sort(([left], [right]) =>
+                    left < right ? -1 : left > right ? 1 : 0,
+                  ),
+                )
+              : value,
+        ),
+      )
+      .digest('hex')
+    if (input.revision !== undefined && input.revision !== revision) {
+      throw invalidRequest('账号列表已变化，请刷新后重试。')
     }
+    const start = (input.page - 1) * input.pageSize
+    const items = document.accounts.slice(start, start + input.pageSize)
+    const ids = new Set(items.map((account) => account.id))
+    const result = {
+      items,
+      total: document.accounts.length,
+      bindings: document.bindings.filter((binding) => ids.has(binding.accountId)),
+      storageDurable: this.store.durable,
+      page: input.page,
+      pageSize: input.pageSize,
+      revision,
+    }
+    const response = {
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: context.requestId,
+      ok: true,
+      result,
+    }
+    if (
+      Buffer.byteLength(`${JSON.stringify(response)}\n`, 'utf8') >= DEFAULT_MAX_LINE_BYTES
+    ) {
+      throw unavailable(
+        '账号列表单页数据过大，超过消息大小上限，请减少每页账号数后重试。',
+      )
+    }
+    context.assertAlive()
+    return result
   }
 
   private async saveAccount(context: DispatchContext): Promise<unknown> {
@@ -229,6 +300,7 @@ export class AccountPool implements AccountPoolContract {
         const created: AccountRecord = {
           id: this.idFactory(),
           ...fields,
+          address: null,
           createdAt: now,
           updatedAt: now,
         }
@@ -284,6 +356,7 @@ export class AccountPool implements AccountPoolContract {
           const record: AccountRecord = {
             id: this.idFactory(),
             ...row,
+            address: null,
             createdAt: now,
             updatedAt: now,
           }
@@ -315,6 +388,58 @@ export class AccountPool implements AccountPoolContract {
       skipped: report.skipped,
     })
     return report
+  }
+
+  private async listAddressTargets(context: DispatchContext): Promise<unknown> {
+    const parsed = AccountAddressTargetsInputSchema.safeParse(context.payload)
+    if (!parsed.success) throw invalidRequest('账号地址查询参数无效')
+    const input = parsed.data
+    const document = await this.store.read()
+    context.assertAlive()
+    const query = (input.query ?? '').toLowerCase()
+    const matches = document.accounts.filter((account) =>
+      [
+        account.account,
+        account.note,
+        account.address?.city ?? '',
+        account.address?.street ?? '',
+      ].some((value) => value.toLowerCase().includes(query)),
+    )
+    const start = (input.page - 1) * input.pageSize
+    return {
+      items: matches.slice(start, start + input.pageSize).map((account) => ({
+        id: account.id,
+        account: account.account,
+        status: account.status,
+        address: account.address ?? null,
+      })),
+      total: matches.length,
+      page: input.page,
+      pageSize: input.pageSize,
+      storageDurable: this.store.durable,
+    }
+  }
+
+  private async setAddress(context: DispatchContext): Promise<unknown> {
+    const input = parseOrThrow(AccountAddressSetInputSchema, context.payload)
+    context.assertAlive()
+    return await this.store.mutate((document) => {
+      context.assertAlive()
+      const account = document.accounts.find((entry) => entry.id === input.accountId)
+      if (account === undefined) throw invalidRequest('账号不存在或已被删除')
+      if (
+        input.expectedProfileId !== undefined &&
+        input.expectedProfileId !== (account.address?.id ?? null)
+      ) {
+        throw invalidRequest('账号地址已变化，请刷新后重试')
+      }
+      const updatedAt = this.now().toISOString()
+      const address =
+        input.profile === null ? null : { ...input.profile, linkedAt: updatedAt }
+      account.address = address
+      account.updatedAt = updatedAt
+      return { address, updatedAt, storageDurable: this.store.durable }
+    })
   }
 
   /** Spreadsheet bytes in, a cell grid out; the extension only picks the parser. */

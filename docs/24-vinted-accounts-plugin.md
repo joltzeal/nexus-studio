@@ -5,8 +5,8 @@
 
 ## 当前事实
 
-当前源码插件版本为 `1.1.0`，最低主程序 `0.1.21`。
-新增已有主页账号的自动已售查询、Bark 推送与配置迁移，详情见
+当前源码插件版本为 `1.2.0`，最低主程序 `0.1.26`。
+新增完整地址快照、分页账号选择、地址复制与解除关联。已有主页账号的自动已售查询、Bark 推送与配置迁移见
 [订单查询与 Bark 提醒](38-vinted-account-order-watch.md)。
 宿主私有 `window.detach` 仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
 发行构件与商店上传的实际状态分别记录在[质量记录](09-quality-and-testing.md)。
@@ -57,25 +57,52 @@ plugins/vinted-accounts/
 
 ## 方法表
 
-| 方法                       | 入参                                          | 说明                             |
-| -------------------------- | --------------------------------------------- | -------------------------------- |
-| `vinted.accounts.list`     | —                                             | 全部账号 + 全部绑定 + 是否持久化 |
-| `vinted.accounts.save`     | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝     |
-| `vinted.accounts.remove`   | `{ accountId }`                               | 删除账号并清掉它的绑定           |
-| `vinted.accounts.import`   | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告  |
-| `vinted.accounts.template` | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容  |
-| `vinted.accounts.bind`     | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突     |
-| `vinted.accounts.unbind`   | `{ windowId }`                                | 解除该窗口的关联                 |
-| `vinted.accounts.bindings` | —                                             | 绑定列表，附带账号摘要           |
-| `vinted.accounts.otp`      | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文 |
-| `window.detach`            | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系   |
-| `transfer.export`          | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照   |
-| `transfer.import`          | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执 |
-| `transfer.rollback`        | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定   |
-| `transfer.commit`          | `{ receipt }`                                 | 清理成功回执，保留账号与绑定     |
+| 方法                              | 入参                                          | 说明                             |
+| --------------------------------- | --------------------------------------------- | -------------------------------- |
+| `vinted.accounts.list`            | `{ page?, pageSize?, revision? }`             | 分页账号、当页绑定与快照标识     |
+| `vinted.accounts.save`            | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝     |
+| `vinted.accounts.remove`          | `{ accountId }`                               | 删除账号并清掉它的绑定           |
+| `vinted.accounts.import`          | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告  |
+| `vinted.accounts.template`        | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容  |
+| `vinted.accounts.bind`            | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突     |
+| `vinted.accounts.unbind`          | `{ windowId }`                                | 解除该窗口的关联                 |
+| `vinted.accounts.bindings`        | —                                             | 绑定列表，附带账号摘要           |
+| `vinted.accounts.otp`             | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文 |
+| `vinted.accounts.address.targets` | `{ query?, page?, pageSize? }`                | 分页选择账号，不返回凭据         |
+| `vinted.accounts.address.set`     | `{ accountId, profile, expectedProfileId? }`  | 原子设置、替换或清空账号地址     |
+| `window.detach`                   | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系   |
+| `transfer.export`                 | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照   |
+| `transfer.import`                 | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执 |
+| `transfer.rollback`               | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定   |
+| `transfer.commit`                 | `{ receipt }`                                 | 清理成功回执，保留账号与绑定     |
 
 上限：账号 2000 条，导入报告最多回传 50 条错误。单次导入内容不超过 512 KB
 （宿主单行消息上限 1 MiB，base64 会放大 1.33 倍）。
+
+## 关联与解除账号地址
+
+在[地址生成器](19-address-generator-plugin.md)生成或选定资料后，点击「关联账号」。
+一个账号保存一个独立的完整地址快照，同一地址可关联多个账号。地址列表移除条目、
+重新生成或卸载地址生成器，不会修改已保存的账号地址。
+账号表格的地址列提供紧凑弹层，显示姓名、用户名、门牌街道、城市、州/地区、邮编、
+国家和关联时间，支持复制完整资料与解除关联。
+
+`vinted.accounts.address.targets` 默认第 1 页、每页 20 个，最多 50 个，搜索最多 200 字符。
+结果为 `{ items, total, page, pageSize, storageDurable }`，每项仅含
+`id/account/status/address`，不返回密码、手机号或接码链接。
+地址字段是资料快照（含来源、坐标及近似标记），另有 ISO 时间 `linkedAt`。
+
+`vinted.accounts.address.set` 的 `profile` 为完整地址资料或 `null`；
+成功结果为 `{ address, updatedAt, storageDurable }`。
+替换或解绑携带最后看到的 `expectedProfileId`，无地址时传 `null`。
+插件在同一次串行修改内核对账号存在性和当前地址，只改 `address/updatedAt`，
+不覆盖并行更新的密码、状态、手机号、备注或主页。
+地址已被其他操作替换时拒绝陈旧提交并提示刷新，账号删除后不会重新创建。
+文件写入失败保留上一份内存与磁盘内容，不返回已保存。
+
+普通账号编辑、CSV 更新和手机号修改均保留快照；删除账号时快照随账号删除。
+窗口迁移附件中的账号记录包含地址；配置导入导出只迁移查询/Bark 设置，不包含业务地址。
+地址在插件私有 JSON 中明文保存，不使用 SQLite 或 Keychain。
 
 ## 可移植传输（原生宿主私有）
 
@@ -110,9 +137,9 @@ type ReceiptInput = { receipt: string }
 type ReceiptResult = { success: true }
 ```
 
-`AccountRecord` 包含 `id`、九个业务字段与 `createdAt` / `updatedAt`，字段定义见
+`AccountRecord` 包含 `id`、九个业务字段、可选的完整 `address` 与 `createdAt` / `updatedAt`，字段定义见
 插件 `src/domain/types.ts`。快照保留真实密码的首尾空格、两种接码链接、状态、备注、
-主页地址与时间，不包含全局 API Key、授权密钥或其他插件数据。
+主页地址、账号地址快照与时间，不包含全局 API Key、授权密钥或其他插件的私有数据。
 公开入口导出传输类型与 zod schema；未知字段、非法版本、重复账号/窗口 ID、
 悬空账号引用、没有绑定的额外账号以及无效映射均拒绝，错误不回显凭据。
 
@@ -169,7 +196,15 @@ type ReceiptResult = { success: true }
 
 账号池表格使用客户端分页，每页默认 20 条，可切换 20 / 50 / 100 条，
 显示筛选后的总数、当前页和总页数，提供上一页和下一页。
-现有列表接口一次返回完整账号清单（最多 2000 条），分页与筛选不增加后台或 RPC 方法。
+底层列表接口分页读取（默认每页 16 条、最多 16 条），避免完整地址快照使单个响应超过 1 MiB。
+页面的公共 `listAccounts()` 适配器按同一 revision 逐页读取并合并账号和绑定，
+供账号页、窗口关联、批量建窗与 SIM8 使用。中途发生修改或任意页面失败时，
+整次读取失败，不把部分清单当成全部账号；页面再按 20 / 50 / 100 条展示和筛选。
+RPC 响应为 `{ items, bindings, total, page, pageSize, revision, storageDurable }`，
+其中 `bindings` 只含当前页账号的窗口关系；后续页携带首页返回的 `revision`。
+revision 根据账号与窗口关系的规范化内容计算，重启回读保持稳定，
+订单查询运行状态变化不影响它。插件检查完整成功响应（含请求 ID、换行）的 UTF-8 字节数；
+极端单页窗口关系仍超出 1 MiB 时返回明确错误，不截断、不让宿主静默丢弃。
 记录按 `createdAt` 从新到旧排列，相同时间保持接口原顺序；无效时间排在末尾。
 「创建时间」列显示完整本地日期时间，包含秒；有效的未来日期照常显示，无效值显示破折号。
 封禁账号名称使用语义错误色，状态继续显示封禁 Badge。

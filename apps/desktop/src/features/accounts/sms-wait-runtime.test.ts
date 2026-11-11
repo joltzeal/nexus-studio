@@ -42,8 +42,8 @@ vi.mock('@/lib/platform/native-plugins', () => ({
     expect(capability).toBe('account.pool')
     state.calls.push(method)
     if (method === 'vinted.accounts.list') {
-      return state.list
-        ? state.list()
+      const snapshot = state.list
+        ? await state.list()
         : {
             items: state.account ? [{ ...state.account }] : [],
             total: state.account ? 1 : 0,
@@ -58,6 +58,15 @@ vi.mock('@/lib/platform/native-plugins', () => ({
               : [],
             storageDurable: true,
           }
+      return {
+        ...snapshot,
+        bindings: snapshot.bindings.filter((binding) =>
+          snapshot.items.some((account) => account.id === binding.accountId),
+        ),
+        page: 1,
+        pageSize: 16,
+        revision: 'a'.repeat(64),
+      }
     }
     if (method === 'vinted.accounts.otp') {
       expect(payload).toEqual({ accountId: 'account-one', channel: 'sms' })

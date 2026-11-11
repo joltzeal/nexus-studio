@@ -65,6 +65,7 @@ import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-b
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { AccountEditor } from './account-editor'
+import { AccountAddressPopover } from './address-popover'
 import { OrderWatchPanel } from './order-watch-panel'
 import {
   ACCOUNT_PAGE_SIZES,
@@ -108,6 +109,8 @@ export interface AccountsPageProps {
 
 export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const running = hostAvailable && plugin !== null && plugin.state === 'running'
+  const supportsAddressWrite =
+    running && plugin.methods.includes('vinted.accounts.address.set')
   const supportsOrderWatch =
     running && plugin.methods.includes('vinted.accounts.orders.list')
   const orderWatchIdentity = supportsOrderWatch
@@ -132,6 +135,10 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const [error, setError] = useState<string | null>(null)
   const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
   const phoneUnlinkRequests = useRef(new Set<string>())
+  const [unlinkingAddresses, setUnlinkingAddresses] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const addressUnlinkRequests = useRef(new Set<string>())
   const listReadSequence = useRef(0)
   const contactRevision = useRef(0)
   const contactSnapshots = useRef(
@@ -227,6 +234,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     if (
       !running ||
       phoneUnlinkRequests.current.has(accountId) ||
+      addressUnlinkRequests.current.has(accountId) ||
       editing?.account?.id === accountId ||
       removing?.id === accountId
     )
@@ -509,6 +517,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   <TableHead>账号</TableHead>
                   <TableHead>登录方式</TableHead>
                   <TableHead>手机号</TableHead>
+                  <TableHead>地址</TableHead>
                   {hasOtpLinks ? <TableHead>验证码</TableHead> : null}
                   <TableHead>状态</TableHead>
                   <TableHead>关联窗口</TableHead>
@@ -571,7 +580,11 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                             aria-label={`解绑 ${account.account} 的手机号`}
                             aria-busy={unlinkingPhones.has(account.id)}
                             title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
-                            disabled={!running || unlinkingPhones.has(account.id)}
+                            disabled={
+                              !running ||
+                              unlinkingPhones.has(account.id) ||
+                              unlinkingAddresses.has(account.id)
+                            }
                             onClick={() => void unlinkPhone(account.id)}
                           >
                             {unlinkingPhones.has(account.id) ? (
@@ -582,6 +595,47 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           </Button>
                         </span>
                       )}
+                    </TableCell>
+                    <TableCell>
+                      <AccountAddressPopover
+                        account={account}
+                        ready={
+                          supportsAddressWrite &&
+                          !unlinkingPhones.has(account.id) &&
+                          !unlinkingAddresses.has(account.id) &&
+                          editing?.account?.id !== account.id &&
+                          removing?.id !== account.id
+                        }
+                        onPendingChange={(pending) => {
+                          if (pending) addressUnlinkRequests.current.add(account.id)
+                          else addressUnlinkRequests.current.delete(account.id)
+                          setUnlinkingAddresses(new Set(addressUnlinkRequests.current))
+                        }}
+                        onUnlinked={async (result) => {
+                          setData((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  items: current.items.map((entry) =>
+                                    entry.id === account.id
+                                      ? {
+                                          ...entry,
+                                          address: result.address,
+                                          updatedAt: result.updatedAt,
+                                        }
+                                      : entry,
+                                  ),
+                                }
+                              : current,
+                          )
+                          try {
+                            await load()
+                            setError(null)
+                          } catch (cause) {
+                            setError(`地址已解绑，刷新账号列表失败：${message(cause)}`)
+                          }
+                        }}
+                      />
                     </TableCell>
                     {hasOtpLinks ? (
                       <TableCell>
@@ -615,9 +669,15 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           variant="ghost"
                           size="icon"
                           aria-label={`编辑 ${account.account}`}
-                          disabled={unlinkingPhones.has(account.id)}
+                          disabled={
+                            unlinkingPhones.has(account.id) ||
+                            unlinkingAddresses.has(account.id)
+                          }
                           onClick={() => {
-                            if (!phoneUnlinkRequests.current.has(account.id)) {
+                            if (
+                              !phoneUnlinkRequests.current.has(account.id) &&
+                              !addressUnlinkRequests.current.has(account.id)
+                            ) {
                               setEditing({ account })
                             }
                           }}
@@ -628,9 +688,15 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           variant="ghost"
                           size="icon"
                           aria-label={`删除 ${account.account}`}
-                          disabled={unlinkingPhones.has(account.id)}
+                          disabled={
+                            unlinkingPhones.has(account.id) ||
+                            unlinkingAddresses.has(account.id)
+                          }
                           onClick={() => {
-                            if (!phoneUnlinkRequests.current.has(account.id)) {
+                            if (
+                              !phoneUnlinkRequests.current.has(account.id) &&
+                              !addressUnlinkRequests.current.has(account.id)
+                            ) {
                               setRemoving(account)
                             }
                           }}
@@ -742,10 +808,17 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           <AccountEditor
             key={editing.account?.id ?? 'new'}
             account={editing.account}
-            ready={running && !unlinkingPhones.has(editing.account?.id ?? '')}
+            ready={
+              running &&
+              !unlinkingPhones.has(editing.account?.id ?? '') &&
+              !unlinkingAddresses.has(editing.account?.id ?? '')
+            }
             onSave={async (input) => {
               if (input.id && phoneUnlinkRequests.current.has(input.id)) {
                 throw new Error('正在解绑手机号，请稍后重试。')
+              }
+              if (input.id && addressUnlinkRequests.current.has(input.id)) {
+                throw new Error('正在解绑地址，请稍后重试。')
               }
               await saveAccount(input)
               await load()
@@ -791,11 +864,17 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
               <AlertDialogCancel>取消</AlertDialogCancel>
               <AlertDialogAction
                 variant="destructive"
-                disabled={unlinkingPhones.has(removing.id)}
+                disabled={
+                  unlinkingPhones.has(removing.id) || unlinkingAddresses.has(removing.id)
+                }
                 onClick={(event) => {
                   event.preventDefault()
                   const target = removing
-                  if (phoneUnlinkRequests.current.has(target.id)) return
+                  if (
+                    phoneUnlinkRequests.current.has(target.id) ||
+                    addressUnlinkRequests.current.has(target.id)
+                  )
+                    return
                   setRemoving(null)
                   void removeAccount(target.id)
                     .then(load)

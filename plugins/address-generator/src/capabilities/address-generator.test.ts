@@ -76,7 +76,7 @@ describe('AddressGenerator', () => {
       cities: { id: string; country: string; latitude: number }[]
     }
     expect(result.countries).toHaveLength(10)
-    expect(result.cities).toHaveLength(30)
+    expect(result.cities).toHaveLength(48)
     expect(result.cities.every((city) => city.latitude !== 0)).toBe(true)
   })
 

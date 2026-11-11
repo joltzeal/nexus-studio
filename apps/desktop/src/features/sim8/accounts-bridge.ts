@@ -4,14 +4,15 @@ import {
   type Account,
   type AccountInput,
 } from '@/features/accounts/types'
+import { listAccounts } from '@/features/accounts/api'
 import { callPlugin } from '@/lib/platform/native-plugins'
 
 /**
  * Linking a purchased number to a Vinted account.
  *
  * This composes the accounts plugin's existing list/save methods instead of
- * adding a narrow `setPhone` method to it: the page then works against every
- * version of that plugin already installed. Keep mergeAccountNumber in sync
+ * adding a narrow `setPhone` method. The shared adapter verifies and collects
+ * every account page before a contact write. Keep mergeAccountNumber in sync
  * when the account's editable fields change.
  */
 export interface AccountTarget {
@@ -23,16 +24,12 @@ export interface AccountTarget {
   note: string
 }
 
-interface AccountList {
-  items: Account[]
-}
-
 function call<T>(method: string, payload: unknown = {}): Promise<T> {
   return callPlugin<T>(ACCOUNTS_PLUGIN_ID, ACCOUNTS_CAPABILITY, method, payload)
 }
 
 export async function listAccountTargets(): Promise<AccountTarget[]> {
-  const result = await call<AccountList>('vinted.accounts.list')
+  const result = await listAccounts()
   return result.items.map((account) => ({
     id: account.id,
     account: account.account,
@@ -112,7 +109,7 @@ export async function updateContact(
 }
 
 async function writeContact(accountId: string, patch: ContactPatch): Promise<Account> {
-  const result = await call<AccountList>('vinted.accounts.list')
+  const result = await listAccounts()
   const target = result.items.find((account) => account.id === accountId)
   if (target === undefined) throw new Error('账号不存在或已被删除')
   const phone = patch.phone ?? target.phone

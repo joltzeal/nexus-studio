@@ -44,6 +44,9 @@ describe('address generator manifest', () => {
       'address.export',
       'address.config.get',
       'address.config.set',
+      'address.saved.list',
+      'address.saved.save',
+      'address.saved.remove',
     ])
   })
 })

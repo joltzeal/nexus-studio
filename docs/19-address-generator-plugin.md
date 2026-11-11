@@ -5,15 +5,16 @@
 
 ## 当前事实
 
-插件版本为 `1.0.1`，要求主程序 `0.1.21`，加入 Google Maps Key 配置迁移。
+插件版本为 `1.1.0`，要求主程序 `0.1.26`，支持保存地址、关联账号以及 Google Maps Key 配置迁移。
 
-插件包位于 `plugins/address-generator`，实现 `address.generator` 能力的 7 个 `address.*` 业务方法、
+插件包位于 `plugins/address-generator`，实现 `address.generator` 能力的 10 个 `address.*` 业务方法、
 私有存储、密钥库边界与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/addresses`。
 
 - 公开地址来自 OpenStreetMap 的 Overpass 接口，由插件进程发起，页面不直接访问上游。
 - 地图选点由页面里的 Google Maps JavaScript API 完成反向地理编码，插件只负责把选点变成资料。
-- 生成结果只存在于页面内存，插件不建表、不落盘。
-- 插件唯一持久化的数据是 Google Maps Key，写在私有目录的 `secrets.json`（明文，0600）。
+- 公开生成的结果先放在页面中，点击「保存地址」后持久化完整资料；地图添加和关联账号会自动保存。
+- 已保存地址写入私有目录的 `address-generator.json`，Google Maps Key 写入 `secrets.json`，均为明文文件。
+- 关联账号时通过账号池 RPC 保存完整快照，不直接读取其他插件的私有文件。
 - 没有 Key 时地图选点不可用，公开地址生成不受影响。
 
 本插件不连接任何交易平台，不创建账号，也不校验地址能否收件。
@@ -37,7 +38,7 @@ plugins/address-generator/
 `rpc/` 与代理插件是同一份实现的两个副本。插件按独立目录安装、独立进程运行，
 不跨插件共享运行时包，因此这里保留副本而不是引入第三个共享包。
 
-manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1.0.0`、
+manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1.1.0`、
 能力 `address.generator`、域名 `overpass-api.de` 与 `maps.mail.ru`、
 `wantsBrowserAccess: false`、`storage: private`、密钥槽 `google-maps-key`。
 
@@ -57,19 +58,46 @@ manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1
 
 ## 方法清单
 
-| 方法                 | 作用                                           |
-| -------------------- | ---------------------------------------------- |
-| `address.catalog`    | 返回插件支持的国家与城市（含中心坐标）         |
-| `address.generate`   | 按城市抓取公开地址，随机抽样并生成资料         |
-| `address.profile`    | 把一次地图选点转换成资料（姓名、用户名）       |
-| `address.csv`        | 返回 CSV 文本，供页面复制                      |
-| `address.export`     | 把 CSV 写入插件私有目录的 `exports/`，返回路径 |
-| `address.config.get` | 读取地图 Key 状态与存储是否可持久化            |
-| `address.config.set` | 保存或清除地图 Key                             |
+| 方法                   | 作用                                           |
+| ---------------------- | ---------------------------------------------- |
+| `address.catalog`      | 返回插件支持的国家与城市（含中心坐标）         |
+| `address.generate`     | 按城市抓取公开地址，随机抽样并生成资料         |
+| `address.profile`      | 把一次地图选点转换成资料（姓名、用户名）       |
+| `address.csv`          | 返回 CSV 文本，供页面复制                      |
+| `address.export`       | 把 CSV 写入插件私有目录的 `exports/`，返回路径 |
+| `address.config.get`   | 读取地图 Key 状态与存储是否可持久化            |
+| `address.config.set`   | 保存或清除地图 Key                             |
+| `address.saved.list`   | 搜索、分页读取已保存地址与持久化状态           |
+| `address.saved.save`   | 保存完整地址资料，相同地点保留已保存的资料标识 |
+| `address.saved.remove` | 从地址列表移除，不修改账号地址快照             |
 
 `address.generate` 的入参是 `{ country, cityId, count }`，`count` 为 1–50。
 返回 `{ items, requested, found, poolSize, endpoint, cached }`：`found` 小于 `requested`
 时页面如实说明"该区域仅找到 N 条完整且不重复的地址"，不补齐、不编造。
+
+## 保存地址并关联账号
+
+1. 在「公开地址」生成资料，或在「地图选点」中选择完整地址。
+2. 点击「保存地址」可加入「已保存地址」；地图上的添加操作会自动保存。
+3. 点击资料卡上的「关联账号」，搜索或分页选择账号，再点击「保存并关联」。
+4. 在「Vinted 账号池」的地址列查看、复制或解除关联。
+
+账号池插件需启用并更新到 `1.2.0`。一个账号最多一个地址，一个地址可用于多个账号。
+账号已有地址时，选择器展示原地址，提交会替换该账号的地址快照。
+地址列表和账号资料分别持久化；从已保存列表删除地址后，账号上的地址仍然保留。
+地址保存成功但账号写入失败时，地址保留在保存列表，弹窗保留选择与失败原因，可重新提交。
+
+| RPC                    | 入参                           | 返回                                               |
+| ---------------------- | ------------------------------ | -------------------------------------------------- |
+| `address.saved.list`   | `{ query?, page?, pageSize? }` | `{ items, total, page, pageSize, storageDurable }` |
+| `address.saved.save`   | `{ profile }`                  | `{ item, created, storageDurable }`                |
+| `address.saved.remove` | `{ id }`                       | `{ removed }`                                      |
+
+`query` 最多 200 字符；默认每页 20 条，最多 50 条；搜索覆盖姓名、用户名、街道、
+门牌、城市、邮编、州与国家。超出末页时回到最后一页，结果按保存顺序倒序排列。
+保存上限为 2000 条。相同规范化地址去重，保留首次保存的姓名、用户名与 profile ID，
+不因再次生成而覆盖。`savedAt` 是保存时间，资料包含来源、坐标及近似位置标记。
+首次并发读取和写入共用初始化；写入通过队列和临时文件替换，失败时保留上一份数据。
 
 ## 上游查询
 
@@ -98,6 +126,9 @@ manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1
 
 ## 地图选点
 
+- 国家和城市选项同时用于公开查询与地图定位；美国提供 21 个主要城市，完整目录共 48 个城市。
+  新增城市包括 Seattle、Houston、Miami、San Francisco、Boston、Washington, DC 等。
+  这些坐标仅控制地图中心和公开查询范围，不是已校验的收货地址。
 - 页面用脚本标签加载 `https://maps.googleapis.com/maps/api/js`，Key 由
   `address.config.get` 提供；`tauri.conf.json` 的 CSP 只放行 `maps.googleapis.com`
   与 `maps.gstatic.com` 等必要主机。
@@ -112,8 +143,10 @@ manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1
   `address-generator.json` 同一目录；宿主不接收、不托管。
 - 这是浏览器 Key，页面必须拿到它才能加载 SDK，因此它对本机进程可见；
   它不是服务端凭据，也不应被当作机密。推荐在 Google Cloud 控制台配置来源限制。
-- 宿主未提供私有目录时退回内存存储，Key 重启即失效，页面会提示"只在内存中"。
-- 生成的地址与用户名不写入任何文件；只有显式"写入 CSV 文件"才会落到 `exports/`。
+- 宿主未提供私有目录时使用内存存储，Key 与已保存地址重启即失效，页面会说明。
+- 完整地址和资料在保存、地图添加或关联账号时写入私有文件；显式「写入 CSV 文件」
+  另写入 `exports/`。文件没有本地加密，不写入 Keychain。
+- 账号快照由账号池插件保存，生成器不能访问账号密码或接码链接；选择账号只使用不含凭据的目标 RPC。
 
 ## 外部服务、费用与数据发送
 
@@ -136,24 +169,21 @@ manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1
 
 ## 本地验证
 
-```bash
-pnpm --filter @nexus/plugin-address-generator build
-pnpm exec vitest run plugins/address-generator apps/desktop/src/features/addresses
-pnpm exec eslint plugins/address-generator apps/desktop/src/features/addresses --max-warnings 0
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --locked
+```sh
+rtk proxy pnpm exec vitest run plugins/address-generator apps/desktop/src/features/addresses --maxWorkers=2
+rtk proxy pnpm exec tsc -p plugins/address-generator/tsconfig.json --noEmit
+rtk proxy pnpm exec eslint plugins/address-generator apps/desktop/src/features/addresses --max-warnings 0
 ```
 
-插件侧 57 个用例覆盖 manifest 校验、用户名模板与批内唯一、Overpass 响应清洗与缓存、
-CSV 公式注入防护、密钥保存与清除、能力方法表与错误码；
-页面侧 14 个用例覆盖工具栏与服务卡片渲染、Google 结果归一化。
-
-最后一条会启动真实 `node` 进程，把本插件从 `dist` 安装进宿主（安装即启动），
-再调用 `address.catalog`，同时验证用 `proxy.provider` 调用会被拒绝。
-这些结果不证明上游地址质量，也不代表 Windows 行为。
+检查范围包括地址回读、去重、分页、并发初始化、写入失败、严格响应校验、
+城市目录、用户名模板、Overpass 响应、CSV 与页面状态。
+实际执行结果与浏览器交互证据记录在[质量记录](09-quality-and-testing.md)。
+本地不构建或执行 Rust 检查；安装包、Windows 与真实地图服务由后续发行验证覆盖。
 
 ## 设置配置迁移
 
 新增通用 `configuration.export / configuration.validate / configuration.import` 三个 RPC，
 通过插件原有能力调用，统一接入「应用设置 → 配置迁移」。
-迁移 Google Maps Key，不包含查询缓存、生成地址或 CSV 文件。
+迁移 Google Maps Key，不包含查询缓存、已保存地址、页面生成结果或 CSV 文件。
+账号地址跟随账号的窗口迁移附件；配置迁移不等同于业务地址列表备份。
 文件、校验和失败写入规则见[配置导入导出](37-configuration-transfer.md)。

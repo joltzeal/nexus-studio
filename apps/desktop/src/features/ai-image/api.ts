@@ -19,6 +19,8 @@ import {
   AI_IMAGE_PLUGIN_ID,
   DEFAULT_IMAGE_RESPONSE_MODE,
   DEFAULT_IMAGE_TIMEOUT_SECONDS,
+  HISTORY_UPDATE_HINT,
+  message,
   PROVIDER_IMAGE_TEST_METHOD,
   PROVIDER_TRANSPORT_UPDATE_HINT,
   SIZES,
@@ -28,6 +30,7 @@ import {
   type Provider,
   type ProviderCatalog,
   type RecordPage,
+  type RecordHistoryFilters,
   type RecordStatus,
   type ScenePreset,
   type ScenePlan,
@@ -157,19 +160,38 @@ export async function listRecords(
   size: number,
   status?: RecordStatus,
   source?: SourceIdentity,
+  filters: RecordHistoryFilters = {},
 ): Promise<RecordPage> {
   const identity = source === undefined ? undefined : sourceIdentity(source)
   const sourceFilter =
     identity === undefined
       ? undefined
       : { sourcePluginId: identity.pluginId, sourceItemId: identity.itemId }
+  const query = filters.query?.trim()
+  if (query !== undefined && query.length > 200)
+    throw new Error('搜索内容最多 200 字符。')
+  const historyFilters: RecordHistoryFilters = {
+    ...(query ? { query } : {}),
+    ...(filters.kind === undefined ? {} : { kind: filters.kind }),
+    ...(filters.activity === undefined ? {} : { activity: filters.activity }),
+  }
+  const hasHistoryFilters = Object.keys(historyFilters).length > 0
   try {
     const result = await call<RecordPage>('image.records.list', {
       page,
       size,
       ...(status === undefined ? {} : { status }),
       ...sourceFilter,
+      ...historyFilters,
     })
+    if (
+      hasHistoryFilters &&
+      Object.entries(historyFilters).some(
+        ([key, value]) =>
+          result.historyFilters?.[key as keyof RecordHistoryFilters] !== value,
+      )
+    )
+      throw new Error(HISTORY_UPDATE_HINT)
     if (
       sourceFilter !== undefined &&
       (result.sourceFilter?.sourcePluginId !== sourceFilter.sourcePluginId ||
@@ -185,6 +207,11 @@ export async function listRecords(
     }
     return result
   } catch (error) {
+    if (
+      hasHistoryFilters &&
+      /INVALID_REQUEST|请求参数无效|未声明该方法|不支持该方法/.test(message(error))
+    )
+      throw Object.assign(new Error(HISTORY_UPDATE_HINT), { cause: error })
     if (sourceFilter !== undefined) throw sourceRequestError(error)
     throw error
   }

@@ -131,6 +131,10 @@ export const RecordsListInputSchema = z
     page: pageSchema,
     size: sizeSchema,
     status: z.enum(['running', 'success', 'failed']).optional(),
+    /** Search the complete parent and its views before pagination, never previews. */
+    query: z.string().trim().max(200).optional(),
+    kind: z.enum(['batch', 'scene', 'single', 'provider-test']).optional(),
+    activity: z.enum(['queued', 'active']).optional(),
     sourcePluginId: sourceIdSchema.optional(),
     sourceItemId: sourceIdSchema.optional(),
   })

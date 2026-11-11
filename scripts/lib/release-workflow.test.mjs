@@ -81,6 +81,8 @@ const requiredMethods = {
     'vinted.accounts.bind',
     'vinted.accounts.unbind',
     'vinted.accounts.bindings',
+    'vinted.accounts.address.targets',
+    'vinted.accounts.address.set',
     'window.detach',
     'transfer.export',
     'transfer.import',
@@ -159,6 +161,9 @@ const requiredMethods = {
     'address.export',
     'address.config.get',
     'address.config.set',
+    'address.saved.list',
+    'address.saved.save',
+    'address.saved.remove',
   ],
 }
 

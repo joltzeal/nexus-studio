@@ -258,6 +258,9 @@ beforeEach(() => {
       bindings: [],
       storageDurable: true,
       total: 0,
+      page: 1,
+      pageSize: 16,
+      revision: 'a'.repeat(64),
     }),
   }
   vi.mocked(callPlugin).mockImplementation(async (_id, _capability, method, payload) => {

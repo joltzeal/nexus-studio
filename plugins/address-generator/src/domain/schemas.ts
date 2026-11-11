@@ -52,6 +52,24 @@ export const ItemsInputSchema = z.strictObject({
   items: z.array(ProfileSchema).min(1).max(50),
 })
 
+export const SavedProfileSchema = ProfileSchema.extend({
+  savedAt: z.iso.datetime(),
+})
+
+export const SavedListInputSchema = z.strictObject({
+  query: z.string().trim().max(200).default(''),
+  page: z.number().int().min(1).max(10_000).default(1),
+  pageSize: z.number().int().min(1).max(50).default(20),
+})
+
+export const SavedProfileInputSchema = z.strictObject({
+  profile: ProfileSchema,
+})
+
+export const SavedRemoveInputSchema = z.strictObject({
+  id: z.string().trim().min(1).max(64),
+})
+
 export const ConfigureInputSchema = z.strictObject({
   /** Omitted keeps the stored key; null or an empty string clears it. */
   apiKey: z.string().max(512).nullable().optional(),

@@ -11,6 +11,7 @@ import {
   UpstreamError,
 } from '../domain/errors.js'
 import { generationSummary } from '../domain/generation-summary.js'
+import { matchesRecordHistory } from '../domain/record-history.js'
 import {
   PRESERVE,
   SCENE_PRESETS,
@@ -109,6 +110,8 @@ const TEST_TIMEOUT_MS = 20_000
 /** A product photo on a CDN either arrives quickly or the host is unreachable. */
 const REMOTE_TIMEOUT_MS = 20_000
 const MAX_PENDING_UPLOADS = 6
+/** Each worker owns a submission; scene views keep their existing serial order. */
+const MAX_CONCURRENT_GENERATIONS = 2
 
 export interface AiImageOptions {
   store: PrivateStore
@@ -164,6 +167,8 @@ export class AiImage {
   private readonly fetchImpl: typeof fetch | null
   private readonly uploads = new Map<string, Upload>()
   private readonly running = new Set<string>()
+  private readonly queuedGenerations: string[] = []
+  private readonly activeGenerations = new Set<string>()
   private readonly runningPlans = new Set<string>()
   private readonly fileLeases = new Map<string, number>()
   private readonly deletingFiles = new Set<string>()
@@ -183,6 +188,8 @@ export class AiImage {
       storage: this.store.kind,
       storageDurable: this.store.durable && this.images.durable,
       running: this.running.size,
+      queued: this.queuedGenerations.length,
+      activeGenerations: this.activeGenerations.size,
       runningPlans: this.runningPlans.size,
       pendingUploads: this.uploads.size,
     }
@@ -456,13 +463,7 @@ export class AiImage {
     context.assertAlive()
     const input = parseOrThrow(RecordsListInputSchema, context.payload)
     const records = await this.records()
-    const filtered = records.filter(
-      (record) =>
-        (input.status === undefined || record.status === input.status) &&
-        (input.sourcePluginId === undefined ||
-          (record.source?.pluginId === input.sourcePluginId &&
-            record.source.itemId === input.sourceItemId)),
-    )
+    const filtered = records.filter((record) => matchesRecordHistory(record, input))
     const sorted = [...filtered].sort((left, right) =>
       left.createdAt < right.createdAt ? 1 : left.createdAt > right.createdAt ? -1 : 0,
     )
@@ -473,6 +474,17 @@ export class AiImage {
       page: input.page,
       pageSize: input.size,
       storageDurable: this.store.durable && this.images.durable,
+      ...(input.query === undefined &&
+      input.kind === undefined &&
+      input.activity === undefined
+        ? {}
+        : {
+            historyFilters: {
+              ...(input.query === undefined ? {} : { query: input.query }),
+              ...(input.kind === undefined ? {} : { kind: input.kind }),
+              ...(input.activity === undefined ? {} : { activity: input.activity }),
+            },
+          }),
       // An explicit acknowledgement lets clients detect old packages that ignore
       // unknown filters, even when the returned page happens to be empty.
       ...(input.sourcePluginId === undefined
@@ -1061,16 +1073,30 @@ export class AiImage {
    * that started it. Progress is written to the record, which the page polls.
    */
   private run(recordId: string): void {
-    void this.execute(recordId)
-      .catch((error: unknown) => {
-        this.logger.error('生成任务异常结束', {
-          recordId,
-          error: error instanceof Error ? error.message : String(error),
+    // Called only after the full parent (including source and plan) is committed.
+    // `running` reserves waiting parents too, protecting reads, pruning and retry.
+    this.queuedGenerations.push(recordId)
+    this.drainGenerations()
+  }
+
+  private drainGenerations(): void {
+    while (this.activeGenerations.size < MAX_CONCURRENT_GENERATIONS) {
+      const recordId = this.queuedGenerations.shift()
+      if (recordId === undefined) return
+      this.activeGenerations.add(recordId)
+      void this.execute(recordId)
+        .catch((error: unknown) => {
+          this.logger.error('生成任务异常结束', {
+            recordId,
+            error: error instanceof Error ? error.message : String(error),
+          })
         })
-      })
-      .finally(() => {
-        this.running.delete(recordId)
-      })
+        .finally(() => {
+          this.activeGenerations.delete(recordId)
+          this.running.delete(recordId)
+          this.drainGenerations()
+        })
+    }
   }
 
   private async execute(recordId: string): Promise<void> {
@@ -1375,8 +1401,7 @@ export class AiImage {
     const interruptedRecord = (record: GenerationRecord) =>
       !this.running.has(record.id) &&
       (record.outputVision?.status === 'running' ||
-        (record.purpose === 'provider-test' && record.status === 'running') ||
-        (record.scenePlan !== undefined && record.status === 'running') ||
+        record.status === 'running' ||
         (this.sceneViewsSucceeded(record) &&
           (record.status !== 'success' ||
             record.stage !== 'done' ||
@@ -1427,6 +1452,12 @@ export class AiImage {
           }
           record.stage = 'done'
           record.error = '上次场景生图已中断，成功成片已保留，请手动重试未完成视角。'
+        }
+        if (record.status === 'running') {
+          record.status = 'failed'
+          record.stage = 'done'
+          record.error =
+            '上次排队或生图任务已中断，已有成片已保留；请手动重试，不会自动重发请求。'
         }
         record.updatedAt = this.now().toISOString()
       }

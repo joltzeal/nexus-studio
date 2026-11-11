@@ -1,3 +1,7 @@
+import type { AssignedAccountAddress } from './address.js'
+
+export type { AccountAddressProfile, AssignedAccountAddress } from './address.js'
+
 /** How the account signs in. Credentials are always present, even for OAuth. */
 export type LoginMethod = 'email' | 'google' | 'apple' | 'facebook'
 
@@ -19,8 +23,8 @@ export const ACCOUNT_STATUSES: readonly AccountStatus[] = [
 ]
 
 /**
- * One credential record. `password` is stored in the plugin's private directory
- * only; it is never returned by a list call.
+ * One credential record stored as plaintext in the plugin's private directory.
+ * Address target queries expose a separate projection without credentials.
  */
 export interface AccountRecord {
   id: string
@@ -33,6 +37,7 @@ export interface AccountRecord {
   note: string
   status: AccountStatus
   homepageUrl: string
+  address?: AssignedAccountAddress | null
   createdAt: string
   updatedAt: string
 }

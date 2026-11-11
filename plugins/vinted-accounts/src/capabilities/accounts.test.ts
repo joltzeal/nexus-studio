@@ -80,6 +80,10 @@ interface AccountList {
   items: AccountRecord[]
   total: number
   bindings: BindingRecord[]
+  page: number
+  pageSize: number
+  revision: string
+  storageDurable: boolean
 }
 
 const CSV_HEADER =
@@ -104,7 +108,13 @@ describe('account records', () => {
       createdAt: '2026-10-22T10:00:00.000Z',
     })
     const list = await call<AccountList>(pool, 'vinted.accounts.list')
-    expect(list.total).toBe(1)
+    expect(list).toMatchObject({
+      total: 1,
+      page: 1,
+      pageSize: 16,
+      revision: expect.stringMatching(/^[a-f0-9]{64}$/),
+      storageDurable: false,
+    })
     expect(list.bindings).toEqual([])
   })
 

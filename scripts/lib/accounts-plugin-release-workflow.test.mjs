@@ -29,6 +29,8 @@ const methods = [
   'vinted.accounts.bind',
   'vinted.accounts.unbind',
   'vinted.accounts.bindings',
+  'vinted.accounts.address.targets',
+  'vinted.accounts.address.set',
   'window.detach',
   'transfer.export',
   'transfer.import',

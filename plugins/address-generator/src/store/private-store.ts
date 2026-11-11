@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
 import { unavailable } from '../domain/errors.js'
+import type { SavedProfileRecord } from '../domain/address.js'
+import { SavedProfileSchema } from '../domain/schemas.js'
 
 export interface StoreDocument {
   schemaVersion: 1
@@ -10,6 +12,7 @@ export interface StoreDocument {
     /** Reference into the plugin's own vault; the key itself never lands here. */
     apiKeyRef: string | null
   }
+  savedProfiles: SavedProfileRecord[]
 }
 
 export interface PrivateStore {
@@ -32,10 +35,11 @@ const documentSchema = z.looseObject({
   maps: z.looseObject({
     apiKeyRef: z.string().nullable(),
   }),
+  savedProfiles: z.array(SavedProfileSchema).max(2000).default([]),
 })
 
 export function emptyDocument(): StoreDocument {
-  return { schemaVersion: 1, maps: { apiKeyRef: null } }
+  return { schemaVersion: 1, maps: { apiKeyRef: null }, savedProfiles: [] }
 }
 
 function parseDocument(text: string): StoreDocument {
@@ -81,6 +85,7 @@ class FileStore implements PrivateStore {
   readonly durable = true
   readonly exportDirectory: string
   private document: StoreDocument | null = null
+  private loading: Promise<void> | null = null
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly file: string) {
@@ -108,6 +113,15 @@ class FileStore implements PrivateStore {
 
   private async load(): Promise<void> {
     if (this.document !== null) return
+    const loading = (this.loading ??= this.loadDocument())
+    try {
+      await loading
+    } finally {
+      if (this.loading === loading) this.loading = null
+    }
+  }
+
+  private async loadDocument(): Promise<void> {
     try {
       this.document = parseDocument(await readFile(this.file, 'utf8'))
     } catch (error) {

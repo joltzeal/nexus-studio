@@ -34,12 +34,12 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [16 · CloakBrowser 授权](16-cloakbrowser-license.md)         | 应用内激活码、SQLite 存储、最新内核与并发边界            |
 | [17 · 插件宿主](17-plugin-host.md)                           | 发现、安装、进程托管、权限检查与窗口启动阻断             |
 | [18 · 插件发布与 CI/CD](18-plugin-release-and-cicd.md)       | 完整方案：加密打包已落地，服务端与收费部分暂缓           |
-| [19 · 地址生成器插件](19-address-generator-plugin.md)        | 仓库内 `studio.address-generator` 的方法、上游与限制     |
+| [19 · 地址生成器插件](19-address-generator-plugin.md)        | 公开查询、地图选点、地址持久化与账号关联                 |
 | [20 · 桌面发行与更新](20-desktop-release-and-updates.md)     | Node sidecar、发行工作流、签名与更新源边界               |
 | [21 · 共享货源插件](21-shared-supply-plugin.md)              | 仓库内 `studio.shared-supply` 的目录协议、收藏与限制     |
-| [22 · AI 生图插件](22-ai-image-plugin.md)                    | 仓库内 `studio.ai-image` 的生图改图、明文模型配置与记录  |
+| [22 · AI 生图插件](22-ai-image-plugin.md)                    | 生图改图、模型配置、队列与完整批次检索                   |
 | [23 · Vinted 监控插件](23-vinted-monitor-plugin.md)          | 独立采集代理、监控与商品表格、卖家资料及 AI 生图关联     |
-| [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)       | 仓库内 `studio.vinted-accounts` 的账密、导入与窗口关联   |
+| [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)       | 账号导入、窗口关联与独立地址快照                         |
 | [25 · 插件商店与在线更新](25-plugin-market.md)               | 商店地址、`catalog.json`、`.nexuspkg` 加密包与定时更新   |
 | [26 · 应用代理](26-application-network-proxy.md)             | 设置项、后台请求、系统代理与插件网络边界                 |
 | [27 · 浏览器内核](27-browser-kernels.md)                     | 官方最新版本查询、下载校验、本地清单与窗口固定绑定       |

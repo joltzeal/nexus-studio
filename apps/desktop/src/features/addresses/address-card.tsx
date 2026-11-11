@@ -1,4 +1,4 @@
-import { Copy, Trash2 } from 'lucide-react'
+import { Bookmark, Check, Copy, Link2, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { addressText, profileText, sourceLabel, streetLine, type Profile } from './types'
 
@@ -7,9 +7,22 @@ export interface AddressCardProps {
   busy: boolean
   onCopy: (text: string) => void
   onDelete: (id: string) => void
+  saved?: boolean
+  deleteLabel?: string
+  onSave?: (profile: Profile) => void
+  onLink?: (profile: Profile) => void
 }
 
-export function AddressCard({ profile, busy, onCopy, onDelete }: AddressCardProps) {
+export function AddressCard({
+  profile,
+  busy,
+  onCopy,
+  onDelete,
+  saved = false,
+  deleteLabel = '删除这条地址',
+  onSave,
+  onLink,
+}: AddressCardProps) {
   const fields: Array<{ label: string; value: string }> = [
     { label: '街道地址', value: streetLine(profile) },
     { label: '城市', value: profile.city },
@@ -32,7 +45,7 @@ export function AddressCard({ profile, busy, onCopy, onDelete }: AddressCardProp
         <Button
           variant="ghost"
           size="icon"
-          aria-label="删除这条地址"
+          aria-label={deleteLabel}
           disabled={busy}
           onClick={() => onDelete(profile.id)}
         >
@@ -61,6 +74,32 @@ export function AddressCard({ profile, busy, onCopy, onDelete }: AddressCardProp
         ))}
       </dl>
       <footer className="address-card-foot">
+        {onSave ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || saved}
+            onClick={() => onSave(profile)}
+          >
+            {saved ? (
+              <Check data-icon="inline-start" />
+            ) : (
+              <Bookmark data-icon="inline-start" />
+            )}
+            {saved ? '已保存' : '保存地址'}
+          </Button>
+        ) : null}
+        {onLink ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => onLink(profile)}
+          >
+            <Link2 data-icon="inline-start" />
+            关联账号
+          </Button>
+        ) : null}
         <Button variant="outline" size="sm" onClick={() => onCopy(profileText(profile))}>
           复制资料
         </Button>

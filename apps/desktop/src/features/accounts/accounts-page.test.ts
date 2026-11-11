@@ -27,6 +27,7 @@ import { updateContact } from '@/features/sim8/accounts-bridge'
 import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountEditor } from './account-editor'
+import { AccountAddressPopover } from './address-popover'
 import { listAccounts, readOtp, removeAccount, saveAccount } from './api'
 import { AccountsPage } from './accounts-page'
 import {
@@ -35,6 +36,7 @@ import {
   LOGIN_METHODS,
   type Account,
   type AccountList,
+  type AssignedAccountAddress,
   type OtpResult,
 } from './types'
 
@@ -268,6 +270,102 @@ beforeEach(() => {
   vi.mocked(listAccounts).mockResolvedValue(inventory([]))
 })
 afterEach(() => hooks.dispose())
+
+const assignedAddress: AssignedAccountAddress = {
+  id: 'profile-paris',
+  street: 'Rue Exemple',
+  houseNumber: '12',
+  city: 'Paris',
+  postalCode: '75001',
+  countryCode: 'FR',
+  state: null,
+  county: null,
+  latitude: 48.8566,
+  longitude: 2.3522,
+  source: 'osm',
+  sourceUrl: 'https://www.openstreetmap.org/node/123',
+  approximate: false,
+  firstName: 'Marie',
+  lastName: 'Exemple',
+  username: 'marie.exemple',
+  linkedAt: '2026-11-11T10:00:00.000Z',
+}
+const addressCell = () => components(tree(), AccountAddressPopover)[0]!
+
+describe('account address table integration', () => {
+  it('shows account snapshots and gates writes on the advertised method', async () => {
+    await mount(inventory([account(0, { address: assignedAddress })]))
+    expect(addressCell().props.account.address).toEqual(assignedAddress)
+    expect(addressCell().props.ready).toBe(false)
+    props.plugin = plugin({
+      methods: ['vinted.accounts.list', 'vinted.accounts.address.set'],
+    })
+    expect(addressCell().props.ready).toBe(true)
+  })
+
+  it('patches only the confirmed address, refreshes the page and ignores an older list response', async () => {
+    const original = account(0, { address: assignedAddress })
+    const data = inventory([original])
+    await mount(data)
+    const stale = deferred<AccountList>()
+    const reload = deferred<AccountList>()
+    vi.mocked(listAccounts)
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(reload.promise)
+    click('刷新')
+    const updatedAt = '2026-11-12T10:00:00.000Z'
+    const refreshing = addressCell().props.onUnlinked({
+      address: null,
+      updatedAt,
+      storageDurable: true,
+    })
+    expect(addressCell().props.account).toEqual({ ...original, address: null, updatedAt })
+    expect(text(tree())).toContain('1 个窗口已关联')
+    stale.resolve(data)
+    await flushPromises()
+    expect(addressCell().props.account.address).toBeNull()
+    reload.resolve(inventory([{ ...original, address: null, updatedAt, note: 'latest' }]))
+    await refreshing
+    expect(text(tree())).toContain('latest')
+    expect(listAccounts).toHaveBeenCalledTimes(3)
+  })
+
+  it('retains the confirmed unlink and credentials when its follow-up refresh fails', async () => {
+    const original = account(0, { address: assignedAddress })
+    await mount(inventory([original]))
+    vi.mocked(listAccounts).mockRejectedValueOnce(new Error('list unavailable'))
+    const updatedAt = '2026-11-12T10:00:00.000Z'
+    await addressCell().props.onUnlinked({
+      address: null,
+      updatedAt,
+      storageDurable: true,
+    })
+    expect(addressCell().props.account).toEqual({ ...original, address: null, updatedAt })
+    expect(text(tree())).toContain('list unavailable')
+  })
+
+  it('prevents overlapping phone, edit and delete operations during an address write', async () => {
+    props.plugin = plugin({
+      methods: ['vinted.accounts.list', 'vinted.accounts.address.set'],
+    })
+    await mount(inventory([account(0, { address: assignedAddress })]))
+    const unlink = button('解绑 seller-00 的手机号').props.onClick!
+    const edit = button('编辑 seller-00').props.onClick!
+    const remove = button('删除 seller-00').props.onClick!
+    expect(addressCell().props.ready).toBe(true)
+    addressCell().props.onPendingChange(true)
+    expect(addressCell().props.ready).toBe(false)
+    unlink({} as MouseEvent<HTMLButtonElement>)
+    edit({} as MouseEvent<HTMLButtonElement>)
+    remove({} as MouseEvent<HTMLButtonElement>)
+    expect(updateContact).not.toHaveBeenCalled()
+    expect(components(tree(), AccountEditor)).toHaveLength(0)
+    expect(components(tree(), AlertDialog)[0]!.props.open).toBe(false)
+    expect(button('编辑 seller-00').props.disabled).toBe(true)
+    addressCell().props.onPendingChange(false)
+    expect(button('编辑 seller-00').props.disabled).toBe(false)
+  })
+})
 
 describe('account table controls', () => {
   it('shows 20 newest records, navigates all 55 and resets when page size changes', async () => {

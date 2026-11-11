@@ -131,14 +131,24 @@ vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
     state.calls.push({ method, input })
     if (method === 'vinted.accounts.list') {
       if (state.listError) throw state.listError
-      return (
-        state.listResponse ?? {
-          items: state.accounts,
-          bindings: state.bindings,
-          total: state.accounts.length,
-          storageDurable: true,
-        }
-      )
+      const snapshot = await (state.listResponse ?? {
+        items: state.accounts,
+        bindings: state.bindings,
+        total: state.accounts.length,
+        storageDurable: true,
+      })
+      const { page, pageSize } = input as { page: number; pageSize: number }
+      const items = snapshot.items.slice((page - 1) * pageSize, page * pageSize)
+      return {
+        ...snapshot,
+        items,
+        bindings: snapshot.bindings.filter((binding) =>
+          items.some((account) => account.id === binding.accountId),
+        ),
+        page,
+        pageSize,
+        revision: 'a'.repeat(64),
+      }
     }
     if (method === 'vinted.accounts.bindings') {
       if (state.bindingsError) throw state.bindingsError

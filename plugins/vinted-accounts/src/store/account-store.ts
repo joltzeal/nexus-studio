@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
+import { AssignedAccountAddressSchema } from '../domain/address.js'
 import { unavailable } from '../domain/errors.js'
 import {
   OrderWatchStateSchema,
@@ -47,6 +48,7 @@ const accountSchema = z.looseObject({
   note: z.string(),
   status: z.enum(['active', 'pending', 'limited', 'blocked']),
   homepageUrl: z.string(),
+  address: AssignedAccountAddressSchema.nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })

@@ -1,6 +1,9 @@
-import type { DependencyList, EffectCallback } from 'react'
+import type { DependencyList, EffectCallback, ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FieldError } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { LabeledSelect } from '@/components/ui/labeled-select'
+import { Button } from '@/components/ui/button'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import {
   components,
@@ -22,6 +25,8 @@ import {
 } from './api'
 import { GenerateDialog } from './generate-dialog'
 import { ProvidersSheet } from './providers-sheet'
+import { BatchSummary } from './batch-summary'
+import { makeSceneRecord } from './scene-plan.test-data'
 import type { ProviderCatalog } from './types'
 
 const state = vi.hoisted(() => ({ hooks: null as PageHookHarness | null }))
@@ -194,6 +199,7 @@ beforeEach(() => {
 
 afterEach(() => {
   hooks.dispose()
+  vi.useRealTimers()
   expect(generate).not.toHaveBeenCalled()
   expect(createScenePlan).not.toHaveBeenCalled()
   expect(recognizeRecord).not.toHaveBeenCalled()
@@ -511,5 +517,182 @@ describe('in-place product image generation', () => {
     expectCatalog(catalog('initial'))
     expect(generation().loadError).toBeNull()
     expect(listRecords).not.toHaveBeenCalled()
+  })
+})
+
+describe('batch history navigation', () => {
+  it('searches and filters batches on the server and resets the page for each query', async () => {
+    vi.mocked(listRecords).mockResolvedValue({
+      items: [],
+      total: 30,
+      page: 0,
+      pageSize: 10,
+      storageDurable: true,
+    })
+    await settle()
+    const search = components(render(), Input).find(
+      (node) => node.props['aria-label'] === '搜索生成批次',
+    )
+    const kind = components(render(), LabeledSelect).find(
+      (node) => node.props.ariaLabel === '任务类型',
+    )
+    expect(search).toBeDefined()
+    expect(kind).toBeDefined()
+    search!.props.onChange?.({
+      target: { value: 'Cabinet' },
+    } as React.ChangeEvent<HTMLInputElement>)
+    await settle()
+    expect(listRecords).toHaveBeenLastCalledWith(0, 10, undefined, undefined, {
+      query: 'Cabinet',
+    })
+    kind!.props.onValueChange('scene')
+    await settle()
+    expect(listRecords).toHaveBeenLastCalledWith(0, 10, undefined, undefined, {
+      query: 'Cabinet',
+      kind: 'scene',
+    })
+    const queued = elements(render()).find(
+      (node) =>
+        node.props.role === 'tab' && text(node.props.children as ReactNode) === '排队中',
+    )
+    expect(queued).toBeDefined()
+    ;(queued!.props.onClick as () => void)()
+    await settle()
+    expect(listRecords).toHaveBeenLastCalledWith(0, 10, 'running', undefined, {
+      query: 'Cabinet',
+      kind: 'scene',
+      activity: 'queued',
+    })
+  })
+
+  it('returns to a valid history page after the last parent on that page is deleted', async () => {
+    const { makeSceneRecord } = await import('./scene-plan.test-data')
+    vi.mocked(listRecords).mockResolvedValue({
+      items: [makeSceneRecord()],
+      total: 11,
+      page: 0,
+      pageSize: 10,
+      storageDurable: true,
+    })
+    await settle()
+    const next = components(render(), Button).find(
+      (node) => text(node.props.children) === '下一页',
+    )!
+    next.props.onClick?.({} as React.MouseEvent<HTMLButtonElement>)
+    await settle()
+    expect(listRecords).toHaveBeenLastCalledWith(1, 10, undefined, undefined, {})
+    vi.mocked(listRecords).mockResolvedValue({
+      items: [],
+      total: 10,
+      page: 1,
+      pageSize: 10,
+      storageDurable: true,
+    })
+    await generation().onSubmitted()
+    await settle()
+    expect(listRecords).toHaveBeenLastCalledWith(0, 10, undefined, undefined, {})
+  })
+})
+
+describe('batch history polling', () => {
+  beforeEach(() => vi.useFakeTimers())
+
+  it.each(['running', 'queued', 'activeGenerations'])(
+    'refreshes an empty active single-image filter while plugin %s is positive, then stops when idle',
+    async (counter) => {
+      await settle()
+      components(render(), LabeledSelect)
+        .find((node) => node.props.ariaLabel === '任务类型')!
+        .props.onValueChange('single')
+      await settle()
+      const activeTab = elements(render()).find(
+        (node) =>
+          node.props.role === 'tab' &&
+          text(node.props.children as ReactNode) === '生成中',
+      )!
+      ;(activeTab.props.onClick as () => void)()
+      await settle()
+      expect(components(render(), BatchSummary)).toHaveLength(0)
+
+      props.plugin = plugin({ status: { pid: 100, [counter]: 1 } })
+      await settle()
+      const reads = vi.mocked(listRecords).mock.calls.length
+      const single = {
+        ...makeSceneRecord(),
+        id: 'queued-single',
+        count: 1,
+        status: 'running' as const,
+        stage: 'image' as const,
+        outputs: [],
+        error: null,
+      }
+      delete single.scenePlan
+      vi.mocked(listRecords).mockResolvedValue({
+        items: [single],
+        total: 1,
+        page: 0,
+        pageSize: 10,
+        storageDurable: true,
+      })
+
+      await vi.advanceTimersByTimeAsync(2500)
+      await settle()
+
+      expect(listRecords).toHaveBeenCalledTimes(reads + 1)
+      expect(listRecords).toHaveBeenLastCalledWith(0, 10, 'running', undefined, {
+        kind: 'single',
+        activity: 'active',
+      })
+      expect(components(render(), BatchSummary)[0]?.props.record.id).toBe('queued-single')
+      expectCatalog(catalog('initial'))
+      expect(listProviders).toHaveBeenCalledTimes(1)
+      expect(listPresets).toHaveBeenCalledTimes(1)
+
+      props.plugin = plugin({
+        status: { pid: 100, running: 0, queued: 0, activeGenerations: 0 },
+      })
+      await settle()
+      vi.mocked(listRecords).mockResolvedValue({
+        items: [],
+        total: 0,
+        page: 0,
+        pageSize: 10,
+        storageDurable: true,
+      })
+      await vi.advanceTimersByTimeAsync(2500)
+      await settle()
+      const idleReads = vi.mocked(listRecords).mock.calls.length
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      expect(listRecords).toHaveBeenCalledTimes(idleReads)
+      expect(listProviders).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it.each([
+    null,
+    { pid: 100, running: 0, queued: 0, activeGenerations: 0 },
+    { pid: 100, running: '1', queued: -1, activeGenerations: Number.NaN },
+  ])('does not poll an empty idle history with status %j', async (status) => {
+    props.plugin = plugin({ status })
+    await settle()
+    await settle()
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(listRecords).toHaveBeenCalledTimes(1)
+    expect(listProviders).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not poll hidden global history in the product generation dialog', async () => {
+    props = {
+      ...props,
+      presentation: 'dialog',
+      plugin: plugin({ status: { pid: 100, running: 2, queued: 1 } }),
+    }
+    await settle()
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(listRecords).not.toHaveBeenCalled()
+    expect(listProviders).toHaveBeenCalledTimes(1)
   })
 })

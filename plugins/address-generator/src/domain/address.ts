@@ -28,6 +28,10 @@ export interface ProfileRecord extends AddressRecord {
   username: string
 }
 
+export interface SavedProfileRecord extends ProfileRecord {
+  savedAt: string
+}
+
 export function streetLine(address: AddressRecord): string {
   return `${address.houseNumber} ${address.street}`.trim()
 }

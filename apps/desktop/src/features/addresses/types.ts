@@ -51,6 +51,40 @@ export interface Profile extends AddressRecord {
   username: string
 }
 
+export interface SavedProfile extends Profile {
+  savedAt: string
+}
+
+export interface SavedAddressList {
+  items: SavedProfile[]
+  total: number
+  page: number
+  pageSize: number
+  storageDurable: boolean
+}
+
+/** Pass only the profile contract when a saved record carries metadata. */
+export function profileData(profile: Profile): Profile {
+  return {
+    id: profile.id,
+    street: profile.street,
+    houseNumber: profile.houseNumber,
+    city: profile.city,
+    postalCode: profile.postalCode,
+    countryCode: profile.countryCode,
+    state: profile.state,
+    county: profile.county,
+    latitude: profile.latitude,
+    longitude: profile.longitude,
+    source: profile.source,
+    sourceUrl: profile.sourceUrl,
+    approximate: profile.approximate,
+    firstName: profile.firstName,
+    lastName: profile.lastName,
+    username: profile.username,
+  }
+}
+
 export interface GenerateResult {
   items: Profile[]
   requested: number

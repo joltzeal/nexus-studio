@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { AssignedAccountAddressSchema } from './address.js'
 import { invalidRequest } from './errors.js'
 import { AccountSaveInputSchema } from './schemas.js'
 
@@ -17,11 +18,17 @@ export const TransferExportInputSchema = z.strictObject({
   endpointIds: z.array(z.number().int().positive()).max(MAX_ITEMS),
 })
 
-const account = AccountSaveInputSchema.omit({ id: true }).extend({
-  id,
-  createdAt: timestamp,
-  updatedAt: timestamp,
-})
+const account = AccountSaveInputSchema.omit({ id: true })
+  .extend({
+    id,
+    address: AssignedAccountAddressSchema.nullable().optional(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+  .transform(({ address, ...entry }) => ({
+    ...entry,
+    ...(address === undefined ? {} : { address }),
+  }))
 
 const binding = z.strictObject({ windowId: id, accountId: id, boundAt: timestamp })
 

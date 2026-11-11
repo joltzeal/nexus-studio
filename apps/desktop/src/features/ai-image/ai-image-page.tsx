@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { FieldError } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -24,7 +26,9 @@ import { handoffImages } from './reference-transfer'
 import { SourceLink } from './source-link'
 import { ProvidersSheet } from './providers-sheet'
 import { RecordImage } from './record-image'
+import { BatchSummary } from './batch-summary'
 import { EMPTY_SELECTIONS } from './model-selection'
+import { hasImageWork } from './history-polling'
 import type { AiImageHandoff } from '@/lib/page-handoff'
 import {
   AI_IMAGE_PLUGIN_ID,
@@ -32,16 +36,20 @@ import {
   message,
   recordTitle,
   statusText,
+  RECORD_KINDS,
   type GenerationSummary,
   type ProviderCatalog,
   type RecordStatus,
+  type RecordKind,
+  type RecordHistoryFilters,
   type ScenePreset,
 } from './types'
 
 const PAGE_SIZE = 10
 
-const FILTERS: { value: RecordStatus | 'all'; label: string }[] = [
+const FILTERS: { value: RecordStatus | 'queued' | 'all'; label: string }[] = [
   { value: 'all', label: '全部' },
+  { value: 'queued', label: '排队中' },
   { value: 'running', label: '生成中' },
   { value: 'success', label: '已生成' },
   { value: 'failed', label: '失败' },
@@ -85,7 +93,9 @@ export function AiImagePage({
   )
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
-  const [filter, setFilter] = useState<RecordStatus | 'all'>('all')
+  const [filter, setFilter] = useState<RecordStatus | 'queued' | 'all'>('all')
+  const [query, setQuery] = useState('')
+  const [kind, setKind] = useState<RecordKind | 'all'>('all')
   const [providerState, setProviderState] = useState<{
     lifecycle: typeof providerLifecycle
     catalog: ProviderCatalog
@@ -97,7 +107,21 @@ export function AiImagePage({
   const [generating, setGenerating] = useState(false)
   const [configuring, setConfiguring] = useState(false)
 
-  const queryKey = `${filter}:${String(page)}`
+  const queryKey = JSON.stringify([filter, query, kind, page])
+  const historyFilters = useMemo<RecordHistoryFilters>(
+    () => ({
+      ...(query.trim() ? { query: query.trim() } : {}),
+      ...(kind === 'all' ? {} : { kind }),
+      ...(filter === 'queued'
+        ? { activity: 'queued' }
+        : filter === 'running'
+          ? { activity: 'active' }
+          : {}),
+    }),
+    [query, kind, filter],
+  )
+  const statusFilter =
+    filter === 'all' ? undefined : filter === 'queued' ? 'running' : filter
   const records = rows !== null && rows.key === queryKey ? rows.items : null
   const catalog =
     providerState?.lifecycle === providerLifecycle ? providerState.catalog : null
@@ -126,14 +150,21 @@ export function AiImagePage({
     const isCurrent = () =>
       providerRequest.current.lifecycle === providerLifecycle &&
       recordsRequest.current === revision
-    const key = `${filter}:${String(page)}`
+    const key = queryKey
     try {
       const result = await listRecords(
         page,
         PAGE_SIZE,
-        filter === 'all' ? undefined : filter,
+        statusFilter,
+        undefined,
+        historyFilters,
       )
       if (!isCurrent()) return
+      const lastPage = Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1)
+      if (page > lastPage) {
+        setPage(lastPage)
+        return
+      }
       setRows({ key, items: result.items })
       setTotal(result.total)
       setStorageDurable(result.storageDurable)
@@ -144,7 +175,7 @@ export function AiImagePage({
       setTotal(0)
       setError(message(cause))
     }
-  }, [page, filter, providerLifecycle, showHistory])
+  }, [page, queryKey, statusFilter, historyFilters, providerLifecycle, showHistory])
 
   const refreshProviders = useCallback(async () => {
     const request = providerRequest.current
@@ -169,15 +200,20 @@ export function AiImagePage({
   useEffect(() => {
     if (!running || !showHistory) return
     const revision = ++recordsRequest.current
-    const key = `${filter}:${String(page)}`
+    const key = queryKey
     let active = true
     const isCurrent = () =>
       active &&
       providerRequest.current.lifecycle === providerLifecycle &&
       recordsRequest.current === revision
-    void listRecords(page, PAGE_SIZE, filter === 'all' ? undefined : filter).then(
+    void listRecords(page, PAGE_SIZE, statusFilter, undefined, historyFilters).then(
       (result) => {
         if (!isCurrent()) return
+        const lastPage = Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1)
+        if (page > lastPage) {
+          setPage(lastPage)
+          return
+        }
         setRows({ key, items: result.items })
         setTotal(result.total)
         setStorageDurable(result.storageDurable)
@@ -194,7 +230,15 @@ export function AiImagePage({
       active = false
       recordsRequest.current += 1
     }
-  }, [running, page, filter, providerLifecycle, showHistory])
+  }, [
+    running,
+    page,
+    queryKey,
+    statusFilter,
+    historyFilters,
+    providerLifecycle,
+    showHistory,
+  ])
 
   useEffect(() => {
     if (!running) return
@@ -232,14 +276,17 @@ export function AiImagePage({
     [records],
   )
 
-  // Only poll while something is actually being generated.
+  const shouldPollHistory =
+    showHistory && running && (hasRunning || hasImageWork(plugin?.status))
+
+  // Active work can be outside the current filter or page.
   useEffect(() => {
-    if (!running || !hasRunning) return
+    if (!shouldPollHistory) return
     const timer = setInterval(() => {
       void refreshRecords()
     }, 2500)
     return () => clearInterval(timer)
-  }, [running, hasRunning, refreshRecords])
+  }, [shouldPollHistory, refreshRecords])
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const showHeader = hostAvailable && plugin !== null && running
@@ -324,7 +371,7 @@ export function AiImagePage({
               AI 生图
             </h1>
             <p className="page-description">
-              识图提取商品标题、描述和提示词，生图生成或修改图片。两种模型可来自不同服务商。
+              每次提交集中为一个批次，多视角与成片保存在同一详情中。最多同时执行两个生成任务，其余排队。
             </p>
           </div>
           <div className="section-actions">
@@ -361,7 +408,32 @@ export function AiImagePage({
         </div>
 
         {showHeader ? (
-          <div className="ai-toolbar">
+          <div className="ai-toolbar flex-wrap gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                type="search"
+                aria-label="搜索生成批次"
+                placeholder="搜索批次、商品、提示词或模型"
+                maxLength={200}
+                className="w-64 max-w-full"
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setPage(0)
+                }}
+              />
+              <LabeledSelect
+                ariaLabel="任务类型"
+                className="w-36"
+                value={kind}
+                options={RECORD_KINDS}
+                onValueChange={(value) => {
+                  if (!RECORD_KINDS.some((entry) => entry.value === value)) return
+                  setKind(value as RecordKind | 'all')
+                  setPage(0)
+                }}
+              />
+            </div>
             <div className="ai-filters" role="tablist" aria-label="按状态筛选">
               {FILTERS.map((entry) => (
                 <button
@@ -380,7 +452,7 @@ export function AiImagePage({
               ))}
             </div>
             <span className="ai-muted">
-              {storageDurable ? '' : '仅本次运行 · '}共 {total} 条记录
+              {storageDurable ? '' : '仅本次运行 · '}共 {total} 个批次 / 任务
             </span>
           </div>
         ) : null}
@@ -399,7 +471,9 @@ export function AiImagePage({
                 <Empty>
                   <EmptyHeader>
                     <EmptyTitle>
-                      {filter === 'all' ? '还没有生成记录' : '没有符合条件的记录'}
+                      {filter === 'all' && !query.trim() && kind === 'all'
+                        ? '还没有生成记录'
+                        : '没有符合条件的批次或任务'}
                     </EmptyTitle>
                     <EmptyDescription>
                       {providers.length === 0
@@ -460,6 +534,7 @@ export function AiImagePage({
                           </TableCell>
                           <TableCell>
                             <div className="ai-row-title">{recordTitle(record)}</div>
+                            <BatchSummary record={record} />
                             <div className="ai-row-prompt">{record.prompt}</div>
                             {record.source ? <SourceLink source={record.source} /> : null}
                           </TableCell>

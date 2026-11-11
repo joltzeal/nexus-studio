@@ -26,6 +26,7 @@ import { PublicAddressService, sampleAddresses } from '../services/overpass.js'
 import { buildProfiles } from '../services/profiles.js'
 import type { PrivateStore } from '../store/private-store.js'
 import type { SecretVault } from '../store/secret-vault.js'
+import { SAVED_ADDRESS_METHODS, SavedAddresses } from './saved-addresses.js'
 
 export const ADDRESS_METHODS = [
   ...CONFIGURATION_METHODS,
@@ -36,6 +37,7 @@ export const ADDRESS_METHODS = [
   'address.export',
   'address.config.get',
   'address.config.set',
+  ...SAVED_ADDRESS_METHODS,
 ] as const
 
 export const MAPS_KEY_SLOT = 'google-maps-key'
@@ -58,8 +60,7 @@ interface MapsKeyState {
 }
 
 /**
- * `address.generator` capability. Every method is a query except the map key,
- * which is the only thing this plugin stores.
+ * `address.generator` capability, including saved profiles and map settings.
  */
 export class AddressGenerator {
   readonly id = 'address.generator'
@@ -73,6 +74,7 @@ export class AddressGenerator {
   private readonly now: () => Date
   private readonly random: () => number
   private readonly idFactory: () => string
+  private readonly saved: SavedAddresses
 
   constructor(options: AddressGeneratorOptions) {
     this.store = options.store
@@ -83,6 +85,7 @@ export class AddressGenerator {
     this.now = options.now ?? (() => new Date())
     this.random = options.random ?? Math.random
     this.idFactory = options.idFactory ?? randomUUID
+    this.saved = new SavedAddresses(this.store, this.now)
   }
 
   status(): Record<string, unknown> {
@@ -92,6 +95,8 @@ export class AddressGenerator {
   async call(context: DispatchContext): Promise<unknown> {
     if (CONFIGURATION_METHODS.some((method) => method === context.method))
       return this.configuration.call(context)
+    if (SAVED_ADDRESS_METHODS.some((method) => method === context.method))
+      return this.saved.call(context)
     switch (context.method) {
       case 'address.catalog':
         context.assertAlive()

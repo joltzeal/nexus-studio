@@ -13,6 +13,8 @@ import {
 } from '@/components/ui/dialog'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Input } from '@/components/ui/input'
+import { LabeledSelect } from '@/components/ui/labeled-select'
 import {
   Table,
   TableBody,
@@ -26,14 +28,19 @@ import { pluginHostAvailable } from '@/lib/platform/native-plugins'
 import { listProviders, listRecords } from './api'
 import { RecordDetailDialog } from './detail-dialog'
 import { RecordImage } from './record-image'
+import { BatchSummary } from './batch-summary'
 import { sourceHistoryAvailability } from './source-history'
 import { SourceLink } from './source-link'
 import { EMPTY_SELECTIONS } from './model-selection'
+import { hasImageWork } from './history-polling'
 import {
+  AI_IMAGE_PLUGIN_ID,
   formatTime,
   message,
   recordTitle,
   statusText,
+  RECORD_KINDS,
+  type RecordKind,
   type GenerationSource,
   type Provider,
   type ModelSelections,
@@ -68,8 +75,11 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
   const [availability, setAvailability] = useState<
     ReturnType<typeof sourceHistoryAvailability> | 'loading' | 'error'
   >(hostAvailable ? 'loading' : 'desktop')
+  const [pluginHasWork, setPluginHasWork] = useState(false)
   const [revision, setRevision] = useState(0)
   const [page, setPage] = useState(0)
+  const [query, setQuery] = useState('')
+  const [kind, setKind] = useState<RecordKind | 'all'>('all')
   const [detailId, setDetailId] = useState<string | null>(null)
   const [result, setResult] = useState<{
     key: string
@@ -79,7 +89,7 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
     modelConfigReady: boolean
     error: string | null
   } | null>(null)
-  const key = `${page}:${revision}`
+  const key = JSON.stringify([page, revision, query, kind])
   const current = result?.key === key ? result : null
   const ready = availability === 'ready'
   const { pluginId, itemId } = source
@@ -87,7 +97,14 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
   useEffect(
     () =>
       watchPluginCatalog(
-        (catalog) => setAvailability(sourceHistoryAvailability(hostAvailable, catalog)),
+        (catalog) => {
+          setAvailability(sourceHistoryAvailability(hostAvailable, catalog))
+          setPluginHasWork(
+            hasImageWork(
+              catalog.find((plugin) => plugin.id === AI_IMAGE_PLUGIN_ID)?.status,
+            ),
+          )
+        },
         () => setAvailability('error'),
       ),
     [hostAvailable, revision],
@@ -100,7 +117,16 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
     async function read() {
       try {
         const [records, providers] = await Promise.all([
-          listRecords(page, PAGE_SIZE, undefined, { pluginId, itemId }),
+          listRecords(
+            page,
+            PAGE_SIZE,
+            undefined,
+            { pluginId, itemId },
+            {
+              ...(query.trim() ? { query: query.trim() } : {}),
+              ...(kind === 'all' ? {} : { kind }),
+            },
+          ),
           listProviders(),
         ])
         if (!active) return
@@ -118,6 +144,7 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           error: null,
         })
         if (
+          pluginHasWork ||
           records.items.some(
             (record) =>
               record.status === 'running' || record.outputVision?.status === 'running',
@@ -142,7 +169,7 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
       active = false
       clearTimeout(timer)
     }
-  }, [ready, page, key, pluginId, itemId])
+  }, [ready, page, key, pluginId, itemId, query, kind, pluginHasWork])
 
   const refresh = useCallback(async () => {
     setRevision((value) => value + 1)
@@ -167,10 +194,37 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           <DialogHeader>
             <DialogTitle>商品生图历史</DialogTitle>
             <DialogDescription>
-              仅显示关联此商品的 AI 生图记录。查看历史不会自动生成图片或发起识图。
+              每次提交显示为完整批次，视角与成片集中在详情。仅显示关联此商品的记录。
             </DialogDescription>
           </DialogHeader>
           <SourceLink source={source} />
+          {ready ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                type="search"
+                aria-label="搜索商品生图批次"
+                placeholder="搜索批次标识、商品或提示词"
+                className="min-w-0 flex-1"
+                maxLength={200}
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setPage(0)
+                }}
+              />
+              <LabeledSelect
+                ariaLabel="商品生图任务类型"
+                className="w-36"
+                value={kind}
+                options={RECORD_KINDS}
+                onValueChange={(value) => {
+                  if (!RECORD_KINDS.some((entry) => entry.value === value)) return
+                  setKind(value as RecordKind | 'all')
+                  setPage(0)
+                }}
+              />
+            </div>
+          ) : null}
           {error ? (
             <Alert variant="destructive">
               <AlertTitle>读取失败</AlertTitle>
@@ -188,7 +242,11 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           ) : records?.items.length === 0 ? (
             <Empty>
               <EmptyHeader>
-                <EmptyTitle>此商品还没有生图记录</EmptyTitle>
+                <EmptyTitle>
+                  {query.trim() || kind !== 'all'
+                    ? '没有符合条件的批次或任务'
+                    : '此商品还没有生图记录'}
+                </EmptyTitle>
                 <EmptyDescription>
                   在商品页选择图片并手动提交生成后，记录会显示在这里。旧版未保存来源的记录不会自动关联。
                 </EmptyDescription>
@@ -225,6 +283,7 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
                       </TableCell>
                       <TableCell>
                         <p className="max-w-48 truncate">{recordTitle(record)}</p>
+                        <BatchSummary record={record} />
                         <p className="text-xs text-muted-foreground">
                           {record.imageModel}
                         </p>
@@ -257,8 +316,8 @@ function SourceImageHistory({ source, onClose }: SourceImageHistoryDialogProps) 
           {ready && records ? (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-muted-foreground">
-                {records.storageDurable ? '' : '仅本次运行 · '}共 {records.total} 条 · 第{' '}
-                {page + 1} / {pages} 页
+                {records.storageDurable ? '' : '仅本次运行 · '}共 {records.total} 个批次 /
+                任务 · 第 {page + 1} / {pages} 页
               </p>
               <div className="flex gap-2">
                 <Button
