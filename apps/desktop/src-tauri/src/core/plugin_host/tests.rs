@@ -199,15 +199,30 @@ fn link_directory(target: &Path, link: &Path) {
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, link).unwrap();
     #[cfg(windows)]
-    assert!(
-        std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(link)
+    {
+        // Use the filesystem API so fixture paths are never parsed by cmd.exe.
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=commonjs",
+                "-e",
+                "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')",
+            ])
             .arg(target)
+            .arg(link)
             .output()
-            .unwrap()
-            .status
-            .success()
+            .expect("Node must be available to create Windows plugin fixtures");
+        assert!(
+            output.status.success(),
+            "Failed to link {} to {}: {}\n{}",
+            link.display(),
+            target.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    assert_eq!(
+        fs::canonicalize(link).unwrap(),
+        fs::canonicalize(target).unwrap(),
     );
 }
 
@@ -441,7 +456,10 @@ fn install_copies_package_and_refuses_a_second_install() {
 #[test]
 fn install_copies_transitive_pnpm_dependencies_with_scopes_and_versions() {
     let _slot = NodeSlot::acquire();
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = tempfile::Builder::new()
+        .prefix("nexus fixtures & dependencies ")
+        .tempdir()
+        .unwrap();
     let source = write_package(&temporary.path().join("source"), MANIFEST, false);
     let store = temporary.path().join("store");
     let parser = store.join("parser@1/node_modules/parser");
@@ -576,6 +594,7 @@ fn install_rejects_unsafe_dependency_names_and_missing_required_dependencies() {
 
 #[test]
 fn install_rejects_dependency_cycles_and_preserves_the_previous_version() {
+    let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();
     let source = write_package(&temporary.path().join("source"), MANIFEST, false);
     let root = temporary.path().join("host");
@@ -617,6 +636,7 @@ fn install_rejects_dependency_cycles_and_preserves_the_previous_version() {
 
 #[test]
 fn install_bounds_the_depth_of_materialized_dependencies() {
+    let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();
     let source = write_package(&temporary.path().join("source"), MANIFEST, false);
     let store = temporary.path().join("store");
