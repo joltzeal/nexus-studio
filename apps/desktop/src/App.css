@@ -354,13 +354,14 @@
   gap: 14px;
 }
 .app-main {
+  --page-inset: 20px;
   display: flex;
   flex-direction: column;
   grid-column: 2;
   min-width: 0;
   min-height: 0;
   width: 100%;
-  padding: 20px;
+  padding: var(--page-inset) var(--page-inset) 0;
   overflow: auto;
 }
 .app-main > [data-slot='tabs-content'] {
@@ -369,7 +370,8 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  /* Keep overflowing pages inside the padded content area. */
+  /* End spacing scrolls with the page instead of reserving viewport space. */
+  padding-bottom: var(--page-inset);
   overflow: auto;
 }
 .page-heading {
@@ -1526,7 +1528,7 @@
     padding-inline: 16px;
   }
   .app-main {
-    padding: 16px;
+    --page-inset: 16px;
   }
   .appearance-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -1586,7 +1588,6 @@
   .app-main {
     grid-column: 1;
     grid-row: 3;
-    padding: 16px;
   }
   .page-heading {
     font-size: 22px;
