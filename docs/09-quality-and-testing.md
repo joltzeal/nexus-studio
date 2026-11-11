@@ -15,10 +15,26 @@ Windows 夹具改用现有 Node 运行时的 `fs.symlinkSync(..., 'junction')`�
 保留完整的间接依赖、作用域、不同版本及脱离工作区运行断言。
 另两项用例纳入已有 Node 进程并发限制。
 
-本地修改文件的 `rustfmt --check` 和 `git diff --check` 通过。
-没有执行本地构建、打包或 Rust 编译/测试/Clippy；Windows 回归与完整原生
-检查交由新提交的 CI，结果尚待确认。本次仅修改测试夹具和验证记录，
-应用版本保持 `0.1.25`，不改写已存在的发行标签。
+修复提交 `7812e44789e708a0ada76c123718326284cd7163` 已推送到远端 main 和工作分支。
+主线 Foundation quality 运行 `43043866709` 三个任务全部成功：
+
+| CI 任务           | 实际结果                                                |
+| ----------------- | ------------------------------------------------------- |
+| JavaScript        | lint、格式、类型、完整测试、构建与运行时检查全部通过    |
+| macOS 原生        | 构建、Rust 编译、完整测试、rustfmt 与 Clippy 全部通过   |
+| Windows 原生      | 构建、受管运行时、Rust 编译、rustfmt 与 Clippy 全部通过 |
+| Windows Rust 测试 | 318 项通过、0 失败；上述三项安装回归均明确记录为 `ok`   |
+
+Windows 完整日志为 `/tmp/nexus-ci-fix-20261111/windows-junction-success.log`。
+本地只执行修改文件的 `rustfmt --check`、Prettier 与 `git diff --check`，均通过；
+没有执行本地构建、打包或 Rust 编译/测试/Clippy。
+
+同时确认 `v0.1.25` Desktop release 运行 `43040337443` 全部成功：
+插件、Windows、macOS arm64、macOS x64 及 publish 均通过。
+Release 已于 `2026-11-11T15:03:52Z` 公开发布，非草稿、非预发布，
+包含三平台安装包、更新归档、签名与 `latest.json`。
+本次仅修改测试夹具和验证记录，应用版本保持 `0.1.25`，
+不改写已存在的发行标签；旧提交的失败记录保留，新提交的成功记录单独核对。
 
 ## 2026-11-11 0.1.25 CI 失败链路修复
 
