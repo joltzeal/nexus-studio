@@ -194,6 +194,33 @@ fn write_package(directory: &Path, manifest: &str, configured: bool) -> PathBuf 
     directory.to_path_buf()
 }
 
+fn link_directory(target: &Path, link: &Path) {
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    assert!(
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+fn write_node_package(directory: &Path, package: serde_json::Value, code: &str) {
+    fs::create_dir_all(directory).unwrap();
+    fs::write(
+        directory.join("package.json"),
+        serde_json::to_vec(&package).unwrap(),
+    )
+    .unwrap();
+    fs::write(directory.join("index.cjs"), code).unwrap();
+}
+
 fn write_account_package(directory: &Path, id: &str, fixture: serde_json::Value) -> PathBuf {
     let manifest = MANIFEST
         .replace("test.fixture-plugin", id)
@@ -332,9 +359,40 @@ fn workspace_vinted_accounts_manifest_declares_the_account_pool() {
     let manifest = PluginManifest::parse(&fs::read(path).unwrap()).unwrap();
     assert_eq!(manifest.id, "studio.vinted-accounts");
     assert!(manifest.declares(Capability::AccountPool));
-    // Credentials never leave the private store: no network, no secret slots.
-    assert!(manifest.permissions.network_domains.is_empty());
+    let expected_domains: Vec<String> = [
+        "vinted.com",
+        "vinted.co.uk",
+        "vinted.at",
+        "vinted.be",
+        "vinted.cz",
+        "vinted.de",
+        "vinted.dk",
+        "vinted.ee",
+        "vinted.es",
+        "vinted.fi",
+        "vinted.fr",
+        "vinted.gr",
+        "vinted.hr",
+        "vinted.hu",
+        "vinted.ie",
+        "vinted.it",
+        "vinted.lt",
+        "vinted.lv",
+        "vinted.nl",
+        "vinted.pl",
+        "vinted.pt",
+        "vinted.ro",
+        "vinted.se",
+        "vinted.si",
+        "vinted.sk",
+    ]
+    .into_iter()
+    .flat_map(|domain| [domain.to_string(), format!("www.{domain}")])
+    .chain(std::iter::once("api.day.app".to_string()))
+    .collect();
+    assert_eq!(manifest.permissions.network_domains, expected_domains);
     assert!(manifest.permissions.secrets.is_empty());
+    assert!(!manifest.permissions.wants_browser_access);
 }
 
 #[test]
@@ -378,6 +436,230 @@ fn install_copies_package_and_refuses_a_second_install() {
 
     install::uninstall(&root, &candidate.manifest.id, &candidate.manifest.version).unwrap();
     assert!(!installed.exists());
+}
+
+#[test]
+fn install_copies_transitive_pnpm_dependencies_with_scopes_and_versions() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let source = write_package(&temporary.path().join("source"), MANIFEST, false);
+    let store = temporary.path().join("store");
+    let parser = store.join("parser@1/node_modules/parser");
+    let entities_v1 = store.join("entities@1/node_modules/entities");
+    let entities_v2 = store.join("entities@2/node_modules/entities");
+    let cookies = store.join("cookies@1/node_modules/@fixture/cookies");
+    let tail = store.join("tail@1/node_modules/tail");
+    let hoisted = store.join("hoisted@1/node_modules/@fixture/hoisted");
+    write_node_package(
+        &parser,
+        serde_json::json!({
+            "main": "index.cjs",
+            "dependencies": { "entities": "2" },
+            "optionalDependencies": { "@fixture/cookies": "1", "absent-native": "1" },
+            "devDependencies": { "absent-dev": "1" },
+        }),
+        "module.exports = [require('entities'), require('@fixture/cookies')]",
+    );
+    for (directory, value) in [(&entities_v1, "root-v1"), (&entities_v2, "parser-v2")] {
+        write_node_package(
+            directory,
+            serde_json::json!({ "main": "index.cjs" }),
+            &format!("module.exports = '{value}'"),
+        );
+    }
+    write_node_package(
+        &cookies,
+        serde_json::json!({ "main": "index.cjs", "dependencies": { "tail": "1" } }),
+        "module.exports = require('tail')",
+    );
+    write_node_package(
+        &tail,
+        serde_json::json!({ "main": "index.cjs" }),
+        "module.exports = 'tail'",
+    );
+    write_node_package(
+        &hoisted,
+        serde_json::json!({ "main": "index.cjs" }),
+        "module.exports = 'hoisted'",
+    );
+    link_directory(&parser, &source.join("node_modules/parser"));
+    link_directory(&entities_v1, &source.join("node_modules/entities"));
+    link_directory(&entities_v2, &store.join("parser@1/node_modules/entities"));
+    link_directory(
+        &cookies,
+        &store.join("parser@1/node_modules/@fixture/cookies"),
+    );
+    link_directory(&tail, &store.join("cookies@1/node_modules/tail"));
+    link_directory(
+        &hoisted,
+        &temporary.path().join("node_modules/@fixture/hoisted"),
+    );
+    fs::write(
+        source.join("package.json"),
+        r#"{"main":"dist/index.js","dependencies":{"@fixture/hoisted":"1"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        source.join("dist/index.js"),
+        "process.stdout.write(JSON.stringify([require('entities'), require('parser'), require('@fixture/hoisted')]))",
+    )
+    .unwrap();
+    let candidate = inspect(&source, CandidateSource::Development)
+        .unwrap()
+        .unwrap();
+    let installed = install::install(&candidate, &temporary.path().join("host")).unwrap();
+
+    // The installed copy must resolve every hop without the workspace or store.
+    fs::remove_dir_all(&source).unwrap();
+    fs::remove_dir_all(&store).unwrap();
+    let output = std::process::Command::new("node")
+        .arg(installed.join("dist/index.js"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!(["root-v1", ["parser-v2", "tail"], "hoisted"])
+    );
+    assert!(
+        !installed
+            .join("node_modules/parser/node_modules/absent-native")
+            .exists()
+    );
+}
+
+#[test]
+fn install_rejects_unsafe_dependency_names_and_missing_required_dependencies() {
+    for name in [
+        "../escape",
+        "@scope/../../escape",
+        "/absolute",
+        "C:\\escape",
+        "C:escape",
+        "@scope\\escape",
+        "@scope/.",
+        "missing-required",
+    ] {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = write_package(&temporary.path().join("source"), MANIFEST, false);
+        fs::write(
+            source.join("package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "main": "dist/index.js",
+                "dependencies": { (name): "1" },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let root = temporary.path().join("host");
+        let candidate = inspect(&source, CandidateSource::Development)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            install::install(&candidate, &root).unwrap_err(),
+            InstallError::CopyFailed,
+            "{name}"
+        );
+        assert!(!root.join("installed").exists());
+        assert!(
+            fs::read_dir(root.join(".staging"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn install_rejects_dependency_cycles_and_preserves_the_previous_version() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = write_package(&temporary.path().join("source"), MANIFEST, false);
+    let root = temporary.path().join("host");
+    let candidate = inspect(&source, CandidateSource::Development)
+        .unwrap()
+        .unwrap();
+    let installed = install::install(&candidate, &root).unwrap();
+    let first = temporary.path().join("store/first/node_modules/first");
+    let second = temporary.path().join("store/second/node_modules/second");
+    write_node_package(
+        &first,
+        serde_json::json!({ "dependencies": { "second": "1" } }),
+        "",
+    );
+    write_node_package(
+        &second,
+        serde_json::json!({ "dependencies": { "first": "1" } }),
+        "",
+    );
+    link_directory(&first, &source.join("node_modules/first"));
+    link_directory(&second, &first.parent().unwrap().join("second"));
+    link_directory(&first, &second.parent().unwrap().join("first"));
+
+    assert_eq!(
+        install::reinstall(&candidate, &root).unwrap_err(),
+        InstallError::CopyFailed
+    );
+    assert_eq!(
+        fs::read_to_string(installed.join("dist/index.js")).unwrap(),
+        PLUGIN_JS
+    );
+    assert!(
+        fs::read_dir(root.join(".staging"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn install_bounds_the_depth_of_materialized_dependencies() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = write_package(&temporary.path().join("source"), MANIFEST, false);
+    let store = temporary.path().join("store");
+    for index in 0..=install::MAX_DEPTH {
+        let name = format!("dep{index}");
+        let next = format!("dep{}", index + 1);
+        let package = store.join(&name).join("node_modules").join(&name);
+        write_node_package(
+            &package,
+            if index == install::MAX_DEPTH {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({ "dependencies": { (next.clone()): "1" } })
+            },
+            "",
+        );
+    }
+    for index in 0..install::MAX_DEPTH {
+        let next = format!("dep{}", index + 1);
+        link_directory(
+            &store.join(&next).join("node_modules").join(&next),
+            &store.join(format!("dep{index}/node_modules")).join(&next),
+        );
+    }
+    link_directory(
+        &store.join("dep0/node_modules/dep0"),
+        &source.join("node_modules/dep0"),
+    );
+    let root = temporary.path().join("host");
+    let candidate = inspect(&source, CandidateSource::Development)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        install::install(&candidate, &root).unwrap_err(),
+        InstallError::TooLarge
+    );
+    assert!(!root.join("installed").exists());
+    assert!(
+        fs::read_dir(root.join(".staging"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
 }
 
 #[test]

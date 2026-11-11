@@ -1,4 +1,5 @@
 use super::discovery::Candidate;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -71,7 +72,13 @@ fn place(candidate: &Candidate, root: &Path, replace: bool) -> Result<PathBuf, I
     fs::create_dir_all(&staging).map_err(|_| InstallError::Io)?;
 
     let mut copied = 0usize;
-    let result = copy_tree(&candidate.directory, &staging, 0, &mut copied);
+    let result = copy_tree(
+        &candidate.directory,
+        &staging,
+        0,
+        &mut copied,
+        &mut Vec::new(),
+    );
     if let Err(error) = result {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
@@ -179,11 +186,17 @@ fn copy_tree(
     destination: &Path,
     depth: usize,
     copied: &mut usize,
+    ancestors: &mut Vec<PathBuf>,
 ) -> Result<(), InstallError> {
     if depth > MAX_DEPTH {
         return Err(InstallError::TooLarge);
     }
-    for entry in fs::read_dir(source).map_err(|_| InstallError::CopyFailed)? {
+    let source = fs::canonicalize(source).map_err(|_| InstallError::CopyFailed)?;
+    if ancestors.contains(&source) {
+        return Err(InstallError::CopyFailed);
+    }
+    ancestors.push(source.clone());
+    for entry in fs::read_dir(&source).map_err(|_| InstallError::CopyFailed)? {
         let entry = entry.map_err(|_| InstallError::CopyFailed)?;
         let name = entry.file_name();
         if name == ".git" || name == ".DS_Store" {
@@ -200,10 +213,114 @@ fn copy_tree(
         let metadata = fs::metadata(&from).map_err(|_| InstallError::CopyFailed)?;
         if metadata.is_dir() {
             fs::create_dir_all(&to).map_err(|_| InstallError::CopyFailed)?;
-            copy_tree(&from, &to, depth + 1, copied)?;
+            copy_tree(&from, &to, depth + 1, copied, ancestors)?;
         } else if metadata.is_file() {
             fs::copy(&from, &to).map_err(|_| InstallError::CopyFailed)?;
         }
     }
+    let parent = destination.parent();
+    let is_package = depth == 0
+        || parent.is_some_and(|parent| {
+            parent.ends_with("node_modules")
+                || (parent
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with('@'))
+                    && parent
+                        .parent()
+                        .is_some_and(|parent| parent.ends_with("node_modules")))
+        });
+    if is_package {
+        copy_dependencies(&source, destination, depth, copied, ancestors)?;
+    }
+    ancestors.pop();
     Ok(())
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ProductionDependencies {
+    dependencies: BTreeMap<String, String>,
+    optional_dependencies: BTreeMap<String, String>,
+    peer_dependencies: BTreeMap<String, String>,
+}
+
+fn copy_dependencies(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    copied: &mut usize,
+    ancestors: &mut Vec<PathBuf>,
+) -> Result<(), InstallError> {
+    let bytes = match fs::read(source.join("package.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(InstallError::CopyFailed),
+    };
+    let package: ProductionDependencies =
+        serde_json::from_slice(&bytes).map_err(|_| InstallError::CopyFailed)?;
+    for name in package
+        .dependencies
+        .keys()
+        .chain(package.optional_dependencies.keys())
+        .chain(package.peer_dependencies.keys())
+    {
+        if !safe_dependency_name(name) {
+            return Err(InstallError::CopyFailed);
+        }
+        let target = destination.join("node_modules").join(name);
+        if target.is_dir() {
+            continue;
+        }
+        // Node resolves from the real package path. In pnpm's store its
+        // dependencies are siblings, outside the directory followed above.
+        let resolved = source
+            .ancestors()
+            .filter(|parent| !parent.ends_with("node_modules"))
+            .map(|parent| parent.join("node_modules").join(name))
+            .find(|path| path.is_dir());
+        let Some(resolved) = resolved else {
+            if package.optional_dependencies.contains_key(name)
+                || !package.dependencies.contains_key(name)
+            {
+                continue;
+            }
+            return Err(InstallError::CopyFailed);
+        };
+        // Keep each package's resolved version local instead of flattening
+        // incompatible versions into the plugin's top-level node_modules.
+        let dependency_depth = depth + 1 + name.split('/').count();
+        if dependency_depth > MAX_DEPTH {
+            return Err(InstallError::TooLarge);
+        }
+        let mut directory = destination.to_path_buf();
+        for component in std::iter::once("node_modules").chain(name.split('/')) {
+            directory.push(component);
+            if !directory.exists() {
+                *copied += 1;
+                if *copied > MAX_ENTRIES {
+                    return Err(InstallError::TooLarge);
+                }
+                fs::create_dir(&directory).map_err(|_| InstallError::CopyFailed)?;
+            }
+        }
+        copy_tree(&resolved, &target, dependency_depth, copied, ancestors)?;
+    }
+    Ok(())
+}
+
+fn safe_dependency_name(name: &str) -> bool {
+    let safe_part = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    };
+    if let Some(scoped) = name.strip_prefix('@') {
+        scoped
+            .split_once('/')
+            .is_some_and(|(scope, package)| safe_part(scope) && safe_part(package))
+    } else {
+        safe_part(name)
+    }
 }

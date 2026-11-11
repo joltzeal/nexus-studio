@@ -90,6 +90,13 @@ plugins/
 3. 重新读取复制后的 manifest，digest 与来源不一致则拒绝安装。
 4. `rename` 到 `installed/<id>/<version>`，再写入登记表。
 
+目录安装会解引用依赖链接，并从包的真实目录按 Node 的 `node_modules` 查找顺序
+补齐 `dependencies`、已安装的 `optionalDependencies` 与 `peerDependencies`，
+不额外追踪 `devDependencies`。补齐的依赖放在各包自己的 `node_modules` 内，
+保留作用域包和不同版本的解析关系，不依赖原工作区或 pnpm store。
+缺失必需依赖、非法依赖名或复制环会拒绝安装；补齐的目录与文件同样计入
+20000 条目和深度 24 的上限。失败清理 staging，重装失败保留原版本目录。
+
 **商店包**（`.nexuspkg`）：
 
 1. catalog 里的 SHA-256 与下载字节比对，不符直接拒绝。

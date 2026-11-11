@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AccountRecord } from '../domain/types.js'
@@ -481,6 +482,8 @@ describe('automatic account sale queries', () => {
       diagnostics,
       orderSourceFactory: () => ({
         scan: async (_url, signal) => {
+          // Include slow setup so polling cannot depend on event-loop iterations.
+          await delay(50, undefined, { signal })
           scanned = true
           return new Promise((resolve) => {
             signal.addEventListener(
@@ -497,18 +500,22 @@ describe('automatic account sale queries', () => {
       }),
     })
     plugins.push(instance.plugin)
-    await eventually(async () => scanned)
-    input.end()
-    await eventually(async () => cancelled)
-    await instance.plugin.orders.stop()
-    expect(await detail(instance.plugin, account.id)).toMatchObject({
-      running: false,
-      lastItemCount: null,
-    })
-    instance.stop()
-    input.destroy()
-    output.destroy()
-    diagnostics.destroy()
+    try {
+      await eventually(async () => scanned)
+      input.end()
+      await eventually(async () => cancelled)
+      await instance.plugin.orders.stop()
+      expect(await detail(instance.plugin, account.id)).toMatchObject({
+        running: false,
+        lastItemCount: null,
+      })
+    } finally {
+      instance.stop()
+      await instance.plugin.orders.stop()
+      input.destroy()
+      output.destroy()
+      diagnostics.destroy()
+    }
   })
 
   it('limits simultaneous scans and eventually processes other due accounts', async () => {
@@ -655,9 +662,11 @@ describe('automatic account sale queries', () => {
 })
 
 async function eventually(check: () => Promise<boolean>) {
-  for (let index = 0; index < 100; index += 1) {
-    if (await check()) return
-    await new Promise<void>((resolve) => setImmediate(resolve))
-  }
-  throw new Error('Expected background operation did not start')
+  await expect
+    .poll(check, {
+      timeout: 3000,
+      interval: 10,
+      message: 'Expected background operation did not start',
+    })
+    .toBe(true)
 }
