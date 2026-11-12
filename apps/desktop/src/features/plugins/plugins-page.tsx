@@ -7,6 +7,7 @@ import {
   KeyRound,
   Loader2,
   MapPinned,
+  Mail,
   Radar,
   Radio,
   RefreshCw,
@@ -72,6 +73,7 @@ const capabilityIcons = {
   'monitor.collector': Radar,
   'account.pool': Users,
   'window.sync': Radio,
+  'email.provider': Mail,
 }
 
 function iconFor(capability: string) {

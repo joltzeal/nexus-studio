@@ -4,6 +4,7 @@ use super::license_store::LicenseStore;
 use super::network_proxy::NetworkProxyStore;
 use super::plugin_host::discovery::development_roots;
 use super::plugin_host::manifest::Capability;
+use super::plugin_host::process::PluginErrorPayload;
 use super::plugin_host::{HostError, MarketStatusView, PluginHost, PluginView};
 use super::runtime_paths::RuntimePaths;
 use serde::Deserialize;
@@ -15,6 +16,10 @@ use tauri::{Manager, State};
 
 fn message(error: HostError) -> String {
     error.message()
+}
+
+fn call_failure(error: HostError) -> PluginErrorPayload {
+    PluginErrorPayload::new(error.code(), &error.message(), error.retryable())
 }
 
 fn capability(value: &str) -> Result<Capability, String> {
@@ -109,8 +114,9 @@ pub struct CallInput {
 pub async fn plugin_call(
     state: State<'_, Arc<PluginHost>>,
     input: CallInput,
-) -> Result<Value, String> {
-    let capability = webview_capability(&input)?;
+) -> Result<Value, PluginErrorPayload> {
+    let capability = webview_capability(&input)
+        .map_err(|message| PluginErrorPayload::new("PERMISSION_DENIED", &message, false))?;
     let deadline = Duration::from_millis(input.deadline_ms.unwrap_or(30_000).clamp(1_000, 120_000));
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
@@ -122,10 +128,10 @@ pub async fn plugin_call(
                 input.payload,
                 deadline,
             )
-            .map_err(message)
+            .map_err(call_failure)
     })
     .await
-    .map_err(|_| "插件调用任务中断".to_string())?
+    .map_err(|_| PluginErrorPayload::new("UNAVAILABLE", "插件调用任务中断", true))?
 }
 
 fn webview_capability(input: &CallInput) -> Result<Capability, String> {
@@ -264,5 +270,25 @@ mod tests {
             assert!(webview_capability(&input(method, "window.sync")).is_ok());
         }
         assert!(webview_capability(&input("configuration.sync.offer", "window.sync")).is_err());
+    }
+
+    #[test]
+    fn webview_call_preserves_structured_plugin_failure() {
+        use super::super::plugin_host::process::ProcessError;
+
+        let failure = call_failure(HostError::Process(ProcessError::Plugin(
+            PluginErrorPayload::new("PERMISSION_DENIED", "Missing mail permission", false),
+        )));
+        assert_eq!(
+            serde_json::to_value(failure).unwrap(),
+            json!({
+                "code": "PERMISSION_DENIED",
+                "message": "Missing mail permission",
+                "retryable": false
+            })
+        );
+        let missing = call_failure(HostError::NotInstalled);
+        assert_eq!(missing.code, "NOT_CONFIGURED");
+        assert!(!missing.retryable);
     }
 }

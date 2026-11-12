@@ -17,6 +17,7 @@ export type {
   AccountPool,
   CapabilityDescriptor,
   EnvironmentConfigurator,
+  EmailProvider,
   ImageProvider,
   PlatformAdapter,
   PluginCapabilityContracts,

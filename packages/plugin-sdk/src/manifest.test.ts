@@ -18,6 +18,14 @@ const manifest: PluginManifest = {
 }
 
 describe('plugin manifest', () => {
+  it('accepts a dedicated email capability without window lifecycle access', () => {
+    const email = PluginManifestSchema.safeParse({
+      ...manifest,
+      capabilities: ['email.provider'],
+    })
+    expect(email.success).toBe(true)
+    if (email.success) expect(email.data.capabilities).toEqual(['email.provider'])
+  })
   it('validates a typed manifest without loading or executing plugin code', () => {
     expect(definePluginManifest(manifest)).toEqual(manifest)
   })

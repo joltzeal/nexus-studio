@@ -6,6 +6,12 @@
 [代理池插件](15-proxy-plugin.md)、[地址生成器插件](19-address-generator-plugin.md)与
 [共享货源插件](21-shared-supply-plugin.md)。
 
+邮箱插件新增独立 `email.provider` 能力，Rust manifest 与 SDK 使用同一能力名称，
+通过既有 `plugin_call`、私有目录和配置迁移调用，不新增邮箱专属原生命令。
+它不声明 `account.pool`，因此不会进入窗口删除解绑或窗口迁移附件流程。
+token 刷新调度属于邮箱插件进程，关闭标准输入或收到终止信号时停止。
+详细持久化与网络边界见[邮箱插件](41-email-plugin.md)。
+
 ## 1. 代码位置与组成
 
 | 文件                                     | 职责                                             |
@@ -249,6 +255,12 @@ Nexus 备注等本地元数据仍可编辑。
 | `plugin_install`         | 从本地目录安装并立即启动             |
 | `plugin_uninstall`       | 停止进程并删除安装目录               |
 | `plugin_call`            | 按能力与方法调用，带截止时间         |
+
+`plugin_call` 的 Tauri 失败响应保留 `{ code, message, retryable }` 结构，
+不会在原生桥接时只留下消息。前端公共适配器校验结构并转换为 `PluginCallError`；
+未知或不合法的拒绝值只显示通用失败，不能将原始值写入提示。
+邮箱页面仅按 `AUTH_FAILED` 与 `PERMISSION_DENIED` 映射固定的重新授权/权限提示，
+其他请求错误使用对应操作的固定失败文案，防止上游响应带出凭据。
 
 页面侧：插件中心是一张紧凑表格，列出插件、能力、版本、状态与操作；
 操作只有“安装”、清单详情（`i` 图标）与卸载，没有启用、停用或重启。

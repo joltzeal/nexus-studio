@@ -1,0 +1,39 @@
+{
+  "name": "@nexus/plugin-email",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Microsoft mailbox management, OAuth mail reading and durable scheduled token refresh",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./manifest": {
+      "types": "./dist/nexus.plugin.d.ts",
+      "import": "./dist/nexus.plugin.js"
+    }
+  },
+  "files": [
+    "dist",
+    "nexus.plugin.ts"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/emit-manifest.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/index.js"
+  },
+  "dependencies": {
+    "@nexus/plugin-sdk": "workspace:*",
+    "htmlparser2": "10.0.0",
+    "imapflow": "2.11.0",
+    "mailparser": "3.14.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/mailparser": "3.9.0"
+  }
+}

@@ -11,6 +11,12 @@ export default defineConfig({
       '@nexus/plugin-sdk/lifecycle': fileURLToPath(
         new URL('./packages/plugin-sdk/src/lifecycle.ts', import.meta.url),
       ),
+      '@nexus/plugin-sdk': fileURLToPath(
+        new URL('./packages/plugin-sdk/src/index.ts', import.meta.url),
+      ),
+      '@nexus/plugin-email/manifest': fileURLToPath(
+        new URL('./plugins/email/nexus.plugin.ts', import.meta.url),
+      ),
     },
   },
   test: {

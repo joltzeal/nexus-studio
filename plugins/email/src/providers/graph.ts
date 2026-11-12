@@ -1,0 +1,222 @@
+import { z } from 'zod'
+import { invalidRequest, protocolError } from '../domain/errors.js'
+import type {
+  MailAddress,
+  MailboxClient,
+  MailFolder,
+  MailGetInput,
+  MailListInput,
+  MailMessage,
+  MailMessageDetail,
+  MailMessagePage,
+  MailSession,
+} from '../domain/types.js'
+import { MicrosoftHttp } from './http.js'
+import {
+  accountKey,
+  capText,
+  checkFolder,
+  checkSession,
+  htmlText,
+  OpaqueCursor,
+} from './support.js'
+
+const ORIGIN = 'https://graph.microsoft.com'
+const properties = [
+  'id',
+  'subject',
+  'from',
+  'receivedDateTime',
+  'isRead',
+  'hasAttachments',
+  'bodyPreview',
+]
+const idSchema = z
+  .string()
+  .min(1)
+  .max(2048)
+  .regex(/^[A-Za-z0-9_+=/-]+$/u)
+const addressSchema = z.object({
+  emailAddress: z.object({
+    name: z.string().nullable().optional(),
+    address: z.string(),
+  }),
+})
+const messageSchema = z.object({
+  id: idSchema,
+  subject: z.string().nullable(),
+  from: addressSchema.nullable(),
+  receivedDateTime: z.iso.datetime({ offset: true }).nullable(),
+  isRead: z.boolean(),
+  hasAttachments: z.boolean(),
+  bodyPreview: z.string().nullable(),
+})
+const pageSchema = z.object({
+  value: z.array(messageSchema).max(20),
+  '@odata.nextLink': z.string().min(1).max(8192).optional(),
+})
+const detailSchema = messageSchema.extend({
+  toRecipients: z.array(addressSchema).max(100),
+  body: z.object({
+    contentType: z.enum(['text', 'html']),
+    content: z.string(),
+  }),
+})
+const cursorSchema = z.strictObject({
+  v: z.literal(1),
+  kind: z.literal('graph'),
+  account: z.string(),
+  folder: z.enum(['inbox', 'junkemail']),
+  url: z.string().min(1).max(8192),
+})
+type GraphMessage = z.infer<typeof messageSchema>
+
+function folderPath(folder: MailFolder): string {
+  return `/v1.0/me/mailFolders/${folder}/messages`
+}
+
+function graphAddress(value: z.infer<typeof addressSchema> | null): MailAddress {
+  return {
+    name: capText(value?.emailAddress.name ?? '', 256).text,
+    address: capText(value?.emailAddress.address ?? '', 320).text,
+  }
+}
+
+function summary(value: GraphMessage): MailMessage {
+  return {
+    id: value.id,
+    subject: capText(value.subject ?? '', 1024).text,
+    from: graphAddress(value.from),
+    receivedAt: value.receivedDateTime
+      ? new Date(value.receivedDateTime).toISOString()
+      : null,
+    isRead: value.isRead,
+    hasAttachments: value.hasAttachments,
+    preview: capText(value.bodyPreview ?? '', 512).text,
+  }
+}
+
+function continuationUrl(link: string, folder: MailFolder): string {
+  try {
+    const url = new URL(link)
+    const path = decodeURIComponent(url.pathname).toLowerCase()
+    const allowed = [
+      folderPath(folder).toLowerCase(),
+      `/v1.0/me/mailfolders('${folder}')/messages`,
+    ]
+    if (
+      url.origin !== ORIGIN ||
+      !allowed.includes(path) ||
+      url.username ||
+      url.password ||
+      url.hash ||
+      !url.search
+    )
+      throw protocolError('Microsoft pagination response is invalid')
+    return url.href
+  } catch {
+    throw protocolError('Microsoft pagination response is invalid')
+  }
+}
+
+export class MicrosoftGraph implements MailboxClient {
+  constructor(
+    private readonly http: MicrosoftHttp,
+    private readonly cursors: OpaqueCursor,
+  ) {}
+
+  async list(
+    session: MailSession,
+    input: MailListInput,
+    signal: AbortSignal,
+  ): Promise<MailMessagePage> {
+    checkSession(session)
+    checkFolder(input.folder)
+    const path = folderPath(input.folder)
+    let requestUrl: string
+    if (input.cursor !== undefined) {
+      const parsed = cursorSchema.safeParse(this.cursors.decode(input.cursor))
+      if (
+        !parsed.success ||
+        parsed.data.folder !== input.folder ||
+        parsed.data.account !== accountKey(session)
+      )
+        throw invalidRequest('Email cursor does not match this mailbox')
+      requestUrl = continuationUrl(parsed.data.url, input.folder)
+    } else {
+      requestUrl = `${ORIGIN}${path}?${new URLSearchParams({
+        $top: '20',
+        $orderby: 'receivedDateTime desc',
+        $select: properties.join(','),
+      })}`
+    }
+    const body = await this.http.json(
+      requestUrl,
+      { headers: this.headers(session) },
+      signal,
+      'graph',
+    )
+    const page = pageSchema.safeParse(body)
+    if (!page.success) throw protocolError('Microsoft message list is invalid')
+    const next = page.data['@odata.nextLink']
+    return {
+      items: page.data.value.map(summary),
+      nextCursor:
+        next === undefined
+          ? null
+          : this.cursors.encode({
+              v: 1,
+              kind: 'graph',
+              account: accountKey(session),
+              folder: input.folder,
+              url: continuationUrl(next, input.folder),
+            }),
+    }
+  }
+
+  async get(
+    session: MailSession,
+    input: MailGetInput,
+    signal: AbortSignal,
+  ): Promise<MailMessageDetail> {
+    checkSession(session)
+    checkFolder(input.folder)
+    if (!idSchema.safeParse(input.messageId).success) {
+      throw invalidRequest('Microsoft message ID is invalid')
+    }
+    const url = new URL(
+      `${ORIGIN}${folderPath(input.folder)}/${encodeURIComponent(input.messageId)}`,
+    )
+    url.searchParams.set('$select', [...properties, 'toRecipients', 'body'].join(','))
+    const body = await this.http.json(
+      url.href,
+      {
+        headers: { ...this.headers(session), Prefer: 'outlook.body-content-type="text"' },
+      },
+      signal,
+      'graph',
+    )
+    const detail = detailSchema.safeParse(body)
+    if (!detail.success || detail.data.id !== input.messageId) {
+      throw protocolError('Microsoft message detail is invalid')
+    }
+    const text =
+      detail.data.body.contentType === 'html'
+        ? htmlText(detail.data.body.content)
+        : detail.data.body.content
+    const boundedBody = capText(text)
+    return {
+      ...summary(detail.data),
+      to: detail.data.toRecipients.map(graphAddress),
+      body: boundedBody.text,
+      truncated: boundedBody.truncated,
+    }
+  }
+
+  private headers(session: MailSession): Record<string, string> {
+    return {
+      Authorization: `Bearer ${session.accessToken}`,
+      Accept: 'application/json',
+    }
+  }
+}

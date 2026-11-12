@@ -27,10 +27,12 @@ pub enum Capability {
     AccountPool,
     #[serde(rename = "window.sync")]
     WindowSync,
+    #[serde(rename = "email.provider")]
+    EmailProvider,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 10] = [
+    pub const ALL: [Capability; 11] = [
         Capability::ProxyProvider,
         Capability::AddressGenerator,
         Capability::SupplyCatalog,
@@ -41,6 +43,7 @@ impl Capability {
         Capability::MonitorCollector,
         Capability::AccountPool,
         Capability::WindowSync,
+        Capability::EmailProvider,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -55,6 +58,7 @@ impl Capability {
             Capability::MonitorCollector => "monitor.collector",
             Capability::AccountPool => "account.pool",
             Capability::WindowSync => "window.sync",
+            Capability::EmailProvider => "email.provider",
         }
     }
 
@@ -317,6 +321,25 @@ pub fn valid_domain(domain: &str) -> bool {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    #[test]
+    fn email_capability_is_distinct_from_account_lifecycle() {
+        assert_eq!(
+            Capability::parse("email.provider"),
+            Some(Capability::EmailProvider)
+        );
+        let manifest = serde_json::json!({
+            "apiVersion":1,"id":"studio.email","version":"1.0.0",
+            "name":"Mailbox","minCoreVersion":env!("CARGO_PKG_VERSION"),
+            "capabilities":["email.provider"],"permissions":{
+                "networkDomains":["graph.microsoft.com"],
+                "wantsBrowserAccess":false,"storage":"private","secrets":[]
+            }
+        });
+        let parsed = PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(parsed.declares(Capability::EmailProvider));
+        assert!(!parsed.declares(Capability::AccountPool));
+    }
 
     #[test]
     fn a_plugin_requiring_the_running_application_version_is_compatible() {

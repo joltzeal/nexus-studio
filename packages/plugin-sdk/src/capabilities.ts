@@ -52,6 +52,8 @@ export interface AccountPool extends CapabilityDescriptor {
   detachWindow(input: WindowDetachInput): Promise<WindowDetachResult>
 }
 export type WindowSync = CapabilityDescriptor
+/** Mailbox accounts, read-only mail and provider-owned token refresh. */
+export type EmailProvider = CapabilityDescriptor
 
 export interface PluginCapabilityContracts {
   'proxy.provider': ProxyProvider
@@ -64,4 +66,5 @@ export interface PluginCapabilityContracts {
   'monitor.collector': MonitorCollector
   'account.pool': AccountPool
   'window.sync': WindowSync
+  'email.provider': EmailProvider
 }

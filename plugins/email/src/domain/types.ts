@@ -1,0 +1,149 @@
+import type { PluginErrorCode } from './errors.js'
+
+export type MailTransport = 'graph' | 'imap'
+export type MailFolder = 'inbox' | 'junkemail'
+export type MailboxStatus = 'pending' | 'active' | 'reauth-required' | 'error' | 'paused'
+
+export interface MailCredentials {
+  email: string
+  clientId: string
+  refreshToken: string
+}
+
+export interface TokenSet {
+  accessToken: string
+  /** Absent means keep the current refresh token. */
+  refreshToken?: string
+  expiresIn: number
+}
+
+export interface MailAddress {
+  name: string
+  address: string
+}
+
+export interface MailMessage {
+  id: string
+  subject: string
+  from: MailAddress
+  receivedAt: string | null
+  isRead: boolean
+  hasAttachments: boolean
+  preview: string
+}
+
+export interface MailMessageDetail extends MailMessage {
+  to: MailAddress[]
+  body: string
+  truncated: boolean
+}
+
+export interface MailMessagePage {
+  items: MailMessage[]
+  /** Opaque cursor validated by the producing client, never an arbitrary URL. */
+  nextCursor: string | null
+}
+
+export interface MailSession {
+  email: string
+  accessToken: string
+}
+
+export interface MailListInput {
+  folder: MailFolder
+  cursor?: string
+}
+
+export interface MailGetInput {
+  folder: MailFolder
+  messageId: string
+}
+
+export interface TokenRefresher {
+  refresh(credentials: MailCredentials, signal: AbortSignal): Promise<TokenSet>
+}
+
+export interface MailboxClient {
+  list(
+    session: MailSession,
+    input: MailListInput,
+    signal: AbortSignal,
+  ): Promise<MailMessagePage>
+  get(
+    session: MailSession,
+    input: MailGetInput,
+    signal: AbortSignal,
+  ): Promise<MailMessageDetail>
+}
+
+export interface EmailProvider {
+  tokens: TokenRefresher
+  mailbox: MailboxClient
+}
+
+/** A provider owns its matching authentication and mailbox clients. */
+export abstract class EmailProviderFactory {
+  abstract readonly id: string
+  abstract create(transport: MailTransport): EmailProvider
+}
+
+export interface MailboxRecord {
+  id: string
+  provider: string
+  transport: MailTransport
+  email: string
+  password: string
+  clientId: string
+  refreshToken: string
+  accessToken: string | null
+  accessExpiresAt: string | null
+  credentialRevision: string
+  note: string
+  enabled: boolean
+  status: MailboxStatus
+  lastAttemptAt: string | null
+  lastRefreshedAt: string | null
+  lastRotatedAt: string | null
+  nextRefreshAt: string | null
+  refreshRequested: boolean
+  consecutiveFailures: number
+  lastError: string | null
+  lastErrorCode: PluginErrorCode | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface MailboxView {
+  id: string
+  provider: string
+  transport: MailTransport
+  email: string
+  clientId: string
+  note: string
+  enabled: boolean
+  status: MailboxStatus
+  hasPassword: boolean
+  hasRefreshToken: boolean
+  refreshing: boolean
+  accessExpiresAt: string | null
+  lastAttemptAt: string | null
+  lastRefreshedAt: string | null
+  lastRotatedAt: string | null
+  nextRefreshAt: string | null
+  lastError: string | null
+  lastErrorCode: PluginErrorCode | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface EmailSettings {
+  autoRefresh: boolean
+  intervalMinutes: number
+}
+
+export interface ImportReport {
+  total: number
+  inserted: number
+  skipped: number
+  errors: { row: number; message: string }[]
+}

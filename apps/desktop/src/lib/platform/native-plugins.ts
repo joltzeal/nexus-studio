@@ -64,16 +64,48 @@ export async function uninstallPlugin(id: string): Promise<void> {
   notifyPluginCatalogChanged()
 }
 
-export function callPlugin<T>(
+export class PluginCallError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message)
+    this.name = 'PluginCallError'
+  }
+}
+
+export async function callPlugin<T>(
   id: string,
   capability: string,
   method: string,
   payload: unknown = {},
   deadlineMs?: number,
 ): Promise<T> {
-  return invoke<T>('plugin_call', {
-    input: { id, capability, method, payload, deadlineMs: deadlineMs ?? null },
-  })
+  try {
+    return await invoke<T>('plugin_call', {
+      input: { id, capability, method, payload, deadlineMs: deadlineMs ?? null },
+    })
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      !Array.isArray(error) &&
+      Object.keys(error).length === 3 &&
+      'code' in error &&
+      typeof error.code === 'string' &&
+      /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) &&
+      'message' in error &&
+      typeof error.message === 'string' &&
+      error.message.length <= 4096 &&
+      'retryable' in error &&
+      typeof error.retryable === 'boolean'
+    ) {
+      throw new PluginCallError(error.code, error.message, error.retryable)
+    }
+    // eslint-disable-next-line preserve-caught-error -- Malformed rejections may contain credentials.
+    throw new Error('插件调用失败，请重试。')
+  }
 }
 
 /** `install` means the store has a plugin this machine does not run yet. */

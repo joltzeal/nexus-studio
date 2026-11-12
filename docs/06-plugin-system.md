@@ -1,5 +1,10 @@
 # 插件页面与长期插件系统
 
+邮箱管理插件 `studio.email` 以独立的 `email.provider` 能力接入，提供微软邮箱
+四段式导入、分页管理、Graph/OAuth IMAP 只读收信和持久化 token 刷新。
+它不复用账号池的窗口生命周期，也不参与窗口迁移。
+专用页面随主程序一起交付，具体范围见[邮箱插件](41-email-plugin.md)。
+
 插件开发者的具体 manifest、能力接口、目标宿主协议与验收要求见
 [插件对接开发规范](14-plugin-integration-guide.md)。本文侧重产品现状与长期边界。
 

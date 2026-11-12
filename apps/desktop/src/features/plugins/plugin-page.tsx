@@ -8,6 +8,7 @@ import { AiImagePage } from '@/features/ai-image/ai-image-page'
 import { AccountsPage } from '@/features/accounts/accounts-page'
 import { Sim8Page } from '@/features/sim8/sim8-page'
 import { VintedMonitorPage } from '@/features/vinted-monitor/vinted-monitor-page'
+import { EmailPage } from '@/features/email/email-page'
 import type { AiImageHandoff } from '@/lib/page-handoff'
 import type { PluginView } from '@/lib/platform/native-plugins'
 
@@ -28,6 +29,7 @@ const pages: Record<string, ComponentType<PageProps> | undefined> = {
   'studio.vinted-accounts': AccountsPage,
   'studio.sim8': Sim8Page,
   'studio.vinted-monitor': VintedMonitorPage,
+  'studio.email': EmailPage,
 }
 
 const states = {

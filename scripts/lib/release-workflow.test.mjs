@@ -165,6 +165,18 @@ const requiredMethods = {
     'address.saved.save',
     'address.saved.remove',
   ],
+  email: [
+    ...configurationMethods,
+    'email.accounts.list',
+    'email.accounts.save',
+    'email.accounts.import',
+    'email.accounts.remove',
+    'email.refresh.queue',
+    'email.settings.get',
+    'email.settings.save',
+    'email.messages.list',
+    'email.messages.get',
+  ],
 }
 
 afterEach(() => {
@@ -353,6 +365,8 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       '@nexus/plugin-proxy-pool...',
       '--filter',
       '@nexus/plugin-address-generator...',
+      '--filter',
+      '@nexus/plugin-email...',
       'build',
     ])
     expect(commands.slice(1).map((args) => args.slice(0, 3))).toEqual([
@@ -362,6 +376,7 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       ['node', 'scripts/pack-plugin.mjs', 'plugins/sim8'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/proxy-pool'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/address-generator'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/email'],
       ['node', 'scripts/build-market.mjs', '--out'],
     ])
     const market = readFileSync(output, 'utf8').match(/^directory=(.+)$/m)?.[1]

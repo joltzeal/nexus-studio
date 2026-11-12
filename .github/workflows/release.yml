@@ -26,9 +26,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' build
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' --filter '@nexus/plugin-email...' build
       - name: Verify AI requests and application transport
-        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
+        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src plugins/email/src apps/desktop/src/features/email packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
       - name: Pack companion plugins
         id: plugin-market
         shell: bash
@@ -41,6 +41,7 @@ jobs:
           node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.21：支持离线迁移 API 地址和 Token，导入后清理旧账户缓存。"
           node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移默认代理及密码、风险检查设置及 API Key。"
           node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套主程序 0.1.26：支持保存、搜索、分页和移除地址，选定地址可关联账号，地图选点自动保存，美国城市扩充至 21 个。"
+          node scripts/pack-plugin.mjs plugins/email --out "$market_dir" --changelog "配套主程序 0.1.27：新增微软邮箱管理，支持四段式批量导入、Graph/OAuth IMAP 收信、token 定时刷新与轮换持久化。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
         shell: bash
@@ -202,6 +203,18 @@ jobs:
               'address.saved.save',
               'address.saved.remove',
             ],
+            email: [
+              ...configurationMethods,
+              'email.accounts.list',
+              'email.accounts.save',
+              'email.accounts.import',
+              'email.accounts.remove',
+              'email.refresh.queue',
+              'email.settings.get',
+              'email.settings.save',
+              'email.messages.list',
+              'email.messages.get',
+            ],
           }
           const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
           const market = resolve(process.env.PLUGIN_MARKET_DIR)
@@ -306,14 +319,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Nexus v__VERSION__'
           releaseBody: |
-            - 地址生成器新增已保存地址，支持搜索、分页和重启后回读，地图选点自动保存。
-            - 地址可关联到 Vinted 账号，账号表格可查看、复制和解绑，移除保存条目保留账号地址。
-            - 账号底层列表改为分页读取，修复大量账号包含地址时加载失败的问题。
-            - 美国城市选项扩充至 21 个，供地图定位和公开地址查询使用。
-            - AI 生图新增批次队列与完整批次历史，支持按商品、批次、方案和提示词检索。
-            - 修复生图筛选为空后，排队任务开始执行时列表未自动刷新的问题。
+            - 新增邮箱插件页面，支持微软邮箱四段式批量导入、搜索、筛选、分页和账号管理。
+            - 支持 Graph 或 OAuth IMAP 读取收件箱、垃圾箱和纯文本邮件详情。
+            - 支持后台定时刷新 token、轮换凭据持久化及手动批量刷新。
+            - 授权失效与权限不足分别提示，永久错误停止自动重试，更新凭据后恢复。
+            - 邮箱插件使用独立提供方工厂，继承应用代理，支持刷新设置导入导出。
 
-            新功能需在插件中心更新地址生成器 1.1.0、Vinted 账号池 1.2.0 和 AI 生图 1.5.0。
+            更新主程序后，在插件中心安装并启用邮箱管理 1.0.0。
             macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
           uploadUpdaterJson: true

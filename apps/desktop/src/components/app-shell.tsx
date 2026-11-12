@@ -8,6 +8,7 @@ import {
   KeyRound,
   LayoutGrid,
   MapPinned,
+  Mail,
   Moon,
   Network,
   Radar,
@@ -57,6 +58,7 @@ const capabilityIcons = new Map([
   ['account.pool', Users],
   ['verification.provider', KeyRound],
   ['monitor.collector', Radar],
+  ['email.provider', Mail],
 ])
 
 const PAGE_LABELS: Record<string, string> = {
