@@ -7,7 +7,7 @@ describe('email plugin declaration', () => {
   it('declares mailbox access without browser or account pool capabilities', () => {
     expect(PluginManifestSchema.safeParse(manifest).success).toBe(true)
     expect(manifest.id).toBe('studio.email')
-    expect(manifest.version).toBe('1.0.0')
+    expect(manifest.version).toBe('1.1.0')
     expect(manifest.capabilities).toEqual(['email.provider'])
     expect(manifest.permissions).toEqual({
       networkDomains: [

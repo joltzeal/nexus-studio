@@ -24,6 +24,7 @@ import {
   text,
 } from '@/features/settings/kernel-test-support'
 import { updateContact } from '@/features/sim8/accounts-bridge'
+import { AccountMailboxPopover } from '@/features/email/account-mailbox-popover'
 import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountEditor } from './account-editor'
@@ -760,5 +761,56 @@ describe('unlinking account phone numbers', () => {
     await flushPromises()
     expect(otpCell(kept.id).props.account).toEqual(externallyUpdated)
     expect(listAccounts).toHaveBeenCalledTimes(4)
+  })
+})
+
+describe('account page mailbox relation', () => {
+  it('blocks other account writes while linking and preserves the saved relation when earlier list reads finish', async () => {
+    props.plugin = plugin({
+      methods: ['vinted.accounts.list', 'vinted.accounts.mailbox.set'],
+    })
+    const original = account(0, { address: assignedAddress })
+    await mount(inventory([original]))
+    const older = deferred<AccountList>()
+    const reload = deferred<AccountList>()
+    vi.mocked(listAccounts)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(reload.promise)
+    click('刷新')
+    const entry = components(tree(), AccountMailboxPopover)[0]!
+    expect(entry.props.ready).toBe(true)
+    entry.props.onPendingChange?.(true)
+    expect(button('编辑 seller-00').props.disabled).toBe(true)
+    expect(button('删除 seller-00').props.disabled).toBe(true)
+    expect(button('解绑 seller-00 的手机号').props.disabled).toBe(true)
+    click('解绑 seller-00 的手机号')
+    expect(updateContact).not.toHaveBeenCalled()
+
+    const mailbox = {
+      pluginId: 'studio.email' as const,
+      mailboxId: 'mailbox-1',
+      email: 'inbox@example.test',
+      linkedAt: '2026-11-12T10:00:00.000Z',
+    }
+    entry.props.onPendingChange?.(false)
+    entry.props.onChanged({
+      mailbox,
+      updatedAt: mailbox.linkedAt,
+      storageDurable: true,
+    })
+    older.resolve(inventory([original]))
+    await flushPromises()
+    reload.reject(new Error('offline'))
+    await flushPromises()
+    const current = components(tree(), AccountMailboxPopover)[0]!.props.account
+    expect(current).toMatchObject({
+      mailbox,
+      address: assignedAddress,
+      phone: original.phone,
+      password: original.password,
+      emailOtpUrl: original.emailOtpUrl,
+      smsOtpUrl: original.smsOtpUrl,
+    })
+    expect(text(tree())).toContain('邮箱关联已保存')
   })
 })

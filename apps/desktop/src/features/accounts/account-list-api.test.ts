@@ -81,6 +81,50 @@ function page(number: number, total = accounts.length): Page {
 beforeEach(() => vi.resetAllMocks())
 
 describe('complete account list adapter', () => {
+  it.each([
+    {
+      pluginId: 'other.plugin',
+      mailboxId: 'mailbox-1',
+      email: 'mail@example.test',
+      linkedAt: timestamp,
+    },
+    {
+      pluginId: 'studio.email',
+      mailboxId: '',
+      email: 'mail@example.test',
+      linkedAt: timestamp,
+    },
+    {
+      pluginId: 'studio.email',
+      mailboxId: 'mailbox-1',
+      email: 'invalid',
+      linkedAt: timestamp,
+    },
+    {
+      pluginId: 'studio.email',
+      mailboxId: 'mailbox-1',
+      email: 'mail@example.test',
+      linkedAt: 'invalid',
+    },
+    {
+      pluginId: 'studio.email',
+      mailboxId: 'mailbox-1',
+      email: 'mail@example.test',
+      linkedAt: timestamp,
+      password: 'synthetic-secret',
+    },
+  ])(
+    'rejects malformed mailbox relationships before exposing the account: %j',
+    async (mailbox) => {
+      vi.mocked(callPlugin).mockResolvedValueOnce({
+        ...page(1, 1),
+        items: [{ ...accounts[0], mailbox }],
+        bindings: [],
+      })
+      await expect(listAccounts()).rejects.toThrow()
+    },
+  )
+
   it('reads pages sequentially with the initial revision and returns all accounts and page-owned bindings together', async () => {
     let finishSecond!: (value: Page) => void
     const second = new Promise<Page>((resolve) => {

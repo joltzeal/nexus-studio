@@ -5,7 +5,7 @@
 
 ## 当前事实
 
-当前源码插件版本为 `1.2.0`，最低主程序 `0.1.26`。
+当前源码插件版本为 `1.3.0`，最低主程序 `0.1.28`。
 新增完整地址快照、分页账号选择、地址复制与解除关联。已有主页账号的自动已售查询、Bark 推送与配置迁移见
 [订单查询与 Bark 提醒](38-vinted-account-order-watch.md)。
 宿主私有 `window.detach` 仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
@@ -57,27 +57,50 @@ plugins/vinted-accounts/
 
 ## 方法表
 
-| 方法                              | 入参                                          | 说明                             |
-| --------------------------------- | --------------------------------------------- | -------------------------------- |
-| `vinted.accounts.list`            | `{ page?, pageSize?, revision? }`             | 分页账号、当页绑定与快照标识     |
-| `vinted.accounts.save`            | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝     |
-| `vinted.accounts.remove`          | `{ accountId }`                               | 删除账号并清掉它的绑定           |
-| `vinted.accounts.import`          | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告  |
-| `vinted.accounts.template`        | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容  |
-| `vinted.accounts.bind`            | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突     |
-| `vinted.accounts.unbind`          | `{ windowId }`                                | 解除该窗口的关联                 |
-| `vinted.accounts.bindings`        | —                                             | 绑定列表，附带账号摘要           |
-| `vinted.accounts.otp`             | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文 |
-| `vinted.accounts.address.targets` | `{ query?, page?, pageSize? }`                | 分页选择账号，不返回凭据         |
-| `vinted.accounts.address.set`     | `{ accountId, profile, expectedProfileId? }`  | 原子设置、替换或清空账号地址     |
-| `window.detach`                   | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系   |
-| `transfer.export`                 | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照   |
-| `transfer.import`                 | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执 |
-| `transfer.rollback`               | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定   |
-| `transfer.commit`                 | `{ receipt }`                                 | 清理成功回执，保留账号与绑定     |
+| 方法                              | 入参                                          | 说明                               |
+| --------------------------------- | --------------------------------------------- | ---------------------------------- |
+| `vinted.accounts.list`            | `{ page?, pageSize?, revision? }`             | 分页账号、当页绑定与快照标识       |
+| `vinted.accounts.save`            | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝       |
+| `vinted.accounts.remove`          | `{ accountId }`                               | 删除账号并清掉它的绑定             |
+| `vinted.accounts.import`          | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告    |
+| `vinted.accounts.template`        | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容    |
+| `vinted.accounts.bind`            | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突       |
+| `vinted.accounts.unbind`          | `{ windowId }`                                | 解除该窗口的关联                   |
+| `vinted.accounts.bindings`        | —                                             | 绑定列表，附带账号摘要             |
+| `vinted.accounts.otp`             | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文   |
+| `vinted.accounts.address.targets` | `{ query?, page?, pageSize? }`                | 分页选择账号，不返回凭据           |
+| `vinted.accounts.address.set`     | `{ accountId, profile, expectedProfileId? }`  | 原子设置、替换或清空账号地址       |
+| `vinted.accounts.mailbox.targets` | `{ query?, page?, pageSize? }`                | 分页选择账号，仅返回账号及邮箱关系 |
+| `vinted.accounts.mailbox.set`     | `{ accountId, mailbox, expectedMailboxId }`   | 原子关联、更换或解除邮箱           |
+| `window.detach`                   | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系     |
+| `transfer.export`                 | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照     |
+| `transfer.import`                 | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执   |
+| `transfer.rollback`               | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定     |
+| `transfer.commit`                 | `{ receipt }`                                 | 清理成功回执，保留账号与绑定       |
 
 上限：账号 2000 条，导入报告最多回传 50 条错误。单次导入内容不超过 512 KB
 （宿主单行消息上限 1 MiB，base64 会放大 1.33 倍）。
+
+## 邮箱联动（1.3.0）
+
+账号池的“关联邮箱”列支持关联、更换、解除、复制邮箱和直接查看邮件。
+邮箱插件也可以从邮箱行反向选择账号。搜索结果只投影
+`id/account/status/mailbox`，不返回密码、手机号、接码链接或其他业务资料；
+搜索同时匹配账号文字和已关联邮箱地址，默认每页 20 条、最多 50 条。
+这些能力配套主程序 `0.1.28`、账号池 `1.3.0` 和邮箱 `1.1.0`，
+实际发布结果见[插件商店](25-plugin-market.md)。
+
+账号保存可空 `mailbox: { pluginId: 'studio.email', mailboxId, email, linkedAt }`。
+关系由账号池独立持久化，绑定邮箱不改变账号的登录邮箱、手机号、地址或窗口关系。
+同一邮箱可关联多个账号，一个账号仅关联一个邮箱。普通编辑、CSV upsert、
+手机号修改和订单状态更新均保留邮箱关联。
+
+`mailbox.set` 必须传最后看到的 `expectedMailboxId`，没有关联时传 `null`。
+串行写入内核对账号与关系，仅改 `mailbox/updatedAt`；陈旧修改或账号已删除时拒绝，
+磁盘失败不反馈已保存。解除关联只要求账号池可用，不依赖邮箱插件。
+阅读时按 ID 和关联邮箱地址共同核对，已删除、改名或暂停的邮箱不会被自动替换。
+窗口导出/导入将设备本地邮箱关联清空，副本应在目标设备重新选择邮箱。
+详见[邮箱插件](41-email-plugin.md)。
 
 ## 关联与解除账号地址
 

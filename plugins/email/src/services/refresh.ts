@@ -2,7 +2,6 @@ import {
   PluginFailure,
   cancelled,
   invalidRequest,
-  isPluginFailure,
   requiresAuthorization,
   unavailable,
 } from '../domain/errors.js'
@@ -18,6 +17,7 @@ import type {
 } from '../domain/types.js'
 import type { Logger } from '../rpc/redact.js'
 import type { EmailStore, StoreDocument } from '../store/private-store.js'
+import { safeMailFailure } from './operations.js'
 
 export interface ProviderRegistry {
   get(provider: string, transport: MailTransport): EmailProvider
@@ -118,6 +118,8 @@ export class RefreshCoordinator {
       hasPassword: record.password.length > 0,
       hasRefreshToken: record.refreshToken.length > 0,
       refreshing: this.active.get(record.id)?.revision === record.credentialRevision,
+      receiving: false,
+      reception: record.reception,
       accessExpiresAt: record.accessExpiresAt,
       lastAttemptAt: record.lastAttemptAt,
       lastRefreshedAt: record.lastRefreshedAt,
@@ -337,10 +339,8 @@ export class RefreshCoordinator {
               entry.id === account.id && entry.credentialRevision === run.revision,
           )
           if (!current || !current.enabled) return
-          const failure = isPluginFailure(error)
-            ? error
-            : unavailable('邮箱刷新失败，请稍后重试')
-          current.lastError = failure.message.slice(0, 500)
+          const failure = safeMailFailure(error)
+          current.lastError = failure.message
           current.lastErrorCode = failure.code
           current.consecutiveFailures = Math.min(32, current.consecutiveFailures + 1)
           const authorizationRequired = requiresAuthorization(failure.code)

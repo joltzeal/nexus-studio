@@ -10,6 +10,43 @@ export interface AssignedAccountAddress extends Profile {
   linkedAt: string
 }
 
+export interface AccountMailboxInput {
+  pluginId: 'studio.email'
+  mailboxId: string
+  email: string
+}
+
+export interface AssignedAccountMailbox extends AccountMailboxInput {
+  linkedAt: string
+}
+
+export interface AccountMailboxTarget {
+  id: string
+  account: string
+  status: AccountStatus
+  mailbox: AssignedAccountMailbox | null
+}
+
+export interface AccountMailboxTargetsInput {
+  query?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface AccountMailboxTargetList {
+  items: AccountMailboxTarget[]
+  total: number
+  page: number
+  pageSize: number
+  storageDurable: boolean
+}
+
+export interface AccountMailboxSetResult {
+  mailbox: AssignedAccountMailbox | null
+  updatedAt: string
+  storageDurable: boolean
+}
+
 /** A target picker never needs credentials, contact details or window bindings. */
 export interface AccountAddressTarget {
   id: string
@@ -50,6 +87,7 @@ export interface Account {
   status: AccountStatus
   homepageUrl: string
   address?: AssignedAccountAddress | null
+  mailbox?: AssignedAccountMailbox | null
   createdAt: string
   updatedAt: string
 }

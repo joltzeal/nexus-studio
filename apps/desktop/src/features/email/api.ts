@@ -8,11 +8,16 @@ import {
   type MailboxInput,
   type MailboxPage,
   type MailboxQuery,
+  type MailboxTargetPage,
+  type MailboxTargetQuery,
   type MailboxView,
   type MailMessageDetail,
   type MailMessagePage,
   type MailTransport,
   type MessageQuery,
+  type MessageDetailQuery,
+  type MessageReadInput,
+  type MessageReadResult,
 } from './types'
 
 const encoder = new TextEncoder()
@@ -29,6 +34,8 @@ const mailboxKeys = [
   'hasPassword',
   'hasRefreshToken',
   'refreshing',
+  'receiving',
+  'reception',
   'accessExpiresAt',
   'lastAttemptAt',
   'lastRefreshedAt',
@@ -93,6 +100,39 @@ function nullableTimestamp(value: unknown): boolean {
   return value === null || timestamp(value)
 }
 
+function errorCode(value: unknown): boolean {
+  return MAILBOX_ERROR_CODES.some((code) => code === value)
+}
+
+function counts(value: unknown): value is { total: number; unread: number } {
+  return (
+    shape(value, ['total', 'unread']) &&
+    integer(value.total) &&
+    integer(value.unread, 0, value.total)
+  )
+}
+
+function reception(value: unknown): boolean {
+  return (
+    shape(value, [
+      'lastCheckedAt',
+      'nextCheckAt',
+      'latestReceivedAt',
+      'lastError',
+      'lastErrorCode',
+      'inbox',
+      'junkemail',
+    ]) &&
+    ['lastCheckedAt', 'nextCheckAt', 'latestReceivedAt'].every((key) =>
+      nullableTimestamp(value[key]),
+    ) &&
+    (value.lastError === null || text(value.lastError, 500)) &&
+    (value.lastErrorCode === null || errorCode(value.lastErrorCode)) &&
+    (value.inbox === null || counts(value.inbox)) &&
+    (value.junkemail === null || counts(value.junkemail))
+  )
+}
+
 function mailbox(value: unknown): value is MailboxView {
   return (
     shape(value, mailboxKeys) &&
@@ -104,9 +144,10 @@ function mailbox(value: unknown): value is MailboxView {
     text(value.clientId, 128, 1) &&
     text(value.note, 1000) &&
     MAILBOX_STATUSES.some((status) => status === value.status) &&
-    ['enabled', 'hasPassword', 'hasRefreshToken', 'refreshing'].every(
+    ['enabled', 'hasPassword', 'hasRefreshToken', 'refreshing', 'receiving'].every(
       (key) => typeof value[key] === 'boolean',
     ) &&
+    reception(value.reception) &&
     [
       'accessExpiresAt',
       'lastAttemptAt',
@@ -144,9 +185,16 @@ function message(value: Record<string, unknown>): boolean {
 
 function settings(value: unknown): value is EmailSettings {
   return (
-    shape(value, ['autoRefresh', 'intervalMinutes']) &&
+    shape(value, [
+      'autoRefresh',
+      'intervalMinutes',
+      'autoReceive',
+      'receiveIntervalMinutes',
+    ]) &&
     typeof value.autoRefresh === 'boolean' &&
-    integer(value.intervalMinutes, 5, 1440)
+    integer(value.intervalMinutes, 5, 1440) &&
+    typeof value.autoReceive === 'boolean' &&
+    integer(value.receiveIntervalMinutes, 1, 60)
   )
 }
 
@@ -163,6 +211,14 @@ function safeMailbox(item: MailboxView): MailboxView {
         ? null
         : (authorizationFailureMessage(item.lastErrorCode) ??
           '刷新未成功，请检查授权和应用代理后重试。'),
+    reception: {
+      ...item.reception,
+      lastError:
+        item.reception.lastError === null
+          ? null
+          : (authorizationFailureMessage(item.reception.lastErrorCode) ??
+            '收信未成功，请检查授权和应用代理后重试。'),
+    },
   }
 }
 
@@ -216,6 +272,54 @@ export async function listMailboxes(input: MailboxQuery): Promise<MailboxPage> {
     pageSize: input.pageSize,
     storageDurable: result.storageDurable,
   }
+}
+
+export async function getMailbox(id: string): Promise<MailboxView> {
+  if (!text(id, 64, 1)) throw new Error('邮箱标识无效。')
+  const result = await call('email.accounts.get', { id }, '邮箱资料读取失败，请重试。')
+  if (!mailbox(result) || result.id !== id)
+    throw new Error('邮箱资料返回的数据格式无效，请更新插件后重试。')
+  return safeMailbox(result)
+}
+
+export async function listMailboxTargets(
+  input: MailboxTargetQuery = {},
+): Promise<MailboxTargetPage> {
+  const page = input.page ?? 1
+  const pageSize = input.pageSize ?? 20
+  if (
+    !integer(page, 1) ||
+    !integer(pageSize, 1, 50) ||
+    (input.query !== undefined && !text(input.query, 254))
+  )
+    throw new Error('邮箱选择列表的查询无效。')
+  const result = await call(
+    'email.accounts.targets',
+    input,
+    '邮箱选择列表读取失败，请重试。',
+  )
+  if (
+    !shape(result, ['items', 'total', 'page', 'pageSize', 'storageDurable']) ||
+    !integer(result.total) ||
+    result.pageSize !== pageSize ||
+    result.page !== Math.min(page, Math.max(1, Math.ceil(result.total / pageSize))) ||
+    typeof result.storageDurable !== 'boolean' ||
+    !Array.isArray(result.items) ||
+    result.items.length > pageSize ||
+    result.items.length > result.total ||
+    !result.items.every(
+      (item: unknown) =>
+        shape(item, ['id', 'email', 'enabled', 'status']) &&
+        text(item.id, 64, 1) &&
+        text(item.email, 254, 3) &&
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(item.email) &&
+        typeof item.enabled === 'boolean' &&
+        MAILBOX_STATUSES.some((status) => status === item.status),
+    ) ||
+    !uniqueIds(result.items)
+  )
+    throw new Error('邮箱选择列表返回的数据格式无效。')
+  return result as unknown as MailboxTargetPage
 }
 
 export async function saveMailbox(input: MailboxInput): Promise<MailboxView> {
@@ -303,6 +407,27 @@ export async function queueRefresh(
   return { queued: result.queued, skipped: result.skipped }
 }
 
+export async function queueReception(
+  ids: string[],
+): Promise<{ queued: number; skipped: number }> {
+  if (
+    ids.length < 1 ||
+    ids.length > 100 ||
+    new Set(ids).size !== ids.length ||
+    !ids.every((id) => text(id, 64, 1))
+  )
+    throw new Error('每批请选择 1–100 个邮箱。')
+  const result = await call('email.receive.queue', { ids }, '收信任务排队失败，请重试。')
+  if (
+    !shape(result, ['queued', 'skipped']) ||
+    !integer(result.queued) ||
+    !integer(result.skipped) ||
+    result.queued + result.skipped !== ids.length
+  )
+    throw new Error('收信任务返回的数据格式无效，请刷新列表核对。')
+  return { queued: result.queued, skipped: result.skipped }
+}
+
 export async function getSettings(): Promise<EmailSettings> {
   const result = await call('email.settings.get', {}, '刷新设置读取失败，请重试。')
   if (!settings(result)) throw new Error('刷新设置返回的数据格式无效。')
@@ -310,7 +435,8 @@ export async function getSettings(): Promise<EmailSettings> {
 }
 
 export async function saveSettings(input: EmailSettings): Promise<EmailSettings> {
-  if (!settings(input)) throw new Error('刷新间隔须为 5–1440 分钟的整数。')
+  if (!settings(input))
+    throw new Error('Token 刷新间隔须为 5–1440 分钟，收信间隔须为 1–60 分钟的整数。')
   const result = await call('email.settings.save', input, '刷新设置保存失败，请重试。')
   if (!settings(result)) throw new Error('刷新设置保存结果无效，请重新读取设置核对。')
   return result
@@ -323,11 +449,16 @@ export async function listMessages(input: MessageQuery): Promise<MailMessagePage
     '邮件列表读取失败，请检查邮箱授权和应用代理后重试。',
     120_000,
   )
+  // Page entries and folder counts are separate provider snapshots.
   if (
-    !shape(result, ['items', 'nextCursor']) ||
+    !shape(result, ['items', 'nextCursor', 'total', 'unread']) ||
+    !integer(result.total) ||
+    !integer(result.unread, 0, result.total) ||
     !Array.isArray(result.items) ||
     result.items.length > 20 ||
     !result.items.every((item: unknown) => shape(item, messageKeys) && message(item)) ||
+    (input.readState === 'unread' && result.items.some((item) => item.isRead)) ||
+    (input.readState === 'read' && result.items.some((item) => !item.isRead)) ||
     !(result.nextCursor === null || text(result.nextCursor, 16 * 1024, 1)) ||
     !uniqueIds(result.items)
   ) {
@@ -336,9 +467,7 @@ export async function listMessages(input: MessageQuery): Promise<MailMessagePage
   return result as unknown as MailMessagePage
 }
 
-export async function getMessage(
-  input: Omit<MessageQuery, 'cursor'> & { messageId: string },
-): Promise<MailMessageDetail> {
+export async function getMessage(input: MessageDetailQuery): Promise<MailMessageDetail> {
   const result = await call(
     'email.messages.get',
     input,
@@ -346,7 +475,7 @@ export async function getMessage(
     120_000,
   )
   if (
-    !shape(result, [...messageKeys, 'to', 'body', 'truncated']) ||
+    !shape(result, [...messageKeys, 'to', 'body', 'html', 'truncated']) ||
     !message(result) ||
     result.id !== input.messageId ||
     !Array.isArray(result.to) ||
@@ -354,9 +483,60 @@ export async function getMessage(
     !result.to.every(address) ||
     !text(result.body, 64 * 1024) ||
     encoder.encode(result.body).byteLength > 64 * 1024 ||
+    !(
+      result.html === null ||
+      (text(result.html, 128 * 1024) &&
+        encoder.encode(result.html).byteLength <= 128 * 1024)
+    ) ||
     typeof result.truncated !== 'boolean'
   ) {
     throw new Error('邮件详情返回的数据格式无效，请更新插件后重试。')
   }
   return result as unknown as MailMessageDetail
+}
+
+export async function setMessagesRead(
+  input: MessageReadInput,
+): Promise<MessageReadResult> {
+  if (
+    input.messageIds.length < 1 ||
+    input.messageIds.length > 20 ||
+    new Set(input.messageIds).size !== input.messageIds.length ||
+    !input.messageIds.every((id) => text(id, 2048, 1)) ||
+    typeof input.isRead !== 'boolean'
+  )
+    throw new Error('每次请选择 1–20 封邮件。')
+  const result = await call(
+    'email.messages.read',
+    input,
+    '已读状态未更新，请重试。',
+    120_000,
+  )
+  if (
+    !shape(result, ['updatedIds', 'failures', 'isRead']) ||
+    result.isRead !== input.isRead ||
+    !Array.isArray(result.updatedIds) ||
+    result.updatedIds.length > 20 ||
+    !result.updatedIds.every((id: unknown) => text(id, 2048, 1)) ||
+    !Array.isArray(result.failures) ||
+    result.failures.length > 20 ||
+    !result.failures.every(
+      (item: unknown) =>
+        shape(item, ['messageId', 'code']) &&
+        text(item.messageId, 2048, 1) &&
+        errorCode(item.code),
+    )
+  )
+    throw new Error('已读状态返回的数据格式无效，请刷新邮件核对。')
+  const ids = [
+    ...result.updatedIds,
+    ...result.failures.map((item: { messageId: string }) => item.messageId),
+  ]
+  if (
+    ids.length !== input.messageIds.length ||
+    new Set(ids).size !== ids.length ||
+    !ids.every((id) => input.messageIds.includes(id))
+  )
+    throw new Error('已读状态返回的数据格式无效，请刷新邮件核对。')
+  return result as unknown as MessageReadResult
 }

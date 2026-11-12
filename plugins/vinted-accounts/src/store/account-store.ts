@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
 import { AssignedAccountAddressSchema } from '../domain/address.js'
+import { AssignedAccountMailboxSchema } from '../domain/mailbox.js'
 import { unavailable } from '../domain/errors.js'
 import {
   OrderWatchStateSchema,
@@ -49,6 +50,7 @@ const accountSchema = z.looseObject({
   status: z.enum(['active', 'pending', 'limited', 'blocked']),
   homepageUrl: z.string(),
   address: AssignedAccountAddressSchema.nullable().optional(),
+  mailbox: AssignedAccountMailboxSchema.nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })

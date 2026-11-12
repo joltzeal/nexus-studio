@@ -15,6 +15,10 @@ import {
   AccountAddressTargetsInputSchema,
 } from '../domain/address.js'
 import {
+  AccountMailboxSetInputSchema,
+  AccountMailboxTargetsInputSchema,
+} from '../domain/mailbox.js'
+import {
   TEMPLATE_HEADERS,
   normalizeHomepage,
   parseAccountRows,
@@ -65,6 +69,8 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.bindings',
   'vinted.accounts.address.targets',
   'vinted.accounts.address.set',
+  'vinted.accounts.mailbox.targets',
+  'vinted.accounts.mailbox.set',
   WINDOW_DETACH_METHOD,
   ...TRANSFER_METHODS,
   ...ORDER_WATCH_METHODS,
@@ -187,6 +193,10 @@ export class AccountPool implements AccountPoolContract {
         return await this.listAddressTargets(context)
       case 'vinted.accounts.address.set':
         return await this.setAddress(context)
+      case 'vinted.accounts.mailbox.targets':
+        return await this.listMailboxTargets(context)
+      case 'vinted.accounts.mailbox.set':
+        return await this.setMailbox(context)
       case 'vinted.accounts.save':
         return await this.saveAccount(context)
       case 'vinted.accounts.remove':
@@ -301,6 +311,7 @@ export class AccountPool implements AccountPoolContract {
           id: this.idFactory(),
           ...fields,
           address: null,
+          mailbox: null,
           createdAt: now,
           updatedAt: now,
         }
@@ -357,6 +368,7 @@ export class AccountPool implements AccountPoolContract {
             id: this.idFactory(),
             ...row,
             address: null,
+            mailbox: null,
             createdAt: now,
             updatedAt: now,
           }
@@ -439,6 +451,65 @@ export class AccountPool implements AccountPoolContract {
       account.address = address
       account.updatedAt = updatedAt
       return { address, updatedAt, storageDurable: this.store.durable }
+    })
+  }
+
+  private async listMailboxTargets(context: DispatchContext): Promise<unknown> {
+    const parsed = AccountMailboxTargetsInputSchema.safeParse(
+      context.payload === undefined ? {} : context.payload,
+    )
+    if (!parsed.success) throw invalidRequest('账号邮箱查询参数无效')
+    const input = parsed.data
+    context.assertAlive()
+    const document = await this.store.read()
+    context.assertAlive()
+    const query = (input.query ?? '').toLowerCase()
+    const matches = document.accounts.filter((account) =>
+      [account.account, account.mailbox?.email ?? ''].some((value) =>
+        value.toLowerCase().includes(query),
+      ),
+    )
+    const start = (input.page - 1) * input.pageSize
+    return {
+      items: matches.slice(start, start + input.pageSize).map((account) => ({
+        id: account.id,
+        account: account.account,
+        status: account.status,
+        mailbox:
+          account.mailbox == null
+            ? null
+            : {
+                pluginId: account.mailbox.pluginId,
+                mailboxId: account.mailbox.mailboxId,
+                email: account.mailbox.email,
+                linkedAt: account.mailbox.linkedAt,
+              },
+      })),
+      total: matches.length,
+      page: input.page,
+      pageSize: input.pageSize,
+      storageDurable: this.store.durable,
+    }
+  }
+
+  private async setMailbox(context: DispatchContext): Promise<unknown> {
+    const parsed = AccountMailboxSetInputSchema.safeParse(context.payload)
+    if (!parsed.success) throw invalidRequest('账号邮箱关联参数无效')
+    const input = parsed.data
+    context.assertAlive()
+    return this.store.mutate((document) => {
+      context.assertAlive()
+      const account = document.accounts.find((entry) => entry.id === input.accountId)
+      if (account === undefined) throw invalidRequest('账号不存在或已被删除')
+      if (input.expectedMailboxId !== (account.mailbox?.mailboxId ?? null)) {
+        throw invalidRequest('账号邮箱已变化，请刷新后重试')
+      }
+      const updatedAt = this.now().toISOString()
+      const mailbox =
+        input.mailbox === null ? null : { ...input.mailbox, linkedAt: updatedAt }
+      account.mailbox = mailbox
+      account.updatedAt = updatedAt
+      return { mailbox, updatedAt, storageDurable: this.store.durable }
     })
   }
 

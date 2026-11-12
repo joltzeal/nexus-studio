@@ -59,6 +59,7 @@ import {
   type PluginView,
 } from '@/lib/platform/native-plugins'
 import { PluginGate } from '@/features/plugins/plugin-gate'
+import { AccountMailboxPopover } from '@/features/email/account-mailbox-popover'
 import { updateContact } from '@/features/sim8/accounts-bridge'
 import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-batch'
@@ -111,6 +112,16 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const running = hostAvailable && plugin !== null && plugin.state === 'running'
   const supportsAddressWrite =
     running && plugin.methods.includes('vinted.accounts.address.set')
+  const supportsMailboxWrite =
+    running && plugin.methods.includes('vinted.accounts.mailbox.set')
+  const mailboxIdentity = JSON.stringify([
+    plugin?.version ?? null,
+    plugin?.state ?? null,
+    plugin?.enabled ?? false,
+    plugin?.source ?? null,
+    plugin?.status?.pid ?? null,
+    plugin?.status?.startedAt ?? null,
+  ])
   const supportsOrderWatch =
     running && plugin.methods.includes('vinted.accounts.orders.list')
   const orderWatchIdentity = supportsOrderWatch
@@ -139,6 +150,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     () => new Set(),
   )
   const addressUnlinkRequests = useRef(new Set<string>())
+  const [savingMailboxes, setSavingMailboxes] = useState<Set<string>>(() => new Set())
+  const mailboxRequests = useRef(new Set<string>())
   const listReadSequence = useRef(0)
   const contactRevision = useRef(0)
   const contactSnapshots = useRef(
@@ -154,19 +167,22 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     result: OtpResult
   } | null>(null)
 
-  const applyList = useCallback((result: AccountList, contactsAtStart: number) => {
-    const items = result.items.map((account) => {
-      const saved = contactSnapshots.current.get(account.id)
-      return saved && saved.revision > contactsAtStart ? saved.account : account
-    })
-    // Preserve the full list's deletions, additions and bindings while applying
-    // contact saves that completed during this read. Never reinsert absent rows.
-    setData({ ...result, items })
-    const available = new Set(items.map((account) => account.id))
-    setSelectedIds((current) => new Set([...current].filter((id) => available.has(id))))
-    // Older reads are superseded; future reads start after these successful saves.
-    contactSnapshots.current.clear()
-  }, [])
+  const applyList = useCallback(
+    (result: AccountList, contactsAtStart: number) => {
+      const items = result.items.map((account) => {
+        const saved = contactSnapshots.current.get(account.id)
+        return saved && saved.revision > contactsAtStart ? saved.account : account
+      })
+      // Preserve the full list's deletions, additions and bindings while applying
+      // contact saves that completed during this read. Never reinsert absent rows.
+      setData({ ...result, items })
+      const available = new Set(items.map((account) => account.id))
+      setSelectedIds((current) => new Set([...current].filter((id) => available.has(id))))
+      // Older reads are superseded; future reads start after these successful saves.
+      contactSnapshots.current.clear()
+    },
+    [setSelectedIds],
+  )
 
   const load = useCallback(async () => {
     const sequence = ++listReadSequence.current
@@ -235,6 +251,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       !running ||
       phoneUnlinkRequests.current.has(accountId) ||
       addressUnlinkRequests.current.has(accountId) ||
+      mailboxRequests.current.has(accountId) ||
       editing?.account?.id === accountId ||
       removing?.id === accountId
     )
@@ -516,6 +533,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   </TableHead>
                   <TableHead>账号</TableHead>
                   <TableHead>登录方式</TableHead>
+                  <TableHead>关联邮箱</TableHead>
                   <TableHead>手机号</TableHead>
                   <TableHead>地址</TableHead>
                   {hasOtpLinks ? <TableHead>验证码</TableHead> : null}
@@ -563,6 +581,55 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                     </TableCell>
                     <TableCell>{LOGIN_METHOD_LABELS[account.loginMethod]}</TableCell>
                     <TableCell>
+                      <AccountMailboxPopover
+                        key={JSON.stringify([
+                          mailboxIdentity,
+                          account.id,
+                          account.mailbox?.mailboxId ?? null,
+                          account.mailbox?.email ?? null,
+                        ])}
+                        account={account}
+                        ready={
+                          supportsMailboxWrite &&
+                          !unlinkingPhones.has(account.id) &&
+                          !unlinkingAddresses.has(account.id) &&
+                          !savingMailboxes.has(account.id) &&
+                          editing?.account?.id !== account.id &&
+                          removing?.id !== account.id
+                        }
+                        onPendingChange={(pending) => {
+                          if (pending) mailboxRequests.current.add(account.id)
+                          else mailboxRequests.current.delete(account.id)
+                          setSavingMailboxes(new Set(mailboxRequests.current))
+                        }}
+                        onChanged={(result) => {
+                          // Earlier list reads must not restore the previous relation.
+                          listReadSequence.current += 1
+                          setData((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  items: current.items.map((entry) =>
+                                    entry.id === account.id
+                                      ? {
+                                          ...entry,
+                                          mailbox: result.mailbox,
+                                          updatedAt: result.updatedAt,
+                                        }
+                                      : entry,
+                                  ),
+                                }
+                              : current,
+                          )
+                          void load().catch(() =>
+                            setError(
+                              '邮箱关联已保存，刷新账号列表失败，请点击刷新重试。',
+                            ),
+                          )
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell>
                       {account.phone.trim() === '' ? (
                         '—'
                       ) : (
@@ -583,7 +650,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                             disabled={
                               !running ||
                               unlinkingPhones.has(account.id) ||
-                              unlinkingAddresses.has(account.id)
+                              unlinkingAddresses.has(account.id) ||
+                              savingMailboxes.has(account.id)
                             }
                             onClick={() => void unlinkPhone(account.id)}
                           >
@@ -603,6 +671,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           supportsAddressWrite &&
                           !unlinkingPhones.has(account.id) &&
                           !unlinkingAddresses.has(account.id) &&
+                          !savingMailboxes.has(account.id) &&
                           editing?.account?.id !== account.id &&
                           removing?.id !== account.id
                         }
@@ -671,12 +740,14 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           aria-label={`编辑 ${account.account}`}
                           disabled={
                             unlinkingPhones.has(account.id) ||
-                            unlinkingAddresses.has(account.id)
+                            unlinkingAddresses.has(account.id) ||
+                            savingMailboxes.has(account.id)
                           }
                           onClick={() => {
                             if (
                               !phoneUnlinkRequests.current.has(account.id) &&
-                              !addressUnlinkRequests.current.has(account.id)
+                              !addressUnlinkRequests.current.has(account.id) &&
+                              !mailboxRequests.current.has(account.id)
                             ) {
                               setEditing({ account })
                             }
@@ -690,12 +761,14 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           aria-label={`删除 ${account.account}`}
                           disabled={
                             unlinkingPhones.has(account.id) ||
-                            unlinkingAddresses.has(account.id)
+                            unlinkingAddresses.has(account.id) ||
+                            savingMailboxes.has(account.id)
                           }
                           onClick={() => {
                             if (
                               !phoneUnlinkRequests.current.has(account.id) &&
-                              !addressUnlinkRequests.current.has(account.id)
+                              !addressUnlinkRequests.current.has(account.id) &&
+                              !mailboxRequests.current.has(account.id)
                             ) {
                               setRemoving(account)
                             }
@@ -811,7 +884,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
             ready={
               running &&
               !unlinkingPhones.has(editing.account?.id ?? '') &&
-              !unlinkingAddresses.has(editing.account?.id ?? '')
+              !unlinkingAddresses.has(editing.account?.id ?? '') &&
+              !savingMailboxes.has(editing.account?.id ?? '')
             }
             onSave={async (input) => {
               if (input.id && phoneUnlinkRequests.current.has(input.id)) {
@@ -819,6 +893,9 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
               }
               if (input.id && addressUnlinkRequests.current.has(input.id)) {
                 throw new Error('正在解绑地址，请稍后重试。')
+              }
+              if (input.id && mailboxRequests.current.has(input.id)) {
+                throw new Error('正在修改邮箱关联，请稍后重试。')
               }
               await saveAccount(input)
               await load()
@@ -865,14 +942,17 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
               <AlertDialogAction
                 variant="destructive"
                 disabled={
-                  unlinkingPhones.has(removing.id) || unlinkingAddresses.has(removing.id)
+                  unlinkingPhones.has(removing.id) ||
+                  unlinkingAddresses.has(removing.id) ||
+                  savingMailboxes.has(removing.id)
                 }
                 onClick={(event) => {
                   event.preventDefault()
                   const target = removing
                   if (
                     phoneUnlinkRequests.current.has(target.id) ||
-                    addressUnlinkRequests.current.has(target.id)
+                    addressUnlinkRequests.current.has(target.id) ||
+                    mailboxRequests.current.has(target.id)
                   )
                     return
                   setRemoving(null)

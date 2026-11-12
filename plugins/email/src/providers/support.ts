@@ -8,7 +8,7 @@ import {
   timedOut,
   unavailable,
 } from '../domain/errors.js'
-import type { MailFolder, MailSession } from '../domain/types.js'
+import type { MailFolder, MailSession, MailReadState } from '../domain/types.js'
 
 export const TIMEOUT_MS = 30_000
 export const MAX_BODY_BYTES = 64 * 1024
@@ -150,6 +150,14 @@ export function checkFolder(folder: MailFolder): void {
   if (folder !== 'inbox' && folder !== 'junkemail') {
     throw invalidRequest('Email folder is not supported')
   }
+}
+
+export function readState(value: MailReadState | undefined): MailReadState {
+  if (value === undefined) return 'all'
+  if (value !== 'all' && value !== 'unread' && value !== 'read') {
+    throw invalidRequest('Email read-state filter is invalid')
+  }
+  return value
 }
 
 export class OpaqueCursor {

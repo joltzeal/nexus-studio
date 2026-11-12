@@ -3,10 +3,12 @@ import type {
   FetchMessageObject,
   FetchQueryObject,
   ImapFlowOptions,
+  ImapResponse,
   ListResponse,
   MailboxObject,
   MessageAddressObject,
   MessageStructureObject,
+  StatusObject,
 } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { z } from 'zod'
@@ -28,7 +30,9 @@ import type {
   MailMessageDetail,
   MailMessagePage,
   MailSession,
+  MailReadInput,
 } from '../domain/types.js'
+import { mailContent } from './content.js'
 import {
   accountKey,
   bounded,
@@ -36,10 +40,10 @@ import {
   checkFolder,
   checkSession,
   hasControlCharacters,
-  htmlText,
   MAX_SOURCE_BYTES,
   OpaqueCursor,
   TIMEOUT_MS,
+  readState,
 } from './support.js'
 
 export interface ImapClient {
@@ -47,9 +51,19 @@ export interface ImapClient {
   close(): void
   on(event: 'error', listener: (error: unknown) => void): unknown
   list(): Promise<ListResponse[]>
-  mailboxOpen(path: string, options: { readOnly: true }): Promise<MailboxObject>
+  mailboxOpen(path: string, options: { readOnly: boolean }): Promise<MailboxObject>
+  status(
+    path: string,
+    query: { messages: true; unseen: true },
+  ): Promise<StatusObject | false>
+  messageFlagsAdd(uid: number, flags: string[], options: { uid: true }): Promise<boolean>
+  messageFlagsRemove(
+    uid: number,
+    flags: string[],
+    options: { uid: true },
+  ): Promise<boolean>
   search(
-    query: { uid: string },
+    query: { uid: string; seen?: boolean },
     options: { uid: true },
   ): Promise<number[] | false | undefined>
   fetchAll(
@@ -74,6 +88,7 @@ const cursorSchema = z
     kind: z.literal('imap'),
     account: z.string(),
     folder: z.enum(['inbox', 'junkemail']),
+    readState: z.enum(['all', 'unread', 'read']),
     path: z.string().min(1).max(1024),
     validity: z.string().regex(/^[1-9]\d{0,9}$/u),
     snapshot: z.number().int().min(0).max(MAX_UID),
@@ -151,6 +166,73 @@ function imapFailure(error: unknown): PluginFailure {
     }
   }
   return unavailable('Email IMAP connection failed')
+}
+
+function commandFailure(error: unknown): PluginFailure | undefined {
+  if (!error || typeof error !== 'object') return
+  const response =
+    'response' in error && error.response && typeof error.response === 'object'
+      ? (error.response as ImapResponse)
+      : undefined
+  const first = Array.isArray(response?.attributes) ? response.attributes[0] : undefined
+  const parsed =
+    first && Array.isArray(first.section) ? first.section[0]?.value : undefined
+  const code = 'serverResponseCode' in error ? error.serverResponseCode : parsed
+  if (typeof code !== 'string' || code.length > 64) return
+  const failure = imapFailure({ serverResponseCode: code.trim().toUpperCase() })
+  if (failure.code === 'AUTH_FAILED' || failure.code === 'PERMISSION_DENIED') {
+    return failure
+  }
+}
+
+async function withCommandFailure<T>(
+  client: ImapClient,
+  command: 'STATUS' | 'UID STORE',
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!('exec' in client) || typeof client.exec !== 'function') return operation()
+  const connection = client as ImapClient & {
+    exec(command: string, ...args: unknown[]): Promise<unknown>
+  }
+  const exec = connection.exec
+  let failure: PluginFailure | undefined
+  // ImapFlow 2.11 swallows STATUS/STORE rejections. Keep only their safe code,
+  // scoped to this call so a nested LIST probe or a later command cannot replace it.
+  connection.exec = async (actual, ...args) => {
+    try {
+      return await exec.call(connection, actual, ...args)
+    } catch (error) {
+      if (actual === command) failure = commandFailure(error)
+      throw error
+    }
+  }
+  try {
+    const result = await operation()
+    if (result === false && failure) throw failure
+    return result
+  } catch (error) {
+    // STATUS wraps its original NO rejection in NotFound after an empty LIST.
+    if (
+      command === 'STATUS' &&
+      failure &&
+      !isPluginFailure(error) &&
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'NotFound' &&
+      'response' in error &&
+      error.response &&
+      typeof error.response === 'object' &&
+      'responseStatus' in error.response &&
+      error.response.responseStatus === 'NO' &&
+      commandFailure(error.response)?.code === failure.code
+    ) {
+      throw failure
+    }
+    throw error
+  } finally {
+    connection.exec = exec
+  }
 }
 
 function active(signal: AbortSignal): void {
@@ -264,6 +346,7 @@ export class MicrosoftImap implements MailboxClient {
   ): Promise<MailMessagePage> {
     checkSession(session)
     checkFolder(input.folder)
+    const filter = readState(input.readState)
     const parsed =
       input.cursor === undefined
         ? null
@@ -272,7 +355,8 @@ export class MicrosoftImap implements MailboxClient {
       parsed &&
       (!parsed.success ||
         parsed.data.account !== accountKey(session) ||
-        parsed.data.folder !== input.folder)
+        parsed.data.folder !== input.folder ||
+        parsed.data.readState !== filter)
     )
       throw invalidRequest('Email cursor does not match this mailbox')
     const cursor = parsed?.success ? parsed.data : null
@@ -287,8 +371,29 @@ export class MicrosoftImap implements MailboxClient {
         throw invalidRequest('Email mailbox changed; reload the message list')
       const snapshot = cursor?.snapshot ?? mailbox.uidNext - 1
       const upper = Math.min(snapshot, (cursor?.before ?? snapshot + 1) - 1)
-      if (!upper) return { items: [], nextCursor: null }
-      const found = await client.search({ uid: `1:${upper}` }, { uid: true })
+      const counts = await withCommandFailure(client, 'STATUS', () =>
+        client.status(path, { messages: true, unseen: true }),
+      )
+      active(context.signal)
+      if (
+        !counts ||
+        !Number.isSafeInteger(counts.messages) ||
+        !Number.isSafeInteger(counts.unseen) ||
+        counts.messages! < 0 ||
+        counts.unseen! < 0 ||
+        counts.unseen! > counts.messages!
+      ) {
+        throw protocolError('Email IMAP folder counts are invalid')
+      }
+      const totals = { total: counts.messages!, unread: counts.unseen! }
+      if (!upper) return { items: [], nextCursor: null, ...totals }
+      const found = await client.search(
+        {
+          uid: `1:${upper}`,
+          ...(filter === 'all' ? {} : { seen: filter === 'read' }),
+        },
+        { uid: true },
+      )
       active(context.signal)
       if (
         !Array.isArray(found) ||
@@ -297,7 +402,7 @@ export class MicrosoftImap implements MailboxClient {
       )
         throw protocolError('Email IMAP UID search response is invalid')
       const selected = found.sort((a, b) => b - a).slice(0, 20)
-      if (!selected.length) return { items: [], nextCursor: null }
+      if (!selected.length) return { items: [], nextCursor: null, ...totals }
       const messages = await client.fetchAll(selected.join(','), metadataQuery, {
         uid: true,
       })
@@ -311,9 +416,10 @@ export class MicrosoftImap implements MailboxClient {
         throw protocolError('Email IMAP message list response is invalid')
       const byUid = new Map(messages.map((message) => [message.uid, message]))
       return {
-        items: selected.map((uid) =>
-          summary(byUid.get(uid)!, session, input.folder, mailbox),
-        ),
+        ...totals,
+        items: selected
+          .map((uid) => summary(byUid.get(uid)!, session, input.folder, mailbox))
+          .filter((item) => filter === 'all' || item.isRead === (filter === 'read')),
         nextCursor:
           found.length > selected.length
             ? this.cursors.encode({
@@ -321,6 +427,7 @@ export class MicrosoftImap implements MailboxClient {
                 kind: 'imap',
                 account: accountKey(session),
                 folder: input.folder,
+                readState: filter,
                 path,
                 validity: mailbox.uidValidity.toString(),
                 snapshot,
@@ -407,25 +514,78 @@ export class MicrosoftImap implements MailboxClient {
       ).flatMap((group) => group.value)
       if (recipients.length > 100)
         throw protocolError('Email recipient list is too large')
-      // With skipHtmlToText, mailparser also emits an empty text placeholder for HTML-only mail.
-      const text =
-        typeof parsed.text === 'string' && parsed.text.length
-          ? parsed.text
-          : typeof parsed.html === 'string'
-            ? htmlText(parsed.html)
-            : ''
-      const body = capText(text)
+      const presentation = mailContent(
+        parsed.text,
+        typeof parsed.html === 'string' ? parsed.html : undefined,
+      )
       return {
         ...message,
         subject: capText(parsed.subject ?? message.subject, 1024).text,
         from: parsed.from?.value[0] ? address(parsed.from.value[0]) : message.from,
         to: recipients.map(address),
         hasAttachments: message.hasAttachments || parsed.attachments.length > 0,
-        preview: capText(body.text, 512).text,
-        body: body.text,
-        truncated: body.truncated,
+        preview: capText(presentation.body, 512).text,
+        ...presentation,
       }
     })
+  }
+
+  async setRead(
+    session: MailSession,
+    input: MailReadInput,
+    signal: AbortSignal,
+  ): Promise<void> {
+    checkSession(session)
+    checkFolder(input.folder)
+    const id =
+      typeof input.messageId === 'string'
+        ? /^imap:([a-f0-9]{64}):(inbox|junkemail):([1-9]\d{0,9}):([1-9]\d{0,9})$/u.exec(
+            input.messageId,
+          )
+        : null
+    if (
+      !id ||
+      id[2] !== input.folder ||
+      !uidSchema.safeParse(Number(id[4])).success ||
+      typeof input.isRead !== 'boolean'
+    ) {
+      throw invalidRequest('Email IMAP read-state request is invalid')
+    }
+    const uid = Number(id[4])
+    await this.withMailbox(
+      session,
+      input.folder,
+      signal,
+      async (context) => {
+        const { client, mailbox } = context
+        if (messageId(session, input.folder, mailbox, uid) !== input.messageId) {
+          throw invalidRequest('Email mailbox changed; reload the message list')
+        }
+        const written = await withCommandFailure(client, 'UID STORE', () =>
+          input.isRead
+            ? client.messageFlagsAdd(uid, ['\\Seen'], { uid: true })
+            : client.messageFlagsRemove(uid, ['\\Seen'], { uid: true }),
+        )
+        active(context.signal)
+        if (written !== true)
+          throw protocolError('Email IMAP read-state write was not accepted')
+        const confirmed = await client.fetchOne(
+          uid,
+          { uid: true, flags: true },
+          { uid: true },
+        )
+        active(context.signal)
+        if (
+          !confirmed ||
+          confirmed.uid !== uid ||
+          !(confirmed.flags instanceof Set) ||
+          confirmed.flags.has('\\Seen') !== input.isRead
+        ) {
+          throw protocolError('Email IMAP read-state update could not be confirmed')
+        }
+      },
+      false,
+    )
   }
 
   private async withMailbox<T>(
@@ -433,6 +593,7 @@ export class MicrosoftImap implements MailboxClient {
     folder: MailFolder,
     signal: AbortSignal,
     operation: (context: Context) => Promise<T>,
+    readOnly = true,
   ): Promise<T> {
     let client: ImapClient | undefined
     let closed = false
@@ -493,12 +654,18 @@ export class MicrosoftImap implements MailboxClient {
               }
               path = junk[0].path
             }
-            const mailbox = await connection.mailboxOpen(path, { readOnly: true })
+            const mailbox = await connection.mailboxOpen(path, { readOnly })
             active(requestSignal)
+            if (!readOnly && mailbox.readOnly === true) {
+              throw new PluginFailure(
+                'PERMISSION_DENIED',
+                'Email IMAP mailbox is read-only',
+              )
+            }
             if (
               !mailbox ||
               mailbox.path !== path ||
-              mailbox.readOnly !== true ||
+              mailbox.readOnly !== readOnly ||
               typeof mailbox.uidValidity !== 'bigint' ||
               mailbox.uidValidity < 1n ||
               mailbox.uidValidity > BigInt(MAX_UID) ||

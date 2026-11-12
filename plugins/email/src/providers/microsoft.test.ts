@@ -145,6 +145,8 @@ describe('Graph mailbox', () => {
   it('requests the selected folder with twenty newest summaries and strips extra fields', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input))
+      if (url.pathname === '/v1.0/me/mailFolders/junkemail')
+        return json({ totalItemCount: 1, unreadItemCount: 1 })
       expect(url.origin + url.pathname).toBe(
         'https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages',
       )
@@ -180,6 +182,8 @@ describe('Graph mailbox', () => {
         },
       ],
       nextCursor: null,
+      total: 1,
+      unread: 1,
     })
   })
 
@@ -193,10 +197,12 @@ describe('Graph mailbox', () => {
           '@odata.nextLink': `https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages${query}`,
         }),
       )
+      .mockResolvedValueOnce(json({ totalItemCount: 1, unreadItemCount: 1 }))
       .mockImplementationOnce(async (input) => {
         expect(new URL(String(input)).search).toBe(query)
         return json({ value: [] })
       })
+      .mockResolvedValueOnce(json({ totalItemCount: 1, unreadItemCount: 1 }))
     const factory = new MicrosoftEmailFactory({ fetchImpl })
     const first = await factory
       .create('graph')
@@ -207,7 +213,7 @@ describe('Graph mailbox', () => {
       factory
         .create('graph')
         .mailbox.list(session, { folder: 'inbox', cursor: first.nextCursor! }, signal()),
-    ).resolves.toEqual({ items: [], nextCursor: null })
+    ).resolves.toEqual({ items: [], nextCursor: null, total: 1, unread: 1 })
   })
 
   it('follows the canonical OData folder selector without rewriting the nextLink', async () => {
@@ -218,7 +224,9 @@ describe('Graph mailbox', () => {
       .mockResolvedValueOnce(
         json({ value: [graphMessage()], '@odata.nextLink': nextLink }),
       )
+      .mockResolvedValueOnce(json({ totalItemCount: 1, unreadItemCount: 1 }))
       .mockResolvedValueOnce(json({ value: [] }))
+      .mockResolvedValueOnce(json({ totalItemCount: 1, unreadItemCount: 1 }))
     const provider = new MicrosoftEmailFactory({ fetchImpl }).create('graph')
     const first = await provider.mailbox.list(session, { folder: 'inbox' }, signal())
     await provider.mailbox.list(
@@ -226,7 +234,7 @@ describe('Graph mailbox', () => {
       { folder: 'inbox', cursor: first.nextCursor! },
       signal(),
     )
-    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(nextLink)
+    expect(String(fetchImpl.mock.calls[2]?.[0])).toBe(nextLink)
   })
 
   it.each([
@@ -248,12 +256,14 @@ describe('Graph mailbox', () => {
   })
 
   it('rejects forged, cross-folder and cross-account cursors before sending a token', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
-      json({
-        value: [],
-        '@odata.nextLink':
-          'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=20',
-      }),
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      new URL(String(input)).pathname.endsWith('/messages')
+        ? json({
+            value: [],
+            '@odata.nextLink':
+              'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skip=20',
+          })
+        : json({ totalItemCount: 0, unreadItemCount: 0 }),
     )
     const mailbox = new MicrosoftEmailFactory({ fetchImpl }).create('graph').mailbox
     const { nextCursor } = await mailbox.list(session, { folder: 'inbox' }, signal())
@@ -269,7 +279,7 @@ describe('Graph mailbox', () => {
         code: 'INVALID_REQUEST',
       })
     }
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it.each([
@@ -313,14 +323,12 @@ describe('Graph mailbox', () => {
     },
   )
 
-  it('asks for text and safely converts returned HTML without script, style or remote image text', async () => {
+  it('returns safe HTML and independently converts plain text without remote image text', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(new URL(String(input)).pathname).toBe(
         '/v1.0/me/mailFolders/inbox/messages/AAMk_fixture',
       )
-      expect(new Headers(init?.headers).get('Prefer')).toBe(
-        'outlook.body-content-type="text"',
-      )
+      expect(new Headers(init?.headers).get('Prefer')).toBeNull()
       return json({
         ...graphMessage(),
         toRecipients: [{ emailAddress: { name: 'Reader', address: session.email } }],
@@ -335,12 +343,14 @@ describe('Graph mailbox', () => {
       .create('graph')
       .mailbox.get(session, { folder: 'inbox', messageId: 'AAMk_fixture' }, signal())
     expect(detail.body).toBe('Hello & welcome\nSecond')
+    expect(detail.html).toBe('<p>Hello &amp; welcome</p><p>Second</p>')
     expect(detail.to).toEqual([{ name: 'Reader', address: session.email }])
     expect(detail.truncated).toBe(false)
     expect(Object.keys(detail).sort()).toEqual([
       'body',
       'from',
       'hasAttachments',
+      'html',
       'id',
       'isRead',
       'preview',
@@ -384,12 +394,16 @@ describe('Graph mailbox', () => {
 
 describe('bounded HTTP operations', () => {
   it('uses the host global fetch without replacing its inherited proxy', async () => {
-    const inherited = vi.fn<typeof fetch>(async () => json({ value: [] }))
+    const inherited = vi.fn<typeof fetch>(async (input) =>
+      new URL(String(input)).pathname.endsWith('/messages')
+        ? json({ value: [] })
+        : json({ totalItemCount: 0, unreadItemCount: 0 }),
+    )
     vi.stubGlobal('fetch', inherited)
     await new MicrosoftEmailFactory()
       .create('graph')
       .mailbox.list(session, { folder: 'inbox' }, signal())
-    expect(inherited).toHaveBeenCalledTimes(1)
+    expect(inherited).toHaveBeenCalledTimes(2)
   })
 
   it('cancels an uncooperative fetch and does not expose its abort reason', async () => {

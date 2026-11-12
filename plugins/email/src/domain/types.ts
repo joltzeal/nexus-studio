@@ -2,6 +2,7 @@ import type { PluginErrorCode } from './errors.js'
 
 export type MailTransport = 'graph' | 'imap'
 export type MailFolder = 'inbox' | 'junkemail'
+export type MailReadState = 'all' | 'unread' | 'read'
 export type MailboxStatus = 'pending' | 'active' | 'reauth-required' | 'error' | 'paused'
 
 export interface MailCredentials {
@@ -35,6 +36,7 @@ export interface MailMessage {
 export interface MailMessageDetail extends MailMessage {
   to: MailAddress[]
   body: string
+  html: string | null
   truncated: boolean
 }
 
@@ -42,6 +44,8 @@ export interface MailMessagePage {
   items: MailMessage[]
   /** Opaque cursor validated by the producing client, never an arbitrary URL. */
   nextCursor: string | null
+  total: number
+  unread: number
 }
 
 export interface MailSession {
@@ -52,11 +56,16 @@ export interface MailSession {
 export interface MailListInput {
   folder: MailFolder
   cursor?: string
+  readState?: MailReadState
 }
 
 export interface MailGetInput {
   folder: MailFolder
   messageId: string
+}
+
+export interface MailReadInput extends MailGetInput {
+  isRead: boolean
 }
 
 export interface TokenRefresher {
@@ -74,6 +83,7 @@ export interface MailboxClient {
     input: MailGetInput,
     signal: AbortSignal,
   ): Promise<MailMessageDetail>
+  setRead(session: MailSession, input: MailReadInput, signal: AbortSignal): Promise<void>
 }
 
 export interface EmailProvider {
@@ -109,6 +119,9 @@ export interface MailboxRecord {
   consecutiveFailures: number
   lastError: string | null
   lastErrorCode: PluginErrorCode | null
+  reception: MailReceptionState
+  receiveRequested: boolean
+  receiveFailures: number
   createdAt: string
   updatedAt: string
 }
@@ -125,6 +138,8 @@ export interface MailboxView {
   hasPassword: boolean
   hasRefreshToken: boolean
   refreshing: boolean
+  receiving: boolean
+  reception: MailReceptionState
   accessExpiresAt: string | null
   lastAttemptAt: string | null
   lastRefreshedAt: string | null
@@ -139,6 +154,18 @@ export interface MailboxView {
 export interface EmailSettings {
   autoRefresh: boolean
   intervalMinutes: number
+  autoReceive: boolean
+  receiveIntervalMinutes: number
+}
+
+export interface MailReceptionState {
+  lastCheckedAt: string | null
+  nextCheckAt: string | null
+  latestReceivedAt: string | null
+  lastError: string | null
+  lastErrorCode: PluginErrorCode | null
+  inbox: { total: number; unread: number } | null
+  junkemail: { total: number; unread: number } | null
 }
 
 export interface ImportReport {

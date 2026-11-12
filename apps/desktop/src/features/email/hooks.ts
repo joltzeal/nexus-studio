@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { EmailAction } from './action-state'
-import type { EmailResource } from './async-state'
+import type { EmailReaderStore, EmailResource } from './async-state'
 
 export function useEmailResource<P, T>(resource: EmailResource<P, T>, pollMs?: number) {
   const snapshot = useSyncExternalStore(
@@ -27,4 +27,20 @@ export function useEmailAction(failure: string) {
     return () => action.dispose()
   }, [action])
   return { action, ...snapshot }
+}
+
+export function useEmailReader(store: EmailReaderStore, onChanged?: () => void) {
+  const snapshot = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
+  )
+  useEffect(() => {
+    store.setOnChanged(onChanged)
+  }, [store, onChanged])
+  useEffect(() => {
+    store.start()
+    return () => store.dispose()
+  }, [store])
+  return snapshot
 }

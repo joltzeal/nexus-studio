@@ -19,3 +19,12 @@ export function emailFailureMessage(error: unknown, fallback: string): string {
     ? (authorizationFailureMessage(error.code) ?? fallback)
     : fallback
 }
+
+export function readStateFailureMessage(code: string | null): string {
+  if (code === 'PERMISSION_DENIED')
+    return '缺少修改已读状态的权限，请重新授予写入权限；邮件仍可阅读，未成功的邮件状态保持不变。'
+  return (
+    authorizationFailureMessage(code) ??
+    '已读状态未更新，请重试。未成功的邮件状态保持不变。'
+  )
+}

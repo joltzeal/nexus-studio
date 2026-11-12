@@ -1,5 +1,6 @@
 import { callPlugin } from '@/lib/platform/native-plugins'
 import { profileData, type Profile } from '@/features/addresses/types'
+import { assignedAccountMailbox } from './account-mailbox-api'
 import type {
   OrderCandidate,
   OrderWatchSettings,
@@ -208,7 +209,10 @@ function accountRecord(value: unknown): value is Account {
     ].every((key) => typeof value[key] === 'string') &&
     (value.address === undefined ||
       value.address === null ||
-      assignedAccountAddress(value.address))
+      assignedAccountAddress(value.address)) &&
+    (value.mailbox === undefined ||
+      value.mailbox === null ||
+      assignedAccountMailbox(value.mailbox))
   )
 }
 

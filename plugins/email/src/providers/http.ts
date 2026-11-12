@@ -127,6 +127,7 @@ export class MicrosoftHttp {
     init: RequestInit,
     signal: AbortSignal,
     kind: HttpKind,
+    allowEmpty = false,
   ): Promise<unknown> {
     return bounded(signal, async (requestSignal) => {
       const response = await (this.fetchImpl ?? globalThis.fetch)(url, {
@@ -141,6 +142,10 @@ export class MicrosoftHttp {
       if (!response.ok && (kind !== 'token' || response.status !== 400)) {
         discard(response)
         throw httpFailure(response)
+      }
+      if (allowEmpty && response.status === 204) {
+        discard(response)
+        return null
       }
       const body = await readJson(
         response,

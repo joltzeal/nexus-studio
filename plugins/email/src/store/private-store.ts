@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { unavailable } from '../domain/errors.js'
 import { StoreDocumentSchema } from '../domain/schemas.js'
-import type { EmailSettings, MailboxRecord } from '../domain/types.js'
+import type { EmailSettings, MailboxRecord, MailReceptionState } from '../domain/types.js'
 
 export interface StoreDocument {
   schemaVersion: 1
@@ -20,9 +20,47 @@ export interface EmailStore {
 export function emptyDocument(): StoreDocument {
   return {
     schemaVersion: 1,
-    settings: { autoRefresh: true, intervalMinutes: 60 },
+    settings: {
+      autoRefresh: true,
+      intervalMinutes: 60,
+      autoReceive: true,
+      receiveIntervalMinutes: 1,
+    },
     accounts: [],
   }
+}
+
+export function emptyReception(): MailReceptionState {
+  return {
+    lastCheckedAt: null,
+    nextCheckAt: null,
+    latestReceivedAt: null,
+    lastError: null,
+    lastErrorCode: null,
+    inbox: null,
+    junkemail: null,
+  }
+}
+
+function normalizeLoaded(document: unknown): unknown {
+  if (!document || typeof document !== 'object') return document
+  const source = document as Record<string, unknown>
+  const settings = source.settings
+  if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+    const current = settings as Record<string, unknown>
+    if (!Object.hasOwn(current, 'autoReceive')) current.autoReceive = true
+    if (!Object.hasOwn(current, 'receiveIntervalMinutes'))
+      current.receiveIntervalMinutes = 1
+  }
+  if (Array.isArray(source.accounts))
+    for (const account of source.accounts) {
+      if (!account || typeof account !== 'object' || Array.isArray(account)) continue
+      const current = account as Record<string, unknown>
+      if (!Object.hasOwn(current, 'reception')) current.reception = emptyReception()
+      if (!Object.hasOwn(current, 'receiveRequested')) current.receiveRequested = false
+      if (!Object.hasOwn(current, 'receiveFailures')) current.receiveFailures = 0
+    }
+  return source
 }
 
 function validate(document: unknown): StoreDocument {
@@ -79,7 +117,9 @@ class PrivateStore implements EmailStore {
     try {
       if ((await stat(this.file)).size > 128 * 1024 * 1024)
         throw unavailable('邮箱存储文件超过读取上限')
-      this.document = validate(JSON.parse(await readFile(this.file, 'utf8')))
+      this.document = validate(
+        normalizeLoaded(JSON.parse(await readFile(this.file, 'utf8'))),
+      )
     } catch (error) {
       if (
         typeof error === 'object' &&

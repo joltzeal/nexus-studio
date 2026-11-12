@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 import { AssignedAccountAddressSchema } from './address.js'
 import { invalidRequest } from './errors.js'
+import { AssignedAccountMailboxSchema } from './mailbox.js'
 import { AccountSaveInputSchema } from './schemas.js'
 
 const id = z
@@ -22,12 +23,15 @@ const account = AccountSaveInputSchema.omit({ id: true })
   .extend({
     id,
     address: AssignedAccountAddressSchema.nullable().optional(),
+    mailbox: AssignedAccountMailboxSchema.nullable().optional(),
     createdAt: timestamp,
     updatedAt: timestamp,
   })
-  .transform(({ address, ...entry }) => ({
+  .transform(({ address, mailbox, ...entry }) => ({
     ...entry,
     ...(address === undefined ? {} : { address }),
+    // Mailbox identities belong to the source device, including same-machine copies.
+    ...(mailbox === undefined ? {} : { mailbox: null }),
   }))
 
 const binding = z.strictObject({ windowId: id, accountId: id, boundAt: timestamp })

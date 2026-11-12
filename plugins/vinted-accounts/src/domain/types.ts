@@ -1,6 +1,8 @@
 import type { AssignedAccountAddress } from './address.js'
+import type { AssignedAccountMailbox } from './mailbox.js'
 
 export type { AccountAddressProfile, AssignedAccountAddress } from './address.js'
+export type { AccountMailboxInput, AssignedAccountMailbox } from './mailbox.js'
 
 /** How the account signs in. Credentials are always present, even for OAuth. */
 export type LoginMethod = 'email' | 'google' | 'apple' | 'facebook'
@@ -38,6 +40,7 @@ export interface AccountRecord {
   status: AccountStatus
   homepageUrl: string
   address?: AssignedAccountAddress | null
+  mailbox?: AssignedAccountMailbox | null
   createdAt: string
   updatedAt: string
 }

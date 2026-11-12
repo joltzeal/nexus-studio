@@ -30,9 +30,26 @@ export const StatusSchema = z.enum([
 export const SettingsSchema = z.strictObject({
   autoRefresh: z.boolean(),
   intervalMinutes: z.number().int().min(5).max(1440),
+  autoReceive: z.boolean(),
+  receiveIntervalMinutes: z.number().int().min(1).max(60),
 })
 const timestamp = z.iso.datetime()
 const nullableTimestamp = timestamp.nullable()
+export const FolderCountsSchema = z
+  .strictObject({
+    total: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    unread: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .refine((counts) => counts.unread <= counts.total)
+export const ReceptionSchema = z.strictObject({
+  lastCheckedAt: nullableTimestamp,
+  nextCheckAt: nullableTimestamp,
+  latestReceivedAt: nullableTimestamp,
+  lastError: z.string().max(500).nullable(),
+  lastErrorCode: z.enum(PLUGIN_ERROR_CODES).nullable(),
+  inbox: FolderCountsSchema.nullable(),
+  junkemail: FolderCountsSchema.nullable(),
+})
 
 export const MailboxRecordSchema = z.strictObject({
   id: z.uuid(),
@@ -56,6 +73,9 @@ export const MailboxRecordSchema = z.strictObject({
   consecutiveFailures: z.number().int().min(0).max(32),
   lastError: z.string().max(500).nullable(),
   lastErrorCode: z.enum(PLUGIN_ERROR_CODES).nullable(),
+  reception: ReceptionSchema,
+  receiveRequested: z.boolean(),
+  receiveFailures: z.number().int().min(0).max(32),
   createdAt: timestamp,
   updatedAt: timestamp,
 })
@@ -95,13 +115,23 @@ export const IdInputSchema = z.strictObject({ id: z.uuid() })
 export const RefreshInputSchema = z.strictObject({
   ids: z.array(z.uuid()).min(1).max(100),
 })
+export const ReceiveInputSchema = z.strictObject({
+  ids: z
+    .array(z.uuid())
+    .min(1)
+    .max(100)
+    .refine((ids) => new Set(ids).size === ids.length),
+})
+export const TargetsInputSchema = ListInputSchema.omit({ status: true })
 export const ImportInputSchema = z.strictObject({
   text: z.string().max(MAX_IMPORT_BYTES),
   transport: TransportSchema,
 })
 export const MessageListInputSchema = z.strictObject({
   accountId: z.uuid(),
+  expectedEmail: EmailSchema.optional(),
   folder: z.enum(['inbox', 'junkemail']),
+  readState: z.enum(['all', 'unread', 'read']).optional(),
   cursor: z
     .string()
     .min(1)
@@ -110,7 +140,18 @@ export const MessageListInputSchema = z.strictObject({
 })
 export const MessageGetInputSchema = MessageListInputSchema.omit({
   cursor: true,
+  readState: true,
 }).extend({ messageId: z.string().min(1).max(2048) })
+export const MessageReadInputSchema = MessageGetInputSchema.omit({
+  messageId: true,
+}).extend({
+  messageIds: z
+    .array(z.string().min(1).max(2048))
+    .min(1)
+    .max(20)
+    .refine((ids) => new Set(ids).size === ids.length),
+  isRead: z.boolean(),
+})
 export const EmptyInputSchema = z.strictObject({})
 
 export function parseInput<T>(schema: z.ZodType<T>, input: unknown): T {

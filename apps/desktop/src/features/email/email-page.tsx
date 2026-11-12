@@ -2,6 +2,7 @@ import { useState } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
+  Download,
   Mail,
   Pencil,
   Plus,
@@ -31,10 +32,12 @@ import { toast } from '@/components/ui/toast'
 import { PluginGate } from '@/features/plugins/plugin-gate'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { cn } from '@/lib/utils'
-import { listMailboxes, queueRefresh } from './api'
+import { listMailboxes, queueReception, queueRefresh } from './api'
+import { EmailAccountLink } from './accounts-bridge'
 import { EmailResource } from './async-state'
 import { useEmailAction, useEmailResource } from './hooks'
 import { emailProcessIdentity } from './identity'
+import { authorizationFailureMessage } from './errors'
 import { ImportMailboxesDialog } from './import-dialog'
 import { MailboxEditor } from './mailbox-editor'
 import { MailReader } from './mail-reader'
@@ -88,6 +91,7 @@ function EmailWorkspace() {
   const [removing, setRemoving] = useState<MailboxView | null>(null)
   const [reading, setReading] = useState<MailboxView | null>(null)
   const refresh = useEmailAction('刷新任务排队失败，请重试。')
+  const receive = useEmailAction('收信任务排队失败，请重试。')
   const data = state.value
   const items = data?.items ?? []
   const selected = items.filter((account) => selectedIds.has(account.id))
@@ -117,6 +121,16 @@ function EmailWorkspace() {
       (result) => {
         resource.invalidate()
         toast.success(`已排队 ${result.queued} 个邮箱，跳过 ${result.skipped} 个`)
+      },
+    )
+  }
+
+  function requestReception(ids: string[]) {
+    void receive.action.run(
+      () => queueReception(ids),
+      (result) => {
+        resource.invalidate()
+        toast.success(`已排队收信 ${result.queued} 个邮箱，跳过 ${result.skipped} 个`)
       },
     )
   }
@@ -159,6 +173,7 @@ function EmailWorkspace() {
         </Alert>
       ) : null}
       {refresh.error ? <FieldError>{refresh.error}</FieldError> : null}
+      {receive.error ? <FieldError>{receive.error}</FieldError> : null}
       {data && !data.storageDurable ? (
         <Alert variant="destructive">
           <AlertDescription>
@@ -199,6 +214,15 @@ function EmailWorkspace() {
         <Button
           variant="outline"
           size="sm"
+          disabled={!selected.length || receive.busy}
+          onClick={() => requestReception(selected.map((account) => account.id))}
+        >
+          <Download data-icon="inline-start" />
+          {receive.busy ? '收信排队中…' : '收取所选邮件'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           disabled={!selected.length || refresh.busy}
           onClick={() => requestRefresh(selected.map((account) => account.id))}
         >
@@ -233,10 +257,11 @@ function EmailWorkspace() {
               </TableHead>
               <TableHead>邮箱 / 备注</TableHead>
               <TableHead>通道</TableHead>
-              <TableHead>刷新状态</TableHead>
-              <TableHead>最近成功刷新</TableHead>
+              <TableHead>收信 / 文件夹</TableHead>
+              <TableHead>Token 状态</TableHead>
+              <TableHead>Token 最近刷新</TableHead>
               <TableHead>Token 到期</TableHead>
-              <TableHead>下次刷新</TableHead>
+              <TableHead>Token 下次刷新</TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -281,6 +306,57 @@ function EmailWorkspace() {
                     {account.transport === 'graph' ? 'Graph' : 'IMAP'}
                   </Badge>
                 </TableCell>
+                <TableCell className="min-w-48">
+                  <div className="flex items-center gap-2 whitespace-nowrap">
+                    <Badge
+                      variant={account.reception.lastError ? 'destructive' : 'secondary'}
+                      title={
+                        account.reception.lastError
+                          ? (authorizationFailureMessage(
+                              account.reception.lastErrorCode,
+                            ) ?? '收信未成功，请检查授权与应用代理后重试。')
+                          : undefined
+                      }
+                    >
+                      {!account.enabled || account.status === 'paused'
+                        ? '已暂停'
+                        : account.receiving
+                          ? '收信中'
+                          : account.reception.lastError
+                            ? '收信失败'
+                            : account.reception.lastCheckedAt
+                              ? '已检查'
+                              : '待收信'}
+                      {account.reception.lastError ? (
+                        <span className="sr-only">
+                          {authorizationFailureMessage(account.reception.lastErrorCode) ??
+                            '收信未成功，请检查授权与应用代理后重试。'}
+                        </span>
+                      ) : null}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      检查 {formatMailTime(account.reception.lastCheckedAt)}
+                    </span>
+                  </div>
+                  <span
+                    className="block whitespace-nowrap text-xs text-muted-foreground"
+                    title={`收件箱共 ${account.reception.inbox?.total ?? '—'} 封，垃圾箱共 ${account.reception.junkemail?.total ?? '—'} 封`}
+                  >
+                    收件箱未读 {account.reception.inbox?.unread ?? '—'} · 垃圾箱未读{' '}
+                    {account.reception.junkemail?.unread ?? '—'}
+                    <span className="sr-only">
+                      {`；收件箱共 ${account.reception.inbox?.total ?? '—'} 封，垃圾箱共 ${account.reception.junkemail?.total ?? '—'} 封`}
+                    </span>
+                  </span>
+                  <span className="block whitespace-nowrap text-xs text-muted-foreground">
+                    下次{' '}
+                    {formatMailTime(
+                      account.enabled && account.status !== 'paused'
+                        ? account.reception.nextCheckAt
+                        : null,
+                    )}
+                  </span>
+                </TableCell>
                 <TableCell>
                   <Badge
                     variant={
@@ -311,6 +387,16 @@ function EmailWorkspace() {
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1">
+                    <EmailAccountLink mailbox={account} />
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`收取 ${account.email} 的邮件`}
+                      disabled={receive.busy || account.receiving || !account.enabled}
+                      onClick={() => requestReception([account.id])}
+                    >
+                      <Download />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -357,7 +443,7 @@ function EmailWorkspace() {
             ))}
             {!items.length ? (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={9}>
                   <Empty className="p-4">
                     <EmptyHeader>
                       <EmptyTitle>
@@ -450,9 +536,11 @@ function EmailWorkspace() {
             currentReader.email,
             currentReader.transport,
             currentReader.clientId,
+            currentReader.enabled,
           ])}
           account={currentReader}
           onClose={() => setReading(null)}
+          onChanged={() => resource.invalidate()}
         />
       ) : null}
     </section>

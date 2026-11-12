@@ -14,6 +14,8 @@ import {
   FieldError,
   FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSet,
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -44,11 +46,11 @@ export function RefreshSettingsDialog({
         }
       }}
     >
-      <DialogContent>
+      <DialogContent className="max-h-[90svh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>刷新设置</DialogTitle>
+          <DialogTitle>收信与 Token 设置</DialogTitle>
           <DialogDescription>
-            插件运行时在后台刷新 token；退出应用后停止调度。
+            收信与 token 刷新独立调度；退出应用后停止。关闭自动收信后仍可手动收信。
           </DialogDescription>
         </DialogHeader>
         {state.value ? (
@@ -90,6 +92,10 @@ function RefreshSettingsForm({
 }) {
   const [autoRefresh, setAutoRefresh] = useState(initial.autoRefresh)
   const [interval, setInterval] = useState(String(initial.intervalMinutes))
+  const [autoReceive, setAutoReceive] = useState(initial.autoReceive)
+  const [receiveInterval, setReceiveInterval] = useState(
+    String(initial.receiveIntervalMinutes),
+  )
   const [validation, setValidation] = useState<string | null>(null)
   const { action, busy, error } = useEmailAction('刷新设置保存失败，请重试。')
   function close() {
@@ -99,6 +105,7 @@ function RefreshSettingsForm({
   function submit(event: FormEvent) {
     event.preventDefault()
     const intervalMinutes = Number(interval)
+    const receiveIntervalMinutes = Number(receiveInterval)
     if (
       !Number.isInteger(intervalMinutes) ||
       intervalMinutes < 5 ||
@@ -107,12 +114,26 @@ function RefreshSettingsForm({
       setValidation('刷新间隔须为 5–1440 分钟的整数。')
       return
     }
+    if (
+      !Number.isInteger(receiveIntervalMinutes) ||
+      receiveIntervalMinutes < 1 ||
+      receiveIntervalMinutes > 60
+    ) {
+      setValidation('收信间隔须为 1–60 分钟的整数。')
+      return
+    }
     setValidation(null)
     void action.run(
-      () => saveSettings({ autoRefresh, intervalMinutes }),
+      () =>
+        saveSettings({
+          autoRefresh,
+          intervalMinutes,
+          autoReceive,
+          receiveIntervalMinutes,
+        }),
       () => {
         onSaved()
-        toast.success('刷新设置已保存')
+        toast.success('收信与 Token 设置已保存')
         close()
       },
     )
@@ -121,32 +142,66 @@ function RefreshSettingsForm({
     <>
       <form id="email-settings-form" onSubmit={submit}>
         <FieldGroup>
-          <Field orientation="horizontal">
-            <FieldLabel htmlFor="email-auto-refresh">自动刷新 token</FieldLabel>
-            <Switch
-              id="email-auto-refresh"
-              checked={autoRefresh}
-              disabled={busy}
-              onCheckedChange={setAutoRefresh}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="email-refresh-interval">刷新间隔（分钟）</FieldLabel>
-            <Input
-              id="email-refresh-interval"
-              type="number"
-              min={5}
-              max={1440}
-              step={1}
-              value={interval}
-              disabled={busy}
-              required
-              onChange={(event) => setInterval(event.target.value)}
-            />
-            <FieldDescription>
-              允许 5–1440 分钟；token 临近到期时会提前刷新。
-            </FieldDescription>
-          </Field>
+          <FieldSet>
+            <FieldLegend>邮件接收</FieldLegend>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="email-auto-receive">自动收信</FieldLabel>
+              <Switch
+                id="email-auto-receive"
+                checked={autoReceive}
+                disabled={busy}
+                onCheckedChange={setAutoReceive}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="email-receive-interval">收信间隔（分钟）</FieldLabel>
+              <Input
+                id="email-receive-interval"
+                type="number"
+                min={1}
+                max={60}
+                step={1}
+                value={receiveInterval}
+                disabled={busy}
+                required
+                onChange={(event) => setReceiveInterval(event.target.value)}
+              />
+              <FieldDescription>
+                允许 1–60 分钟；检查收件箱与垃圾箱，不自动标记已读。
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+          <FieldSet>
+            <FieldLegend>Token 刷新</FieldLegend>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="email-auto-refresh">自动刷新 token</FieldLabel>
+              <Switch
+                id="email-auto-refresh"
+                checked={autoRefresh}
+                disabled={busy}
+                onCheckedChange={setAutoRefresh}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="email-refresh-interval">
+                Token 刷新间隔（分钟）
+              </FieldLabel>
+              <Input
+                id="email-refresh-interval"
+                type="number"
+                min={5}
+                max={1440}
+                step={1}
+                value={interval}
+                disabled={busy}
+                required
+                onChange={(event) => setInterval(event.target.value)}
+              />
+              <FieldDescription>
+                允许 5–1440 分钟；token 临近到期时会提前刷新。
+              </FieldDescription>
+            </Field>
+          </FieldSet>
           {validation || error ? <FieldError>{validation ?? error}</FieldError> : null}
         </FieldGroup>
       </form>

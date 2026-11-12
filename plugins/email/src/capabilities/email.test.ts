@@ -38,14 +38,18 @@ function context(method: string, payload: unknown = {}): DispatchContext {
     signal: new AbortController().signal,
   }
 }
-function setup(refreshImpl: TokenRefresher['refresh'] = async () => issued) {
+async function setup(refreshImpl: TokenRefresher['refresh'] = async () => issued) {
   const refresh = vi.fn(refreshImpl)
   const store = createMemoryStore()
+  await store.mutate((document) => {
+    document.settings.autoReceive = false
+  })
   let time = new Date('2026-11-12T01:00:00.000Z')
   const provider: EmailProvider = {
     tokens: { refresh },
     mailbox: {
-      list: vi.fn(async () => ({ items: [], nextCursor: null })),
+      list: vi.fn(async () => ({ items: [], nextCursor: null, total: 0, unread: 0 })),
+      setRead: vi.fn(async () => {}),
       get: vi.fn(async () => {
         throw new Error('unused')
       }),
@@ -76,7 +80,7 @@ function setup(refreshImpl: TokenRefresher['refresh'] = async () => issued) {
 
 describe('email account service', () => {
   it('persists credentials but never returns them in summaries', async () => {
-    const t = setup()
+    const t = await setup()
     const view = await t.save()
     expect(view.status).toBe('pending')
     expect(JSON.stringify(view)).not.toContain('synthetic-')
@@ -86,7 +90,7 @@ describe('email account service', () => {
   })
 
   it('skips duplicate import without overwriting the latest rotated token', async () => {
-    const t = setup()
+    const t = await setup()
     await t.save()
     await t.service.tick()
     const report = await t.service.call(
@@ -101,7 +105,7 @@ describe('email account service', () => {
   })
 
   it('keeps edited credentials when blank credential fields are omitted', async () => {
-    const t = setup()
+    const t = await setup()
     const original = await t.save()
     await t.service.tick()
     await t.service.call(
@@ -122,7 +126,7 @@ describe('email account service', () => {
   })
 
   it('strictly sorts newest first, filters and clamps pages', async () => {
-    const t = setup()
+    const t = await setup()
     await t.save()
     t.setTime('2026-11-12T01:01:00.000Z')
     await t.save({ email: 'newer@hotmail.com', note: 'priority' })
@@ -137,7 +141,7 @@ describe('email account service', () => {
   })
 
   it('rejects unsupported capability and preserves data on cancelled writes', async () => {
-    const t = setup()
+    const t = await setup()
     const bad = context('email.accounts.save', initial)
     bad.assertAlive = () => {
       throw new PluginFailure('CANCELLED', 'cancelled')
@@ -152,7 +156,7 @@ describe('email account service', () => {
 
 describe('durable email refresh coordination', () => {
   it('rotates token atomically, refreshes before expiry and resumes after restart', async () => {
-    const t = setup()
+    const t = await setup()
     await t.save()
     await t.service.tick()
     const record = (await t.store.read()).accounts[0]!
@@ -176,7 +180,7 @@ describe('durable email refresh coordination', () => {
   })
 
   it('keeps refresh token and last rotation timestamp when no new token is issued', async () => {
-    const t = setup(
+    const t = await setup(
       vi.fn(async () => ({ accessToken: 'synthetic-access', expiresIn: 3600 })),
     )
     await t.save()
@@ -190,7 +194,7 @@ describe('durable email refresh coordination', () => {
   })
 
   it('stops automatic retry on invalid_grant and resumes after credentials change', async () => {
-    const t = setup(
+    const t = await setup(
       vi.fn(async () => {
         throw new PluginFailure('AUTH_FAILED', '需要更新邮箱凭据')
       }),
@@ -211,7 +215,7 @@ describe('durable email refresh coordination', () => {
   })
 
   it('backs off transient failures and honors Retry-After without erasing success', async () => {
-    const t = setup()
+    const t = await setup()
     await t.save()
     await t.service.tick()
     t.refresh.mockRejectedValueOnce(
@@ -230,7 +234,7 @@ describe('durable email refresh coordination', () => {
   it.each(['AUTH_FAILED', 'PERMISSION_DENIED'] as const)(
     'does not retry %s after pausing and resuming the mailbox',
     async (code) => {
-      const t = setup(async () => {
+      const t = await setup(async () => {
         throw new PluginFailure(code, '请更新邮箱授权')
       })
       const account = await t.save()
@@ -244,12 +248,17 @@ describe('durable email refresh coordination', () => {
   )
 
   it('persists terminal permission failure and clears manual intent until credentials change', async () => {
-    const t = setup(async () => {
+    const t = await setup(async () => {
       throw new PluginFailure('PERMISSION_DENIED', '所选通道缺少权限')
     })
     const account = await t.save()
     await t.service.call(
-      context('email.settings.save', { autoRefresh: false, intervalMinutes: 60 }),
+      context('email.settings.save', {
+        autoRefresh: false,
+        intervalMinutes: 60,
+        autoReceive: false,
+        receiveIntervalMinutes: 1,
+      }),
     )
     await t.service.call(context('email.refresh.queue', { ids: [account.id] }))
     await t.service.tick()
@@ -291,7 +300,7 @@ describe('durable email refresh coordination', () => {
   })
 
   it('refreshes a rejected access token once and retries only a read operation', async () => {
-    const t = setup()
+    const t = await setup()
     const account = await t.save()
     await t.service.tick()
     t.refresh.mockResolvedValueOnce({
@@ -301,12 +310,12 @@ describe('durable email refresh coordination', () => {
     })
     vi.mocked(t.provider.mailbox.list)
       .mockRejectedValueOnce(new PluginFailure('AUTH_FAILED', '访问令牌已失效'))
-      .mockResolvedValueOnce({ items: [], nextCursor: null })
+      .mockResolvedValueOnce({ items: [], nextCursor: null, total: 0, unread: 0 })
     expect(
       await t.service.call(
         context('email.messages.list', { accountId: account.id, folder: 'inbox' }),
       ),
-    ).toEqual({ items: [], nextCursor: null })
+    ).toEqual({ items: [], nextCursor: null, total: 0, unread: 0 })
     expect(t.refresh).toHaveBeenCalledTimes(2)
     expect(vi.mocked(t.provider.mailbox.list).mock.calls[1]?.[0].accessToken).toBe(
       'synthetic-fresh-access',
@@ -314,10 +323,15 @@ describe('durable email refresh coordination', () => {
   })
 
   it('allows a persisted manual queue while automatic refresh is off', async () => {
-    const t = setup()
+    const t = await setup()
     const account = await t.save()
     await t.service.call(
-      context('email.settings.save', { autoRefresh: false, intervalMinutes: 60 }),
+      context('email.settings.save', {
+        autoRefresh: false,
+        intervalMinutes: 60,
+        autoReceive: false,
+        receiveIntervalMinutes: 1,
+      }),
     )
     await t.service.tick()
     expect(t.refresh).not.toHaveBeenCalled()
@@ -330,10 +344,15 @@ describe('durable email refresh coordination', () => {
   })
 
   it('retains an interrupted manual refresh across restart with automatic refresh disabled', async () => {
-    const t = setup()
+    const t = await setup()
     const account = await t.save()
     await t.service.call(
-      context('email.settings.save', { autoRefresh: false, intervalMinutes: 60 }),
+      context('email.settings.save', {
+        autoRefresh: false,
+        intervalMinutes: 60,
+        autoReceive: false,
+        receiveIntervalMinutes: 1,
+      }),
     )
     await t.service.call(context('email.refresh.queue', { ids: [account.id] }))
     t.refresh.mockImplementationOnce(
@@ -357,7 +376,7 @@ describe('durable email refresh coordination', () => {
 
   it('deduplicates concurrent scheduled and mail-triggered refresh', async () => {
     let resolve!: (tokens: TokenSet) => void
-    const t = setup(
+    const t = await setup(
       vi.fn(
         () =>
           new Promise<TokenSet>((done) => {
@@ -379,7 +398,7 @@ describe('durable email refresh coordination', () => {
 
   it('does not commit late results after credentials change or deletion', async () => {
     let resolve!: (tokens: TokenSet) => void
-    const t = setup(
+    const t = await setup(
       vi.fn(
         () =>
           new Promise<TokenSet>((done) => {
@@ -406,7 +425,7 @@ describe('durable email refresh coordination', () => {
   })
 
   it('retries a rotated result after disk failure without another remote rotation', async () => {
-    const t = setup()
+    const t = await setup()
     await t.save()
     const mutate = t.store.mutate.bind(t.store)
     let rejectCommit = true
@@ -430,7 +449,9 @@ describe('durable email refresh coordination', () => {
 
   it('limits concurrent refreshes to two and skips paused mailboxes', async () => {
     const pending: ((tokens: TokenSet) => void)[] = []
-    const t = setup(vi.fn(() => new Promise<TokenSet>((done) => pending.push(done))))
+    const t = await setup(
+      vi.fn(() => new Promise<TokenSet>((done) => pending.push(done))),
+    )
     await t.save()
     await t.save({ email: 'two@hotmail.com' })
     await t.save({ email: 'three@live.com' })
@@ -445,7 +466,7 @@ describe('durable email refresh coordination', () => {
 
   it('cancels requests on shutdown and never runs a later timer', async () => {
     let refreshSignal!: AbortSignal
-    const t = setup(
+    const t = await setup(
       vi.fn(async (_input, signal: AbortSignal) => {
         refreshSignal = signal
         return new Promise<TokenSet>((_resolve, reject) => {
@@ -463,17 +484,27 @@ describe('durable email refresh coordination', () => {
     expect(t.refresh).toHaveBeenCalledTimes(1)
   })
 
-  it('exports only refresh settings and leaves accounts intact on configuration import', async () => {
-    const t = setup()
+  it('exports only scheduler settings and leaves accounts intact on configuration import', async () => {
+    const t = await setup()
     await t.save()
     expect(await t.service.call(context('configuration.export'))).toEqual({
       schemaVersion: 1,
-      data: { autoRefresh: true, intervalMinutes: 60 },
+      data: {
+        autoRefresh: true,
+        intervalMinutes: 60,
+        autoReceive: false,
+        receiveIntervalMinutes: 1,
+      },
     })
     await t.service.call(
       context('configuration.import', {
         schemaVersion: 1,
-        data: { autoRefresh: false, intervalMinutes: 120 },
+        data: {
+          autoRefresh: false,
+          intervalMinutes: 120,
+          autoReceive: true,
+          receiveIntervalMinutes: 5,
+        },
       }),
     )
     expect((await t.store.read()).accounts).toHaveLength(1)

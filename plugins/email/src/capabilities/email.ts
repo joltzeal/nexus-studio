@@ -13,6 +13,7 @@ import {
 import { parseMailboxImport } from '../domain/import.js'
 import {
   EmptyInputSchema,
+  FolderCountsSchema,
   IdInputSchema,
   ImportInputSchema,
   ListInputSchema,
@@ -20,33 +21,51 @@ import {
   MAX_MAILBOXES,
   MessageGetInputSchema,
   MessageListInputSchema,
+  MessageReadInputSchema,
+  ReceiveInputSchema,
   RefreshInputSchema,
   SaveInputSchema,
   SettingsSchema,
+  TargetsInputSchema,
   parseInput,
   type SaveInput,
 } from '../domain/schemas.js'
-import type { EmailSettings, ImportReport, MailboxRecord } from '../domain/types.js'
+import type {
+  EmailSettings,
+  ImportReport,
+  MailboxRecord,
+  MailboxView,
+} from '../domain/types.js'
 import type { DispatchContext } from '../rpc/protocol.js'
 import type { Logger } from '../rpc/redact.js'
+import { safeMailFailure, withSignal } from '../services/operations.js'
+import { ReceptionCoordinator } from '../services/reception.js'
 import {
   RefreshCoordinator,
   findMailbox,
   nextRefresh,
   type ProviderRegistry,
 } from '../services/refresh.js'
-import type { EmailStore } from '../store/private-store.js'
+import {
+  emptyReception,
+  type EmailStore,
+  type StoreDocument,
+} from '../store/private-store.js'
 
 export const EMAIL_METHODS = [
   'email.accounts.list',
+  'email.accounts.get',
+  'email.accounts.targets',
   'email.accounts.save',
   'email.accounts.import',
   'email.accounts.remove',
   'email.refresh.queue',
+  'email.receive.queue',
   'email.settings.get',
   'email.settings.save',
   'email.messages.list',
   'email.messages.get',
+  'email.messages.read',
   ...CONFIGURATION_METHODS,
 ] as const
 
@@ -62,6 +81,8 @@ export class EmailService {
   private readonly providers: ProviderRegistry
   private readonly now: () => Date
   private readonly refresh: RefreshCoordinator
+  private readonly reception: ReceptionCoordinator
+  private readonly mailboxScopes = new Map<string, AbortController>()
 
   constructor(options: EmailServiceOptions) {
     this.store = options.store
@@ -73,16 +94,26 @@ export class EmailService {
       options.logger,
       this.now,
     )
+    this.reception = new ReceptionCoordinator(
+      this.store,
+      this.providers,
+      this.refresh,
+      options.logger,
+      this.now,
+    )
   }
 
   start(): void {
     this.refresh.start()
+    this.reception.start()
   }
-  stop(): Promise<void> {
-    return this.refresh.stop()
+  async stop(): Promise<void> {
+    for (const scope of this.mailboxScopes.values()) scope.abort(cancelled())
+    this.mailboxScopes.clear()
+    await Promise.all([this.refresh.stop(), this.reception.stop()])
   }
-  tick(): Promise<void> {
-    return this.refresh.tick()
+  async tick(): Promise<void> {
+    await Promise.all([this.refresh.tick(), this.reception.tick()])
   }
   status(): Record<string, unknown> {
     return { storageDurable: this.store.durable }
@@ -108,7 +139,7 @@ export class EmailService {
         const query = input.query.toLowerCase()
         const items = [...document.accounts]
           .reverse()
-          .map((entry) => this.refresh.view(entry))
+          .map((entry) => this.view(entry))
           .filter(
             (entry) =>
               (!input.status || entry.status === input.status) &&
@@ -127,6 +158,41 @@ export class EmailService {
           storageDurable: this.store.durable,
         }
       }
+      case 'email.accounts.get': {
+        const { id } = parseInput(IdInputSchema, context.payload)
+        const document = await this.store.read()
+        context.assertAlive()
+        return this.view(findMailbox(document, id))
+      }
+      case 'email.accounts.targets': {
+        const input = parseInput(TargetsInputSchema, context.payload)
+        const document = await this.store.read()
+        context.assertAlive()
+        const query = input.query.toLowerCase()
+        const targets = [...document.accounts]
+          .reverse()
+          .filter((entry) => !query || entry.email.toLowerCase().includes(query))
+          .map((entry) => {
+            const view = this.view(entry)
+            return {
+              id: view.id,
+              email: view.email,
+              enabled: view.enabled,
+              status: view.status,
+            }
+          })
+        const page = Math.min(
+          input.page,
+          Math.max(1, Math.ceil(targets.length / input.pageSize)),
+        )
+        return {
+          items: targets.slice((page - 1) * input.pageSize, page * input.pageSize),
+          total: targets.length,
+          page,
+          pageSize: input.pageSize,
+          storageDurable: this.store.durable,
+        }
+      }
       case 'email.accounts.save':
         return this.save(parseInput(SaveInputSchema, context.payload), context)
       case 'email.accounts.import':
@@ -139,6 +205,7 @@ export class EmailService {
           document.accounts = document.accounts.filter((account) => account.id !== id)
         })
         this.refresh.invalidate(id, true)
+        this.invalidateMailbox(id)
         return { removed: true }
       }
       case 'email.refresh.queue': {
@@ -162,6 +229,28 @@ export class EmailService {
         })
         return { queued, skipped: ids.length - queued }
       }
+      case 'email.receive.queue': {
+        const { ids } = parseInput(ReceiveInputSchema, context.payload)
+        let queued = 0
+        await this.store.mutate((document) => {
+          context.assertAlive()
+          for (const id of ids) {
+            const account = findMailbox(document, id)
+            if (
+              !account.enabled ||
+              account.status === 'reauth-required' ||
+              requiresAuthorization(account.reception.lastErrorCode) ||
+              account.receiveRequested ||
+              this.reception.receiving(account)
+            )
+              continue
+            account.receiveRequested = true
+            account.reception.nextCheckAt = this.now().toISOString()
+            queued += 1
+          }
+        })
+        return { queued, skipped: ids.length - queued }
+      }
       case 'email.settings.get':
         parseInput(EmptyInputSchema, context.payload)
         return (await this.store.read()).settings
@@ -173,9 +262,21 @@ export class EmailService {
       case 'email.messages.list':
       case 'email.messages.get':
         return this.readMail(context)
+      case 'email.messages.read':
+        return this.writeMail(context)
       default:
         throw invalidRequest('邮箱插件不支持此方法')
     }
+  }
+
+  private view(record: MailboxRecord): MailboxView {
+    return { ...this.refresh.view(record), receiving: this.reception.receiving(record) }
+  }
+
+  private invalidateMailbox(id: string): void {
+    this.mailboxScopes.get(id)?.abort(cancelled())
+    this.mailboxScopes.delete(id)
+    this.reception.invalidate(id)
   }
 
   private newAccount(input: SaveInput): MailboxRecord {
@@ -203,6 +304,12 @@ export class EmailService {
       consecutiveFailures: 0,
       lastError: null,
       lastErrorCode: null,
+      reception: {
+        ...emptyReception(),
+        nextCheckAt: input.enabled ? now : null,
+      },
+      receiveRequested: false,
+      receiveFailures: 0,
       createdAt: now,
       updatedAt: now,
     }
@@ -248,6 +355,9 @@ export class EmailService {
         account.status = 'pending'
         account.nextRefreshAt = this.now().toISOString()
         account.refreshRequested = false
+        account.reception = { ...emptyReception(), nextCheckAt: this.now().toISOString() }
+        account.receiveRequested = false
+        account.receiveFailures = 0
       }
       account.provider = input.provider
       account.transport = input.transport
@@ -260,6 +370,7 @@ export class EmailService {
         account.status = 'paused'
         account.nextRefreshAt = null
         account.refreshRequested = false
+        account.receiveRequested = false
       } else if (!account.enabled && !changed) {
         const authorizationRequired = requiresAuthorization(account.lastErrorCode)
         account.status = authorizationRequired
@@ -268,13 +379,22 @@ export class EmailService {
             ? 'error'
             : 'pending'
         account.nextRefreshAt = authorizationRequired ? null : this.now().toISOString()
+        if (
+          !requiresAuthorization(account.reception.lastErrorCode) &&
+          (account.reception.nextCheckAt === null ||
+            Date.parse(account.reception.nextCheckAt) <= this.now().getTime())
+        )
+          account.reception.nextCheckAt = this.now().toISOString()
       }
       account.enabled = input.enabled
       account.updatedAt = this.now().toISOString()
       return account
     })
-    if (invalidate) this.refresh.invalidate(saved.id, changed)
-    return this.refresh.view(saved)
+    if (invalidate) {
+      this.refresh.invalidate(saved.id, changed)
+      this.invalidateMailbox(saved.id)
+    }
+    return this.view(saved)
   }
 
   private async import(context: DispatchContext): Promise<ImportReport> {
@@ -326,8 +446,34 @@ export class EmailService {
   ): Promise<void> {
     await this.store.mutate((document) => {
       assertAlive()
+      const previous = document.settings
       document.settings = settings
       for (const account of document.accounts) {
+        if (
+          previous.autoReceive !== settings.autoReceive ||
+          previous.receiveIntervalMinutes !== settings.receiveIntervalMinutes
+        ) {
+          if (
+            account.enabled &&
+            !account.receiveRequested &&
+            !requiresAuthorization(account.reception.lastErrorCode) &&
+            account.receiveFailures === 0
+          ) {
+            account.reception.nextCheckAt = settings.autoReceive
+              ? account.reception.lastCheckedAt
+                ? new Date(
+                    Date.parse(account.reception.lastCheckedAt) +
+                      settings.receiveIntervalMinutes * 60_000,
+                  ).toISOString()
+                : this.now().toISOString()
+              : null
+          }
+        }
+        if (
+          previous.autoRefresh === settings.autoRefresh &&
+          previous.intervalMinutes === settings.intervalMinutes
+        )
+          continue
         if (
           !account.enabled ||
           account.status === 'reauth-required' ||
@@ -348,22 +494,72 @@ export class EmailService {
     })
   }
 
-  private async readMail(context: DispatchContext): Promise<unknown> {
-    const list = context.method === 'email.messages.list'
-    const input = list
-      ? parseInput(MessageListInputSchema, context.payload)
-      : parseInput(MessageGetInputSchema, context.payload)
+  private async mailAccess(
+    context: DispatchContext,
+    input: { accountId: string; expectedEmail?: string | undefined },
+  ) {
+    const document = await this.store.read()
+    context.assertAlive()
+    const record = findMailbox(document, input.accountId)
+    const matchesEmail = (current: MailboxRecord) =>
+      input.expectedEmail === undefined ||
+      current.email.trim().toLowerCase() === input.expectedEmail.trim().toLowerCase()
+    if (!matchesEmail(record)) throw cancelled('关联的邮箱地址已变更，请重新关联')
+    if (!record.enabled) throw invalidRequest('请先启用此邮箱')
+    let scope = this.mailboxScopes.get(record.id)
+    if (!scope) {
+      scope = new AbortController()
+      this.mailboxScopes.set(record.id, scope)
+    }
     const signal = AbortSignal.any([
       this.refresh.signal,
+      scope.signal,
       ...(context.signal ? [context.signal] : []),
       AbortSignal.timeout(
         Math.max(1, Math.min(120_000, context.deadlineAt - Date.now())),
       ),
     ])
-    const { record, session } = await this.refresh.session(input.accountId, signal)
-    context.assertAlive()
-    const client = this.providers.get(record.provider, record.transport).mailbox
-    const read = (currentSession: typeof session) =>
+    const assertCurrent = (latest: StoreDocument) => {
+      context.assertAlive()
+      if (signal.aborted) throw cancelled()
+      const current = latest.accounts.find((entry) => entry.id === record.id)
+      if (
+        !current ||
+        !current.enabled ||
+        !matchesEmail(current) ||
+        current.credentialRevision !== record.credentialRevision
+      )
+        throw cancelled('邮箱资料已变更，请重新读取')
+      return current
+    }
+    const check = async () => assertCurrent(await this.store.read())
+    assertCurrent(document)
+    let access: Awaited<ReturnType<RefreshCoordinator['session']>>
+    try {
+      access = await withSignal(this.refresh.session(record.id, signal), signal)
+    } catch (error) {
+      await check()
+      throw safeMailFailure(error)
+    }
+    await check()
+    return {
+      record,
+      signal,
+      session: access.session,
+      check,
+      assertCurrent,
+      client: this.providers.get(record.provider, record.transport).mailbox,
+    }
+  }
+
+  private async readMail(context: DispatchContext): Promise<unknown> {
+    const list = context.method === 'email.messages.list'
+    const input = list
+      ? parseInput(MessageListInputSchema, context.payload)
+      : parseInput(MessageGetInputSchema, context.payload)
+    const access = await this.mailAccess(context, input)
+    const { record, session, signal, client } = access
+    const read = async (currentSession: typeof session) =>
       'messageId' in input
         ? client.get(
             currentSession,
@@ -375,29 +571,103 @@ export class EmailService {
             {
               folder: input.folder,
               ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+              ...(input.readState === undefined ? {} : { readState: input.readState }),
             },
             signal,
           )
     let result: unknown
     try {
-      result = await read(session)
+      result = await withSignal(read(session), signal)
     } catch (error) {
-      if (!isPluginFailure(error) || error.code !== 'AUTH_FAILED') throw error
-      context.assertAlive()
-      const retry = await this.refresh.session(
-        input.accountId,
+      await access.check()
+      if (!isPluginFailure(error) || error.code !== 'AUTH_FAILED')
+        throw safeMailFailure(error)
+      const retry = await withSignal(
+        this.refresh.session(input.accountId, signal, session.accessToken),
         signal,
-        session.accessToken,
       )
+      await access.check()
       if (retry.record.credentialRevision !== record.credentialRevision)
         throw cancelled('邮箱资料已变更，请重新读取')
-      result = await read(retry.session)
+      result = await withSignal(read(retry.session), signal)
     }
-    context.assertAlive()
-    signal.throwIfAborted()
-    const latest = findMailbox(await this.store.read(), record.id)
-    if (latest.credentialRevision !== record.credentialRevision || !latest.enabled)
-      throw cancelled('邮箱资料已变更，请重新读取')
+    await access.check()
     return result
+  }
+
+  private async writeMail(context: DispatchContext): Promise<unknown> {
+    const input = parseInput(MessageReadInputSchema, context.payload)
+    let access: Awaited<ReturnType<EmailService['mailAccess']>>
+    try {
+      access = await this.mailAccess(context, input)
+    } catch (error) {
+      context.assertAlive()
+      const failure = safeMailFailure(error)
+      if (failure.code === 'CANCELLED' || failure.code === 'INVALID_REQUEST')
+        throw failure
+      return {
+        updatedIds: [],
+        failures: input.messageIds.map((messageId) => ({
+          messageId,
+          code: failure.code,
+        })),
+        isRead: input.isRead,
+      }
+    }
+    const updatedIds: string[] = []
+    const failures: {
+      messageId: string
+      code: ReturnType<typeof safeMailFailure>['code']
+    }[] = []
+    for (const messageId of input.messageIds) {
+      await access.check()
+      try {
+        await withSignal(
+          access.client.setRead(
+            access.session,
+            {
+              folder: input.folder,
+              messageId,
+              isRead: input.isRead,
+            },
+            access.signal,
+          ),
+          access.signal,
+        )
+        await access.check()
+        updatedIds.push(messageId)
+      } catch (error) {
+        await access.check()
+        failures.push({ messageId, code: safeMailFailure(error).code })
+      }
+    }
+    if (updatedIds.length) {
+      this.reception.invalidate(input.accountId)
+      try {
+        const page = await withSignal(
+          access.client.list(
+            access.session,
+            { folder: input.folder, readState: 'all' },
+            access.signal,
+          ),
+          access.signal,
+        )
+        await access.check()
+        const counts = FolderCountsSchema.safeParse({
+          total: page.total,
+          unread: page.unread,
+        })
+        if (counts.success)
+          await this.store.mutate((document) => {
+            const current = access.assertCurrent(document)
+            current.reception[input.folder] = counts.data
+          })
+      } catch {
+        // The write receipt describes confirmed provider writes; failed recounts keep old counts.
+        await access.check()
+      }
+    }
+    await access.check()
+    return { updatedIds, failures, isRead: input.isRead }
   }
 }

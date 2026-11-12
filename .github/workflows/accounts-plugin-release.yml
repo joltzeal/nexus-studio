@@ -35,7 +35,7 @@ jobs:
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "支持从地址生成器关联完整地址资料，账号表格可查看、复制和解绑，地址独立持久化并跟随账号迁移，保留订单查询与 Bark 设置。"
+          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "支持关联邮箱并从账号查看邮件，邮箱关系独立持久化并支持更换和解绑，保留地址、窗口关联、订单查询与 Bark 设置。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify artifact and plugin startup
         shell: bash
@@ -59,8 +59,8 @@ jobs:
           assert.equal(manifest.version, pkg.version, 'Package/manifest version mismatch')
           assert.equal(process.env.GITHUB_REF_NAME, `plugin-vinted-accounts@${pkg.version}`,
             'Plugin tag must match the package version')
-          assert.equal(ACCOUNT_METHODS.length, 25, 'Expected 25 compiled account methods')
-          assert.equal(new Set(ACCOUNT_METHODS).size, 25, 'Expected 25 distinct account methods')
+          assert.equal(ACCOUNT_METHODS.length, 27, 'Expected 27 compiled account methods')
+          assert.equal(new Set(ACCOUNT_METHODS).size, 27, 'Expected 27 distinct account methods')
 
           const market = resolve(process.env.PLUGIN_MARKET_DIR)
           const catalog = json(join(market, 'catalog.json'))
@@ -99,7 +99,7 @@ jobs:
           const advertised = methodLine[2].split(', ').filter(Boolean)
           assert.equal(advertised.length, Number(methodLine[1]), 'Invalid advertised method count')
           assert.deepEqual(advertised.sort(), [...ACCOUNT_METHODS].sort(),
-            'Packaged RPC methods must match the 25 compiled ACCOUNT_METHODS')
+            'Packaged RPC methods must match the 27 compiled ACCOUNT_METHODS')
           process.stdout.write(report)
           NODE
       - uses: actions/upload-artifact@v4

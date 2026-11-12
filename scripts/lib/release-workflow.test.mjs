@@ -83,6 +83,8 @@ const requiredMethods = {
     'vinted.accounts.bindings',
     'vinted.accounts.address.targets',
     'vinted.accounts.address.set',
+    'vinted.accounts.mailbox.targets',
+    'vinted.accounts.mailbox.set',
     'window.detach',
     'transfer.export',
     'transfer.import',
@@ -168,14 +170,18 @@ const requiredMethods = {
   email: [
     ...configurationMethods,
     'email.accounts.list',
+    'email.accounts.get',
+    'email.accounts.targets',
     'email.accounts.save',
     'email.accounts.import',
     'email.accounts.remove',
     'email.refresh.queue',
+    'email.receive.queue',
     'email.settings.get',
     'email.settings.save',
     'email.messages.list',
     'email.messages.get',
+    'email.messages.read',
   ],
 }
 

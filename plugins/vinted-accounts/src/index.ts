@@ -37,11 +37,19 @@ export type {
   AccountInput,
   AccountRecord,
   AccountStatus,
+  AccountMailboxInput,
+  AssignedAccountMailbox,
   BindingRecord,
   ImportReport,
   LoginMethod,
   TemplateFile,
 } from './domain/types.js'
+export {
+  AccountMailboxInputSchema,
+  AssignedAccountMailboxSchema,
+  AccountMailboxTargetsInputSchema,
+  AccountMailboxSetInputSchema,
+} from './domain/mailbox.js'
 export {
   AccountTransferDataSchema,
   TransferExportInputSchema,

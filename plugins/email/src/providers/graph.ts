@@ -10,15 +10,17 @@ import type {
   MailMessageDetail,
   MailMessagePage,
   MailSession,
+  MailReadInput,
 } from '../domain/types.js'
+import { mailContent } from './content.js'
 import { MicrosoftHttp } from './http.js'
 import {
   accountKey,
   capText,
   checkFolder,
   checkSession,
-  htmlText,
   OpaqueCursor,
+  readState,
 } from './support.js'
 
 const ORIGIN = 'https://graph.microsoft.com'
@@ -67,9 +69,16 @@ const cursorSchema = z.strictObject({
   kind: z.literal('graph'),
   account: z.string(),
   folder: z.enum(['inbox', 'junkemail']),
+  readState: z.enum(['all', 'unread', 'read']),
   url: z.string().min(1).max(8192),
 })
 type GraphMessage = z.infer<typeof messageSchema>
+const countsSchema = z
+  .object({
+    totalItemCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    unreadItemCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .refine((value) => value.unreadItemCount <= value.totalItemCount)
 
 function folderPath(folder: MailFolder): string {
   return `/v1.0/me/mailFolders/${folder}/messages`
@@ -132,6 +141,7 @@ export class MicrosoftGraph implements MailboxClient {
   ): Promise<MailMessagePage> {
     checkSession(session)
     checkFolder(input.folder)
+    const filter = readState(input.readState)
     const path = folderPath(input.folder)
     let requestUrl: string
     if (input.cursor !== undefined) {
@@ -139,6 +149,7 @@ export class MicrosoftGraph implements MailboxClient {
       if (
         !parsed.success ||
         parsed.data.folder !== input.folder ||
+        parsed.data.readState !== filter ||
         parsed.data.account !== accountKey(session)
       )
         throw invalidRequest('Email cursor does not match this mailbox')
@@ -148,6 +159,11 @@ export class MicrosoftGraph implements MailboxClient {
         $top: '20',
         $orderby: 'receivedDateTime desc',
         $select: properties.join(','),
+        ...(filter === 'all'
+          ? {}
+          : {
+              $filter: `receivedDateTime ge 0001-01-01T00:00:00Z and isRead eq ${filter === 'read'}`,
+            }),
       })}`
     }
     const body = await this.http.json(
@@ -159,8 +175,19 @@ export class MicrosoftGraph implements MailboxClient {
     const page = pageSchema.safeParse(body)
     if (!page.success) throw protocolError('Microsoft message list is invalid')
     const next = page.data['@odata.nextLink']
+    const counts = countsSchema.safeParse(
+      await this.http.json(
+        `${ORIGIN}/v1.0/me/mailFolders/${input.folder}?$select=totalItemCount,unreadItemCount`,
+        { headers: this.headers(session) },
+        signal,
+        'graph',
+      ),
+    )
+    if (!counts.success) throw protocolError('Microsoft folder counts are invalid')
     return {
       items: page.data.value.map(summary),
+      total: counts.data.totalItemCount,
+      unread: counts.data.unreadItemCount,
       nextCursor:
         next === undefined
           ? null
@@ -169,6 +196,7 @@ export class MicrosoftGraph implements MailboxClient {
               kind: 'graph',
               account: accountKey(session),
               folder: input.folder,
+              readState: filter,
               url: continuationUrl(next, input.folder),
             }),
     }
@@ -191,7 +219,7 @@ export class MicrosoftGraph implements MailboxClient {
     const body = await this.http.json(
       url.href,
       {
-        headers: { ...this.headers(session), Prefer: 'outlook.body-content-type="text"' },
+        headers: this.headers(session),
       },
       signal,
       'graph',
@@ -200,16 +228,56 @@ export class MicrosoftGraph implements MailboxClient {
     if (!detail.success || detail.data.id !== input.messageId) {
       throw protocolError('Microsoft message detail is invalid')
     }
-    const text =
-      detail.data.body.contentType === 'html'
-        ? htmlText(detail.data.body.content)
-        : detail.data.body.content
-    const boundedBody = capText(text)
+    const content = mailContent(
+      detail.data.body.contentType === 'text' ? detail.data.body.content : undefined,
+      detail.data.body.contentType === 'html' ? detail.data.body.content : undefined,
+    )
     return {
       ...summary(detail.data),
       to: detail.data.toRecipients.map(graphAddress),
-      body: boundedBody.text,
-      truncated: boundedBody.truncated,
+      ...content,
+    }
+  }
+
+  async setRead(
+    session: MailSession,
+    input: MailReadInput,
+    signal: AbortSignal,
+  ): Promise<void> {
+    checkSession(session)
+    checkFolder(input.folder)
+    if (
+      !idSchema.safeParse(input.messageId).success ||
+      typeof input.isRead !== 'boolean'
+    ) {
+      throw invalidRequest('Microsoft read-state request is invalid')
+    }
+    const url = `${ORIGIN}${folderPath(input.folder)}/${encodeURIComponent(input.messageId)}`
+    let response = await this.http.json(
+      url,
+      {
+        method: 'PATCH',
+        headers: { ...this.headers(session), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isRead: input.isRead }),
+      },
+      signal,
+      'graph',
+      true,
+    )
+    if (response === null)
+      response = await this.http.json(
+        `${url}?$select=id,isRead`,
+        { headers: this.headers(session) },
+        signal,
+        'graph',
+      )
+    const confirmed = z.object({ id: idSchema, isRead: z.boolean() }).safeParse(response)
+    if (
+      !confirmed.success ||
+      confirmed.data.id !== input.messageId ||
+      confirmed.data.isRead !== input.isRead
+    ) {
+      throw protocolError('Microsoft read-state update could not be confirmed')
     }
   }
 

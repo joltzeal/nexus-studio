@@ -18,8 +18,9 @@ const provider: EmailProvider = {
   },
   mailbox: {
     async list() {
-      return { items: [], nextCursor: null }
+      return { items: [], nextCursor: null, total: 0, unread: 0 }
     },
+    async setRead() {},
     async get() {
       throw new Error('not used')
     },
@@ -125,7 +126,12 @@ describe('email plugin lifecycle', () => {
       await new Promise<void>((resolve) => setImmediate(resolve))
       t.request('settings', 'configuration.import', {
         schemaVersion: 1,
-        data: { autoRefresh: false, intervalMinutes: 15 },
+        data: {
+          autoRefresh: false,
+          intervalMinutes: 15,
+          autoReceive: false,
+          receiveIntervalMinutes: 10,
+        },
       })
       await new Promise<void>((resolve) => setImmediate(resolve))
       t.input.end()
@@ -136,6 +142,8 @@ describe('email plugin lifecycle', () => {
       expect((await t.store.read()).settings).toEqual({
         autoRefresh: true,
         intervalMinutes: 60,
+        autoReceive: true,
+        receiveIntervalMinutes: 1,
       })
     } finally {
       release()
