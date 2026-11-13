@@ -288,19 +288,18 @@ impl WindowService {
             .registry
             .get(connection.provider_id)?
             .capacity(&connection)?;
-        if let Some(value) = &capacity {
-            if value.max_running > 1_000_000
+        if let Some(value) = &capacity
+            && (value.max_running > 1_000_000
                 || value.running_profiles.len() > 100_000
                 || value
                     .running_profiles
                     .iter()
-                    .any(|id| id.is_empty() || id.len() > 200)
-            {
-                return Err(BrowserError::new(
-                    "invalid_response",
-                    "Invalid provider capacity observation",
-                ));
-            }
+                    .any(|id| id.is_empty() || id.len() > 200))
+        {
+            return Err(BrowserError::new(
+                "invalid_response",
+                "Invalid provider capacity observation",
+            ));
         }
         Ok(capacity)
     }

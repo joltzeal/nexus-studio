@@ -26,9 +26,15 @@ Ecom Agent 展示名改为首字母大写并使用机器人图标。
 
 本次本地只执行直接测试、类型、lint、格式和受控页面验证，
 没有执行应用构建、打包或 Rust 编译、测试、Clippy。
-原生构建与三平台发行交由 GitHub Actions。
-推送标签、插件任务完成、R2 发布和桌面 Release 公开是不同结果，
-以[质量记录](09-quality-and-testing.md)中的实际回执为准。
+源提交 `7882dcf0c5114b0fa70b263b66ac48dbd47d3d8d` 和 `v0.1.30` 已推送，
+GitHub Actions 的 Desktop release `43458994527` 全部成功，
+Release 于 2026-11-14 00:26:54（Asia/Shanghai）公开。
+安装包为 `Raccoon_0.1.30_aarch64.dmg`、`Raccoon_0.1.30_x64.dmg`、
+`Raccoon_0.1.30_x64-setup.exe` 与 `Raccoon_0.1.30_x64_en-US.msi`，
+同时附带更新归档、更新签名和 `latest.json`。
+全部 11 个配套插件已完成 R2 和公开入口回读。
+独立质量工作流另有四项 Clippy 失败，后续源码已作最小修正并交由 CI 复核；
+不能以发行构建成功代替该检查结果。完整证据与验证边界见[质量记录](09-quality-and-testing.md)。
 
 ## 0.1.29 ecom agent 本地构建（2026-11-13）
 

@@ -16,7 +16,8 @@ use self::manifest::{Capability, ManifestError, PluginManifest, PluginPermission
 use self::market::{Catalog, MarketError, MarketStore, StoreSettings};
 use self::permissions::PermissionError;
 use self::process::{
-    HostHandlerSlot, HostRequestHandler, PluginCaller, PluginProcess, ProcessError, ReadyInfo,
+    HostGateway, HostHandlerSlot, HostRequestHandler, PluginCaller, PluginProcess, ProcessError,
+    ReadyInfo,
 };
 use self::registry::{InstalledPlugin, RegistryDocument, RegistryError, RegistryStore};
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -996,8 +997,10 @@ impl PluginHost {
             proxy
                 .as_ref()
                 .zip(self.network.as_ref().map(|(_, path)| path.as_path())),
-            installation_generation(&plugin),
-            Arc::clone(&self.host_handler),
+            HostGateway {
+                installation: installation_generation(&plugin),
+                host_handler: Arc::clone(&self.host_handler),
+            },
         )?;
         let _ = ready;
         if self.closing.load(Ordering::Acquire)

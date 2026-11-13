@@ -1,9 +1,10 @@
 # Ecom Agent 架构与执行规范
 
-更新日期：2026-11-13。已按获批方案接入 `studio.sales-agent` 源码、
+更新日期：2026-11-14。已按获批方案接入 `studio.sales-agent` 源码、
 Rust 持久任务协调器、Playwright 工具层与真实商品库页面。
 当前配套核心版本为 `0.1.30`，插件版本为 `1.0.1`，展示名统一为 `Ecom Agent`。
-已完成本地 macOS Apple Silicon 安装包构建，插件及配套商品库、账号池已发布至 R2。
+`0.1.29` 曾按用户要求执行本地 macOS Apple Silicon 构建；
+本次 `0.1.30` 由 CI 完成三平台发行，Ecom Agent 及全部配套插件已发布至 R2。
 已执行的检查与尚未执行的原生、厂商和平台验收见[质量记录](09-quality-and-testing.md)。
 历史[交互原型](42-sales-agent-demo.md)不是生产任务执行入口。
 

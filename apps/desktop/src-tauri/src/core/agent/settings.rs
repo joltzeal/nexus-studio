@@ -28,8 +28,8 @@ pub(crate) fn validate_settings(value: &Value) -> AgentResult<Value> {
             .as_object()
             .ok_or_else(|| invalid("Both decision and generation models must be configured"))?;
         if endpoint.keys().any(|field| {
-            !["baseUrl", "apiKey", "model"].contains(&field.as_str())
-                && !(key == "decision" && field == "protocol")
+            !(["baseUrl", "apiKey", "model"].contains(&field.as_str())
+                || key == "decision" && field == "protocol")
         }) {
             return Err(invalid("Unknown model endpoint field"));
         }

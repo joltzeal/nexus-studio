@@ -31,9 +31,30 @@
 新增持久化失败、重启恢复和作用域回归源码，由后续原生 CI 执行。
 上一个 Desktop release `43441763834` 已全部成功并发布；不能将该结果当成本次原生验证。
 
+源提交 `7882dcf0c5114b0fa70b263b66ac48dbd47d3d8d` 已推送到工作分支与 `main`，
+`v0.1.30` 的 Desktop release `43458994527` 全部任务成功：
+配套插件、macOS Apple Silicon、Intel Mac、Windows 安装包及最终公开任务均通过。
+Release 于 2026-11-14 00:26:54（Asia/Shanghai）公开，包含三平台安装包、
+更新归档与签名及 `latest.json`，不再是草稿。
+
+同源 Foundation quality `43458994293` 的 JavaScript 检查通过；
+Windows 的 `rust:check` 与 `rust:test` 通过，`rust:lint` 因四处 Clippy 检查失败。
+失败为模型字段判断的布尔表达式、两处嵌套条件及插件启动函数的八个参数；
+macOS 原生任务在执行前取消，不能记为通过。
+后续源码简化等价条件，并用 `HostGateway` 集中安装代次和反向宿主处理器，
+同步调整实际调用与既有协议测试，不关闭任何 lint。
+后续修正本地仅执行 Rust 格式检查，编译、原生测试和 Clippy 仍交由新一轮 CI 复核。
+已发布标签和插件包不覆盖、不重新加密。
+
+全部 11 个 CI 加密插件包及完整商店目录已于 2026-11-14 00:26
+完成 R2 发布，并从 R2 与公开入口读取逐字节核对。
+最终 Ecom Agent 包的实际 RPC 验证配置保存、进程重启读回、错误请求不覆盖旧值，
+没有发送真实模型请求。构件摘要、包摘要和完整目录摘要见[插件商店](25-plugin-market.md)，
+原始回执为 `/tmp/raccoon-branding-20261113/publication.json`。
+
 页面测试使用受控 native/plugin 响应，不代表真实模型计费、Bark 投递、
 平台发布、外部浏览器或 Windows 安装升级已验证。
-本次没有本地构建或打包。原生编译及正式发行交由 CI，插件 R2 上传须另有回执。
+本次没有本地构建或打包，原生编译及正式发行交由 CI。
 检查日志和截图位于 `/tmp/raccoon-branding-20261113/`。
 
 ## 2026-11-13 v0.1.29 原生 CI 编译修复

@@ -60,6 +60,11 @@ pub type HostRequestHandler =
     dyn Fn(PluginCaller, HostRequest) -> Result<Value, PluginErrorPayload> + Send + Sync;
 pub type HostHandlerSlot = Arc<Mutex<Option<Arc<HostRequestHandler>>>>;
 
+pub struct HostGateway {
+    pub installation: String,
+    pub host_handler: HostHandlerSlot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginErrorPayload {
     pub code: String,
@@ -263,8 +268,10 @@ impl PluginProcess {
             node,
             key,
             network,
-            String::new(),
-            Arc::new(Mutex::new(None)),
+            HostGateway {
+                installation: String::new(),
+                host_handler: Arc::new(Mutex::new(None)),
+            },
         )
     }
 
@@ -275,8 +282,7 @@ impl PluginProcess {
         node: &Path,
         key: &str,
         network: Option<(&NetworkProxy, &Path)>,
-        installation: String,
-        host_handler: HostHandlerSlot,
+        gateway: HostGateway,
     ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
         let mut command = Command::new(node);
         if let Some((proxy, preload)) = network {
@@ -315,9 +321,9 @@ impl PluginProcess {
             caller: PluginCaller {
                 plugin_id: manifest.id.clone(),
                 generation: Uuid::new_v4().to_string(),
-                installation,
+                installation: gateway.installation,
             },
-            host_handler,
+            host_handler: gateway.host_handler,
             host_requests: Mutex::new(HashSet::new()),
         });
 

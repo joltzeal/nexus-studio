@@ -1878,8 +1878,10 @@ fn reverse_host_process(
         Path::new("node"),
         "",
         None,
-        "fixture-installation".into(),
-        std::sync::Arc::new(std::sync::Mutex::new(Some(handler))),
+        super::process::HostGateway {
+            installation: "fixture-installation".into(),
+            host_handler: std::sync::Arc::new(std::sync::Mutex::new(Some(handler))),
+        },
     )
     .unwrap()
     .0

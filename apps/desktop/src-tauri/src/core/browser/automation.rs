@@ -303,10 +303,10 @@ impl AutomationChannel {
     }
 
     pub fn stop(&self) {
-        if let Ok(mut writer) = self.writer.lock() {
-            if let Some(mut stdin) = writer.take() {
-                let _ = stdin.write_all(b"stop\n");
-            }
+        if let Ok(mut writer) = self.writer.lock()
+            && let Some(mut stdin) = writer.take()
+        {
+            let _ = stdin.write_all(b"stop\n");
         }
     }
 

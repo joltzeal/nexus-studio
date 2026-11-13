@@ -33,6 +33,8 @@ token 刷新调度属于邮箱插件进程，关闭标准输入或收到终止�
 `plugin_service` 初始化同一个 `Arc<PluginHost>`，供插件命令、`WindowService` 与迁移服务使用。
 `WindowService` 通过 `builtin: Arc<CloakBrowserProvider>` 访问内置资源，
 外部 provider 则调用厂商的本机管理 API。
+进程启动使用 `HostGateway` 集中传入安装代次与反向宿主处理器；
+调用者身份仍由宿主生成，插件协议和现有作用域检查保持一致。
 窗口由 `WindowStore` 保存为 schema 2，绑定包含 `provider_id`、`connection_id` 和
 `profile_id`；插件业务关联始终使用 Raccoon 窗口 UUID，不使用厂商环境 ID。
 配置迁移复用已授予的插件能力和 `ready.methods` 检查；宿主不读取插件私有配置文件，
