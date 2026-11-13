@@ -2,7 +2,7 @@
 
 ## 1. 文档目的
 
-本文规定 Nexus 插件的开发、接入、运行与验收边界，涵盖代理、地址生成、共享货源、平台账号、接码、图片生成、浏览器环境配置、列表监控、同步及邮箱能力。
+本文规定 Nexus 插件的开发、接入、运行与验收边界，涵盖代理、地址生成、共享货源、平台账号、接码、图片生成、浏览器环境配置、列表监控、同步、邮箱和商品能力。
 插件负责实现能力，主程序通过统一 `WindowService` 负责业务窗口、Provider 分派、
 连接范围、权限决策、密钥引用和统一交互。
 窗口使用 `WindowRecord` v2 与
@@ -53,6 +53,18 @@ AdsPower 编辑和插件代理能力已关闭，验证前不可用，见[浏览�
 
 - `definePluginManifest()`：使用严格 schema 校验 manifest。
 - `PluginManifest`、`PluginPermissions`、`PluginCapability`：manifest 类型。
+- `ProductCatalog` 与 `product.catalog`：独立商品资料及图片能力，不复用货源目录或生图记录。
+  RPC 与图片传输契约公开于 `@nexus/plugin-products/contracts`，见[商品管理插件](43-products-plugin.md)。
+  `products.publications.record` 只记录受信任调用方已确认的平台刊登事实，按操作 UUID 幂等，
+  保存 Nexus 窗口与商品快照修订；普通保存和导入不能修改发布历史。
+  商品插件本身不执行刊登；ecom agent 的宿主网关与调用权限见[执行规范](44-sales-agent-architecture.md)。
+- `SalesAgent`、`sales.agent` 与 `@nexus/plugin-sdk/agent`：
+  批次输入、不可变快照、作业 scope、模型设置与分页状态的严格校验契约。
+  `studio.sales-agent` 只接收宿主派发的单步任务，不在一次普通 RPC 内运行完整批次。
+  `host.request` / `host.response` 使用 `hostVersion: 1`；
+  宿主核对任务、租约、fence、进程代次及方法白名单，不开放任意 CDP 或脚本执行。
+  账号快照与局部观察契约公开于 `@nexus/plugin-vinted-accounts/agent-contracts`；
+  回写必须携带稳定 operationId、观察时间和来源，不能覆盖账号凭据。
 - 七类能力接口：`ProxyProvider`、`AddressGenerator`、`SupplyCatalog`、`PlatformAdapter`、`VerificationProvider`、`ImageProvider`、`EnvironmentConfigurator`。
 - `ProxyResolution`：代理解析结果，只允许返回不透明配置句柄和可选密钥引用。
 - `@nexus/plugin-sdk/configuration`：版本化配置导出、只读校验和导入，

@@ -55,18 +55,29 @@ beforeEach(async () => {
       const context=new EventEmitter();
       let closeTimer;
       let rejectNavigation;
+      let pageUrl='about:blank';
       const page={
+        url:()=>pageUrl,
+        isClosed:()=>false,
         async goto(url) {
           if (url.startsWith('chrome://')) return;
+          if (process.env.NEXUS_TEST_AUTOMATION) {pageUrl=url;return;}
           return new Promise((_,reject)=>{rejectNavigation=reject});
         },
-        async evaluate(){return []},
+        async evaluate(script){
+          if(String(script).includes('maxChars'))return{
+            url:pageUrl,title:'Fixture',text:'Fixture page',controls:[]
+          };
+          return [];
+        },
         async route(){},
+        async unroute(){},
         async close(){}
       };
       context.pages=()=>[page];
       context.newPage=async()=>page;
       context.route=async()=>{};
+      context.unroute=async()=>{};
       context.setOffline=async()=>{};
       context.storageState=async()=>({
         cookies:[{
@@ -82,9 +93,40 @@ beforeEach(async () => {
         rejectNavigation?.(new Error('Target closed'));
         context.emit('close');
       };
-      if (!options.headless) closeTimer=setTimeout(()=>context.close(),50);
+      if (!options.headless && !process.env.NEXUS_TEST_AUTOMATION)
+        closeTimer=setTimeout(()=>context.close(),50);
       return context;
     }
+  `,
+  )
+  const cdp = join(directory, 'cdp.mjs')
+  await writeFile(
+    cdp,
+    `
+    import {EventEmitter} from 'node:events';
+    export const chromium={
+      async connectOverCDP(endpoint,options) {
+        if(endpoint!=='ws://127.0.0.1:9000/devtools/browser/fixture' || options.timeout!==30000)
+          throw new Error('Unexpected CDP attach');
+        let url='about:blank';
+        const page={
+          url:()=>url,isClosed:()=>false,route:async()=>{},unroute:async()=>{},
+          goto:async next=>{url=next},
+          evaluate:async()=>({url,title:'Vendor',text:'Existing vendor page',controls:[]}),
+          close:async()=>{throw new Error('Unexpected page.close')}
+        };
+        const context={
+          pages:()=>[page],newPage:async()=>{throw new Error('Unexpected context')},
+          route:async()=>{},unroute:async()=>{}
+        };
+        const browser=new EventEmitter();
+        browser.contexts=()=>[context];
+        browser.close=async()=>{process.stderr.write('UNEXPECTED_BROWSER_CLOSE\\n')};
+        if(process.env.NEXUS_TEST_CDP_DISCONNECT)
+          setTimeout(()=>browser.emit('disconnected'),30);
+        return browser;
+      }
+    };
   `,
   )
   preload = join(directory, 'preload.mjs')
@@ -96,6 +138,9 @@ beforeEach(async () => {
       resolve(specifier,context,nextResolve) {
         if(specifier==='cloakbrowser')return{
           url:${JSON.stringify(pathToFileURL(sdk).href)},shortCircuit:true
+        };
+        if(specifier==='playwright-core')return{
+          url:${JSON.stringify(pathToFileURL(cdp).href)},shortCircuit:true
         };
         if(specifier.startsWith('.') && specifier.endsWith('.js') &&
           context.parentURL?.startsWith(${JSON.stringify(new URL('./', import.meta.url).href)})) {
@@ -124,6 +169,7 @@ async function run(
     binary_path: binary,
     settings: { ...runtimeWindow().settings, startUrl },
   }),
+  automationCommands: Record<string, unknown>[] = [],
 ) {
   const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
   const env: NodeJS.ProcessEnv = {
@@ -131,6 +177,10 @@ async function run(
     CLOAKBROWSER_CACHE_DIR: directory,
     CLOAKBROWSER_LICENSE_KEY: activated ? 'synthetic-runner-key' : '',
     ...(sdkFailure ? { NEXUS_TEST_SDK_FAILURE: '1' } : {}),
+    ...(automationCommands.length ? { NEXUS_TEST_AUTOMATION: '1' } : {}),
+    ...(action === 'automation-cdp' && !automationCommands.length
+      ? { NEXUS_TEST_CDP_DISCONNECT: '1' }
+      : {}),
   }
   delete env.CLOAKBROWSER_VERSION
   if (requestedVersion !== undefined) env.CLOAKBROWSER_VERSION = requestedVersion
@@ -139,8 +189,27 @@ async function run(
   })
   let stdout = ''
   let stderr = ''
+  let sent = false
+  let stopped = false
+  let nextCommand = 0
   child.stdout.on('data', (data: Buffer) => {
     stdout += data.toString()
+    if (automationCommands.length && !sent && stdout.includes('NEXUS_READY\n')) {
+      sent = true
+      // Wait for each receipt before dispatching the next window operation.
+      child.stdin.write(`${JSON.stringify(automationCommands[nextCommand++])}\n`)
+    }
+    if (sent && !stopped) {
+      const completed = stdout
+        .split('\n')
+        .filter((line) => line.startsWith('NEXUS_AUTOMATION ')).length
+      if (completed >= automationCommands.length) {
+        stopped = true
+        child.stdin.end('stop\n')
+      } else if (completed >= nextCommand && nextCommand < automationCommands.length) {
+        child.stdin.write(`${JSON.stringify(automationCommands[nextCommand++])}\n`)
+      }
+    }
   })
   child.stderr.on('data', (data: Buffer) => {
     stderr += data.toString()
@@ -168,6 +237,114 @@ async function run(
 }
 
 describe('profile runner subprocess', () => {
+  it('executes commands inside the original builtin persistent context and preserves stop/proxy', async () => {
+    const result = await run(
+      'launch',
+      '',
+      false,
+      false,
+      undefined,
+      true,
+      undefined,
+      runtimeWindow({
+        binary_path: binary,
+        proxy_mode: 'plugin',
+        proxy: 'http://synthetic-user:do-not-log@proxy.example:8080',
+        proxy_plugin: 'opaque/plugin-ref:v2',
+        settings: { ...runtimeWindow().settings, startUrl: '', geoip: false },
+      }),
+      [
+        {
+          requestId: 'navigate',
+          operation: 'navigate',
+          origin: 'https://www.vinted.fr',
+          input: { url: 'https://www.vinted.fr/items/new' },
+        },
+        {
+          requestId: 'snapshot',
+          operation: 'snapshot',
+          origin: 'https://www.vinted.fr',
+          input: {},
+        },
+      ],
+    )
+    expect(result).toMatchObject({ exit: 0, stderr: '', timedOut: false })
+    expect(result.stdout).toContain('NEXUS_READY\n')
+    const receipts = result.stdout
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map((line) => JSON.parse(line.slice('NEXUS_AUTOMATION '.length)) as unknown)
+    expect(receipts).toEqual([
+      {
+        requestId: 'navigate',
+        ok: true,
+        result: { url: 'https://www.vinted.fr/items/new' },
+      },
+      {
+        requestId: 'snapshot',
+        ok: true,
+        result: {
+          url: 'https://www.vinted.fr/items/new',
+          title: 'Fixture',
+          text: 'Fixture page',
+          controls: [],
+        },
+      },
+    ])
+    expect(result.stdout + result.stderr).not.toContain('do-not-log')
+  })
+
+  it('attaches the packaged CDP action to the existing context without closing its browser', async () => {
+    const result = await run(
+      'automation-cdp',
+      '',
+      false,
+      false,
+      undefined,
+      false,
+      undefined,
+      { endpoint: 'ws://127.0.0.1:9000/devtools/browser/fixture' },
+      [
+        {
+          requestId: 'navigate',
+          operation: 'navigate',
+          origin: 'https://www.vinted.fr',
+          input: { url: 'https://www.vinted.fr/inbox/123' },
+        },
+        {
+          requestId: 'snapshot',
+          operation: 'snapshot',
+          origin: 'https://www.vinted.fr',
+          input: {},
+        },
+        { requestId: 'release', control: 'release' },
+      ],
+    )
+    expect(result).toMatchObject({ exit: 0, stderr: '', timedOut: false })
+    expect(result.stdout).toContain('Existing vendor page')
+    expect(result.stdout).toContain('"released":true')
+  })
+
+  it('exits on external disconnect without closing a page or vendor browser', async () => {
+    const result = await run(
+      'automation-cdp',
+      '',
+      false,
+      false,
+      undefined,
+      false,
+      undefined,
+      { endpoint: 'ws://127.0.0.1:9000/devtools/browser/fixture' },
+    )
+    expect(result).toEqual({
+      exit: 0,
+      stderr: '',
+      stdout: 'NEXUS_READY\n',
+      timedOut: false,
+    })
+  })
+
   it('receives a resolved plugin proxy with credentials and a numeric pinned endpoint through stdin', async () => {
     const record = runtimeWindow({
       binary_path: binary,

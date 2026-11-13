@@ -8,9 +8,11 @@ import {
   Loader2,
   MapPinned,
   Mail,
+  Package,
   Radar,
   Radio,
   RefreshCw,
+  Bot,
   ShoppingBag,
   SlidersHorizontal,
   Store,
@@ -74,6 +76,8 @@ const capabilityIcons = {
   'account.pool': Users,
   'window.sync': Radio,
   'email.provider': Mail,
+  'product.catalog': Package,
+  'sales.agent': Bot,
 }
 
 function iconFor(capability: string) {

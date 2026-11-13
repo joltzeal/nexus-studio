@@ -258,6 +258,244 @@ fn input(connection: &str) -> CreateWindowInput {
     }
 }
 
+#[test]
+fn agent_lease_blocks_manual_operations_and_requires_the_dedicated_start() {
+    let (_root, service, provider, connection) = fixture();
+    let record = service.create(input(&connection)).unwrap();
+    service.acquire_agent_window(&record.id, "job-one").unwrap();
+    service.acquire_agent_window(&record.id, "job-one").unwrap();
+    assert_eq!(
+        service
+            .acquire_agent_window(&record.id, "job-two")
+            .unwrap_err()
+            .code,
+        "profile_busy"
+    );
+    assert_eq!(
+        service.start_window(&record.id).unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(service.stop(&record.id).unwrap_err().code, "profile_busy");
+    assert_eq!(
+        service.update_note(&record.id, "edit").unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(
+        service.delete_window(&record.id, false).unwrap_err().code,
+        "profile_busy"
+    );
+    assert!(
+        service
+            .lock_transfer(std::slice::from_ref(&record.id))
+            .is_err()
+    );
+    assert_eq!(
+        service
+            .start_agent_window(&record.id, "job-two")
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+    service.start_agent_window(&record.id, "job-one").unwrap();
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        service
+            .release_agent_window(&record.id, "job-two")
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+    service.release_agent_window(&record.id, "job-one").unwrap();
+    service.stop(&record.id).unwrap();
+}
+
+#[test]
+fn agent_snapshot_has_only_allowlisted_identity_fields_and_actual_state() {
+    let (_root, service, _provider, connection) = fixture();
+    let record = service.create(input(&connection)).unwrap();
+    let snapshot = service.agent_window_snapshot(&record.id).unwrap();
+    let mut keys = snapshot
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "connectionId",
+            "id",
+            "name",
+            "profileId",
+            "providerId",
+            "state"
+        ]
+    );
+    assert_eq!(snapshot["state"], "stopped");
+    assert_eq!(snapshot["profileId"], record.provider_profile_id);
+    assert_eq!(
+        service
+            .agent_browser_execute(
+                &record.id,
+                json!({
+                    "operation":"snapshot","origin":"https://www.vinted.fr","input":{}
+                })
+            )
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+}
+
+#[test]
+fn acquiring_does_not_steal_an_existing_manual_or_transfer_operation() {
+    let (_root, service, _provider, connection) = fixture();
+    let record = service.create(input(&connection)).unwrap();
+    let guard = service.hold(&record.id).unwrap();
+    assert!(service.acquire_agent_window(&record.id, "job").is_err());
+    assert!(service.restore_agent_window(&record.id, "job").is_err());
+    drop(guard);
+    let transfer = service
+        .lock_transfer(std::slice::from_ref(&record.id))
+        .unwrap();
+    assert!(service.acquire_agent_window(&record.id, "job").is_err());
+    assert!(service.restore_agent_window(&record.id, "job").is_err());
+    drop(transfer);
+    service.acquire_agent_window(&record.id, "job").unwrap();
+    assert!(
+        service
+            .hold_connections(BrowserProviderId::AdsPower, false)
+            .is_err()
+    );
+    service.release_agent_window(&record.id, "job").unwrap();
+}
+
+#[test]
+fn restart_restores_agent_ownership_without_reconciling_unknown_provider_operations() {
+    let (_root, service, provider, connection) = fixture();
+    let record = service.create(input(&connection)).unwrap();
+    let mut operation = service
+        .operations
+        .prepare(
+            &uuid::Uuid::new_v4().to_string(),
+            &record.id,
+            &connection,
+            "start",
+            json!({"record": service.store.get(&record.id).unwrap()}),
+        )
+        .unwrap();
+    service
+        .operations
+        .phase(&mut operation, "uncertain", Some("Result unknown".into()))
+        .unwrap();
+    service
+        .observations
+        .set(&record.id, WindowState::Unknown, true)
+        .unwrap();
+    let expected_operation = serde_json::to_value(&operation).unwrap();
+    let expected_observation =
+        serde_json::to_value(service.observations.get(&record.id).unwrap()).unwrap();
+    let profiles = service.store.root().to_path_buf();
+    let license = service.builtin.license_store.clone();
+    drop(service);
+    let mut service =
+        WindowService::with_runtime(profiles, None, license, RuntimePaths::development()).unwrap();
+    service.registry.register(provider.clone());
+    provider.offline.store(true, Ordering::SeqCst);
+    let owner = uuid::Uuid::new_v4().to_string();
+    assert_eq!(
+        service
+            .acquire_agent_window(&record.id, &owner)
+            .unwrap_err()
+            .code,
+        "operation_uncertain"
+    );
+    service.restore_agent_window(&record.id, &owner).unwrap();
+    service.restore_agent_window(&record.id, &owner).unwrap();
+    assert_eq!(
+        service
+            .restore_agent_window(&record.id, "other-owner")
+            .unwrap_err()
+            .code,
+        "profile_busy"
+    );
+    assert_eq!(
+        service.start_window(&record.id).unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(service.stop(&record.id).unwrap_err().code, "profile_busy");
+    assert_eq!(
+        service.update_note(&record.id, "edit").unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(
+        service.delete_window(&record.id, false).unwrap_err().code,
+        "profile_busy"
+    );
+    assert!(
+        service
+            .lock_transfer(std::slice::from_ref(&record.id))
+            .is_err()
+    );
+    assert_eq!(
+        serde_json::to_value(service.operations.get(&operation.id).unwrap().unwrap()).unwrap(),
+        expected_operation
+    );
+    assert_eq!(
+        serde_json::to_value(service.observations.get(&record.id).unwrap()).unwrap(),
+        expected_observation
+    );
+    assert!(service.agent_actors.lock().unwrap().is_empty());
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.updates.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn quiescing_retains_the_agent_owner_until_an_explicit_release() {
+    let (_root, service, _provider, connection) = fixture();
+    let record = service.create(input(&connection)).unwrap();
+    let owner = uuid::Uuid::new_v4().to_string();
+    service.acquire_agent_window(&record.id, &owner).unwrap();
+    assert_eq!(
+        service
+            .quiesce_agent_window(&record.id, "other-owner")
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+    service.quiesce_agent_window(&record.id, &owner).unwrap();
+    service.quiesce_agent_window(&record.id, &owner).unwrap();
+    assert_eq!(
+        service.start_window(&record.id).unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(service.stop(&record.id).unwrap_err().code, "profile_busy");
+    assert_eq!(
+        service.update_note(&record.id, "edit").unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(
+        service.delete_window(&record.id, false).unwrap_err().code,
+        "profile_busy"
+    );
+    assert!(
+        service
+            .lock_transfer(std::slice::from_ref(&record.id))
+            .is_err()
+    );
+    assert_eq!(
+        service
+            .acquire_agent_window(&record.id, "other-owner")
+            .unwrap_err()
+            .code,
+        "profile_busy"
+    );
+    service.acquire_agent_window(&record.id, &owner).unwrap();
+    service.release_agent_window(&record.id, &owner).unwrap();
+    service.update_note(&record.id, "editable").unwrap();
+}
+
 fn native_fixture() -> (
     tempfile::TempDir,
     WindowService,

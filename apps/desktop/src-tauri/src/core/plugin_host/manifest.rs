@@ -29,10 +29,14 @@ pub enum Capability {
     WindowSync,
     #[serde(rename = "email.provider")]
     EmailProvider,
+    #[serde(rename = "product.catalog")]
+    ProductCatalog,
+    #[serde(rename = "sales.agent")]
+    SalesAgent,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 11] = [
+    pub const ALL: [Capability; 13] = [
         Capability::ProxyProvider,
         Capability::AddressGenerator,
         Capability::SupplyCatalog,
@@ -44,6 +48,8 @@ impl Capability {
         Capability::AccountPool,
         Capability::WindowSync,
         Capability::EmailProvider,
+        Capability::ProductCatalog,
+        Capability::SalesAgent,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -59,6 +65,8 @@ impl Capability {
             Capability::AccountPool => "account.pool",
             Capability::WindowSync => "window.sync",
             Capability::EmailProvider => "email.provider",
+            Capability::ProductCatalog => "product.catalog",
+            Capability::SalesAgent => "sales.agent",
         }
     }
 
@@ -321,6 +329,26 @@ pub fn valid_domain(domain: &str) -> bool {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    #[test]
+    fn product_catalog_needs_neither_browser_nor_network_permissions() {
+        assert_eq!(
+            Capability::parse("product.catalog"),
+            Some(Capability::ProductCatalog)
+        );
+        let manifest = serde_json::json!({
+            "apiVersion":1,"id":"studio.products","version":"1.0.0",
+            "name":"Products","minCoreVersion":env!("CARGO_PKG_VERSION"),
+            "capabilities":["product.catalog"],"permissions":{
+                "networkDomains":[],
+                "wantsBrowserAccess":false,"storage":"private","secrets":[]
+            }
+        });
+        let parsed = PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(parsed.declares(Capability::ProductCatalog));
+        assert!(!parsed.permissions.wants_browser_access);
+        assert!(parsed.permissions.network_domains.is_empty());
+    }
 
     #[test]
     fn email_capability_is_distinct_from_account_lifecycle() {

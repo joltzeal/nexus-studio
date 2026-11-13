@@ -1,3 +1,6 @@
+use super::browser::provider::automation::{
+    AutomationChannel, AutomationSession, CdpActor, validate_request,
+};
 use super::browser::{
     connection_store::{BrowserConnection, ConnectionInput, ConnectionStore},
     operation_store::{BrowserOperation, OperationResolution, OperationStore},
@@ -136,6 +139,7 @@ struct WindowManagerState {
     scheduler: Scheduler,
     epochs: HashMap<String, u64>,
     busy: HashSet<String>,
+    agent_owners: HashMap<String, String>,
     transfers: HashSet<String>,
     recoveries: HashSet<String>,
     installing: bool,
@@ -170,6 +174,11 @@ pub struct WindowService {
     observations: SessionStore,
     plugin_host: Option<Arc<PluginHost>>,
     state: Mutex<WindowManagerState>,
+    agent_actors: Mutex<HashMap<String, AgentActor>>,
+}
+struct AgentActor {
+    channel: Arc<AutomationChannel>,
+    _external: Option<CdpActor>,
 }
 fn failure(error: impl std::fmt::Display) -> BrowserError {
     BrowserError::new("storage_failed", error.to_string())
@@ -181,6 +190,12 @@ fn uncertain() -> BrowserError {
     BrowserError::new(
         "operation_uncertain",
         "操作结果尚未确认，请在待处理操作中重新检查",
+    )
+}
+fn agent_pending() -> BrowserError {
+    BrowserError::new(
+        "operation_pending",
+        "Browser operation still requires reconciliation",
     )
 }
 fn known_rejection(error: &BrowserError) -> bool {
@@ -223,10 +238,12 @@ impl WindowService {
             operations: OperationStore::new(path.clone()),
             observations: SessionStore::new(path),
             plugin_host,
+            agent_actors: Mutex::new(HashMap::new()),
             state: Mutex::new(WindowManagerState {
                 scheduler: Scheduler::default(),
                 epochs: HashMap::new(),
                 busy: HashSet::new(),
+                agent_owners: HashMap::new(),
                 transfers: HashSet::new(),
                 recoveries: HashSet::new(),
                 installing: false,
@@ -244,6 +261,291 @@ impl WindowService {
         self.registry.register(self.builtin.clone());
         self
     }
+
+    pub fn agent_window_snapshot(&self, id: &str) -> BrowserResult<Value> {
+        let record = self.store.get(id).map_err(failure)?;
+        let connection = self.connection(&record.binding.connection_id, false)?;
+        let states = self.observe_states(&connection, std::slice::from_ref(&record))?;
+        let actual = states
+            .get(&record.binding.profile_id)
+            .copied()
+            .unwrap_or(WindowState::Unknown);
+        Ok(json!({
+            "id":record.id, "name":record.name,
+            "providerId":record.binding.provider_id,
+            "connectionId":record.binding.connection_id,
+            "profileId":record.binding.profile_id, "state":actual
+        }))
+    }
+
+    pub fn agent_provider_capacity(
+        &self,
+        id: &str,
+    ) -> BrowserResult<Option<crate::core::browser::provider::ProviderCapacity>> {
+        let record = self.store.get(id).map_err(failure)?;
+        let connection = self.connection(&record.binding.connection_id, false)?;
+        let capacity = self
+            .registry
+            .get(connection.provider_id)?
+            .capacity(&connection)?;
+        if let Some(value) = &capacity {
+            if value.max_running > 1_000_000
+                || value.running_profiles.len() > 100_000
+                || value
+                    .running_profiles
+                    .iter()
+                    .any(|id| id.is_empty() || id.len() > 200)
+            {
+                return Err(BrowserError::new(
+                    "invalid_response",
+                    "Invalid provider capacity observation",
+                ));
+            }
+        }
+        Ok(capacity)
+    }
+
+    pub fn acquire_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()> {
+        self.reserve_agent_window(id, owner, false)
+    }
+
+    /// Restore durable ownership before exposing commands, without probing the provider.
+    pub fn restore_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()> {
+        self.reserve_agent_window(id, owner, true)
+    }
+
+    fn reserve_agent_window(
+        &self,
+        id: &str,
+        owner: &str,
+        allow_pending: bool,
+    ) -> BrowserResult<()> {
+        if owner.is_empty() || owner.len() > 256 || owner.chars().any(char::is_control) {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "Invalid Agent lease owner",
+            ));
+        }
+        {
+            let state = self.state.lock().map_err(failure)?;
+            if let Some(current) = state.agent_owners.get(id) {
+                return if current == owner {
+                    Ok(())
+                } else {
+                    Err(busy())
+                };
+            }
+        }
+        let _guard = self.hold(id)?;
+        self.store.get(id).map_err(failure)?;
+        if !allow_pending && self.operations.window_pending(id)? {
+            return Err(uncertain());
+        }
+        self.state
+            .lock()
+            .map_err(failure)?
+            .agent_owners
+            .insert(id.into(), owner.into());
+        Ok(())
+    }
+
+    fn hold_agent(&self, id: &str, owner: Option<&str>) -> BrowserResult<WindowGuard<'_>> {
+        let mut state = self.state.lock().map_err(failure)?;
+        let current = state.agent_owners.get(id).ok_or_else(|| {
+            BrowserError::new("permission_denied", "Agent window lease is required")
+        })?;
+        if owner.is_some_and(|owner| owner != current) {
+            return Err(BrowserError::new(
+                "permission_denied",
+                "Agent window lease owner mismatch",
+            ));
+        }
+        if state.installing
+            || state.busy.contains("connections")
+            || state.busy.contains(id)
+            || state.transfers.contains(id)
+            || state.recoveries.contains(id)
+        {
+            return Err(busy());
+        }
+        state.advance(id)?;
+        state.busy.insert(id.into());
+        Ok(WindowGuard {
+            service: self,
+            id: id.into(),
+        })
+    }
+
+    pub fn release_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()> {
+        self.finish_agent_window(id, owner, true)
+    }
+
+    /// Remove an idle actor while retaining the reservation for review/reconciliation.
+    pub fn quiesce_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()> {
+        self.finish_agent_window(id, owner, false)
+    }
+
+    fn finish_agent_window(&self, id: &str, owner: &str, release_owner: bool) -> BrowserResult<()> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        if self.operations.window_pending(id)? {
+            return Err(agent_pending());
+        }
+        let channel = self
+            .agent_actors
+            .lock()
+            .map_err(failure)?
+            .get(id)
+            .map(|actor| actor.channel.clone());
+        if let Some(channel) = channel {
+            // A timeout/disconnect with an outstanding request keeps the lease.
+            // A normal release also removes the page's temporary origin guard.
+            channel.release()?;
+        }
+        let actor = self.agent_actors.lock().map_err(failure)?.remove(id);
+        drop(actor);
+        if release_owner {
+            self.state.lock().map_err(failure)?.agent_owners.remove(id);
+        }
+        Ok(())
+    }
+
+    /// Observe lifecycle outcomes without replaying provider writes or dropping ownership.
+    pub fn reconcile_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        let channel = self
+            .agent_actors
+            .lock()
+            .map_err(failure)?
+            .get(id)
+            .map(|actor| actor.channel.clone());
+        if let Some(channel) = channel {
+            channel.idle()?;
+        }
+        let mut operations: Vec<_> = self
+            .operations
+            .list(None)?
+            .into_iter()
+            .filter(|operation| operation.window_id == id)
+            .collect();
+        if operations.is_empty() {
+            return Ok(());
+        }
+        if operations.iter().any(|operation| {
+            !matches!(operation.kind.as_str(), "start" | "stop")
+                || !matches!(
+                    operation.phase.as_str(),
+                    "prepared" | "submitted" | "uncertain" | "confirmed"
+                )
+        }) {
+            return Err(agent_pending());
+        }
+        let record = self.store.get(id).map_err(failure)?;
+        for operation in &operations {
+            let snapshot: WindowRecord =
+                serde_json::from_value(operation.payload["record"].clone()).map_err(failure)?;
+            if operation.connection_id != record.binding.connection_id
+                || snapshot.id != record.id
+                || snapshot.binding != record.binding
+            {
+                return Err(BrowserError::new(
+                    "scope_mismatch",
+                    "Pending operation does not match the reserved window",
+                ));
+            }
+        }
+        // Startup resets scope confirmation. Read-only identity checks do not
+        // silently reconfirm it or grant permission for later provider writes.
+        let connection = self.connection(&record.binding.connection_id, false)?;
+        self.check_external(&connection, &record, true)?;
+        let actual = self
+            .observe_states(&connection, std::slice::from_ref(&record))?
+            .get(&record.binding.profile_id)
+            .copied()
+            .unwrap_or(WindowState::Unknown);
+        if !matches!(actual, WindowState::Running | WindowState::Stopped)
+            || operations.iter().any(|operation| {
+                operation.phase != "prepared"
+                    && actual
+                        != if operation.kind == "start" {
+                            WindowState::Running
+                        } else {
+                            WindowState::Stopped
+                        }
+            })
+        {
+            return Err(agent_pending());
+        }
+        let owned = self
+            .observations
+            .get(id)?
+            .is_some_and(|observation| observation.nexus_started)
+            || operations
+                .iter()
+                .any(|operation| operation.kind == "start" && operation.phase != "prepared");
+        self.accept_session(&record, actual, owned)?;
+        for operation in &mut operations {
+            let _operation_guard = self.hold(&format!("operation:{}", operation.id))?;
+            if operation.phase == "prepared" {
+                self.operations.phase(
+                    operation,
+                    "failed",
+                    Some("Provider operation was never submitted".into()),
+                )?;
+            } else {
+                if operation.kind == "start" {
+                    self.store.mark_opened(id).map_err(failure)?;
+                }
+                self.operations.phase(operation, "committed", None)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn agent_browser_execute(&self, id: &str, request: Value) -> BrowserResult<Value> {
+        validate_request(&request)?;
+        let _guard = self.hold_agent(id, None)?;
+        if self.operations.window_pending(id)? {
+            return Err(uncertain());
+        }
+        let record = self.store.get(id).map_err(failure)?;
+        let connection = self.connection(&record.binding.connection_id, true)?;
+        let existing = self
+            .agent_actors
+            .lock()
+            .map_err(failure)?
+            .get(id)
+            .map(|actor| actor.channel.clone());
+        let channel = match existing {
+            Some(channel) => channel,
+            None => {
+                let session = self
+                    .registry
+                    .get(connection.provider_id)?
+                    .automation_session(&connection, &record)?;
+                let actor = match session {
+                    AutomationSession::Managed(channel) => AgentActor {
+                        channel,
+                        _external: None,
+                    },
+                    AutomationSession::Cdp(endpoint) => {
+                        let external = CdpActor::attach(&self.builtin.runtime, endpoint)?;
+                        AgentActor {
+                            channel: external.channel.clone(),
+                            _external: Some(external),
+                        }
+                    }
+                };
+                let channel = actor.channel.clone();
+                self.agent_actors
+                    .lock()
+                    .map_err(failure)?
+                    .insert(id.into(), actor);
+                channel
+            }
+        };
+        channel.execute(request)
+    }
+
     pub fn watch_sessions(self: &Arc<Self>) {
         let service = Arc::downgrade(self);
         std::thread::spawn(move || {
@@ -264,6 +566,7 @@ impl WindowService {
         if state.installing
             || state.busy.contains("connections")
             || state.busy.contains(id)
+            || state.agent_owners.contains_key(id)
             || state.transfers.contains(id)
             || state.recoveries.contains(id)
         {
@@ -282,17 +585,20 @@ impl WindowService {
     fn hold_connections(
         &self,
         provider_id: BrowserProviderId,
-        allow_pending: bool,
+        confirming_scope: bool,
     ) -> BrowserResult<WindowGuard<'_>> {
         let mut state = self.state.lock().map_err(failure)?;
         if state.installing
             || !state.busy.is_empty()
+            || (!confirming_scope && !state.agent_owners.is_empty())
             || !state.transfers.is_empty()
             || state.transfer_operations > 0
         {
             return Err(busy());
         }
-        if !allow_pending {
+        // Reconfirmation probes the unchanged connection; retained Agent owners
+        // still guard window writes and prevent connection edits or activation.
+        if !confirming_scope {
             for operation in self.operations.list(None)? {
                 if self.connections.get(&operation.connection_id)?.provider_id == provider_id {
                     return Err(busy());
@@ -1154,6 +1460,14 @@ impl WindowService {
     }
     pub(crate) fn start_window(&self, id: &str) -> BrowserResult<()> {
         let _guard = self.hold(id)?;
+        self.start_window_held(id)
+    }
+    /// The Agent gateway must first acquire its durable resources and local lease.
+    pub fn start_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        self.start_window_held(id)
+    }
+    fn start_window_held(&self, id: &str) -> BrowserResult<()> {
         if self.operations.window_pending(id)? {
             return Err(uncertain());
         }
@@ -1757,6 +2071,7 @@ impl WindowService {
             || state.busy.contains("connections")
             || ids.iter().any(|id| {
                 state.busy.contains(id)
+                    || state.agent_owners.contains_key(id)
                     || state.transfers.contains(id)
                     || state.recoveries.contains(id)
                     || state.scheduler.status(id).is_some()
@@ -1825,6 +2140,7 @@ impl WindowService {
             let mut state = self.state.lock().map_err(|_| "profiles_failed")?;
             if state.installing
                 || !state.busy.is_empty()
+                || !state.agent_owners.is_empty()
                 || !state.transfers.is_empty()
                 || !state.recoveries.is_empty()
                 || state.transfer_operations > 0

@@ -5,7 +5,9 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createVintedAccountsPlugin } from '../index.js'
+import { AccountObservationStateSchema } from '../agent-contracts.js'
 import { AssignedAccountAddressSchema } from '../domain/address.js'
+import { AssignedAccountMailboxSchema } from '../domain/mailbox.js'
 import { AccountSaveInputSchema } from '../domain/schemas.js'
 import { AccountTransferDataSchema } from '../domain/transfer.js'
 import type { AccountRecord, BindingRecord } from '../domain/types.js'
@@ -218,7 +220,7 @@ describe('account list pagination', () => {
     expect(last.bytes).toBeLessThan(LIMIT)
   })
 
-  it.each(['unicode', 'escaped'] as const)(
+  it.each(['unicode', 'escaped', 'controls'] as const)(
     'keeps maximum-length %s fields and several bindings per account within the byte budget',
     async (kind) => {
       const directory = await mkdtemp(join(tmpdir(), 'nexus-account-page-bytes-'))
@@ -227,8 +229,11 @@ describe('account list pagination', () => {
       const text = (length: number) =>
         kind === 'unicode'
           ? '\u6c49'.repeat(length)
-          : `${'\u0000'.repeat(length - 4)}"\\\n\u0000`
+          : kind === 'controls'
+            ? '\u0000'.repeat(length)
+            : `${'\u0000'.repeat(length - 4)}"\\\n\u0000`
       const longTimestamp = `2026-11-12T00:00:00.${'0'.repeat(43)}Z`
+      const observationTimestamp = `2026-11-13T09:00:00.${'0'.repeat(14)}+08:00`
       const accounts = Array.from({ length: 50 }, (_, index) => {
         const entry = account(index)
         const fields = AccountSaveInputSchema.parse({
@@ -267,11 +272,57 @@ describe('account list pagination', () => {
             username: 'a'.repeat(20),
             linkedAt: longTimestamp,
           }),
+          mailbox: AssignedAccountMailboxSchema.parse({
+            pluginId: 'studio.email',
+            mailboxId: '\ud800'.repeat(64),
+            email: `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(60)}`,
+            linkedAt: longTimestamp,
+          }),
+          observation: AccountObservationStateSchema.parse({
+            platformUserId: '9'.repeat(32),
+            tags: Array.from({ length: 8 }, () => '\u6c49'.repeat(24)),
+            summary: '\u6c49'.repeat(160),
+            rating: 5,
+            balance: {
+              currency: 'EUR',
+              available: '-999999999999.9999',
+              pending: '-999999999999.9999',
+              availableEvidence: {
+                source: 'official',
+                observedAt: observationTimestamp,
+              },
+              pendingEvidence: {
+                source: 'official',
+                observedAt: observationTimestamp,
+              },
+            },
+            statusEvidence: {
+              status: 'limited',
+              source: 'official',
+              observedAt: observationTimestamp,
+            },
+            lastObservation: {
+              operationId: '33333333-3333-4333-8333-333333333333',
+              accountId: '11111111-1111-4111-8111-111111111111',
+              windowId: '22222222-2222-4222-8222-222222222222',
+              source: 'official',
+              observedAt: observationTimestamp,
+              status: 'limited',
+              balance: {
+                currency: 'EUR',
+                available: '-999999999999.9999',
+                pending: '-999999999999.9999',
+              },
+            },
+          }),
         }
       })
-      const allBindings = bindings(accounts, 4).map((binding) => ({
+      const allBindings = bindings(accounts, 4).map((binding, index) => ({
         ...binding,
-        windowId: binding.windowId.padEnd(64, text(64)),
+        windowId:
+          kind === 'controls'
+            ? `${'\u0000'.repeat(63)}${String.fromCharCode(0xd800 + index)}`
+            : binding.windowId.padEnd(64, text(64)),
         boundAt: longTimestamp,
       }))
       await client.store.mutate((document) => {
@@ -285,7 +336,13 @@ describe('account list pagination', () => {
       let count = 0
       for (let page = 1; page <= 4; page += 1) {
         const { reply, bytes } = await client.request({ page, revision })
-        expect(reply.ok).toBe(true)
+        const payloadBytes = Buffer.byteLength(
+          JSON.stringify({
+            items: accounts.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+            bindings: allBindings.slice((page - 1) * PAGE_SIZE * 4, page * PAGE_SIZE * 4),
+          }),
+        )
+        expect(reply.ok, `${kind} page data: ${payloadBytes} bytes`).toBe(true)
         expect(bytes).toBeLessThan(LIMIT)
         revision ??= reply.result!.revision
         count += reply.result!.items.length

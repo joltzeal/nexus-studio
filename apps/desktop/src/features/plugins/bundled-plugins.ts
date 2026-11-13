@@ -1,6 +1,8 @@
 import addressManifest from '@nexus/plugin-address-generator/manifest'
 import aiImageManifest from '@nexus/plugin-ai-image/manifest'
 import emailManifest from '@nexus/plugin-email/manifest'
+import productsManifest from '@nexus/plugin-products/manifest'
+import salesAgentManifest from '@nexus/plugin-sales-agent/manifest'
 import proxyManifest from '@nexus/plugin-proxy-pool/manifest'
 import supplyManifest from '@nexus/plugin-shared-supply/manifest'
 import sim8Manifest from '@nexus/plugin-sim8/manifest'
@@ -21,4 +23,6 @@ export const BUNDLED_PLUGINS = [
   vintedAccountsManifest,
   sim8Manifest,
   emailManifest,
+  productsManifest,
+  salesAgentManifest,
 ] as const

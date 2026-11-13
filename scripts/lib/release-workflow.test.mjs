@@ -81,6 +81,8 @@ const requiredMethods = {
     'vinted.accounts.bind',
     'vinted.accounts.unbind',
     'vinted.accounts.bindings',
+    'vinted.accounts.agent.snapshot',
+    'vinted.accounts.observations.record',
     'vinted.accounts.address.targets',
     'vinted.accounts.address.set',
     'vinted.accounts.mailbox.targets',
@@ -166,6 +168,31 @@ const requiredMethods = {
     'address.saved.list',
     'address.saved.save',
     'address.saved.remove',
+  ],
+  products: [
+    'products.list',
+    'products.get',
+    'products.save',
+    'products.remove',
+    'products.import',
+    'products.sources.find',
+    'products.importAi',
+    'products.upload.begin',
+    'products.upload.chunk',
+    'products.upload.finish',
+    'products.upload.abort',
+    'products.images.read',
+    'products.images.discard',
+    'products.publications.list',
+    'products.publications.record',
+  ],
+  'sales-agent': [
+    ...configurationMethods,
+    'salesAgent.settings.get',
+    'salesAgent.settings.save',
+    'salesAgent.models.test',
+    'salesAgent.notifications.send',
+    'salesAgent.jobs.step',
   ],
   email: [
     ...configurationMethods,
@@ -285,7 +312,7 @@ function fixture() {
         sha256: createHash('sha256').update(bytes).digest('hex'),
       },
     })
-    const report = { id: manifest.id, version, methods }
+    const report = { id: manifest.id, version, methods, status: { storageDurable: true } }
     writeJson(`${file}.report.json`, report)
     return { name, file, report, manifest }
   })
@@ -304,7 +331,7 @@ if (report.error) {
 }
 console.log('ok ' + report.id + ' ' + report.version)
 console.log('   \\u65b9\\u6cd5 ' + report.methods.length + ' \\u4e2a\\uff1a' + report.methods.join(', '))
-console.log('   \\u72b6\\u6001 {}')
+console.log('   \\u72b6\\u6001 ' + JSON.stringify(report.status ?? {}))
 `,
   )
   return {
@@ -373,6 +400,10 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       '@nexus/plugin-address-generator...',
       '--filter',
       '@nexus/plugin-email...',
+      '--filter',
+      '@nexus/plugin-products...',
+      '--filter',
+      '@nexus/plugin-sales-agent...',
       'build',
     ])
     expect(commands.slice(1).map((args) => args.slice(0, 3))).toEqual([
@@ -383,6 +414,8 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       ['node', 'scripts/pack-plugin.mjs', 'plugins/proxy-pool'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/address-generator'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/email'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/products'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/sales-agent'],
       ['node', 'scripts/build-market.mjs', '--out'],
     ])
     const market = readFileSync(output, 'utf8').match(/^directory=(.+)$/m)?.[1]
@@ -440,6 +473,20 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     const result = data.verify()
     expect(result.status, result.stdout).toBe(1)
     expect(result.stderr).toContain(method)
+  })
+
+  it.each(
+    ['sales-agent', 'products', 'vinted-accounts'].flatMap((name) =>
+      [undefined, false, 'true'].map((storageDurable) => [name, storageDurable]),
+    ),
+  )('rejects %s with an invalid durable-storage status: %s', (name, storageDurable) => {
+    const data = fixture()
+    const plugin = data.plugins.find((entry) => entry.name === name)
+    plugin.report.status = { storageDurable }
+    writeJson(`${plugin.file}.report.json`, plugin.report)
+    const result = data.verify()
+    expect(result.status, result.stdout).toBe(1)
+    expect(result.stderr).toContain('durable storage')
   })
 
   it('does not accept a method name that only contains the required name', () => {

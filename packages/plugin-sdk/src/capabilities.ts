@@ -54,6 +54,10 @@ export interface AccountPool extends CapabilityDescriptor {
 export type WindowSync = CapabilityDescriptor
 /** Mailbox accounts, read-only mail and provider-owned token refresh. */
 export type EmailProvider = CapabilityDescriptor
+/** Independent products, editable listing details and plugin-owned images. */
+export type ProductCatalog = CapabilityDescriptor
+/** Durable, host-scheduled sales workflows with scoped browser tools. */
+export type SalesAgent = CapabilityDescriptor
 
 export interface PluginCapabilityContracts {
   'proxy.provider': ProxyProvider
@@ -67,4 +71,6 @@ export interface PluginCapabilityContracts {
   'account.pool': AccountPool
   'window.sync': WindowSync
   'email.provider': EmailProvider
+  'product.catalog': ProductCatalog
+  'sales.agent': SalesAgent
 }

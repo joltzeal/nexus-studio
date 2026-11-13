@@ -1820,6 +1820,241 @@ fn workspace_proxy_plugin_completes_a_handshake_and_a_call() {
     process.stop();
 }
 
+const REVERSE_HOST_PLUGIN_JS: &str = r#"
+const readline = require('node:readline')
+const { randomUUID } = require('node:crypto')
+const send = value => process.stdout.write(JSON.stringify(value) + '\n')
+const waiting = new Map()
+send({type:'hello',pluginId:'test.fixture-plugin',version:'1.2.0',apiVersion:1})
+readline.createInterface({input:process.stdin}).on('line', line => {
+  const message = JSON.parse(line)
+  if (message.type === 'handshake') {
+    send({type:'ready',pluginId:'test.fixture-plugin',version:'1.2.0',
+      capabilities:['proxy.provider'],methods:['test.reverse','test.flood','test.echo','test.deadline']})
+    return
+  }
+  if (message.type === 'host.response') {
+    const owner = waiting.get(message.requestId)
+    waiting.delete(message.requestId)
+    if (!owner) return
+    if (owner.method === 'test.reverse' ||
+        (message.ok === false && message.error.code === 'RATE_LIMITED')) {
+      send({protocolVersion:1,requestId:owner.requestId,ok:true,result:message})
+    }
+    return
+  }
+  if (message.type === 'cancel') return
+  if (message.method === 'test.echo') {
+    send({protocolVersion:1,requestId:message.requestId,ok:true,result:message.payload})
+    return
+  }
+  if (message.method === 'test.deadline') {
+    send({protocolVersion:1,requestId:message.requestId,ok:true,
+      result:{deadlineMs:message.deadlineMs}})
+    return
+  }
+  const count = message.method === 'test.flood' ? message.payload.count : 1
+  for (let index=0; index<count; index++) {
+    const requestId = randomUUID()
+    waiting.set(requestId, message)
+    send({type:'host.request',hostVersion:1,requestId,scope:message.payload.scope,
+      method:'agent.action.get',payload:{claimedPluginId:'studio.sales-agent',index},
+      deadlineMs:10000})
+  }
+}).on('close', () => process.exit(0))
+"#;
+
+fn reverse_host_process(
+    directory: &Path,
+    handler: std::sync::Arc<super::process::HostRequestHandler>,
+) -> std::sync::Arc<PluginProcess> {
+    let entry = directory.join("reverse.cjs");
+    fs::write(&entry, REVERSE_HOST_PLUGIN_JS).unwrap();
+    let manifest = PluginManifest::parse(MANIFEST.as_bytes()).unwrap();
+    PluginProcess::spawn_with_gateway(
+        &entry,
+        None,
+        manifest,
+        Path::new("node"),
+        "",
+        None,
+        "fixture-installation".into(),
+        std::sync::Arc::new(std::sync::Mutex::new(Some(handler))),
+    )
+    .unwrap()
+    .0
+}
+
+fn reverse_scope() -> serde_json::Value {
+    serde_json::json!({
+        "batchId":uuid::Uuid::new_v4().to_string(),
+        "jobId":uuid::Uuid::new_v4().to_string(),
+        "windowId":uuid::Uuid::new_v4().to_string(),
+        "accountId":uuid::Uuid::new_v4().to_string(),
+        "leaseId":uuid::Uuid::new_v4().to_string(),"fence":1
+    })
+}
+
+#[test]
+fn reverse_host_calls_complete_during_outer_rpc_and_use_actual_process_identity() {
+    use std::sync::Arc;
+    let _slot = NodeSlot::acquire();
+    let temp = tempfile::tempdir().unwrap();
+    let handler: Arc<super::process::HostRequestHandler> = Arc::new(|caller, request| {
+        assert_eq!(request.payload["claimedPluginId"], "studio.sales-agent");
+        Ok(serde_json::json!({
+            "pluginId":caller.plugin_id,"generation":caller.generation,
+            "installation":caller.installation,"jobId":request.scope.job_id
+        }))
+    });
+    let process = reverse_host_process(temp.path(), handler);
+    let scope = reverse_scope();
+    let reply = process.call(
+        Capability::ProxyProvider,
+        "test.reverse",
+        serde_json::json!({"scope":scope}),
+        Duration::from_secs(5),
+    );
+    let expected = process.caller().clone();
+    process.stop();
+    let reply = reply.unwrap();
+    assert_eq!(reply["type"], "host.response");
+    assert_eq!(reply["hostVersion"], 1);
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["result"]["pluginId"], "test.fixture-plugin");
+    assert_eq!(reply["result"]["generation"], expected.generation);
+    assert_eq!(reply["result"]["installation"], "fixture-installation");
+    assert_eq!(reply["result"]["jobId"], scope["jobId"]);
+}
+
+#[test]
+fn plugin_rpc_deadlines_bound_both_the_wire_envelope_and_host_wait() {
+    use std::sync::Arc;
+    let _slot = NodeSlot::acquire();
+    let temp = tempfile::tempdir().unwrap();
+    let process = reverse_host_process(
+        temp.path(),
+        Arc::new(|_, _| panic!("No reverse host call is expected")),
+    );
+    for (requested, expected_ms) in [
+        (Duration::ZERO, 1),
+        (Duration::from_nanos(999_999), 1),
+        (Duration::from_millis(120_001), 120_000),
+        (Duration::MAX, 120_000),
+    ] {
+        // Duration::MAX must not overflow the host wait when grace is added.
+        let result = process.call(
+            Capability::ProxyProvider,
+            "test.deadline",
+            serde_json::json!({}),
+            requested,
+        );
+        assert_eq!(result.unwrap()["deadlineMs"], expected_ms);
+    }
+    process.stop();
+}
+
+#[test]
+fn reverse_host_concurrency_is_bounded_and_stdout_still_drains() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    let _slot = NodeSlot::acquire();
+    let temp = tempfile::tempdir().unwrap();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_gate = Arc::clone(&gate);
+    let handler_calls = Arc::clone(&calls);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let handler: Arc<super::process::HostRequestHandler> = Arc::new(move |_, _| {
+        handler_calls.fetch_add(1, Ordering::AcqRel);
+        let _ = started_tx.send(());
+        let (lock, wake) = &*handler_gate;
+        let released = lock.lock().unwrap();
+        let _released = wake
+            .wait_timeout_while(released, Duration::from_secs(10), |released| !*released)
+            .unwrap();
+        Ok(serde_json::json!({"settled":true}))
+    });
+    let process = reverse_host_process(temp.path(), handler);
+    let limited = process.call(
+        Capability::ProxyProvider,
+        "test.flood",
+        serde_json::json!({"scope":reverse_scope(),"count":super::process::MAX_HOST_REQUESTS+1}),
+        Duration::from_secs(5),
+    );
+    let echo = process.call(
+        Capability::ProxyProvider,
+        "test.echo",
+        serde_json::json!({"stdoutDrained":true}),
+        Duration::from_secs(5),
+    );
+    let started: Vec<_> = (0..super::process::MAX_HOST_REQUESTS)
+        .map(|_| started_rx.recv_timeout(Duration::from_secs(2)))
+        .collect();
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    process.stop();
+    assert_eq!(limited.unwrap()["error"]["code"], "RATE_LIMITED");
+    assert_eq!(echo.unwrap()["stdoutDrained"], true);
+    assert!(started.iter().all(Result::is_ok));
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        super::process::MAX_HOST_REQUESTS
+    );
+}
+
+#[test]
+fn sales_agent_reverse_gateway_requires_exact_identity_grant_and_browser_permission() {
+    use super::permissions::check_agent_gateway;
+    let manifest = PluginManifest::parse(
+        MANIFEST
+            .replace("test.fixture-plugin", "studio.sales-agent")
+            .replace("proxy.provider", "sales.agent")
+            .replace(
+                "\"wantsBrowserAccess\": false",
+                "\"wantsBrowserAccess\": true",
+            )
+            .as_bytes(),
+    )
+    .unwrap();
+    let mut plugin = super::registry::InstalledPlugin {
+        id: manifest.id.clone(),
+        version: manifest.version.clone(),
+        manifest,
+        directory: PathBuf::from("fixture"),
+        entry: "index.cjs".into(),
+        manifest_digest: "fixture-digest".into(),
+        enabled: true,
+        granted_capabilities: vec![Capability::SalesAgent],
+        granted_domains: vec![],
+        installed_at: "fixture-installation".into(),
+    };
+    assert!(check_agent_gateway(&plugin).is_ok());
+    plugin.granted_capabilities.clear();
+    assert_eq!(
+        check_agent_gateway(&plugin),
+        Err(PermissionError::CapabilityNotGranted)
+    );
+    plugin.granted_capabilities.push(Capability::SalesAgent);
+    plugin.manifest.permissions.wants_browser_access = false;
+    assert_eq!(
+        check_agent_gateway(&plugin),
+        Err(PermissionError::BrowserAccessUndeclared)
+    );
+    plugin.manifest.permissions.wants_browser_access = true;
+    plugin.enabled = false;
+    assert_eq!(
+        check_agent_gateway(&plugin),
+        Err(PermissionError::NotEnabled)
+    );
+    plugin.enabled = true;
+    plugin.id = "test.impersonator".into();
+    assert_eq!(
+        check_agent_gateway(&plugin),
+        Err(PermissionError::CapabilityUndeclared)
+    );
+}
+
 #[test]
 fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
     let _slot = NodeSlot::acquire();

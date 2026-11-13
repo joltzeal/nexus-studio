@@ -53,6 +53,7 @@ import {
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
+import { navigateDetail, useDetailNavigation } from '@/lib/detail-navigation'
 import {
   listPlugins,
   pluginHostAvailable,
@@ -66,6 +67,10 @@ import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-b
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { AccountEditor } from './account-editor'
+import {
+  AccountObservationBalance,
+  AccountObservationSummary,
+} from './account-observation'
 import { AccountAddressPopover } from './address-popover'
 import { OrderWatchPanel } from './order-watch-panel'
 import {
@@ -140,6 +145,34 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [batchAccounts, setBatchAccounts] = useState<BatchAccount[] | null>(null)
   const [editing, setEditing] = useState<{ account: Account | null } | null>(null)
+  const [detailRequest, setDetailRequest] = useState<{ id: string } | null>(null)
+  useDetailNavigation(
+    'account',
+    useCallback((request) => {
+      setDetailRequest({ id: request.id })
+    }, []),
+  )
+  useEffect(() => {
+    if (!detailRequest) return
+    let active = true
+    void listAccounts().then(
+      (result) => {
+        if (!active) return
+        const account = result.items.find((item) => item.id === detailRequest.id)
+        if (account) setEditing((current) => current ?? { account })
+        else toast.error('该账号已不存在，请检查账号池。')
+        setDetailRequest(null)
+      },
+      () => {
+        if (!active) return
+        toast.error('无法读取目标账号，请刷新账号池。')
+        setDetailRequest(null)
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [detailRequest])
   const [importing, setImporting] = useState(false)
   const [removing, setRemoving] = useState<Account | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -538,6 +571,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   <TableHead>地址</TableHead>
                   {hasOtpLinks ? <TableHead>验证码</TableHead> : null}
                   <TableHead>状态</TableHead>
+                  <TableHead>余额</TableHead>
                   <TableHead>关联窗口</TableHead>
                   <TableHead>创建时间</TableHead>
                   <TableHead className="text-right">操作</TableHead>
@@ -575,6 +609,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           done="账号已复制"
                         />
                       </span>
+                      <AccountObservationSummary observation={account.observation} />
                       <small className="block text-muted-foreground">
                         {account.note || account.homepageUrl || '—'}
                       </small>
@@ -722,12 +757,33 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                         {STATUS_LABELS[account.status]}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      <AccountObservationBalance
+                        accountName={account.account}
+                        observation={account.observation}
+                      />
+                    </TableCell>
                     <TableCell>{windowCountText(bindings, account.id)}</TableCell>
                     <TableCell className="whitespace-nowrap tabular-nums">
                       {formatAccountCreatedAt(account.createdAt)}
                     </TableCell>
                     <TableCell>
                       <div className="table-actions">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`查看 ${account.account} 的执行记录`}
+                          title="执行记录"
+                          onClick={() =>
+                            navigateDetail({
+                              kind: 'agent',
+                              id: account.id,
+                              related: 'account',
+                            })
+                          }
+                        >
+                          <ClipboardList />
+                        </Button>
                         <CopyButton
                           value={account.password}
                           label={`复制 ${account.account} 的密码`}

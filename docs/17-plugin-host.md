@@ -161,6 +161,24 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 原生操作解析的 `connectionUrl` 可能包含认证信息，只交给对应 provider 使用，不写入日志；
 `ResolvedBrowserProxy` 的 `Debug` 实现隐藏完整连接地址。
 
+### 6.1 ecom agent 反向宿主调用
+
+`core::agent` 注册当前进程代次下的反向处理器。读取线程识别
+`{ type: "host.request", hostVersion: 1, requestId, scope, method, payload, deadlineMs }`，
+交给有界处理池；不在等待插件响应的互斥锁中执行工具。
+结果通过独立的 `host.response` 返回，普通 RPC 响应的关联规则保持独立。
+未知 scope、过期 fence、插件更新后的旧进程和未登记的方法均拒绝。
+
+Agent 任务由原生命令创建和查询，模型设置由插件私有存储保存；
+批次冻结设置进入 Rust 管理的 SQLite，不把模型密钥放入页面任务 DTO 或事件。
+浏览器动作、工件读取、LangGraph 检查点、动作日志、控制修订、
+模型许可与用量收据及少量跨插件方法经过同一作业网关。
+`submit` 先消耗持久提交资格，超时保留未知状态；租约到期不能自行释放未收敛 actor。
+`salesAgent.notifications.send` 仅由原生通知 outbox 调用，普通 WebView 不能直接发送。
+模型申请固定到创建时的端点和 scope，完成收据幂等保存；
+单商品控制不能清除已有提交意图或修改原始素材快照。
+完整方法、恢复流程和验证范围见[ecom agent](44-sales-agent-architecture.md)。
+
 ## 7. 密码归属
 
 宿主没有系统钥匙串，也没有宿主侧凭据库。

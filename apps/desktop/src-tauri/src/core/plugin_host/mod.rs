@@ -15,7 +15,9 @@ use self::install::InstallError;
 use self::manifest::{Capability, ManifestError, PluginManifest, PluginPermissions, StorageScope};
 use self::market::{Catalog, MarketError, MarketStore, StoreSettings};
 use self::permissions::PermissionError;
-use self::process::{PluginProcess, ProcessError, ReadyInfo};
+use self::process::{
+    HostHandlerSlot, HostRequestHandler, PluginCaller, PluginProcess, ProcessError, ReadyInfo,
+};
 use self::registry::{InstalledPlugin, RegistryDocument, RegistryError, RegistryStore};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyReference {
@@ -200,6 +202,9 @@ pub struct PluginHost {
     store: RegistryStore,
     registry: Mutex<RegistryDocument>,
     processes: Mutex<HashMap<String, Arc<PluginProcess>>>,
+    process_start: Mutex<()>,
+    host_handler: HostHandlerSlot,
+    closing: AtomicBool,
     attempts: Mutex<HashMap<String, Attempt>>,
     supervisor: Mutex<Option<Supervisor>>,
     dev_roots: Vec<(PathBuf, CandidateSource)>,
@@ -263,6 +268,9 @@ impl PluginHost {
             store,
             registry: Mutex::new(document),
             processes: Mutex::new(HashMap::new()),
+            process_start: Mutex::new(()),
+            host_handler: Arc::new(Mutex::new(None)),
+            closing: AtomicBool::new(false),
             attempts: Mutex::new(HashMap::new()),
             supervisor: Mutex::new(None),
             dev_roots,
@@ -294,6 +302,67 @@ impl PluginHost {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn register_host_handler(&self, handler: Arc<HostRequestHandler>) -> Result<(), HostError> {
+        *self.host_handler.lock().map_err(|_| HostError::Registry)? = Some(handler);
+        Ok(())
+    }
+
+    pub fn validate_agent_caller(&self, caller: &PluginCaller) -> Result<(), HostError> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ProcessError::Cancelled.into());
+        }
+        let plugin = self.find(&caller.plugin_id)?;
+        permissions::check_agent_gateway(&plugin)?;
+        let current = self
+            .processes
+            .lock()
+            .map_err(|_| HostError::Registry)?
+            .get(&caller.plugin_id)
+            .cloned()
+            .ok_or(PermissionError::StaleGeneration)?;
+        if current.caller() != caller
+            || caller.installation != installation_generation(&plugin)
+            || current.failure().is_some()
+            || !current.is_alive()
+        {
+            return Err(PermissionError::StaleGeneration.into());
+        }
+        Ok(())
+    }
+
+    pub fn agent_caller(&self) -> Result<PluginCaller, HostError> {
+        let plugin = self.find("studio.sales-agent")?;
+        permissions::check_agent_gateway(&plugin)?;
+        let process = self.ensure_started(&plugin.id)?;
+        Ok(process.caller().clone())
+    }
+
+    pub fn call_agent_generation(
+        &self,
+        caller: &PluginCaller,
+        method: &str,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<Value, HostError> {
+        self.validate_agent_caller(caller)?;
+        let plugin = self.find(&caller.plugin_id)?;
+        let process = self
+            .processes
+            .lock()
+            .map_err(|_| HostError::Registry)?
+            .get(&caller.plugin_id)
+            .cloned()
+            .ok_or(PermissionError::StaleGeneration)?;
+        if process.caller() != caller {
+            return Err(PermissionError::StaleGeneration.into());
+        }
+        let ready = process.ready().ok_or(ProcessError::NotReady)?;
+        permissions::check_call(&plugin, &ready, Capability::SalesAgent, method)?;
+        process
+            .call(Capability::SalesAgent, method, payload, deadline)
+            .map_err(HostError::Process)
     }
 
     fn snapshot(&self) -> Result<RegistryDocument, HostError> {
@@ -449,6 +518,7 @@ impl PluginHost {
     }
 
     pub fn install(&self, source: &Path) -> Result<PluginView, HostError> {
+        let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
         let candidate = discovery::inspect(source, CandidateSource::Development)
             .ok()
             .flatten()
@@ -503,6 +573,7 @@ impl PluginHost {
         {
             let _ = install::uninstall(&self.root, &previous.id, &previous.version);
         }
+        drop(installation);
         // Start right away so the page that installs a plugin can use it. A
         // start failure is not fatal: the supervisor retries with backoff.
         let _ = self.ensure_started(&record.id);
@@ -510,6 +581,7 @@ impl PluginHost {
     }
 
     pub fn uninstall(&self, id: &str) -> Result<(), HostError> {
+        let _installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
         let plugin = self.find(id)?;
         self.stop(id);
         self.forget_attempt(id);
@@ -527,6 +599,7 @@ impl PluginHost {
     /// Installing a higher version replaces the record in place and starts the
     /// new process; the previous version directory is removed afterwards.
     pub fn install_from_package(&self, bytes: &[u8]) -> Result<PluginView, HostError> {
+        let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
         let contents = package::parse(bytes)
             .map_err(|error| HostError::Install(InstallError::Package(error)))?;
         let manifest = contents.manifest.clone();
@@ -578,6 +651,7 @@ impl PluginHost {
         {
             let _ = install::uninstall(&self.root, &previous.id, &previous.version);
         }
+        drop(installation);
         let _ = self.ensure_started(&record.id);
         self.view_of(&record.id)
     }
@@ -873,6 +947,10 @@ impl PluginHost {
     }
 
     fn ensure_started(&self, id: &str) -> Result<Arc<PluginProcess>, HostError> {
+        let _start = self.process_start.lock().map_err(|_| HostError::Registry)?;
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ProcessError::Cancelled.into());
+        }
         if let Some(existing) = self
             .processes
             .lock()
@@ -907,7 +985,7 @@ impl PluginHost {
             .map(|(store, _)| store.get())
             .transpose()
             .map_err(|error| HostError::Process(ProcessError::Failed(error)))?;
-        let (process, ready) = PluginProcess::spawn_with_network(
+        let (process, ready) = PluginProcess::spawn_with_gateway(
             &plugin.entry_path(),
             storage.as_deref(),
             plugin.manifest.clone(),
@@ -918,8 +996,16 @@ impl PluginHost {
             proxy
                 .as_ref()
                 .zip(self.network.as_ref().map(|(_, path)| path.as_path())),
+            installation_generation(&plugin),
+            Arc::clone(&self.host_handler),
         )?;
         let _ = ready;
+        if self.closing.load(Ordering::Acquire)
+            || installation_generation(&self.find(id)?) != installation_generation(&plugin)
+        {
+            process.stop();
+            return Err(PermissionError::StaleGeneration.into());
+        }
         if let Ok(mut processes) = self.processes.lock() {
             processes.insert(plugin.id.clone(), Arc::clone(&process));
         }
@@ -932,8 +1018,11 @@ impl PluginHost {
         capability: Capability,
         methods: &[&str],
     ) -> Result<(), HostError> {
-        let plugin = self.find(id)?;
         let process = self.ensure_started(id)?;
+        let plugin = self.find(id)?;
+        if process.caller().installation != installation_generation(&plugin) {
+            return Err(PermissionError::StaleGeneration.into());
+        }
         let ready = process
             .ready()
             .ok_or(HostError::Process(ProcessError::NotReady))?;
@@ -951,8 +1040,11 @@ impl PluginHost {
         payload: Value,
         deadline: Duration,
     ) -> Result<Value, HostError> {
-        let plugin = self.find(id)?;
         let process = self.ensure_started(id)?;
+        let plugin = self.find(id)?;
+        if process.caller().installation != installation_generation(&plugin) {
+            return Err(PermissionError::StaleGeneration.into());
+        }
         let ready = process
             .ready()
             .ok_or(HostError::Process(ProcessError::NotReady))?;
@@ -1075,6 +1167,9 @@ impl PluginHost {
     }
 
     pub fn shutdown(&self) {
+        if self.closing.swap(true, Ordering::AcqRel) {
+            return;
+        }
         if let Ok(mut slot) = self.market_watch.lock()
             && let Some(watcher) = slot.take()
         {
@@ -1212,5 +1307,12 @@ fn timestamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!("{}", now.as_secs())
+    format!("{}.{:09}", now.as_secs(), now.subsec_nanos())
+}
+
+fn installation_generation(plugin: &InstalledPlugin) -> String {
+    format!(
+        "{}:{}:{}",
+        plugin.version, plugin.installed_at, plugin.manifest_digest
+    )
 }

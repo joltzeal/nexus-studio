@@ -1,3 +1,4 @@
+import type { AccountObservationState } from '@nexus/plugin-vinted-accounts/agent-contracts'
 import type { Profile } from '@/features/addresses/types'
 
 export const ACCOUNTS_PLUGIN_ID = 'studio.vinted-accounts'
@@ -88,6 +89,7 @@ export interface Account {
   homepageUrl: string
   address?: AssignedAccountAddress | null
   mailbox?: AssignedAccountMailbox | null
+  observation?: AccountObservationState
   createdAt: string
   updatedAt: string
 }

@@ -2,6 +2,12 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 
+import { AccountObservationStateSchema } from '../agent-contracts.js'
+import {
+  AccountObservationOperationSchema,
+  MAX_OBSERVATION_OPERATIONS,
+  type AccountObservationOperation,
+} from '../domain/observations.js'
 import { AssignedAccountAddressSchema } from '../domain/address.js'
 import { AssignedAccountMailboxSchema } from '../domain/mailbox.js'
 import { unavailable } from '../domain/errors.js'
@@ -22,6 +28,7 @@ export interface StoreDocument {
   accounts: AccountRecord[]
   bindings: BindingRecord[]
   transferReceipts: AccountTransferReceipt[]
+  observationOperations: AccountObservationOperation[]
   orderWatch: OrderWatchState
 }
 
@@ -51,6 +58,7 @@ const accountSchema = z.looseObject({
   homepageUrl: z.string(),
   address: AssignedAccountAddressSchema.nullable().optional(),
   mailbox: AssignedAccountMailboxSchema.nullable().optional(),
+  observation: AccountObservationStateSchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -66,6 +74,10 @@ const documentSchema = z.looseObject({
   accounts: z.array(accountSchema),
   bindings: z.array(bindingSchema),
   transferReceipts: z.array(AccountTransferReceiptSchema).default([]),
+  observationOperations: z
+    .array(AccountObservationOperationSchema)
+    .max(MAX_OBSERVATION_OPERATIONS)
+    .default([]),
   orderWatch: OrderWatchStateSchema.default(emptyOrderWatchState),
 })
 
@@ -75,6 +87,7 @@ export function emptyDocument(): StoreDocument {
     accounts: [],
     bindings: [],
     transferReceipts: [],
+    observationOperations: [],
     orderWatch: emptyOrderWatchState(),
   }
 }

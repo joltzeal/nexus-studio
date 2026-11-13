@@ -1,5 +1,6 @@
 import type { AssignedAccountAddress } from './address.js'
 import type { AssignedAccountMailbox } from './mailbox.js'
+import type { AccountObservationState } from '../agent-contracts.js'
 
 export type { AccountAddressProfile, AssignedAccountAddress } from './address.js'
 export type { AccountMailboxInput, AssignedAccountMailbox } from './mailbox.js'
@@ -41,6 +42,8 @@ export interface AccountRecord {
   homepageUrl: string
   address?: AssignedAccountAddress | null
   mailbox?: AssignedAccountMailbox | null
+  /** Agent-owned partial state, kept separate from operator notes and credentials. */
+  observation?: AccountObservationState
   createdAt: string
   updatedAt: string
 }

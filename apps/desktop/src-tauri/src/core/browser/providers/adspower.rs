@@ -6,6 +6,7 @@ use crate::core::browser::local_api::{
     validate_binding, validate_create, validate_settings, validate_update, verify_identity,
     verify_observed_identities,
 };
+use crate::core::browser::provider::automation::{AutomationSession, CdpEndpoint};
 use crate::core::browser::provider::{
     BrowserCapabilities, BrowserError, BrowserProvider, BrowserProviderId, BrowserResult,
     CreatedProfile, ObservedProfiles, ProviderGroup, ProviderProbe, ProxyMode, RemoteProfile,
@@ -54,6 +55,36 @@ impl AdsPowerProvider {
 impl BrowserProvider for AdsPowerProvider {
     fn id(&self) -> BrowserProviderId {
         BrowserProviderId::AdsPower
+    }
+
+    fn automation_session(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+    ) -> BrowserResult<AutomationSession> {
+        validate_binding(connection, record, self.id())?;
+        require_scope(connection)?;
+        let api = LocalApi::connect(connection, self.id())?;
+        let _profile = api.lock_profile(&record.binding.profile_id)?;
+        let (remote, _) = read_profile(&api, &record.binding.profile_id)?;
+        verify_identity(record, &remote)?;
+        // Official V2 status returns ws.puppeteer for an already active profile.
+        let data = api.get(
+            "/api/v2/browser-profile/active",
+            &[("profile_id", &record.binding.profile_id)],
+            RequestKind::Read,
+        )?;
+        if data["status"].as_str() != Some("Active") {
+            return Err(BrowserError::new(
+                "unavailable",
+                "AdsPower profile is not active",
+            ));
+        }
+        Ok(AutomationSession::Cdp(CdpEndpoint::websocket(
+            data["ws"]["puppeteer"]
+                .as_str()
+                .ok_or_else(invalid_response)?,
+        )?))
     }
 
     fn capabilities(&self) -> BrowserCapabilities {
@@ -559,6 +590,65 @@ mod tests {
             "password": "private",
             "user_proxy_config": {"proxy_soft": "other", "proxy_password": "private"}
         })
+    }
+
+    #[test]
+    fn automation_discovers_an_active_browser_without_restarting_or_reconfiguring_it() {
+        let raw = remote("remote-1", "memo");
+        let server = MockServer::new(vec![
+            page(json!([raw.clone()]), 1),
+            page(json!([]), 2),
+            MockResponse::json(json!({"code":0,"data":{
+                "status":"Active",
+                "ws":{"puppeteer":"ws://127.0.0.1:9000/devtools/browser/fixture"}
+            }})),
+        ]);
+        let connection = server.connection(BrowserProviderId::AdsPower);
+        let mut window = record(&connection, "remote-1");
+        window.proxy_mode = ProxyMode::Provider;
+        window.provider_config = remote_profile(raw).unwrap().provider_config;
+        let saved = serde_json::to_value(&window).unwrap();
+        assert!(matches!(
+            AdsPowerProvider::new().automation_session(&connection, &window),
+            Ok(AutomationSession::Cdp(_))
+        ));
+        assert_eq!(serde_json::to_value(&window).unwrap(), saved);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[2].method, "GET");
+        assert_eq!(
+            requests[2].target,
+            "/api/v2/browser-profile/active?profile_id=remote-1"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.target == LIST || request.target.contains("/active?"))
+        );
+    }
+
+    #[test]
+    fn automation_never_accepts_remote_debug_hosts_or_starts_an_inactive_profile() {
+        for data in [
+            json!({"status":"Inactive"}),
+            json!({"status":"Active","ws":{"puppeteer":"ws://remote.invalid:9000/devtools/browser/a"}}),
+        ] {
+            let raw = remote("remote-1", "");
+            let server = MockServer::new(vec![
+                page(json!([raw.clone()]), 1),
+                page(json!([]), 2),
+                MockResponse::json(json!({"code":0,"data":data})),
+            ]);
+            let connection = server.connection(BrowserProviderId::AdsPower);
+            let mut window = record(&connection, "remote-1");
+            window.provider_config = remote_profile(raw).unwrap().provider_config;
+            assert!(
+                AdsPowerProvider::new()
+                    .automation_session(&connection, &window)
+                    .is_err()
+            );
+            assert_eq!(server.requests().len(), 3);
+        }
     }
 
     #[test]

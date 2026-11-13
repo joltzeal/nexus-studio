@@ -20,6 +20,7 @@ import { withinProfileDeadline } from './profile-deadline.js'
 import { initializeStoredOrigins } from './stored-origins.js'
 import { prepareBrowserProxy } from './browser-proxy.js'
 import { parseRuntimeWindow, type RuntimeWindow } from './runtime-window.js'
+import { AutomationActor, automationCommandLoop } from './automation.js'
 
 export { verifySdkDependencies } from './sdk-dependencies.js'
 export { parseRuntimeWindow, type RuntimeWindow } from './runtime-window.js'
@@ -278,9 +279,10 @@ export async function openProfile(
     await restorePortableState(context, userDataDir)
     await context.setOffline(false)
     process.stdout.write('NEXUS_READY\n')
+    let startup: Promise<unknown> | undefined
     if (record.settings.startUrl) {
       // Navigation is independent of browser readiness and of the stop command loop.
-      void (async () => {
+      startup = (async () => {
         const page = context.pages()[0] ?? (await context.newPage())
         await page.goto(record.settings.startUrl, {
           timeout: 30_000,
@@ -290,14 +292,8 @@ export async function openProfile(
         process.stderr.write('PROFILE_START_URL_FAILED\n')
       })
     }
-    await Promise.race([
-      closed,
-      (async () => {
-        for await (const command of commands) {
-          if (command === 'stop') break
-        }
-      })(),
-    ])
+    const actor = new AutomationActor(context, startup)
+    await Promise.race([closed, automationCommandLoop(actor, commands)])
   } finally {
     context.off('close', onClose)
     await context.close()

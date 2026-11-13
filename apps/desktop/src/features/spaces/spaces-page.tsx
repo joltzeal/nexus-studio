@@ -10,9 +10,11 @@ import { BrowserOperationRecovery } from './browser-operation-recovery'
 import type { CreateBrowserWindowInput } from '@nexus/contracts/browser'
 import { AttachWindowDialog } from './attach-window-dialog'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { navigateDetail, useDetailNavigation } from '@/lib/detail-navigation'
 import {
   ArrowUpRight,
   Check,
+  ClipboardList,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -219,6 +221,41 @@ export function SpacesPage() {
   const [editing, setEditing] = useState<string | 'new' | null>(null)
   const [batchCreating, setBatchCreating] = useState(false)
   const [viewing, setViewing] = useState<string | null>(null)
+  const [detailWindowId, setDetailWindowId] = useState<string | null>(null)
+  useDetailNavigation(
+    'window',
+    useCallback((request) => {
+      setDetailWindowId(request.id)
+    }, []),
+  )
+  useEffect(() => {
+    if (!detailWindowId || windows.length === 0 || connections.length === 0) return
+    let active = true
+    // Initial connection refresh can reset open dialogs; resolve the link after it settles.
+    queueMicrotask(() => {
+      if (!active) return
+      const target = windows.find((item) => item.id === detailWindowId)
+      if (!target) {
+        toast.error('该窗口已不存在，请刷新窗口列表。')
+        setDetailWindowId(null)
+        return
+      }
+      if (providerId !== target.providerId) {
+        setProviderId(target.providerId)
+        return
+      }
+      if (connection?.id !== target.connectionId) {
+        toast.error('该窗口所属的浏览器接入尚未启用，请先检查应用设置。')
+        setDetailWindowId(null)
+        return
+      }
+      setViewing(target.id)
+      setDetailWindowId(null)
+    })
+    return () => {
+      active = false
+    }
+  }, [windows, connections, providerId, connection?.id, detailWindowId])
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleteEnvironment, setDeleteEnvironment] = useState(true)
   const deletingRequest = useRef(false)
@@ -1335,6 +1372,21 @@ export function SpacesPage() {
                         onClick={() => setViewing(window.id)}
                       >
                         <ArrowUpRight />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`查看 ${window.name} 的执行记录`}
+                        title="执行记录"
+                        onClick={() =>
+                          navigateDetail({
+                            kind: 'agent',
+                            id: window.id,
+                            related: 'window',
+                          })
+                        }
+                      >
+                        <ClipboardList />
                       </Button>
                       <Button
                         variant="ghost"

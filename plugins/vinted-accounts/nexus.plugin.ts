@@ -6,9 +6,9 @@ import { VINTED_DOMAINS } from './src/services/order-source.js'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.vinted-accounts',
-  version: '1.3.0',
+  version: '1.4.0',
   name: 'Vinted 账号池',
-  minCoreVersion: '0.1.28',
+  minCoreVersion: '0.1.29',
   capabilities: ['account.pool'],
   permissions: {
     // Custom Bark services and saved OTP links are user supplied. As with other

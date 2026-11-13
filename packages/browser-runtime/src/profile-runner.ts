@@ -77,6 +77,40 @@ async function main(): Promise<void> {
     const key = process.env.CLOAKBROWSER_LICENSE_KEY
     if (!key) throw new Error('License key is required')
     process.stdout.write(`${JSON.stringify(await validateBrowserLicense(key))}\n`)
+  } else if (action === 'automation-cdp') {
+    const input = createInterface({ input: process.stdin })
+    try {
+      const commands = input[Symbol.asyncIterator]()
+      const first = await commands.next()
+      if (first.done || Buffer.byteLength(first.value) > 4096) {
+        throw new Error('AUTOMATION_CDP_INVALID')
+      }
+      let endpoint: unknown
+      try {
+        const config = JSON.parse(first.value) as Record<string, unknown>
+        if (Object.keys(config).join(',') !== 'endpoint') throw new Error()
+        endpoint = config.endpoint
+      } catch {
+        throw new Error('AUTOMATION_CDP_INVALID')
+      }
+      const { AutomationActor, automationCommandLoop, validateCdpEndpoint } =
+        await import('./automation.js')
+      const vetted = validateCdpEndpoint(endpoint)
+      const { chromium } = await import('playwright-core')
+      const browser = await chromium.connectOverCDP(vetted, { timeout: 30_000 })
+      const contexts = browser.contexts()
+      if (contexts.length !== 1) throw new Error('AUTOMATION_CONTEXT_AMBIGUOUS')
+      const actor = new AutomationActor(contexts[0]!)
+      process.stdout.write('NEXUS_READY\n')
+      await Promise.race([
+        new Promise<void>((resolve) => browser.once('disconnected', () => resolve())),
+        automationCommandLoop(actor, commands),
+      ])
+    } finally {
+      input.close()
+      // Closing the process drops its CDP socket without sending Browser.close.
+      // Provider-managed browser processes and user pages remain alive.
+    }
   } else if ((action === 'launch' || action === 'snapshot') && userDataDir) {
     const input = createInterface({ input: process.stdin })
     try {
@@ -105,11 +139,18 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error: unknown) => {
-  if (['prepare', 'download', 'latest'].includes(process.argv[2] ?? '')) {
-    process.stderr.write(`NEXUS_KERNEL_ERROR ${JSON.stringify(kernelFailure(error))}\n`)
-  } else {
-    console.error(error instanceof Error ? error.message : 'Profile runtime failed')
-  }
-  process.exitCode = 1
-})
+void main()
+  .then(() => {
+    if (process.argv[2] === 'automation-cdp') process.exit(0)
+  })
+  .catch((error: unknown) => {
+    if (['prepare', 'download', 'latest'].includes(process.argv[2] ?? '')) {
+      process.stderr.write(`NEXUS_KERNEL_ERROR ${JSON.stringify(kernelFailure(error))}\n`)
+    } else if (process.argv[2] === 'automation-cdp') {
+      console.error('AUTOMATION_CDP_FAILED')
+      process.exit(1)
+    } else {
+      console.error(error instanceof Error ? error.message : 'Profile runtime failed')
+    }
+    process.exitCode = 1
+  })

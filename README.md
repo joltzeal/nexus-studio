@@ -2,7 +2,7 @@
 
 面向 macOS / Windows 的电商多窗口管理应用，使用 Tauri 2、Rust、React 与 shadcn/ui。
 窗口页保持紧凑表格，通过“内置浏览器 / AdsPower / 比特浏览器”Tabs 切换接入。
-账号、代理、号码、采集与 AI 生图通过插件扩展。
+账号、代理、号码、采集、AI 生图、商品库与ecom agent 通过插件扩展。
 
 ## 窗口与浏览器
 
@@ -23,9 +23,17 @@
 ## 插件
 
 插件中心根据已安装、已启用的插件动态生成二级导航。
-现有专用页面包括代理池、地址生成器、共享货源、AI 生图、Vinted 账号、Vinted 监控与 SIM8 接码。
+现有专用页面包括代理池、地址生成器、共享货源、AI 生图、Vinted 账号、Vinted 监控、
+SIM8 接码、邮箱、商品管理与ecom agent。
 发布应用从插件商店安装 `.nexuspkg`；受信任的 Node 子进程不是安全沙箱。
 业务关联始终使用 Nexus 窗口 UUID，切换浏览器 Tab 不改变账号与号码关系。
+
+ecom agent 从商品库选择资料，明确分配到账号窗口，以 Playwright 操作现有环境。
+Rust 持久化批次、独占资源、LangGraph 检查点和外部动作回执；
+账号确认封禁即停止，发布或发信结果不明时只核对，不自动重发。
+商品发布事实通过幂等 outbox 同步；架构、插件方法和验证范围见
+[ecom agent 执行规范](docs/44-sales-agent-architecture.md)，
+草稿、审查、接管、通知与清理见[操作说明](docs/46-sales-agent-operations.md)。
 
 ## 开发
 

@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["nexus.plugin.ts", "src/**/*.ts"],
+  "exclude": []
+}

@@ -31,6 +31,7 @@ import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from '@/components/ui/toast'
 import { copyText } from '@/lib/clipboard'
+import { ImportGenerationButton } from '@/features/products/import-generation-button'
 import {
   exportRecord,
   getRecord,
@@ -619,6 +620,11 @@ function RecordDetailContent({
         ) : null}
 
         <DialogFooter>
+          <ImportGenerationButton
+            recordId={recordId}
+            disabled={record === null || busy || running || record.outputs.length === 0}
+            onBusyChange={setBusy}
+          />
           <Button
             type="button"
             variant="ghost"

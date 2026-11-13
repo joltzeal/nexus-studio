@@ -19,6 +19,8 @@ export const PluginCapabilitySchema = z.enum([
   'account.pool',
   'window.sync',
   'email.provider',
+  'product.catalog',
+  'sales.agent',
 ])
 
 export const NetworkDomainSchema = z.string().max(253).regex(domainPattern)

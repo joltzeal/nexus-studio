@@ -26,9 +26,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' --filter '@nexus/plugin-email...' build
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' --filter '@nexus/plugin-email...' --filter '@nexus/plugin-products...' --filter '@nexus/plugin-sales-agent...' build
       - name: Verify AI requests and application transport
-        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src plugins/email/src apps/desktop/src/features/email packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
+        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src plugins/email/src apps/desktop/src/features/email plugins/products/src apps/desktop/src/features/products plugins/sales-agent/src apps/desktop/src/features/sales-agent packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
       - name: Pack companion plugins
         id: plugin-market
         shell: bash
@@ -37,11 +37,13 @@ jobs:
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
           node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "配套主程序 0.1.26：生图按批次排队，最多两个批次同时执行，支持按商品、批次和方案检索完整记录，重启后保留结果并允许手动重试。"
           node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移采集代理、密码及默认代理，采集运行期间阻止导入。"
-          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套主程序 0.1.28：支持关联邮箱并从账号查看邮件，邮箱关系独立持久化并支持更换和解绑，保留地址、窗口关联、订单查询与 Bark 设置。"
+          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套主程序 0.1.29：支持 Agent 幂等回写账号标签、摘要、评分、余额及强状态，保留地址、邮箱、窗口关联、订单查询与 Bark 设置。"
           node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.21：支持离线迁移 API 地址和 Token，导入后清理旧账户缓存。"
           node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移默认代理及密码、风险检查设置及 API Key。"
           node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套主程序 0.1.26：支持保存、搜索、分页和移除地址，选定地址可关联账号，地图选点自动保存，美国城市扩充至 21 个。"
           node scripts/pack-plugin.mjs plugins/email --out "$market_dir" --changelog "配套主程序 0.1.28：优化邮件列表与格式化阅读，支持已读未读筛选和批量同步、独立定时收信及账号池双向关联，保留 token 定时刷新与轮换持久化。"
+          node scripts/pack-plugin.mjs plugins/products --out "$market_dir" --changelog "独立商品库：手动创建、CSV/JSON 导入、生图整组导入与图片副本，支持分页、修订检查和来源去重；分类可留空。"
+          node scripts/pack-plugin.mjs plugins/sales-agent --out "$market_dir" --changelog "ecom agent：商品与窗口明确分配、账号检查、上架及指定会话消息，支持模型设置、任务检查点、暂停取消、结果核对与发布记录同步。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
         shell: bash
@@ -119,6 +121,8 @@ jobs:
               'vinted.accounts.bind',
               'vinted.accounts.unbind',
               'vinted.accounts.bindings',
+              'vinted.accounts.agent.snapshot',
+              'vinted.accounts.observations.record',
               'vinted.accounts.address.targets',
               'vinted.accounts.address.set',
               'vinted.accounts.mailbox.targets',
@@ -205,6 +209,31 @@ jobs:
               'address.saved.save',
               'address.saved.remove',
             ],
+            products: [
+              'products.list',
+              'products.get',
+              'products.save',
+              'products.remove',
+              'products.import',
+              'products.sources.find',
+              'products.importAi',
+              'products.upload.begin',
+              'products.upload.chunk',
+              'products.upload.finish',
+              'products.upload.abort',
+              'products.images.read',
+              'products.images.discard',
+              'products.publications.list',
+              'products.publications.record',
+            ],
+            'sales-agent': [
+              ...configurationMethods,
+              'salesAgent.settings.get',
+              'salesAgent.settings.save',
+              'salesAgent.models.test',
+              'salesAgent.notifications.send',
+              'salesAgent.jobs.step',
+            ],
             email: [
               ...configurationMethods,
               'email.accounts.list',
@@ -262,6 +291,12 @@ jobs:
             assert.equal(advertised.length, Number(methodLine[1]), `${name}: invalid method count`)
             for (const method of methods) {
               assert.ok(advertised.includes(method), `${name}: missing RPC ${method}`)
+            }
+            if (['sales-agent', 'products', 'vinted-accounts'].includes(name)) {
+              const statusLine = report.match(/^\s+\u72B6\u6001 ([^\r\n]*)$/m)
+              assert.ok(statusLine, `${name}: missing durable storage status`)
+              assert.equal(JSON.parse(statusLine[1]).storageDurable, true,
+                `${name}: durable storage is required`)
             }
           }
           const packages = readdirSync(join(market, 'plugins'), { recursive: true })
@@ -325,13 +360,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Nexus v__VERSION__'
           releaseBody: |
-            - 优化邮件列表与阅读布局，支持格式化邮件和纯文本切换。
-            - 支持已读未读筛选、单封及批量标记，打开邮件后自动同步已读状态。
-            - 新增独立后台定时收信，默认每分钟检查收件箱和垃圾箱，可调整间隔。
-            - 邮箱与 Vinted 账号池双向关联，可直接从账号查看邮件、更换或解除关联。
-            - 保留 token 定时刷新、轮换持久化和应用代理；只读权限不影响收信。
+            - 新增 ecom agent，支持商品与窗口分配、批量账号检查、商品上架与指定会话消息任务。
+            - 新增独立商品管理插件，支持手动建档、导入 AI 生图商品和查看发布窗口记录。
+            - 账号池接入账号标签、状态及余额观察记录，可从任务定位关联账号和商品。
+            - 提供任务草稿、运行前检查、暂停取消、人工接管、商品审查及结果核对。
+            - 支持模型配置、请求与用量明细、通知和历史保留设置。
 
-            更新主程序后，在插件中心更新邮箱管理至 1.1.0、Vinted 账号池至 1.3.0。
+            更新主程序后，在插件中心安装 ecom agent 1.0.0、商品管理 1.0.0，并更新 Vinted 账号池至 1.4.0。
             macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
           uploadUpdaterJson: true

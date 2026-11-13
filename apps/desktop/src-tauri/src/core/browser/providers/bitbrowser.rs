@@ -6,6 +6,7 @@ use crate::core::browser::local_api::{
     validate_binding, validate_create, validate_settings, validate_update, verify_identity,
     verify_observed_identities,
 };
+use crate::core::browser::provider::automation::{AutomationSession, CdpEndpoint};
 use crate::core::browser::provider::{
     BrowserError, BrowserProvider, BrowserProviderId, BrowserResult, CreatedProfile,
     ObservedProfiles, ProviderGroup, ProviderProbe, ProxyMode, RemoteProfile, ResolvedProxy,
@@ -52,6 +53,30 @@ impl BitBrowserProvider {
 impl BrowserProvider for BitBrowserProvider {
     fn id(&self) -> BrowserProviderId {
         BrowserProviderId::BitBrowser
+    }
+
+    fn automation_session(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+    ) -> BrowserResult<AutomationSession> {
+        validate_binding(connection, record, self.id())?;
+        require_scope(connection)?;
+        let api = LocalApi::connect(connection, self.id())?;
+        let _profile = api.lock_profile(&record.binding.profile_id)?;
+        let (remote, _) = read_profile(&api, &record.binding.profile_id)?;
+        verify_identity(record, &remote)?;
+        // /browser/ports is read-only; calling /browser/open to rediscover CDP
+        // would replay a lifecycle write and could change an existing proxy.
+        let data = api.post("/browser/ports", &json!({}), RequestKind::Read)?;
+        let raw = data[&record.binding.profile_id]
+            .as_str()
+            .ok_or_else(invalid_response)?;
+        if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid_response());
+        }
+        let port: u16 = raw.parse().map_err(|_| invalid_response())?;
+        Ok(AutomationSession::Cdp(CdpEndpoint::from_port(port)?))
     }
 
     fn probe(&self, connection: &BrowserConnection) -> BrowserResult<ProviderProbe> {
@@ -646,6 +671,38 @@ mod tests {
             "randomFingerprint": false,
             "browserFingerPrint": {"canvasValue": 19281, "webRTC": "0"}
         })
+    }
+
+    #[test]
+    fn automation_uses_read_only_port_discovery_and_rejects_missing_or_invalid_ports() {
+        for port in [
+            Value::Null,
+            json!("0"),
+            json!("65536"),
+            json!("http://remote.invalid"),
+        ] {
+            let raw = remote("remote-1", "");
+            let server = MockServer::new(vec![
+                response(raw.clone()),
+                response(json!({"remote-1":port})),
+            ]);
+            let connection = server.connection(BrowserProviderId::BitBrowser);
+            let mut window = record(&connection, "remote-1");
+            window.proxy_mode = ProxyMode::Provider;
+            window.provider_config = remote_profile(raw).unwrap().provider_config;
+            let saved = serde_json::to_value(&window).unwrap();
+            assert!(
+                BitBrowserProvider::new()
+                    .automation_session(&connection, &window)
+                    .is_err()
+            );
+            assert_eq!(serde_json::to_value(&window).unwrap(), saved);
+            let requests = server.requests();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].target, "/browser/detail");
+            assert_eq!(requests[1].target, "/browser/ports");
+            assert_eq!(requests[1].body, json!({}));
+        }
     }
 
     #[test]

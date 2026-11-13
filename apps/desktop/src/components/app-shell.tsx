@@ -11,6 +11,7 @@ import {
   Mail,
   Moon,
   Network,
+  Package,
   Radar,
   RefreshCw,
   Settings2,
@@ -41,6 +42,7 @@ import {
   reconcileSmsWaitPlugin,
 } from '@/features/accounts/sms-wait-runtime'
 import { onAiImageHandoff, type AiImageHandoff } from '@/lib/page-handoff'
+import { watchDetailNavigation } from '@/lib/detail-navigation'
 import { APP_VERSION } from '@/lib/platform/app-info'
 import { notifyPluginCatalogChanged } from '@/lib/platform/plugin-catalog-events'
 
@@ -59,6 +61,7 @@ const capabilityIcons = new Map([
   ['verification.provider', KeyRound],
   ['monitor.collector', Radar],
   ['email.provider', Mail],
+  ['product.catalog', Package],
 ])
 
 const PAGE_LABELS: Record<string, string> = {
@@ -129,6 +132,21 @@ export function AppShell() {
   )
 
   const consumeAiImageHandoff = useCallback(() => setAiImageHandoff(null), [])
+
+  useEffect(
+    () =>
+      watchDetailNavigation((request) => {
+        const target = {
+          product: pluginPageValue('studio.products'),
+          account: pluginPageValue('studio.vinted-accounts'),
+          window: 'spaces',
+          agent: pluginPageValue('studio.sales-agent'),
+        }[request.kind]
+        navigate({ type: 'navigate', page: target })
+        if (request.kind !== 'window') setPluginsOpen(true)
+      }),
+    [plugins],
+  )
 
   return (
     <Tabs

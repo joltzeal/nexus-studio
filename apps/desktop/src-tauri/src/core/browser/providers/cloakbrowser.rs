@@ -1,4 +1,7 @@
 use crate::core::browser::connection_store::BrowserConnection;
+use crate::core::browser::provider::automation::{
+    AutomationChannel, AutomationSession, stdout_pump,
+};
 use crate::core::browser::provider::{
     BUILTIN_CONNECTION_ID, BrowserBinding, BrowserError, BrowserProvider, BrowserProviderId,
     BrowserResult, CreatedProfile, ObservedProfiles, ProviderGroup, ProviderProbe, ProxyMode,
@@ -69,6 +72,7 @@ struct Session {
     child: Child,
     state: WindowState,
     stop_requested: bool,
+    automation: Arc<AutomationChannel>,
 }
 
 impl Drop for Session {
@@ -527,13 +531,14 @@ impl CloakBrowserProvider {
                 .map_err(|_| BrowserError::new("unavailable", "无法启动浏览器运行组件"))?,
             state: WindowState::Starting,
             stop_requested: false,
+            automation: Arc::new(AutomationChannel::default()),
         };
         let started = Instant::now();
         let stdin = process.child.stdin.take().ok_or_else(state_error)?;
         let stdout = process.child.stdout.take().ok_or_else(state_error)?;
         let stderr = process.child.stderr.take().ok_or_else(state_error)?;
         let configured = write_configuration(stdin, config);
-        let ready = read_readiness(stdout);
+        let ready = stdout_pump(stdout, process.automation.clone());
         let errors = read_errors(stderr);
         let session = Arc::new(Mutex::new(process));
         self.sessions
@@ -549,8 +554,8 @@ impl CloakBrowserProvider {
                     .ok_or_else(|| {
                         BrowserError::new("unavailable", "无法将窗口配置发送到浏览器")
                     })?;
-                let mut process = session.lock().map_err(|_| state_error())?;
-                process.child.stdin = Some(stdin);
+                let process = session.lock().map_err(|_| state_error())?;
+                process.automation.set_writer(stdin)?;
             }
             let remaining = START_TIMEOUT.saturating_sub(started.elapsed());
             if !matches!(ready.recv_timeout(remaining), Ok(true)) {
@@ -586,6 +591,25 @@ impl CloakBrowserProvider {
 impl BrowserProvider for CloakBrowserProvider {
     fn id(&self) -> BrowserProviderId {
         BrowserProviderId::CloakBrowser
+    }
+
+    fn automation_session(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+    ) -> BrowserResult<AutomationSession> {
+        validate_record(connection, record)?;
+        let session = self
+            .session(&record.id)?
+            .ok_or_else(|| BrowserError::new("unavailable", "Browser profile is not running"))?;
+        let mut process = session.lock().map_err(|_| state_error())?;
+        if process.state != WindowState::Running || !matches!(process.child.try_wait(), Ok(None)) {
+            return Err(BrowserError::new(
+                "unavailable",
+                "Browser profile is not running",
+            ));
+        }
+        Ok(AutomationSession::Managed(process.automation.clone()))
     }
 
     fn probe(&self, connection: &BrowserConnection) -> BrowserResult<ProviderProbe> {
@@ -776,9 +800,7 @@ impl BrowserProvider for CloakBrowserProvider {
             let mut process = session.lock().map_err(|_| state_error())?;
             process.state = WindowState::Stopping;
             if !process.stop_requested {
-                if let Some(mut stdin) = process.child.stdin.take() {
-                    let _ = stdin.write_all(b"stop\n");
-                }
+                process.automation.stop();
                 process.stop_requested = true;
             }
         }
@@ -1096,44 +1118,9 @@ fn browser_launch_record(
     Ok(launching)
 }
 
-fn read_readiness(mut stdout: impl Read + Send + 'static) -> mpsc::Receiver<bool> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buffer = [0; 1024];
-        let mut line = Vec::new();
-        let mut overlong = false;
-        let mut notified = false;
-        loop {
-            match stdout.read(&mut buffer) {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Ok(0) | Err(_) => break,
-                Ok(length) => {
-                    for byte in &buffer[..length] {
-                        if *byte == b'\n' {
-                            if !notified
-                                && !overlong
-                                && (line.as_slice() == b"NEXUS_READY"
-                                    || line.as_slice() == b"NEXUS_READY\r")
-                            {
-                                let _ = sender.send(true);
-                                notified = true;
-                            }
-                            line.clear();
-                            overlong = false;
-                        } else if line.len() < 64 {
-                            line.push(*byte);
-                        } else {
-                            overlong = true;
-                        }
-                    }
-                }
-            }
-        }
-        if !notified {
-            let _ = sender.send(false);
-        }
-    });
-    receiver
+#[cfg(test)]
+fn read_readiness(stdout: impl Read + Send + 'static) -> mpsc::Receiver<bool> {
+    stdout_pump(stdout, Arc::new(AutomationChannel::default()))
 }
 
 fn read_errors(mut stderr: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {

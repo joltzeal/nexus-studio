@@ -2,11 +2,12 @@ use super::manifest::{Capability, PluginManifest};
 use crate::core::network_proxy::NetworkProxy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -20,6 +21,44 @@ pub const MAX_STDERR_BYTES: usize = 4096;
 pub const MAX_DEADLINE_MS: u64 = 120_000;
 /// Extra wait on top of the plugin deadline before the host gives up.
 pub const DEADLINE_GRACE: Duration = Duration::from_millis(750);
+// Ten actors can checkpoint concurrently, with a small bounded allowance for
+// pending writes; browser execution is additionally serialized per actor.
+pub const MAX_HOST_REQUESTS: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCaller {
+    pub plugin_id: String,
+    pub generation: String,
+    pub installation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentScope {
+    pub batch_id: String,
+    pub job_id: String,
+    pub window_id: String,
+    pub account_id: String,
+    pub lease_id: String,
+    pub fence: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HostRequest {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub host_version: u32,
+    pub request_id: String,
+    pub scope: AgentScope,
+    pub method: String,
+    pub payload: Value,
+    pub deadline_ms: u64,
+}
+
+pub type HostRequestHandler =
+    dyn Fn(PluginCaller, HostRequest) -> Result<Value, PluginErrorPayload> + Send + Sync;
+pub type HostHandlerSlot = Arc<Mutex<Option<Arc<HostRequestHandler>>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginErrorPayload {
@@ -100,24 +139,32 @@ pub struct ReadyInfo {
 struct Inner {
     plugin_id: String,
     version: String,
-    stdin: Mutex<Option<ChildStdin>>,
+    outgoing: SyncSender<String>,
+    closed: AtomicBool,
     pending: Mutex<HashMap<String, Sender<Result<Value, PluginErrorPayload>>>>,
     ready: Mutex<Option<ReadyInfo>>,
     failed: Mutex<Option<String>>,
     stderr_tail: Mutex<String>,
     protocol_errors: Mutex<u32>,
+    caller: PluginCaller,
+    host_handler: HostHandlerSlot,
+    host_requests: Mutex<HashSet<String>>,
 }
 
 impl Inner {
     fn write(&self, message: &Value) -> bool {
-        let Ok(mut guard) = self.stdin.lock() else {
+        if self.closed.load(Ordering::Acquire) {
             return false;
-        };
-        let Some(stdin) = guard.as_mut() else {
-            return false;
-        };
+        }
         let line = format!("{message}\n");
-        stdin.write_all(line.as_bytes()).is_ok() && stdin.flush().is_ok()
+        if line.len() > MAX_LINE_BYTES {
+            return false;
+        }
+        if self.outgoing.try_send(line).is_err() {
+            self.fail("Plugin input queue is full or closed");
+            return false;
+        }
+        true
     }
 
     fn redact(&self, text: &str) -> String {
@@ -187,6 +234,7 @@ pub struct PluginProcess {
     child: Mutex<Child>,
     reader: Mutex<Option<JoinHandle<()>>>,
     stderr_reader: Mutex<Option<JoinHandle<()>>>,
+    writer: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl PluginProcess {
@@ -207,6 +255,28 @@ impl PluginProcess {
         node: &Path,
         key: &str,
         network: Option<(&NetworkProxy, &Path)>,
+    ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
+        Self::spawn_with_gateway(
+            entry,
+            storage_directory,
+            manifest,
+            node,
+            key,
+            network,
+            String::new(),
+            Arc::new(Mutex::new(None)),
+        )
+    }
+
+    pub fn spawn_with_gateway(
+        entry: &Path,
+        storage_directory: Option<&Path>,
+        manifest: PluginManifest,
+        node: &Path,
+        key: &str,
+        network: Option<(&NetworkProxy, &Path)>,
+        installation: String,
+        host_handler: HostHandlerSlot,
     ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
         let mut command = Command::new(node);
         if let Some((proxy, preload)) = network {
@@ -231,17 +301,51 @@ impl PluginProcess {
         let stdout = child.stdout.take().ok_or(ProcessError::SpawnFailed)?;
         let stderr = child.stderr.take().ok_or(ProcessError::SpawnFailed)?;
 
+        let (write_tx, write_rx) = mpsc::sync_channel::<String>(32);
         let inner = Arc::new(Inner {
             plugin_id: manifest.id.clone(),
             version: manifest.version.clone(),
-            stdin: Mutex::new(Some(stdin)),
+            outgoing: write_tx,
+            closed: AtomicBool::new(false),
             pending: Mutex::new(HashMap::new()),
             ready: Mutex::new(None),
             failed: Mutex::new(None),
             stderr_tail: Mutex::new(String::new()),
             protocol_errors: Mutex::new(0),
+            caller: PluginCaller {
+                plugin_id: manifest.id.clone(),
+                generation: Uuid::new_v4().to_string(),
+                installation,
+            },
+            host_handler,
+            host_requests: Mutex::new(HashSet::new()),
         });
 
+        let writer_inner = Arc::downgrade(&inner);
+        let writer = thread::spawn(move || {
+            let mut stdin = stdin;
+            loop {
+                let Some(inner) = writer_inner.upgrade() else {
+                    break;
+                };
+                if inner.closed.load(Ordering::Acquire) {
+                    break;
+                }
+                drop(inner);
+                match write_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(line) => {
+                        if stdin.write_all(line.as_bytes()).is_err() || stdin.flush().is_err() {
+                            if let Some(inner) = writer_inner.upgrade() {
+                                inner.fail("Plugin process input is unavailable");
+                            }
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        });
         let (ready_tx, ready_rx) = mpsc::channel::<Result<ReadyInfo, ProcessError>>();
         let reader_inner = Arc::clone(&inner);
         let reader = thread::spawn(move || {
@@ -266,6 +370,7 @@ impl PluginProcess {
             child: Mutex::new(child),
             reader: Mutex::new(Some(reader)),
             stderr_reader: Mutex::new(Some(stderr_reader)),
+            writer: Mutex::new(Some(writer)),
         });
 
         match ready_rx.recv_timeout(HANDSHAKE_TIMEOUT) {
@@ -283,6 +388,10 @@ impl PluginProcess {
 
     pub fn ready(&self) -> Option<ReadyInfo> {
         self.inner.ready.lock().ok().and_then(|value| value.clone())
+    }
+
+    pub fn caller(&self) -> &PluginCaller {
+        &self.inner.caller
     }
 
     pub fn failure(&self) -> Option<String> {
@@ -332,7 +441,8 @@ impl PluginProcess {
         }
         let deadline_ms = u64::try_from(deadline.as_millis())
             .unwrap_or(MAX_DEADLINE_MS)
-            .min(MAX_DEADLINE_MS);
+            .clamp(1, MAX_DEADLINE_MS);
+        let deadline = Duration::from_millis(deadline_ms);
         let request = json!({
             "protocolVersion": PROTOCOL_VERSION,
             "requestId": request_id,
@@ -368,9 +478,7 @@ impl PluginProcess {
 
     /// Cooperative shutdown: close stdin, wait, then terminate.
     pub fn stop(&self) {
-        if let Ok(mut guard) = self.inner.stdin.lock() {
-            guard.take();
-        }
+        self.inner.closed.store(true, Ordering::Release);
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let exited = match self.child.lock() {
@@ -386,14 +494,17 @@ impl PluginProcess {
     }
 
     fn shutdown(&self) {
-        if let Ok(mut guard) = self.inner.stdin.lock() {
-            guard.take();
-        }
+        self.inner.closed.store(true, Ordering::Release);
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
             let _ = child.wait();
         }
         self.inner.fail("插件已停止");
+        if let Ok(mut writer) = self.writer.lock()
+            && let Some(handle) = writer.take()
+        {
+            let _ = handle.join();
+        }
         if let Ok(mut reader) = self.reader.lock()
             && let Some(handle) = reader.take()
         {
@@ -438,6 +549,7 @@ fn read_stdout(
             .and_then(Value::as_str)
             .unwrap_or_default();
         match kind {
+            "host.request" => dispatch_host_request(&inner, message),
             "hello" => {
                 let id = message.get("pluginId").and_then(Value::as_str);
                 let version = message.get("version").and_then(Value::as_str);
@@ -519,6 +631,123 @@ fn read_stdout(
     let _ = ready_tx.send(Err(ProcessError::HandshakeFailed(
         "插件进程在握手前退出".into(),
     )));
+}
+
+fn host_response(inner: &Inner, request_id: &str, outcome: Result<Value, PluginErrorPayload>) {
+    let response = match outcome {
+        Ok(result) => json!({
+            "type":"host.response","hostVersion":1,"requestId":request_id,
+            "ok":true,"result":result
+        }),
+        Err(error) => json!({
+            "type":"host.response","hostVersion":1,"requestId":request_id,
+            "ok":false,"error":error
+        }),
+    };
+    if !inner.write(&response) {
+        // An oversized result must not strand the plugin awaiting its host call.
+        inner.write(&json!({
+            "type":"host.response","hostVersion":1,"requestId":request_id,
+            "ok":false,"error":PluginErrorPayload::new(
+                "PROTOCOL_ERROR", "Host response exceeds the protocol limit", false)
+        }));
+    }
+}
+
+fn dispatch_host_request(inner: &Arc<Inner>, value: Value) {
+    let request_id = value.get("requestId").and_then(Value::as_str).unwrap_or("");
+    let request = serde_json::from_value::<HostRequest>(value.clone());
+    let Ok(request) = request else {
+        if Uuid::parse_str(request_id).is_ok() {
+            host_response(
+                inner,
+                request_id,
+                Err(PluginErrorPayload::new(
+                    "INVALID_REQUEST",
+                    "Invalid host request envelope",
+                    false,
+                )),
+            );
+        } else {
+            inner.note_protocol_error("Invalid host request envelope");
+        }
+        return;
+    };
+    if request.host_version != 1
+        || request.message_type != "host.request"
+        || Uuid::parse_str(&request.request_id).is_err()
+        || request.method.is_empty()
+        || request.method.len() > 96
+        || !(1..=MAX_DEADLINE_MS).contains(&request.deadline_ms)
+    {
+        host_response(
+            inner,
+            &request.request_id,
+            Err(PluginErrorPayload::new(
+                "INVALID_REQUEST",
+                "Invalid host request envelope",
+                false,
+            )),
+        );
+        return;
+    }
+    let handler = inner.host_handler.lock().ok().and_then(|slot| slot.clone());
+    let Some(handler) = handler else {
+        host_response(
+            inner,
+            &request.request_id,
+            Err(PluginErrorPayload::new(
+                "UNAVAILABLE",
+                "Host gateway has not been initialized",
+                false,
+            )),
+        );
+        return;
+    };
+    {
+        let Ok(mut active) = inner.host_requests.lock() else {
+            return;
+        };
+        if active.contains(&request.request_id) {
+            // Do not dispatch or settle a duplicate while its original is running.
+            inner.note_protocol_error("Duplicate host request ID");
+            return;
+        }
+        if active.len() >= MAX_HOST_REQUESTS {
+            host_response(
+                inner,
+                &request.request_id,
+                Err(PluginErrorPayload::new(
+                    "RATE_LIMITED",
+                    "Too many concurrent host requests",
+                    true,
+                )),
+            );
+            return;
+        }
+        active.insert(request.request_id.clone());
+    }
+    let inner = Arc::clone(inner);
+    // Stdout must keep draining while the graph RPC waits for this host request.
+    thread::spawn(move || {
+        let request_id = request.request_id.clone();
+        let started = Instant::now();
+        let deadline = Duration::from_millis(request.deadline_ms);
+        let outcome = handler(inner.caller.clone(), request);
+        let outcome = if started.elapsed() > deadline && outcome.is_ok() {
+            Err(PluginErrorPayload::new(
+                "TIMEOUT",
+                "Host request exceeded its deadline; reconcile writes",
+                false,
+            ))
+        } else {
+            outcome
+        };
+        host_response(&inner, &request_id, outcome);
+        if let Ok(mut active) = inner.host_requests.lock() {
+            active.remove(&request_id);
+        }
+    });
 }
 
 enum LineOutcome {

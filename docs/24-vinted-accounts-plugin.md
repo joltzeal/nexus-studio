@@ -5,7 +5,8 @@
 
 ## 当前事实
 
-当前源码插件版本为 `1.3.0`，最低主程序 `0.1.28`。
+当前插件版本为 `1.4.0`，最低主程序 `0.1.29`，已发布至 R2。
+新增供 ecom agent 使用的账号身份快照和局部观察写入，保留用户资料及邮箱、地址、号码关系。
 新增完整地址快照、分页账号选择、地址复制与解除关联。已有主页账号的自动已售查询、Bark 推送与配置迁移见
 [订单查询与 Bark 提醒](38-vinted-account-order-watch.md)。
 宿主私有 `window.detach` 仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
@@ -15,6 +16,8 @@
 私有 JSON 存储与逐行 JSON RPC 服务端。页面位于
 `apps/desktop/src/features/accounts`，在主导航里叫「Vinted 账号」。
 账号与浏览器窗口的关联由插件维护，窗口页可发起关联并直接编辑已关联账号。
+真实ecom agent 可通过独立的只读快照和局部观察写入方法接入账号池；
+账号池本身不启动浏览器，不读取登录态，也不新增 SQLite 连接。
 
 - 一条账号记录有九个业务字段：登录方式、账号、密码、手机号、邮箱接码地址、
   手机接码地址、状态、主页链接与备注。
@@ -27,7 +30,8 @@
   不做“猜一个默认值”的补齐。
 - 登录方式只有四种：`email` / `google` / `apple` / `facebook`。
 - 状态只有四种：`active`（正常）/ `pending`（待验证）/ `limited`（受限）/
-  `blocked`（封禁）。状态是操作者的记录，插件不探测真实账号状态。
+  `blocked`（封禁）。状态来自操作者记录或ecom agent 的受限观察写入；
+  插件不自行探测真实账号状态。
 - 密码明文存在插件私有目录（文件权限 0600），宿主不加密、不代管。
   页面在表格里不显示密码，只在编辑弹窗里回读，默认隐藏。
 - 保存与关联不执行账号登录。用户显式读取验证码时，插件请求账号已保存的
@@ -47,6 +51,7 @@ plugins/vinted-accounts/
 ├── nexus.plugin.ts       # manifest 唯一来源，由 definePluginManifest 校验
 ├── src/
 │   ├── index.ts          # 组装存储、能力与协议；进程入口
+│   ├── agent-contracts.ts # 不含凭据的ecom agent schema、方法常量和类型
 │   ├── capabilities/     # account.pool 方法表
 │   ├── domain/           # 类型、zod 校验、表格解析、表头映射与错误码
 │   ├── rpc/              # 协议、服务端、脱敏日志（与其他插件同源，按包自包含）
@@ -57,29 +62,152 @@ plugins/vinted-accounts/
 
 ## 方法表
 
-| 方法                              | 入参                                          | 说明                               |
-| --------------------------------- | --------------------------------------------- | ---------------------------------- |
-| `vinted.accounts.list`            | `{ page?, pageSize?, revision? }`             | 分页账号、当页绑定与快照标识       |
-| `vinted.accounts.save`            | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝       |
-| `vinted.accounts.remove`          | `{ accountId }`                               | 删除账号并清掉它的绑定             |
-| `vinted.accounts.import`          | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告    |
-| `vinted.accounts.template`        | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容    |
-| `vinted.accounts.bind`            | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突       |
-| `vinted.accounts.unbind`          | `{ windowId }`                                | 解除该窗口的关联                   |
-| `vinted.accounts.bindings`        | —                                             | 绑定列表，附带账号摘要             |
-| `vinted.accounts.otp`             | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文   |
-| `vinted.accounts.address.targets` | `{ query?, page?, pageSize? }`                | 分页选择账号，不返回凭据           |
-| `vinted.accounts.address.set`     | `{ accountId, profile, expectedProfileId? }`  | 原子设置、替换或清空账号地址       |
-| `vinted.accounts.mailbox.targets` | `{ query?, page?, pageSize? }`                | 分页选择账号，仅返回账号及邮箱关系 |
-| `vinted.accounts.mailbox.set`     | `{ accountId, mailbox, expectedMailboxId }`   | 原子关联、更换或解除邮箱           |
-| `window.detach`                   | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系     |
-| `transfer.export`                 | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照     |
-| `transfer.import`                 | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执   |
-| `transfer.rollback`               | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定     |
-| `transfer.commit`                 | `{ receipt }`                                 | 清理成功回执，保留账号与绑定       |
+| 方法                                  | 入参                                          | 说明                               |
+| ------------------------------------- | --------------------------------------------- | ---------------------------------- |
+| `vinted.accounts.list`                | `{ page?, pageSize?, revision? }`             | 分页账号、当页绑定与快照标识       |
+| `vinted.accounts.save`                | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝       |
+| `vinted.accounts.remove`              | `{ accountId }`                               | 删除账号并清掉它的绑定             |
+| `vinted.accounts.import`              | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告    |
+| `vinted.accounts.template`            | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容    |
+| `vinted.accounts.bind`                | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突       |
+| `vinted.accounts.unbind`              | `{ windowId }`                                | 解除该窗口的关联                   |
+| `vinted.accounts.bindings`            | —                                             | 绑定列表，附带账号摘要             |
+| `vinted.accounts.otp`                 | `{ accountId, channel: 'email' \| 'sms' }`    | 从账号已保存链接读取验证码与原文   |
+| `vinted.accounts.address.targets`     | `{ query?, page?, pageSize? }`                | 分页选择账号，不返回凭据           |
+| `vinted.accounts.address.set`         | `{ accountId, profile, expectedProfileId? }`  | 原子设置、替换或清空账号地址       |
+| `vinted.accounts.mailbox.targets`     | `{ query?, page?, pageSize? }`                | 分页选择账号，仅返回账号及邮箱关系 |
+| `vinted.accounts.mailbox.set`         | `{ accountId, mailbox, expectedMailboxId }`   | 原子关联、更换或解除邮箱           |
+| `vinted.accounts.agent.snapshot`      | `{ windowId }`                                | 只读绑定身份、状态、主页与观察摘要 |
+| `vinted.accounts.observations.record` | `AccountObservationInput`                     | 校验绑定后幂等持久化局部观察       |
+| `window.detach`                       | `{ windowId }`                                | 原生宿主专用，幂等清理窗口关系     |
+| `transfer.export`                     | `{ windowIds, endpointIds }`                  | 原生宿主专用的选中窗口账号快照     |
+| `transfer.import`                     | `{ data, windowIdMap, transactionId? }`       | 本地副本、重映射绑定与持久化回执   |
+| `transfer.rollback`                   | `{ receipt }`                                 | 撤销本次导入，恢复被替换的绑定     |
+| `transfer.commit`                     | `{ receipt }`                                 | 清理成功回执，保留账号与绑定       |
 
 上限：账号 2000 条，导入报告最多回传 50 条错误。单次导入内容不超过 512 KB
 （宿主单行消息上限 1 MiB，base64 会放大 1.33 倍）。
+
+## ecom agent 账号观察
+
+两个方法继续使用 `account.pool` 能力。公开子路径
+`@nexus/plugin-vinted-accounts/agent-contracts` 仅导出方法常量、严格 zod schema
+与对应 TypeScript 类型，不加载插件入口、存储或浏览器。
+类型入口直接引用随包携带的 `src/agent-contracts.ts`，可在没有本地构建时进行
+TypeScript 消费方检查；运行入口仍为发行构建生成的 `dist/src/agent-contracts.js`。
+宿主协调器核对窄字段，平台采集流程和 Playwright 会话由ecom agent 与浏览器宿主负责。
+Rust 仍是 SQLite 的唯一所有者，账号业务继续保存在插件现有明文 JSON 文件中。
+
+`vinted.accounts.agent.snapshot({ windowId })` 要求 Nexus 窗口 UUID，
+在单份存储读取中取得当前绑定，严格返回：
+
+```ts
+type AccountAgentSnapshotResult = {
+  account: {
+    accountId: string // Nexus 账号 UUID
+    account: string // 登录标识，仅用于身份核对
+    status: 'active' | 'pending' | 'limited' | 'blocked'
+    homepageUrl: string
+    platformUserId: string | null
+    observation: AccountObservationState | null
+  }
+  windowId: string
+}
+```
+
+未绑定、重复窗口绑定或绑定账号不存在时明确拒绝，不返回空账号或模拟身份。
+平台用户 ID 优先使用已有观察中的数字 ID，否则从受支持 Vinted 主页的
+`/member/<id>`（可带昵称后缀）解析，无法确定时返回 `null`。
+快照不返回密码、手机号、接码链接、邮箱关系、地址、用户备注或其他账号字段；
+读取不会写存储，也不代表已经验证当前浏览器的实际登录身份。
+
+`vinted.accounts.observations.record` 只接受以下严格对象，未知字段一律拒绝：
+
+```ts
+type AccountObservationInput = {
+  operationId: string // UUID；同一次观察的重试沿用此值
+  accountId: string // Nexus 账号 UUID
+  windowId: string // Nexus 窗口 UUID
+  observedAt: string // ISO 时间，允许时区偏移，最多 40 字符
+  source: 'official' | 'page' | 'model'
+  platformUserId?: string // 1–32 位数字，首位不能为零
+  status?: 'active' | 'pending' | 'limited' | 'blocked'
+  tags?: string[] // 最多 8 个，每个 1–24 字符
+  summary?: string // 最多 160 字符；独立于用户 note
+  rating?: number // 有限数值，0–5
+  balance?: {
+    currency: string // 三位大写币种代码
+    available: string | null
+    pending: string | null
+  }
+}
+type AccountObservationResult = {
+  operationId: string
+  accountId: string
+  applied: boolean
+  storageDurable: boolean
+}
+```
+
+- 写入在现有串行 `mutate` 内重新校验窗口仍唯一绑定该账号；取消或排队期间
+  解绑、改绑、删除会阻止写入，不恢复被删除的账号或关系。
+  提供平台 ID 时，还必须与已有观察 ID 和可解析的主页 ID 一致。
+- `operationId` 对整个插件存储唯一。严格解析保留字段值，字段顺序不影响输入摘要；
+  同 ID、同输入返回原 `applied`，不同输入拒绝。幂等重试仍须满足当前账号绑定。
+  账号修改和操作收据在同一次文件替换中保存，文件失败时两者都不提交。
+  收据最多 100,000 条，达到上限后拒绝新操作，不静默淘汰旧 ID；账号删除也不释放 ID。
+- 每个账号独立按观察时间推进；较旧或相同时间的不同操作只保存
+  `applied: false` 收据，不更新账号或最后观察，避免迟到结果覆盖较新的事实。
+  同时间以先提交的观察为准。已知操作重试返回原回执，不重新应用。
+- 仅更新输入中实际存在的观察字段；省略保留旧值，显式空 tags、空 summary 和
+  rating 为零均可保存。标签与摘要要求格式完整的 Unicode 文本，不接受控制字符。
+  登录标识、密码、手机号、接码链接、主页、用户 note、
+  地址、邮箱关系和窗口绑定不变；普通编辑、CSV upsert、地址和邮箱更新保留观察。
+- `official` / `page` 明确确认 `blocked` 才能把状态改为封禁。模型单独给出
+  `blocked` 只保存观察，不封禁账号；已有官方或页面状态证据后，模型不覆盖其状态，
+  也不能解除操作者标记的封禁。页面结果不能解除已有封禁或降级官方受限、
+  待验证状态；较新的官方确认可恢复状态。普通网络失败不构成封禁证据。
+
+`AccountRecord.observation` 与账号列表 DTO 均包含有界的
+`platformUserId/tags/summary/rating/balance/statusEvidence/lastObservation`，
+这些字段不复用用户备注。`lastObservation` 独立保存最后一次被采用的操作 ID、
+账号/窗口 UUID、时间、来源、可选状态和原始余额读取结果；
+不重复 tags、summary、rating 和平台 ID，避免撑大 16 个完整账号的默认分页。
+最新状态证据单独保留，不因较新的模型或无状态观察而丢失。
+
+余额只接受十进制字符串：最多 12 位整数、4 位小数，可带负号，总长不超过 18，
+不接受数字、指数、逗号、自动四舍五入或补零。未知值始终为 `null`，不是零。
+持久余额保留 `currency/available/pending`，另有独立的
+`availableEvidence/pendingEvidence: { source, observedAt } | null`：
+同币种的某一项读取未知时保留旧金额及其原始证据；初次未知仍为 `null`。
+完全未知的新读取保留旧余额，原始未知结果可从 `lastObservation.balance` 识别。
+换币种且至少一项已知时重新建立余额，另一项保持未知，不跨币种拼接。
+这些数据是观察事实，不保证余额现在仍然相同。
+
+### 账号池中的只读观察
+
+账号名称下方紧凑显示观察标签、摘要与 0–5 评分，用户备注或主页链接仍独立保留；
+没有这些观察字段时不补造内容，评分为零照常显示。展示使用现有 shadcn Badge，
+摘要与长标签限制行内宽度，可通过原生悬停标题查看完整文本。
+
+表格增加一个「余额」列，分两行显示可用、待结算金额及币种。
+金额原样展示十进制文本，未知值显示 `—`，不补零或四舍五入。
+点击余额打开只读 Popover，逐项显示该金额实际保存的来源和观察时间；
+最新读取未知时仍沿用已有金额及其旧证据，并提示「最近读取未知，保留此前金额」。
+不使用最后一次账号观察时间冒充两项余额的采集时间，也不把未知的新币种套在旧金额上。
+
+桌面账号列表从公开 `@nexus/plugin-vinted-accounts/agent-contracts` 导入
+`AccountObservationStateSchema` 校验可选 `account.observation`。
+缺省观察的现有账号继续有效；存在观察但字段、嵌套证据或额外键不合法时，
+整次分页列表读取失败，不丢掉坏字段后继续展示。校验不裁剪账号原有字段。
+账号新增和编辑表单没有观察输入，保存仅提交原有可编辑字段；
+窗口页的绑定摘要不复制整份观察。
+
+操作收据在 `vinted-accounts.json` 的独立 `observationOperations` 中保存，
+不进入账号分页或 Agent 快照；普通账号列表仍校验完整 RPC 行小于 1 MiB。
+窗口传输保留账号业务资料与当前状态，观察与收据属于源账号/窗口，
+不复制到重新分配 UUID 的迁移副本，目标环境须重新观察。
+未提供宿主私有目录时仍如实返回 `storageDurable: false`，不承诺内存模式重启恢复。
 
 ## 邮箱联动（1.3.0）
 
@@ -361,7 +489,20 @@ bindings: [{ windowId, accountId, boundAt }]
 
 按当前开发约定，本地只直接运行测试、lint、格式与无产物类型检查，不构建或打包。
 使用仓库固定 Node.js 24.18.0，并在复用已安装依赖时设置
-`pnpm_config_verify_deps_before_run=false`。前端联动回归入口：
+`pnpm_config_verify_deps_before_run=false`。账号插件的直接检查入口：
+
+```bash
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run plugins/vinted-accounts --maxWorkers=4
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p plugins/vinted-accounts/tsconfig.tests.json --noEmit
+```
+
+观察测试覆盖局部保留、重复操作与冲突、重启后的收据和证据、迟到观察、绑定竞态、
+取消、真实文件失败与重试、封禁证据优先级、严格无凭据快照及实际逐行 RPC。
+分页压力测试同时携带有界观察、完整地址、邮箱关系和多条窗口绑定，检查最大长度
+Unicode 与 JSON 转义内容仍低于 1 MiB。这些测试使用合成资料，不访问真实平台账号，
+不替代浏览器登录态、代理、Windows 或正式 Agent 端到端验收。
+
+前端联动回归入口：
 
 ```bash
 rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run apps/desktop/src/features/accounts/accounts-page.test.ts apps/desktop/src/features/sim8/accounts-bridge.test.ts apps/desktop/src/features/sim8/number-picker.test.ts apps/desktop/src/features/spaces/spaces-page.test.ts --maxWorkers=4
@@ -375,6 +516,16 @@ rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_con
 手机号解绑成功和失败、旧短信响应隔离及邮箱验证码保留。
 组件状态与事件处理在 Node 测试环境验证，
 不替代桌面 WebView 中的布局、键盘和焦点检查。
+账号观察的 `account-observation-api.test.ts`、`account-observation.test.ts` 与
+`account-observation-page.test.ts` 覆盖严格读取校验、无观察记录、旧金额证据、
+未知与零值、原始金额精度、摘要文本转义、实际账号表格和编辑提交不携带观察。
+可用以下直接入口执行这些检查：
+
+```bash
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec vitest run apps/desktop/src/features/accounts/account-observation-api.test.ts apps/desktop/src/features/accounts/account-observation.test.ts apps/desktop/src/features/accounts/account-observation-page.test.ts --maxWorkers=4
+rtk proxy env PATH="/Users/ameno/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm_config_verify_deps_before_run=false pnpm exec tsc -p apps/desktop/tsconfig.json --noEmit
+```
+
 传输测试启动实际构建的 Node.js 入口，经握手和逐行 RPC 验证选中范围、完整凭据、
 共享账号的窗口重映射、调用方事务 UUID、重启后的回滚/提交、同 ID 替换恢复、
 真实文件写入失败与重试。另有取消、幂等重试与账号上限的原子性测试。

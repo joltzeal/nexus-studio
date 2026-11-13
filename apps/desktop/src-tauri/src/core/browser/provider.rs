@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+#[path = "automation.rs"]
+pub mod automation;
+
 pub const BUILTIN_CONNECTION_ID: &str = "builtin-cloakbrowser";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -148,6 +151,14 @@ pub struct ObservedProfiles {
     pub profiles: Vec<RemoteProfile>,
 }
 
+/// A complete running-profile observation from a provider with an authoritative limit.
+/// Providers without such an API return None; plan names never imply a capacity.
+#[derive(Debug, Clone)]
+pub struct ProviderCapacity {
+    pub max_running: u32,
+    pub running_profiles: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreatedProfile {
     pub profile_id: String,
@@ -252,6 +263,21 @@ pub trait BrowserProvider: Send + Sync {
 
     fn capabilities(&self) -> BrowserCapabilities {
         BrowserCapabilities::for_provider(self.id())
+    }
+
+    fn capacity(&self, _connection: &BrowserConnection) -> BrowserResult<Option<ProviderCapacity>> {
+        Ok(None)
+    }
+
+    /// Read-only automation extension. It never starts or reconfigures a profile.
+    fn automation_session(
+        &self,
+        _connection: &BrowserConnection,
+        _record: &WindowRecord,
+    ) -> BrowserResult<automation::AutomationSession> {
+        Err(BrowserError::unsupported(
+            "Browser automation is unavailable",
+        ))
     }
 
     fn probe(&self, connection: &BrowserConnection) -> BrowserResult<ProviderProbe>;

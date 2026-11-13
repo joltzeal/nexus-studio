@@ -33,7 +33,14 @@ export async function exportAccounts(
   const accounts = new Set(bindings.map((entry) => entry.accountId))
   return parseTransfer(AccountTransferDataSchema, {
     schemaVersion: 1,
-    accounts: document.accounts.filter((entry) => accounts.has(entry.id)),
+    accounts: document.accounts
+      .filter((entry) => accounts.has(entry.id))
+      .map((entry) => {
+        // Evidence and operation identities belong to the source window/account.
+        const portable = { ...entry }
+        delete portable.observation
+        return portable
+      }),
     bindings,
   })
 }

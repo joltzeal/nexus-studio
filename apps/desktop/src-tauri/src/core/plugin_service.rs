@@ -139,6 +139,28 @@ fn webview_capability(input: &CallInput) -> Result<Capability, String> {
     if input.method == "window.detach" {
         return Err("窗口关联清理仅供原生窗口删除流程调用".into());
     }
+    if matches!(
+        input.method.as_str(),
+        "salesAgent.jobs.step"
+            | "salesAgent.notifications.send"
+            | "products.publications.record"
+            | "vinted.accounts.observations.record"
+    ) {
+        return Err("Agent execution and confirmed observations/publications require the native scoped gateway".into());
+    }
+    if capability == Capability::SalesAgent
+        && !matches!(
+            input.method.as_str(),
+            "salesAgent.settings.get"
+                | "salesAgent.settings.save"
+                | "salesAgent.models.test"
+                | "configuration.export"
+                | "configuration.validate"
+                | "configuration.import"
+        )
+    {
+        return Err("ecom agent method is not available through the WebView".into());
+    }
     if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
         return Err("代理连接解析仅供原生窗口启动调用".into());
     }
@@ -218,6 +240,16 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     .map_err(std::io::Error::other)?
     .with_network(network);
     let windows = Arc::new(windows);
+    let agent = super::agent::AgentService::new(
+        app_data.join("nexus.sqlite"),
+        app_data.join("agent").join("artifacts"),
+        &host,
+        &windows,
+    )
+    .map_err(|error| std::io::Error::other(error.message))?;
+    agent
+        .register_gateway()
+        .map_err(|error| std::io::Error::other(error.message))?;
     let transfer = super::transfer_service::TransferService::new(
         Arc::clone(&windows),
         Arc::clone(&host),
@@ -228,6 +260,8 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     app.manage(windows);
     app.manage(Arc::new(transfer));
     app.manage(Arc::new(license_service));
+    agent.start();
+    app.manage(agent);
     Ok(())
 }
 
@@ -270,6 +304,26 @@ mod tests {
             assert!(webview_capability(&input(method, "window.sync")).is_ok());
         }
         assert!(webview_capability(&input("configuration.sync.offer", "window.sync")).is_err());
+    }
+
+    #[test]
+    fn webview_rpc_cannot_forge_agent_steps_observations_or_publications() {
+        for capability in [
+            "sales.agent",
+            "account.pool",
+            "product.catalog",
+            "proxy.provider",
+        ] {
+            for method in [
+                "salesAgent.jobs.step",
+                "salesAgent.notifications.send",
+                "vinted.accounts.observations.record",
+                "products.publications.record",
+            ] {
+                assert!(webview_capability(&input(method, capability)).is_err());
+            }
+        }
+        assert!(webview_capability(&input("salesAgent.settings.get", "sales.agent")).is_ok());
     }
 
     #[test]

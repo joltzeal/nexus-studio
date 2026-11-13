@@ -18,6 +18,21 @@ const manifest: PluginManifest = {
 }
 
 describe('plugin manifest', () => {
+  it('accepts a product catalog without browser or network access', () => {
+    const products = definePluginManifest({
+      ...manifest,
+      id: 'studio.products',
+      capabilities: ['product.catalog'],
+      permissions: {
+        networkDomains: [],
+        wantsBrowserAccess: false,
+        storage: 'private',
+        secrets: [],
+      },
+    })
+    expect(products.capabilities).toEqual(['product.catalog'])
+    expect(products.permissions.wantsBrowserAccess).toBe(false)
+  })
   it('accepts a dedicated email capability without window lifecycle access', () => {
     const email = PluginManifestSchema.safeParse({
       ...manifest,

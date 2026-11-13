@@ -2,7 +2,16 @@ pub mod core;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Manager;
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init());
     #[cfg(not(debug_assertions))]
@@ -64,8 +73,43 @@ pub fn run() {
             core::plugin_service::plugin_market_status,
             core::plugin_service::plugin_market_set_store,
             core::plugin_service::plugin_market_refresh,
-            core::plugin_service::plugin_market_install
+            core::plugin_service::plugin_market_install,
+            core::agent::commands::sales_agent_batch_create,
+            core::agent::commands::sales_agent_batch_list,
+            core::agent::commands::sales_agent_batch_get,
+            core::agent::commands::sales_agent_batch_control,
+            core::agent::commands::sales_agent_events,
+            core::agent::commands::sales_agent_preflight,
+            core::agent::commands::sales_agent_job_control,
+            core::agent::commands::sales_agent_items,
+            core::agent::commands::sales_agent_item_control,
+            core::agent::commands::sales_agent_artifact_preview,
+            core::agent::commands::sales_agent_workspace_list,
+            core::agent::commands::sales_agent_workspace_get,
+            core::agent::commands::sales_agent_workspace_save,
+            core::agent::commands::sales_agent_workspace_delete,
+            core::agent::commands::sales_agent_usage,
+            core::agent::commands::sales_agent_model_requests,
+            core::agent::commands::sales_agent_retention_preview,
+            core::agent::commands::sales_agent_retention_clean,
+            core::agent::commands::sales_agent_attention,
+            core::agent::commands::sales_agent_related
         ])
-        .run(tauri::generate_context!())
-        .expect("Nexus could not initialize its desktop runtime");
+        .build(tauri::generate_context!())
+        .expect("Nexus could not initialize its desktop runtime")
+        .run(|app, event| {
+            use tauri::Manager;
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                if let Some(agent) = app.try_state::<std::sync::Arc<core::agent::AgentService>>() {
+                    agent.shutdown();
+                }
+                if let Some(host) = app.try_state::<std::sync::Arc<core::plugin_host::PluginHost>>()
+                {
+                    host.shutdown();
+                }
+            }
+        });
 }

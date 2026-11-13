@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-vinted-accounts",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Nexus Vinted account pool plugin: credential records, CSV/XLSX import, window bindings, order-watch and Bark notifications",
   "type": "module",
@@ -14,11 +14,16 @@
     "./manifest": {
       "types": "./dist/nexus.plugin.d.ts",
       "import": "./dist/nexus.plugin.js"
+    },
+    "./agent-contracts": {
+      "types": "./src/agent-contracts.ts",
+      "import": "./dist/src/agent-contracts.js"
     }
   },
   "files": [
     "dist",
-    "nexus.plugin.ts"
+    "nexus.plugin.ts",
+    "src/agent-contracts.ts"
   ],
   "sideEffects": false,
   "scripts": {

@@ -10,6 +10,8 @@ pub enum PermissionError {
     CapabilityNotGranted,
     MethodNotDeclared,
     DomainUndeclared,
+    BrowserAccessUndeclared,
+    StaleGeneration,
 }
 
 impl PermissionError {
@@ -20,7 +22,9 @@ impl PermissionError {
             | PermissionError::CapabilityUndeclared
             | PermissionError::CapabilityNotGranted
             | PermissionError::MethodNotDeclared
-            | PermissionError::DomainUndeclared => "PERMISSION_DENIED",
+            | PermissionError::DomainUndeclared
+            | PermissionError::BrowserAccessUndeclared
+            | PermissionError::StaleGeneration => "PERMISSION_DENIED",
         }
     }
 
@@ -32,8 +36,26 @@ impl PermissionError {
             PermissionError::CapabilityNotGranted => "该能力尚未获得授权",
             PermissionError::MethodNotDeclared => "插件未声明该方法",
             PermissionError::DomainUndeclared => "插件未声明该网络域名",
+            PermissionError::BrowserAccessUndeclared => "Plugin has no browser access grant",
+            PermissionError::StaleGeneration => "Plugin process generation is no longer current",
         }
     }
+}
+
+pub fn check_agent_gateway(plugin: &InstalledPlugin) -> Result<(), PermissionError> {
+    if plugin.id != "studio.sales-agent" || !plugin.manifest.declares(Capability::SalesAgent) {
+        return Err(PermissionError::CapabilityUndeclared);
+    }
+    if !plugin.enabled {
+        return Err(PermissionError::NotEnabled);
+    }
+    if !plugin.has_granted(Capability::SalesAgent) {
+        return Err(PermissionError::CapabilityNotGranted);
+    }
+    if !plugin.manifest.permissions.wants_browser_access {
+        return Err(PermissionError::BrowserAccessUndeclared);
+    }
+    Ok(())
 }
 
 /// Every call passes through here before the request reaches the plugin

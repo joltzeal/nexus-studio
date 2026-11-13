@@ -21,6 +21,8 @@ export type {
   ImageProvider,
   PlatformAdapter,
   PluginCapabilityContracts,
+  ProductCatalog,
+  SalesAgent,
   ProxyProvider,
   ProxyResolution,
   SupplyCatalog,

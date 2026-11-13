@@ -1,5 +1,27 @@
 # 桌面发行与应用内更新
 
+## 0.1.29 ecom agent 本地构建（2026-11-13）
+
+按用户本次要求，已完成 macOS Apple Silicon 的 release 构建，包含 ecom agent
+正式任务页面、独立商品管理和账号观察。用户界面与插件清单的展示名为
+`ecom agent`，稳定插件标识 `studio.sales-agent` 保持不变。
+
+产物为
+`apps/desktop/src-tauri/target/release/bundle/macos/Nexus.app`
+和 `apps/desktop/src-tauri/target/release/bundle/dmg/Nexus_0.1.29_aarch64.dmg`。
+DMG 大小 57,068,120 字节，SHA-256 为
+`de6aa5f12c4a31354fe5b9db4f6a780fb30830e553f692ad39a6e6b004fbf31b`。
+受管 Node、browser-runtime、应用签名完整性和 DMG 校验均通过；
+另外使用包内 Node 实际启动三个配套加密插件包并完成握手。
+
+本次本地构建使用 ad-hoc 签名，未经 Apple 公证。
+临时覆盖配置仅关闭 updater 归档生成，不更改生产更新端点和公钥；
+没有产生正式更新签名、更新清单或 GitHub Release，也没有构建其他平台。
+发布构建仍不预装插件。安装主程序后，在插件中心安装 ecom agent `1.0.0`、
+商品管理 `1.0.0`，并更新账号池至 `1.4.0`；这三个包均已完成
+[R2 发布与公开回读](25-plugin-market.md)。
+实际构建和回归证据见[质量记录](09-quality-and-testing.md)。
+
 ## 0.1.28 邮件阅读、定时收信与账号联动（2026-11-12）
 
 主程序增加紧凑邮件列表、格式化阅读、已读未读筛选与批量操作，

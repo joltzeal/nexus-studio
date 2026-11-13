@@ -244,6 +244,126 @@ UI 只接受稳定 DTO，不持有进程句柄或调试端口。启动前生成�
 适配器必须单独约束这类请求，不能凭页面代理配置声称全部流量已受保护。
 日志仅存脱敏摘要，代理密码和许可证不进入 localStorage。
 
+## ecom agent 自动化端口
+
+当前浏览器工具层采用现有 `playwright-core` 与受管 Node 运行时，供 Rust 宿主网关调用。
+它不包含销售流程、插件权限检查或持久任务协调；这些由
+[ecom agent 架构](44-sales-agent-architecture.md) 所述宿主负责。
+`WindowService` 提供以下 Rust 接口，均返回 `BrowserResult`，不是直接开放给页面的 IPC：
+
+```rust
+pub fn agent_window_snapshot(&self, id: &str) -> BrowserResult<Value>;
+pub fn acquire_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()>;
+pub fn start_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()>;
+pub fn agent_browser_execute(&self, id: &str, request: Value) -> BrowserResult<Value>;
+pub fn release_agent_window(&self, id: &str, owner: &str) -> BrowserResult<()>;
+```
+
+窗口快照仅含 `id/name/providerId/connectionId/profileId/state`，不包含代理、密码、
+API Key 或许可证。宿主先取得持久账号/窗口/profile 锁与租约令牌，再用稳定 `owner`
+取得本机窗口租约。该租约阻止手动启动、停止、修改、删除、转移、连接切换和安装更新。
+Agent 使用独立 `start_agent_window`，要求匹配 owner，仍执行原有代理解析、启动意图、
+状态核对与失败阻断；不能绕过普通 busy 检查调用手动入口。
+宿主每次执行前验证持久令牌和账号/profile 关系；本机租约不代替持久锁或授权。
+
+工具请求格式固定为 `{ operation, origin, input, timeoutMs? }`：
+
+| operation         | input                    | 结果                                                       |
+| ----------------- | ------------------------ | ---------------------------------------------------------- |
+| `navigate`        | `{url}`                  | `{url}`                                                    |
+| `snapshot`        | `{maxChars?}`            | `{url,title,text,controls:[{index,role,name,type,value}]}` |
+| `click`           | `{target}`               | `{completed:true}`                                         |
+| `submit`          | `{target,operationId}`   | `{completed:true,operationId}`                             |
+| `fill` / `select` | `{target,value}`         | `{completed:true}`                                         |
+| `upload`          | `{target,files}`         | `{completed:true}`                                         |
+| `readFields`      | `{fields:{name:target}}` | 字段值对象                                                 |
+| `request`         | `{path,method:"GET"}`    | `{url,status,text}`                                        |
+
+`target` 只接受 `css/role/name/label/placeholder/testId/index`；选择方式最多一种，
+`name` 仅用于 role，`index` 可选择快照可见控件或缩小指定选择器。
+CSS 不接受 Playwright 的 `>>` 选择器链；表单变更与提交还核对目标文档来源，
+拒绝将 iframe/object/embed 作为动作目标，不能通过选择器跨入其他来源的表单。
+快照最多 100 个控件和 100,000 字符，默认 20,000 字符；字段最多 32 个，
+`readFields` 单字段最多 16,384 字符，与 `fill` 一致，高于商品描述的 6,000 字符上限；
+截断后的超长内容仍会超过商品校验上限，不能冒充完整合法描述。
+请求和单行回执仍最多 256 KiB，截止时间默认 30 秒、最多 120 秒。
+`navigate` 可在同一来源内访问 `/items/new` 和 `/inbox/<id>` 等平台路径，
+复用原 profile 与页面，不重建环境。普通 `click` 读取实际 DOM，拒绝 submit/image
+类型及发布、发送、删除、确认、支付等最终动作标签；button/link 角色及其子节点
+同样受限，不能用 `type=button` 绕过。运行时覆盖适配器支持的完整发布/发送词表，
+包括 Upload、List item、Hochladen、Mettre en ligne 及其他支持语言，
+按 NFKC、空白、末尾必填星号和大小写归一后逐个名称来源精确匹配；
+保留危险动作的通用识别。最终动作必须使用 `submit`。
+`submit.input.operationId` 为宿主预先准备并验证的稳定 UUID。运行时在点击前记住该 ID，
+重复 ID（包括上次调用失败或超时）拒绝重发，每个租约最多 256 次最终动作。
+运行时不能自行证明 action 已持久化；Rust 协调器负责验证 prepared action、
+账号/窗口/profile 与租约令牌。`completed` 仅表示点击调用结束，不代表平台发布已确认。
+密码表单值与敏感 JSON 键脱敏；错误不回显 Playwright 调用日志、输入值或凭据。
+`select.value` 同时与当前可选且未隐藏 option 的实际 value 和可见 label 精确匹配，
+仅有一个匹配时选择该 DOM option；缺失、重复 label/value 或 value/label 冲突均拒绝，
+不猜测平台分类或成色 ID。
+上传最多 20 个绝对路径，必须由 Rust 工件网关解析授权引用后提供，
+插件/模型不能自行选择本机文件。路径格式校验不代表工件授权。
+`upload` 仍接受 `{target,files}` 并返回 `{completed:true}`；宿主外侧的
+`{target,artifactIds}` 契约不变。target 为 file input 时直接设置受控文件；
+为观察到的 Add photos 等可点击入口时，先拦截该页 filechooser，再点击入口。
+实际 file input 必须属于绑定页面的主 frame 和固定来源，不向子 frame 或其他页面
+提供文件；入口也执行最终动作保护，不能用 upload 绕过 prepared submit。
+等待 chooser 与点击均收敛后才结束操作，期间持续拦截文件对话框；
+超时不反馈完成，移除本次监听器，不保留可能消费后续上传的等待者。
+
+`origin` 必须是工具层明确列出的 Vinted HTTPS 根域或 www 域来源，不接受其他子域、
+凭据、非标准端口或通配后缀。actor 首次调用固定 exact origin，导航和后续操作均核对；
+禁止原始 JavaScript、任意 Cookie、HTTP 请求头及远端 API 地址。
+同源 GET 使用固定 `page.evaluate` 脚本中的浏览器 `fetch`，禁止跳转，
+响应体最多 64 KiB，复用当前登录态、profile 与窗口网络路径；不调用 Node fetch
+或 Playwright APIRequestContext。网站本身加载的资源不等于工具获准访问任意 API。
+页面与 locator 的固定脚本均作为独立函数传给 Playwright，由其序列化并调用，
+不传未调用的箭头函数字符串；工具输入仅作为数据参数。
+
+每个窗口只有一个 actor；窗口之间可并行。已有目标来源页面多于一个时拒绝猜测；
+已绑定页面关闭后拒绝自动换页。actor 不关闭用户已有页面或浏览器。
+释放会撤销页面导航保护并清空 actor 的来源绑定。
+每个租约最多记住 256 个最终动作 ID；仅在无未收敛操作且释放成功后清空本机重放集合，
+同一受管 runner 可继续后续租约，跨租约防重仍由宿主持久 action journal 与 fence 负责。
+超时只结束调用等待，仍保留底层操作与租约。收到最终收敛回执前，
+后续执行和释放返回 `operation_pending`；未收到回执的断线不会释放占用或自动重连。
+持久外部写入结果仍须由宿主核对，底层操作收敛不等于平台写入成功。
+
+内置模式复用 `launchPersistentContext()` 的同一个上下文和已有 runner，
+不会第二次启动浏览器。stdin 在首行 v2 配置后接受带 `requestId` 的工具 JSON，
+stdout 保留 `NEXUS_READY`，增加
+`NEXUS_AUTOMATION {"requestId":"...","ok":true,"result":...}` 或
+`{"requestId":"...","ok":false,"error":{"code":"...","message":"..."}}`。
+超时先回 `AUTOMATION_TIMEOUT`，操作实际结束后再以同一 ID 回
+`AUTOMATION_SETTLED`；Rust 有界 stdout pump 按 ID 关联，忽略无关 ID。
+内部释放命令为 `{requestId,control:"release"}`，不是公开 Agent 工具。
+原来的 `stop`、浏览器关闭退出和离线恢复行为保留。
+
+外部模式经 `BrowserProvider.automation_session` 独立只读扩展取得端点：
+AdsPower 使用 V2 `GET /api/v2/browser-profile/active` 的 `ws.puppeteer`，
+比特浏览器使用 `POST /browser/ports` 的 profile 到端口映射，再直连该端口
+`/json/version` 取得浏览器 WebSocket。两者先验证不可变绑定和厂商身份；
+只允许回环 IP 的 `/devtools/browser/<id>`，localhost 固定为 127.0.0.1，
+拒绝凭据、查询、跳转及远端主机。发现会话不调用 start/open 或修改代理。
+受管 `profile-runner automation-cdp` 从 stdin 接收经审核的端点，
+通过 `connectOverCDP` 附着唯一已有上下文；不要求安装新的组件或配置环境变量。
+释放/退出只终止 Node actor、断开 CDP，不发送 `Browser.close` 或停止厂商环境。
+
+上述厂商接口已按官方资料核对：
+[AdsPower V2 状态](https://localapi-doc-en.adspower.com/docs/Check-Browser-Status-V2)、
+[比特浏览器窗口接口](https://doc2.bitbrowser.cn/jiekou/liu-lan-qi-jie-kou.html)、
+[Playwright CDP](https://playwright.dev/docs/api/class-browsertype#browser-type-connect-over-cdp)。
+本轮验证限于受控运行时测试、TypeScript/lint 与 rustfmt；
+不宣称已完成 Rust 编译、真实厂商账号、真实代理、Windows 或发行验证。
+运行时另保留使用本机已安装 Playwright Chromium 的受控表单回归，
+所有页面/API 请求由 fixture 拦截；没有该测试浏览器时跳过，不自动下载。
+可用 `NEXUS_TEST_AUTOMATION_BROWSER_BINARY` 指定独立测试 Chromium 路径。
+该回归覆盖实际脚本序列化、完整 6,000 字符描述的表单读写、
+普通按钮/链接最终动作保护、观察到的上传入口与隐藏/零尺寸 file input、
+子 frame 上传拒绝、chooser 超时恢复、提交边界、同源 GET 脱敏和释放保留页面，
+不替代授权内核或真实账号集成验收。
+
 ## 版本与分发
 
 CloakBrowser 二进制版本、并发配额及再分发许可由所选版本和授权决定，不能从 profile 数量推断。

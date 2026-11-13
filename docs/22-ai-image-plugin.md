@@ -1,5 +1,14 @@
 # AI 生图插件 `studio.ai-image`
 
+## 导入商品管理
+
+开发版本的生成记录详情新增“导入商品库”，商品管理页也可选择生图批次导入。
+一条记录保存为一件草稿商品，整组图片复制到商品插件，保留英文文案及公开来源。
+重复导入返回已有商品，不覆盖手工资料；当前页面保持不变。
+后续ecom agent 将从商品插件读取资料，生图记录不承担商品主档职责。
+此能力需要包含 `product.catalog` 的新主程序及商品插件，尚未发布；
+完整规则见[商品管理插件](43-products-plugin.md)。
+
 本文说明 `plugins/ai-image` 与 `apps/desktop/src/features/ai-image` 的当前实现。
 宿主边界见[插件对接规范](14-plugin-integration-guide.md)与[插件宿主](17-plugin-host.md)。
 当前工作区在已发布的上传格式校验、Vinted 原图本机 JPEG 转换及商品资料预填基础上，

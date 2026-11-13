@@ -1,3 +1,4 @@
+import { AccountObservationStateSchema } from '@nexus/plugin-vinted-accounts/agent-contracts'
 import { callPlugin } from '@/lib/platform/native-plugins'
 import { profileData, type Profile } from '@/features/addresses/types'
 import { assignedAccountMailbox } from './account-mailbox-api'
@@ -212,7 +213,9 @@ function accountRecord(value: unknown): value is Account {
       assignedAccountAddress(value.address)) &&
     (value.mailbox === undefined ||
       value.mailbox === null ||
-      assignedAccountMailbox(value.mailbox))
+      assignedAccountMailbox(value.mailbox)) &&
+    (value.observation === undefined ||
+      AccountObservationStateSchema.safeParse(value.observation).success)
   )
 }
 

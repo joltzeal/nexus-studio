@@ -56,6 +56,12 @@ import {
   finishAccountsTransfer,
   importAccounts,
 } from './transfer.js'
+import {
+  ACCOUNT_AGENT_METHODS,
+  ACCOUNT_AGENT_SNAPSHOT_METHOD,
+  ACCOUNT_OBSERVATION_RECORD_METHOD,
+} from '../agent-contracts.js'
+import { accountAgentSnapshot, recordAccountObservation } from './account-observations.js'
 
 export const ACCOUNT_METHODS = [
   'vinted.accounts.list',
@@ -71,6 +77,7 @@ export const ACCOUNT_METHODS = [
   'vinted.accounts.address.set',
   'vinted.accounts.mailbox.targets',
   'vinted.accounts.mailbox.set',
+  ...ACCOUNT_AGENT_METHODS,
   WINDOW_DETACH_METHOD,
   ...TRANSFER_METHODS,
   ...ORDER_WATCH_METHODS,
@@ -179,6 +186,10 @@ export class AccountPool implements AccountPoolContract {
       return this.orders.call(context)
     }
     switch (context.method) {
+      case ACCOUNT_AGENT_SNAPSHOT_METHOD:
+        return accountAgentSnapshot(this.store, context)
+      case ACCOUNT_OBSERVATION_RECORD_METHOD:
+        return recordAccountObservation(this.store, context, this.now)
       case 'transfer.export':
         return exportAccounts(this.store, context)
       case 'transfer.import':
