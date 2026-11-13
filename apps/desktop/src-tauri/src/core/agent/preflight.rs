@@ -63,10 +63,10 @@ impl AgentService {
                 .as_ref()
                 .ok()
                 .and_then(|(a, _)| a["platformUserId"].as_str());
-            if let Some(identity) = identity {
-                if !identities.insert(identity.trim_start_matches('0').to_owned()) {
-                    account_ready = false;
-                }
+            if let Some(identity) = identity
+                && !identities.insert(identity.trim_start_matches('0').to_owned())
+            {
+                account_ready = false;
             }
             checks.push(check(
                 Some(&assignment.window_id),

@@ -190,10 +190,10 @@ impl AgentService {
         let mut freed = 0u64;
         if let Ok(items) = self.store.artifact_cleanup() {
             for (id, _) in items {
-                if let Ok(bytes) = self.artifacts.remove_retained_batch(&id) {
-                    if self.store.artifact_cleaned(&id).is_ok() {
-                        freed = freed.saturating_add(bytes);
-                    }
+                if let Ok(bytes) = self.artifacts.remove_retained_batch(&id)
+                    && self.store.artifact_cleaned(&id).is_ok()
+                {
+                    freed = freed.saturating_add(bytes);
                 }
             }
         }
@@ -223,10 +223,10 @@ impl AgentService {
         else {
             return;
         };
-        if let Ok(preview) = self.store.retention_preview(days) {
-            if let Some(token) = preview["token"].as_str() {
-                let _ = self.retention_clean(token);
-            }
+        if let Ok(preview) = self.store.retention_preview(days)
+            && let Some(token) = preview["token"].as_str()
+        {
+            let _ = self.retention_clean(token);
         }
     }
 }

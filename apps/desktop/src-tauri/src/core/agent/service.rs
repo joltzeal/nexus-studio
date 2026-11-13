@@ -395,7 +395,10 @@ impl AgentService {
             }
         }
         self.store.control(&input)?;
-        self.settle_idle_controls();
+        self.settle_controls(
+            self.store
+                .stopped_control_jobs_for(Some(&input.batch_id), None)?,
+        )?;
         self.store.batch_view(&input.batch_id)
     }
 
@@ -406,7 +409,7 @@ impl AgentService {
             self.isolate_retained(&self.store.job(id)?, true)?;
         }
         self.store.control_job(id, action)?;
-        self.settle_idle_controls();
+        self.settle_controls(self.store.stopped_control_jobs_for(None, Some(id))?)?;
         self.store.job_view(id)
     }
 
@@ -446,9 +449,14 @@ impl AgentService {
     }
 
     fn settle_idle_controls(&self) {
-        let Ok(ids) = self.store.stopped_control_jobs() else {
-            return;
-        };
+        let _ = self
+            .store
+            .stopped_control_jobs()
+            .and_then(|ids| self.settle_controls(ids));
+    }
+
+    fn settle_controls(&self, ids: Vec<String>) -> AgentResult<()> {
+        let mut first_error = None;
         for id in ids {
             let Ok(_isolation) = self.begin_isolation(&id) else {
                 continue;
@@ -487,10 +495,12 @@ impl AgentService {
                 }
                 self.store.takeover_settled(&id, release)
             })();
-            if result.is_err() {
+            if let Err(error) = result {
                 let _ = self.store.control_isolation_failed(&id);
+                first_error.get_or_insert(error);
             }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     pub(crate) fn account_snapshot(&self, window_id: &str) -> AgentResult<(Value, String)> {
@@ -832,16 +842,11 @@ impl AgentService {
                 actor.releasing.store(false, Ordering::Release);
                 continue;
             };
-            if (control != "run"
+            if control != "run"
                 && !matches!(
                     job.state.as_str(),
                     "completed" | "blocked" | "cancelled" | "skipped"
-                ))
-                || (control == "cancel"
-                    && !matches!(
-                        job.state.as_str(),
-                        "completed" | "blocked" | "skipped" | "cancelled"
-                    ))
+                )
             {
                 if self
                     .store

@@ -1398,10 +1398,10 @@ impl AgentStore {
                 }
                 let config = graph_config(thread, id);
                 let mut tuple = json!({"config":config,"checkpoint":checkpoint,"metadata":payload["metadata"],"pendingWrites":[]});
-                if let Some(parent) = payload.get("parentConfig").filter(|v| !v.is_null()) {
-                    if let Some(parent_id) = checkpoint_config_id(parent, thread)? {
-                        tuple["parentConfig"] = graph_config(thread, &parent_id);
-                    }
+                if let Some(parent) = payload.get("parentConfig").filter(|v| !v.is_null())
+                    && let Some(parent_id) = checkpoint_config_id(parent, thread)?
+                {
+                    tuple["parentConfig"] = graph_config(thread, &parent_id);
                 }
                 let encoded = canonical(&tuple);
                 let versions = canonical(&payload["newVersions"]);

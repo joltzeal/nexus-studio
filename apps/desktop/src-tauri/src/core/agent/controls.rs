@@ -105,6 +105,14 @@ fn apply(db: &Connection, id: &str, action: ControlAction) -> AgentResult<()> {
 
 impl AgentStore {
     pub fn stopped_control_jobs(&self) -> AgentResult<Vec<String>> {
+        self.stopped_control_jobs_for(None, None)
+    }
+
+    pub(super) fn stopped_control_jobs_for(
+        &self,
+        batch_id: Option<&str>,
+        job_id: Option<&str>,
+    ) -> AgentResult<Vec<String>> {
         strings(&self.open()?,
             "SELECT j.id FROM agent_jobs j JOIN agent_dispatch d ON d.job_id=j.id
              JOIN agent_batches b ON b.id=j.batch_id
@@ -118,7 +126,11 @@ impl AgentStore {
                      AND i.submitted=0 AND i.operation_id IS NULL)
                  AND NOT EXISTS(SELECT 1 FROM agent_actions WHERE job_id=j.id AND state IN ('prepared','unknown'))
                  AND NOT EXISTS(SELECT 1 FROM agent_publication_outbox WHERE job_id=j.id AND state!='synced')))
-             AND d.control_retry_at<=?1 ORDER BY j.updated_at,j.id LIMIT 20", [super::now_ms()])
+              AND d.control_retry_at<=?1
+              AND (?2 IS NULL OR j.batch_id=?2) AND (?3 IS NULL OR j.id=?3)
+              ORDER BY j.updated_at,j.id
+              LIMIT CASE WHEN ?2 IS NULL AND ?3 IS NULL THEN 20 ELSE 100 END",
+              params![super::now_ms(),batch_id,job_id])
     }
 
     pub fn job_action(&self, id: &str) -> AgentResult<String> {

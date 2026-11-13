@@ -584,14 +584,25 @@ mod window_ownership {
         let windows = windows(temp.path());
         let (_host, service) = coordinator(temp.path(), &windows);
         assert_manual_mutations_blocked(&windows, &snapshot);
-        assert!(
-            service
-                .control(ControlInput {
-                    batch_id: batch,
-                    action: ControlAction::Cancel,
-                })
-                .is_err()
+        assert!(operations.window_pending(&snapshot.window_id).unwrap());
+        let error = service
+            .control(ControlInput {
+                batch_id: batch.clone(),
+                action: ControlAction::Cancel,
+            })
+            .expect_err("pending lifecycle operations must prevent cancellation");
+        assert_eq!(error.code, "UNAVAILABLE");
+        assert_manual_mutations_blocked(&windows, &snapshot);
+        assert_eq!(
+            service.store.retained_window_owners().unwrap(),
+            vec![(snapshot.window_id.clone(), job.clone())]
         );
+        let error = service
+            .job_control(&job, ControlAction::Cancel)
+            .expect_err("job cancellation must also report failed isolation");
+        assert_eq!(error.code, "UNAVAILABLE");
+        assert_eq!(service.store.batch_control(&batch).unwrap(), "cancel");
+        assert_eq!(service.store.job(&job).unwrap().state, "review_required");
         assert_manual_mutations_blocked(&windows, &snapshot);
         assert_eq!(
             service.store.retained_window_owners().unwrap(),
@@ -602,6 +613,151 @@ mod window_ownership {
             saved_operation
         );
         assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn cancellation_persistence_failures_keep_ownership_across_restart_until_retry_succeeds() {
+        for trigger in [
+            "CREATE TRIGGER fixture_fail_control BEFORE UPDATE OF actor_owned ON agent_jobs
+             WHEN NEW.actor_owned=0 BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
+            "CREATE TRIGGER fixture_fail_control BEFORE INSERT ON agent_events
+             WHEN NEW.kind='job.stopped' BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
+            "CREATE TRIGGER fixture_fail_control BEFORE DELETE ON agent_resources
+             BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
+        ] {
+            let (temp, store) = fixture();
+            let server = MockServer::new(vec![]);
+            let previous = windows(temp.path());
+            let connection = connection(temp.path(), &server.endpoint);
+            let snapshot = window_snapshot(&previous, &connection, "42");
+            let (batch, job, _) = create(&store, snapshot.clone(), Preset::InspectAccounts);
+            claim(&store, &job);
+            drop(previous);
+            let restored_windows = windows(temp.path());
+            let (host, service) = coordinator(temp.path(), &restored_windows);
+            let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+            db.execute_batch(trigger).unwrap();
+
+            let requested_at = super::super::now_ms();
+            let error = service
+                .control(ControlInput {
+                    batch_id: batch.clone(),
+                    action: ControlAction::Cancel,
+                })
+                .expect_err("cancellation persistence failures must reach the caller");
+            assert_eq!(error.code, "UNAVAILABLE");
+            assert_eq!(service.store.batch_control(&batch).unwrap(), "cancel");
+            assert_manual_mutations_blocked(&restored_windows, &snapshot);
+            assert_eq!(
+                service.store.retained_window_owners().unwrap(),
+                vec![(snapshot.window_id.clone(), job.clone())]
+            );
+            let retry_at: i64 = db
+                .query_row(
+                    "SELECT control_retry_at FROM agent_dispatch WHERE job_id=?1",
+                    [&job],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(retry_at > requested_at);
+            db.execute_batch("DROP TRIGGER fixture_fail_control")
+                .unwrap();
+            drop(db);
+            drop(service);
+            drop(host);
+            drop(restored_windows);
+
+            let reopened_windows = windows(temp.path());
+            let (_host, service) = coordinator(temp.path(), &reopened_windows);
+            assert_manual_mutations_blocked(&reopened_windows, &snapshot);
+            let result = service
+                .control(ControlInput {
+                    batch_id: batch,
+                    action: ControlAction::Cancel,
+                })
+                .unwrap();
+            assert_eq!(result["state"], "cancelled");
+            assert_eq!(service.store.job(&job).unwrap().state, "cancelled");
+            assert!(service.store.retained_window_owners().unwrap().is_empty());
+            reopened_windows
+                .update_note(&snapshot.window_id, "released after retry")
+                .unwrap();
+            assert!(server.requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn control_requests_do_not_settle_unrelated_retained_jobs() {
+        for single_job in [false, true] {
+            let (temp, store) = fixture();
+            let server = MockServer::new(vec![]);
+            let previous = windows(temp.path());
+            let connection = connection(temp.path(), &server.endpoint);
+            let blocked = window_snapshot(&previous, &connection, "42");
+            let target = window_snapshot(&previous, &connection, "43");
+            let batch = id();
+            let job = id();
+            let target_job = id();
+            let target_batch = if single_job { batch.clone() } else { id() };
+            let mut request = input(&blocked, Preset::InspectAccounts);
+            let mut snapshots = vec![(job.clone(), blocked.clone())];
+            if single_job {
+                request
+                    .assignments
+                    .extend(input(&target, Preset::InspectAccounts).assignments);
+                snapshots.push((target_job.clone(), target.clone()));
+            }
+            store
+                .create(&batch, &request, &snapshots, &settings())
+                .unwrap();
+            if !single_job {
+                store
+                    .create(
+                        &target_batch,
+                        &input(&target, Preset::InspectAccounts),
+                        &[(target_job.clone(), target.clone())],
+                        &settings(),
+                    )
+                    .unwrap();
+            }
+            claim(&store, &job);
+            claim(&store, &target_job);
+            store.control_job(&job, ControlAction::Cancel).unwrap();
+            let operations = OperationStore::new(temp.path().join("nexus.sqlite"));
+            operations
+                .prepare(
+                    &id(),
+                    &blocked.window_id,
+                    &connection.id,
+                    "start",
+                    json!({"record":previous.store.get(&blocked.window_id).unwrap()}),
+                )
+                .unwrap();
+            drop(previous);
+            let windows = windows(temp.path());
+            let (_host, service) = coordinator(temp.path(), &windows);
+            if single_job {
+                service
+                    .job_control(&target_job, ControlAction::Cancel)
+                    .unwrap();
+            } else {
+                service
+                    .control(ControlInput {
+                        batch_id: target_batch,
+                        action: ControlAction::Cancel,
+                    })
+                    .unwrap();
+            }
+            assert_eq!(service.store.job(&target_job).unwrap().state, "cancelled");
+            windows.update_note(&target.window_id, "released").unwrap();
+            assert_manual_mutations_blocked(&windows, &blocked);
+            assert_eq!(
+                service.store.retained_window_owners().unwrap(),
+                vec![(blocked.window_id, job.clone())]
+            );
+            assert!(service.store.stopped_control_jobs().unwrap().contains(&job));
+            assert!(server.requests().is_empty());
+        }
     }
 
     #[test]
