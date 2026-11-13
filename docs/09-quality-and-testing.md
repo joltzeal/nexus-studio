@@ -1,5 +1,22 @@
 # 质量门禁与验证记录
 
+## 2026-11-13 v0.1.29 原生 CI 编译修复
+
+`v0.1.29`、`main` 和开发分支的 Foundation quality 在 macOS / Windows 的
+`rust:test` 阶段失败；JavaScript 检查通过。失败运行包括
+`43441763962`、`43441765375` 和 `43441765545`。
+两处连接保护测试使用 `Result::unwrap_err()`，要求成功类型 `ConnectionView`
+实现 `Debug`，导致测试编译报 `E0277`。现将成功值映射为 `()` 再明确断言失败，
+保留 `scope_mismatch`、`profile_busy` 及后续状态检查，不修改生产 DTO。
+`AgentStore` 的 `queued`、`claim` 和 `batch_control` 仅供测试使用，
+增加 `#[cfg(test)]`，移除生产编译的未使用方法告警，不降低 Clippy 检查等级。
+
+本地 `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all --check`
+通过；本次未在本地执行构建、Rust 编译、测试或 Clippy。
+修复提交的原生测试与 lint 交由后续远端运行验证，不能据格式检查宣称编译通过。
+独立的 Desktop release 运行 `43441763834` 已通过插件、macOS Apple Silicon
+和 Windows 打包任务；记录时 Intel Mac 打包仍在执行。
+
 ## 2026-11-13 ecom agent 命名、应用构建与插件发布
 
 本次由用户明确要求本地构建应用并发布插件，按该授权执行 macOS Apple Silicon

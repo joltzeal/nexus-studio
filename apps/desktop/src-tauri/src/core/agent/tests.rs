@@ -628,7 +628,8 @@ mod window_ownership {
         assert_eq!(
             windows
                 .confirm_connection(&connection.id, "Another scope")
-                .unwrap_err()
+                .map(|_| ())
+                .expect_err("reconfirming a different scope must be rejected")
                 .code,
             "scope_mismatch"
         );
@@ -642,7 +643,8 @@ mod window_ownership {
         assert_eq!(
             windows
                 .activate_connection(&connection.id)
-                .unwrap_err()
+                .map(|_| ())
+                .expect_err("activating a retained connection must be rejected")
                 .code,
             "profile_busy"
         );

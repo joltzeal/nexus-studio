@@ -456,6 +456,7 @@ impl AgentStore {
         Ok(owners)
     }
 
+    #[cfg(test)]
     pub fn queued(&self) -> AgentResult<Vec<String>> {
         self.queued_page(&mut None)
     }
@@ -503,6 +504,7 @@ impl AgentStore {
         Ok(rows.into_iter().map(|(id, _)| id).collect())
     }
 
+    #[cfg(test)]
     pub fn claim(&self, id: &str, generation: &str) -> AgentResult<Option<Job>> {
         self.claim_with_capacity(id, generation, None)
     }
@@ -651,6 +653,7 @@ impl AgentStore {
         tx.commit().map_err(storage_error)
     }
 
+    #[cfg(test)]
     pub fn batch_control(&self, batch_id: &str) -> AgentResult<String> {
         self.open()?
             .query_row(
