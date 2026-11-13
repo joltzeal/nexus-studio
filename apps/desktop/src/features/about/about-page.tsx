@@ -43,12 +43,12 @@ export function AboutPage() {
   return (
     <section className="settings-page page-reveal" aria-labelledby="about-heading">
       <h1 className="page-heading" id="about-heading">
-        关于 Nexus
+        关于 Raccoon
       </h1>
       <p className="page-description">多账户浏览器环境管理工作区。</p>
       <Card>
         <CardHeader>
-          <CardTitle>Nexus Studio</CardTitle>
+          <CardTitle>Raccoon</CardTitle>
           <CardDescription>多账户窗口管理应用。</CardDescription>
         </CardHeader>
         <CardContent>

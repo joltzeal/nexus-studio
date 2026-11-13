@@ -3,7 +3,7 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.email',
-  version: '1.1.0',
+  version: '1.1.1',
   name: '邮箱管理',
   minCoreVersion: '0.1.28',
   capabilities: ['email.provider'],

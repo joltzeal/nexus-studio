@@ -47,10 +47,10 @@ flowchart TD
 
 ## 窗口身份与连接范围
 
-所有浏览器共用 `WindowRecord.schema_version = 2`。Nexus UUID 是业务窗口标识，
+所有浏览器共用 `WindowRecord.schema_version = 2`。Raccoon UUID 是业务窗口标识，
 也是账号等插件关联使用的 `windowId`。`BrowserBinding` 保存
 `provider_id`、`connection_id`、`profile_id`；最后一项才是 Provider 的环境标识。
-不能拿厂商环境 ID 替换 Nexus UUID，或仅凭名称把窗口重新绑定到其他账户。
+不能拿厂商环境 ID 替换 Raccoon UUID，或仅凭名称把窗口重新绑定到其他账户。
 
 内置接入固定为 `builtin-cloakbrowser`。外部连接保存本机 API 地址、可选 API Key、
 默认厂商分组、账户或工作区说明及确认状态。同一 Provider 同时只启用一个连接，
@@ -66,12 +66,12 @@ API 可达只证明服务响应，当前外部探测不提供稳定的账户范�
 不能因使用统一 DTO 就推定功能对所有浏览器相同。
 AdsPower 编辑和插件代理在验证完成前不可用；具体能力及限制见
 [浏览器接入](05-browser-integration.md)。外部环境的指纹和内核由厂商管理，
-不接受 Nexus 数字指纹种子或内置内核选择。
+不接受 Raccoon 数字指纹种子或内置内核选择。
 
 窗口状态为 `stopped`、`starting`、`running`、`stopping`、`unknown`、`missing`。
 API 失败进入未知语义，不能显示为已停止；环境缺失也不自动删除插件关联。
-外部环境可由厂商应用启动，Nexus 的观察记录不代表拥有其进程。
-退出或更新 Nexus 不应自动关闭第三方环境；解除 Nexus 关联与删除厂商环境是独立选择。
+外部环境可由厂商应用启动，Raccoon 的观察记录不代表拥有其进程。
+退出或更新 Raccoon 不应自动关闭第三方环境；解除 Raccoon 关联与删除厂商环境是独立选择。
 
 内置浏览器在启动前生成不可变配置快照，并持有窗口独占锁。
 代理是必需项时，解析、鉴权或连接失败必须阻断启动，不自动直连。

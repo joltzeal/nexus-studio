@@ -136,7 +136,7 @@ export const settings: AgentSettings = AgentSettingsSchema.parse({
 export function agentPlugin(overrides: Partial<PluginView> = {}): PluginView {
   return {
     id: 'studio.sales-agent',
-    name: 'ecom agent',
+    name: 'Ecom Agent',
     version: '1.0.0',
     apiVersion: 1,
     minCoreVersion: '0.1.29',

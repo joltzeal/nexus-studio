@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-shared-supply",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
-  "description": "Nexus shared supply plugin: catalogue browsing, image search and local favourites",
+  "description": "Raccoon shared supply plugin: catalogue browsing, image search and local favourites",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

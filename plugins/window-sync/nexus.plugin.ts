@@ -3,7 +3,7 @@
 export default {
   apiVersion: 1,
   id: 'studio.window-sync',
-  version: '1.0.0',
+  version: '1.0.1',
   name: '窗口同步',
   minCoreVersion: '0.1.3',
   capabilities: ['window.sync'],

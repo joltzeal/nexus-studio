@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-sales-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Durable sales workflows using host-managed browser environments",
   "type": "module",

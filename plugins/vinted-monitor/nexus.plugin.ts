@@ -17,7 +17,7 @@ const networkDomains = [
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.vinted-monitor',
-  version: '1.1.3',
+  version: '1.1.4',
   name: 'Vinted 商品监控',
   minCoreVersion: '0.1.21',
   capabilities: ['monitor.collector'],

@@ -2,7 +2,7 @@
 
 本文只描述内置 CloakBrowser。`KernelService`、授权、缓存和 Node 准备流程由
 `CloakBrowserProvider` 持有，通用 `WindowService` 只在内置操作时使用这些资源。
-AdsPower 和比特浏览器的内核由厂商管理，不使用这些命令，也不要求 Nexus 激活码。
+AdsPower 和比特浏览器的内核由厂商管理，不使用这些命令，也不要求 Raccoon 激活码。
 外部版本未知时保留未知，不填入本机内置版本。
 
 ## 页面与操作

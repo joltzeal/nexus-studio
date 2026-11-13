@@ -1,10 +1,10 @@
-# Nexus 文档索引
+# Raccoon 文档索引
 
-Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、克制的 B 端后台风格。
+Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、克制的 B 端后台风格。
 桌面端通过统一窗口服务连接内置浏览器、AdsPower 和比特浏览器，首页使用提供方 Tabs，保留现有表格。
 固定主页面为“窗口管理、分组管理、插件中心、应用设置”，插件二级目录由已启用插件动态生成。
 窗口、分组、接入、激活码和应用代理由 Rust 明文存入 SQLite；外观与工作区偏好存于 localStorage。
-插件保有各自的业务存储，业务关系使用 Nexus UUID，配置和详情不代表平台账号已登录。
+插件保有各自的业务存储，业务关系使用 Raccoon UUID，配置和详情不代表平台账号已登录。
 内置窗口创建时固定完整内核版本、目录与种子；外部指纹和内核由对应官方应用管理。
 旧窗口 IPC、DTO 别名、运行时格式和快照导入兼容路径已删除；现有数据库只升级一次。
 实际编译、厂商 API 和系统安装验证边界见质量记录，源码接入不等于这些验证已经完成。
@@ -55,11 +55,11 @@ Nexus 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、
 | [37 · 配置导入导出](37-configuration-transfer.md)                  | 设置与插件配置的明文迁移、预校验、逐项结果和业务数据边界       |
 | [38 · 账号订单查询与 Bark](38-vinted-account-order-watch.md)       | 账号主页自动扫描、严格已售核查、Bark 提醒和失败恢复            |
 | [41 · 邮箱插件](41-email-plugin.md)                                | 微软邮箱、已读同步、定时收信、token 轮换与账号联动             |
-| [42 · ecom agent 交互原型](42-sales-agent-demo.md)                 | 独立开发预览、运行前批量编辑、窗口分配与模拟执行               |
+| [42 · Ecom Agent 交互原型](42-sales-agent-demo.md)                 | 独立开发预览、运行前批量编辑、窗口分配与模拟执行               |
 | [43 · 商品管理插件](43-products-plugin.md)                         | 独立商品库、生图整组导入、发布状态与使用窗口历史               |
-| [44 · ecom agent 架构与执行](44-sales-agent-architecture.md)       | LangGraph、Playwright、Rust 任务协调、分配、结果核对与插件协作 |
-| [45 · ecom agent 实施审计](45-sales-agent-implementation-audit.md) | 实施计划逐项核对、独立审查问题、修复进度与验收边界             |
-| [46 · ecom agent 操作与恢复](46-sales-agent-operations.md)         | 草稿模板、运行前检查、人工接管、审查、用量、通知与历史保留     |
+| [44 · Ecom Agent 架构与执行](44-sales-agent-architecture.md)       | LangGraph、Playwright、Rust 任务协调、分配、结果核对与插件协作 |
+| [45 · Ecom Agent 实施审计](45-sales-agent-implementation-audit.md) | 实施计划逐项核对、独立审查问题、修复进度与验收边界             |
+| [46 · Ecom Agent 操作与恢复](46-sales-agent-operations.md)         | 草稿模板、运行前检查、人工接管、审查、用量、通知与历史保留     |
 
 ## 多浏览器重构
 

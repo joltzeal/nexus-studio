@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useReducer, useState } from 're
 import {
   AlertCircle,
   Blocks,
+  Bot,
   ChevronDown,
   ChevronRight,
   Folders,
@@ -62,6 +63,7 @@ const capabilityIcons = new Map([
   ['monitor.collector', Radar],
   ['email.provider', Mail],
   ['product.catalog', Package],
+  ['sales.agent', Bot],
 ])
 
 const PAGE_LABELS: Record<string, string> = {
@@ -157,10 +159,14 @@ export function AppShell() {
     >
       <aside className="app-sidebar">
         <div className="sidebar-brand">
-          <span className="brand-symbol">N</span>
-          <span className="wordmark">
-            Nexus<span className="wordmark-dot">.</span>
-          </span>
+          <img
+            className="brand-symbol"
+            src="/raccoon.png"
+            alt=""
+            width={30}
+            height={30}
+          />
+          <span className="wordmark">Raccoon</span>
         </div>
         <div className="workspace-switcher">
           <span className="workspace-avatar">
@@ -233,7 +239,7 @@ export function AppShell() {
           </Button>
         ) : null}
         <div className="sidebar-version">
-          Nexus Studio <span>v{APP_VERSION}</span>
+          Raccoon <span>v{APP_VERSION}</span>
         </div>
       </aside>
       <header className="app-header">

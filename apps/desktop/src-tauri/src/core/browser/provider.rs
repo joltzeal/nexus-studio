@@ -257,7 +257,7 @@ impl UpdateEvidence {
     }
 }
 
-/// Provider operations never write Nexus business records or own plugin bindings.
+/// Provider operations never write Raccoon business records or own plugin bindings.
 pub trait BrowserProvider: Send + Sync {
     fn id(&self) -> BrowserProviderId;
 

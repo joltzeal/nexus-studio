@@ -70,7 +70,7 @@ const PROVIDERS: Record<string, string> = {
   adspower: 'AdsPower',
   bitbrowser: '比特浏览器',
 }
-const ACCOUNT_STATES: Record<string, string> = {
+const ACCOUNT_STATES: Record<NonNullable<AgentTarget['account']>['status'], string> = {
   active: '正常',
   pending: '待验证',
   limited: '受限',
@@ -102,6 +102,7 @@ export function BatchComposer({
   const [selectedProducts, setSelectedProducts] = useState<Set<string>>(() => new Set())
   const [windowQuery, setWindowQuery] = useState('')
   const [windowFilter, setWindowFilter] = useState('all')
+  const [windowAccountFilter, setWindowAccountFilter] = useState('all')
   const [windowPage, setWindowPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [picker, setPicker] = useState(false)
@@ -142,7 +143,11 @@ export function BatchComposer({
       `${target.name} ${target.account?.account ?? ''} ${target.account?.note ?? ''} ${PROVIDERS[target.provider] ?? target.provider}`
         .toLowerCase()
         .includes(windowQuery.toLowerCase()) &&
-      (windowFilter === 'all' || draft.windowIds.includes(target.id)),
+      (windowFilter === 'all' || draft.windowIds.includes(target.id)) &&
+      (windowAccountFilter === 'all' ||
+        (windowAccountFilter === 'unknown'
+          ? target.account === null
+          : target.account?.status === windowAccountFilter)),
   )
   const pages = Math.max(1, Math.ceil(windowsVisible.length / pageSize))
   const currentPage = Math.min(windowPage, pages)
@@ -689,6 +694,22 @@ export function BatchComposer({
               ]}
               onValueChange={(value) => {
                 setWindowFilter(value)
+                setWindowPage(1)
+              }}
+            />
+            <LabeledSelect
+              ariaLabel="执行窗口账号状态筛选"
+              value={windowAccountFilter}
+              options={[
+                { value: 'all', label: '全部账号状态' },
+                ...Object.entries(ACCOUNT_STATES).map(([value, label]) => ({
+                  value,
+                  label,
+                })),
+                { value: 'unknown', label: '未关联 / 未知' },
+              ]}
+              onValueChange={(value) => {
+                setWindowAccountFilter(value)
                 setWindowPage(1)
               }}
             />

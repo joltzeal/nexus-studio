@@ -14,7 +14,7 @@
 | 最近会话观察             | Rust `SessionStore`，SQLite；不等于当前进程状态                   |
 | 内置浏览器数据           | `profiles/<Nexus UUID>/user-data`，内置 Provider 管理             |
 | 内置内核                 | `cloakbrowser/` 中按完整包版本保存的缓存                          |
-| 外部浏览器环境           | AdsPower 或比特浏览器自行存储，Nexus 不复制其目录                 |
+| 外部浏览器环境           | AdsPower 或比特浏览器自行存储，Raccoon 不复制其目录               |
 | 插件安装及业务资料       | `plugins/` 与各插件私有存储，由插件宿主管理安装、插件管理业务资料 |
 | 外观与工作区偏好         | 当前来源的 localStorage                                           |
 
@@ -30,7 +30,7 @@ React、Node 适配器和插件不直接打开主程序业务库。
 
 | 字段                                         | 含义与约束                                                               |
 | -------------------------------------------- | ------------------------------------------------------------------------ |
-| `id`、`name`                                 | Nexus UUID 与窗口名称；插件关联使用该 UUID                               |
+| `id`、`name`                                 | Raccoon UUID 与窗口名称；插件关联使用该 UUID                             |
 | `binding`                                    | `BrowserBinding { provider_id, connection_id, profile_id }`              |
 | `binary_path`、`kernel_version`              | 可空；内置窗口保存本机二进制路径与完整包版本，外部窗口不据此使用内置内核 |
 | `proxy_mode`                                 | `direct` / `manual` / `plugin` / `provider`，受 Provider 能力约束        |
@@ -67,7 +67,7 @@ React、Node 适配器和插件不直接打开主程序业务库。
 - `browser_connections`：连接配置、启用状态和账户范围声明；
   部分唯一索引保证同一 Provider 只有一个启用连接。
 - `browser_operations`：操作 ID、窗口和连接 ID、操作类型、阶段、请求快照及人工确认记录。
-- `browser_session_observations`：最近观察状态、观察时间和是否由 Nexus 启动。
+- `browser_session_observations`：最近观察状态、观察时间和是否由 Raccoon 启动。
 - `browser_schema`：当前浏览器数据库版本 `2`。
 - `profile_records` 的 `connection_id`、`provider_profile_id`、`sort_order` 是从 JSON
   提取的生成列；连接与环境 ID 的组合唯一，分组列有查询索引。
@@ -79,7 +79,7 @@ Node 浏览器数据目录与 SQLite 记录有各自生命周期；
 ## 唯一一次启动升级
 
 应用启动初始化时，对没有浏览器 schema 标记的既有 SQLite 数据执行一次升级，
-把旧 SQL 窗口行写成 v2 内置绑定，并保留 Nexus UUID、业务字段与分组关系。
+把旧 SQL 窗口行写成 v2 内置绑定，并保留 Raccoon UUID、业务字段与分组关系。
 升级建立连接、操作、观察表和生成列索引，事务提交后记录数据库版本 `2`。
 已有窗口行时先通过 SQLite `VACUUM INTO` 生成一致性备份，
 备份名包含 `before-browser-v2-<UUID>.sqlite`；备份失败停止升级。

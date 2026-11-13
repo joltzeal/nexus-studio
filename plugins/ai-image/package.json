@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-ai-image",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
-  "description": "Nexus AI image plugin: vision-guided product imagery with explicit vision and image model selection",
+  "description": "Raccoon AI image plugin: vision-guided product imagery with explicit vision and image model selection",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

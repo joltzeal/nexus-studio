@@ -112,6 +112,36 @@ class Host implements AgentHost {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('model permits through the production capability', () => {
+  it('rejects malformed settings without crashing or replacing the persisted configuration', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'raccoon-agent-settings-validation-'))
+    try {
+      const service = new SalesAgentService(createSettingsStore(directory))
+      const context = (method: string, payload: unknown) => ({
+        method,
+        payload,
+        signal: new AbortController().signal,
+        assertAlive: () => {},
+      })
+      const host = new Host(true)
+      await service.call(context('salesAgent.settings.save', { settings }), host)
+      for (const baseUrl of ['', 'not-a-url'])
+        await expect(
+          service.call(
+            context('salesAgent.settings.save', {
+              settings: { ...settings, decision: { ...settings.decision, baseUrl } },
+            }),
+            host,
+          ),
+        ).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+      const restarted = new SalesAgentService(createSettingsStore(directory))
+      expect(await restarted.call(context('salesAgent.settings.get', {}), host)).toEqual({
+        settings,
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it.each([false, true])(
     'respects native acquire and reports completion only when acquired: %s',
     async (acquired) => {

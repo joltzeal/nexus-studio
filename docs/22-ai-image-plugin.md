@@ -5,7 +5,7 @@
 开发版本的生成记录详情新增“导入商品库”，商品管理页也可选择生图批次导入。
 一条记录保存为一件草稿商品，整组图片复制到商品插件，保留英文文案及公开来源。
 重复导入返回已有商品，不覆盖手工资料；当前页面保持不变。
-后续ecom agent 将从商品插件读取资料，生图记录不承担商品主档职责。
+后续Ecom Agent 将从商品插件读取资料，生图记录不承担商品主档职责。
 此能力需要包含 `product.catalog` 的新主程序及商品插件，尚未发布；
 完整规则见[商品管理插件](43-products-plugin.md)。
 
@@ -405,29 +405,29 @@ outputVision?: {
 
 ## RPC 方法
 
-| 方法                        | 作用                                           |
-| --------------------------- | ---------------------------------------------- |
-| `image.providers.list`      | 提供方列表，不回传明文 Key                     |
-| `image.providers.save`      | 保存配置；省略 Key/visionModel 保留原值        |
-| `image.providers.remove`    | 删除配置，保留生成记录                         |
-| `image.providers.test`      | GET /models 连通性检查                         |
-| `image.providers.testImage` | 实际生成一张测试图，返回可轮询的生成记录       |
-| `image.presets`             | 返回 100 个场景，含 category                   |
-| `image.upload.begin`        | 开始分块上传                                   |
-| `image.upload.chunk`        | 追加图片分块                                   |
-| `image.upload.finish`       | 校验总大小并写入图片                           |
-| `image.upload.abort`        | 放弃上传会话                                   |
-| `image.upload.remote`       | 插件下载远程图片，按实际字节校验格式           |
-| `image.file.chunk`          | 页面分块读取插件图片                           |
-| `image.plans.create`        | 后台识图并规划场景与多视角提示词               |
-| `image.plans.get`           | 读取规划进度、结果或错误                       |
-| `image.records.list`        | 按状态与来源筛选，返回倒序分页摘要             |
-| `image.records.get`         | 读取记录，含两类识图状态                       |
-| `image.records.remove`      | 删除记录及其图片文件                           |
-| `image.records.retry`       | 重试生成，沿用模型与选图快照                   |
-| `image.records.recognize`   | 识别单张成片，或按原选择重试                   |
-| `image.records.export`      | 补导出到下载文件夹的 Nexus AI 子目录并返回路径 |
-| `image.generate`            | 创建记录并后台执行                             |
+| 方法                        | 作用                                             |
+| --------------------------- | ------------------------------------------------ |
+| `image.providers.list`      | 提供方列表，不回传明文 Key                       |
+| `image.providers.save`      | 保存配置；省略 Key/visionModel 保留原值          |
+| `image.providers.remove`    | 删除配置，保留生成记录                           |
+| `image.providers.test`      | GET /models 连通性检查                           |
+| `image.providers.testImage` | 实际生成一张测试图，返回可轮询的生成记录         |
+| `image.presets`             | 返回 100 个场景，含 category                     |
+| `image.upload.begin`        | 开始分块上传                                     |
+| `image.upload.chunk`        | 追加图片分块                                     |
+| `image.upload.finish`       | 校验总大小并写入图片                             |
+| `image.upload.abort`        | 放弃上传会话                                     |
+| `image.upload.remote`       | 插件下载远程图片，按实际字节校验格式             |
+| `image.file.chunk`          | 页面分块读取插件图片                             |
+| `image.plans.create`        | 后台识图并规划场景与多视角提示词                 |
+| `image.plans.get`           | 读取规划进度、结果或错误                         |
+| `image.records.list`        | 按状态与来源筛选，返回倒序分页摘要               |
+| `image.records.get`         | 读取记录，含两类识图状态                         |
+| `image.records.remove`      | 删除记录及其图片文件                             |
+| `image.records.retry`       | 重试生成，沿用模型与选图快照                     |
+| `image.records.recognize`   | 识别单张成片，或按原选择重试                     |
+| `image.records.export`      | 补导出到下载文件夹的 Raccoon AI 子目录并返回路径 |
+| `image.generate`            | 创建记录并后台执行                               |
 
 同时最多 6 个上传会话；单图最多 8 MiB，仅接受 PNG/JPEG/WebP。
 分块上传完成时检查文件签名与声明 MIME 一致后才落盘；格式不符时丢弃上传会话，

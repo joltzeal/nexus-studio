@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-vinted-monitor",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "private": true,
-  "description": "Nexus Vinted monitor plugin: scheduled listing collection with run history",
+  "description": "Raccoon Vinted monitor plugin: scheduled listing collection with run history",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

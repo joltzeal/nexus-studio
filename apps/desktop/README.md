@@ -1,4 +1,4 @@
-# Nexus 桌面应用
+# Raccoon 桌面应用
 
 本目录包含 React / TypeScript / Vite 前端、Tauri 2 桌面入口与 Rust 业务核心。
 界面采用纸白与钴蓝，保持紧凑表格、侧栏和 shadcn/ui 控件。
@@ -11,7 +11,7 @@
 窗口页使用三个提供方 Tabs，在现有表格上管理内置浏览器、AdsPower 与比特浏览器。
 新建时选择当前接入，已有外部环境可从官方列表接入；创建后不能原地更换绑定。
 全局代理占用、账号关系、短信等待与 SIM8 到期提醒覆盖全部接入。
-详情不启动浏览器；打开、停止、移出 Nexus 与删除环境是独立操作。
+详情不启动浏览器；打开、停止、移出 Raccoon 与删除环境是独立操作。
 
 Rust 是 SQLite 的唯一所有者，窗口与连接字段明文保存，不写 Keychain。
 外观与工作区偏好保留在 localStorage，浏览器预览和 Tauri WebView 按来源分别保存。
@@ -28,7 +28,7 @@ Rust 是 SQLite 的唯一所有者，窗口与连接字段明文保存，不写 
 
 旧 `profile_*` IPC、`NativeProfile` DTO、运行时 schema 1 与旧快照导入已移除。
 已有 SQLite 只在启动时执行一次事务升级，正常读写不包含兼容分支。
-插件仍使用 Nexus UUID；厂商 ID 不替代业务关联 ID。
+插件仍使用 Raccoon UUID；厂商 ID 不替代业务关联 ID。
 
 ## 开发与检查
 

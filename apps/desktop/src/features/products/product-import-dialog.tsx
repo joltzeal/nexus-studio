@@ -75,7 +75,7 @@ function downloadTemplate(format: 'csv' | 'json') {
   )
   const link = document.createElement('a')
   link.href = url
-  link.download = `nexus-products-template.${format}`
+  link.download = `raccoon-products-template.${format}`
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

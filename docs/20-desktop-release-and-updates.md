@@ -1,5 +1,35 @@
 # 桌面发行与应用内更新
 
+## 0.1.30 Raccoon 与 Ecom Agent（2026-11-14）
+
+应用展示名、原生窗口标题、关于页、网页标题及侧栏统一为 `Raccoon`。
+原始品牌图保存在 `assets/brand/raccoon.png`，通过仓库固定的 Tauri CLI
+生成 macOS、Windows 图标；侧栏与 favicon 同步使用这张图。
+macOS 发行与运行时验证路径改为 `Raccoon.app`。
+
+应用版本统一为 `0.1.30`。已有安装身份 `com.nexusstudio.desktop`、
+`nexus-desktop` 二进制名、`nexus.sqlite`、深链接协议、更新端点和验证公钥保持稳定；
+这些属于数据与安装标识，不作为界面品牌展示。
+WiX 的升级身份显式固定为原值
+`2e3e2263-4519-5724-8aaa-441e824cdcc7`，避免因产品更名派生新的升级身份。
+NSIS 使用固定 CLI 对应的官方模板，仅固定原有两个技术注册表键；
+产品名和发布者仍显示 `Raccoon`，保留原有 NSIS 更新通道。
+模板来源、摘要、许可和升级维护要求见
+`apps/desktop/src-tauri/installers/README.md`，不能用静态检查代替 Windows 安装升级验证。
+
+Ecom Agent 展示名改为首字母大写并使用机器人图标。
+修复无效模型地址导致保存抛异常的问题，支持保存并测试；
+商品选择显示相对添加时间和上架次数，执行窗口增加账号状态筛选。
+页面变化随主程序分发，需要升级主程序才能使用。
+配套 11 个插件由同一次 CI 生成和核对，版本清单及 R2 发布证据见
+[插件商店](25-plugin-market.md)。
+
+本次本地只执行直接测试、类型、lint、格式和受控页面验证，
+没有执行应用构建、打包或 Rust 编译、测试、Clippy。
+原生构建与三平台发行交由 GitHub Actions。
+推送标签、插件任务完成、R2 发布和桌面 Release 公开是不同结果，
+以[质量记录](09-quality-and-testing.md)中的实际回执为准。
+
 ## 0.1.29 ecom agent 本地构建（2026-11-13）
 
 按用户本次要求，已完成 macOS Apple Silicon 的 release 构建，包含 ecom agent

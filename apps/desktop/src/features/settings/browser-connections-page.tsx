@@ -122,7 +122,7 @@ export function BrowserConnectionsPage() {
           )}
         </div>
       </div>
-      {!native ? <p role="status">请在 Nexus 桌面应用中管理浏览器接入。</p> : null}
+      {!native ? <p role="status">请在 Raccoon 桌面应用中管理浏览器接入。</p> : null}
       {error ? <FieldError role="alert">{error}</FieldError> : null}
       <Table aria-label="浏览器接入">
         <TableHeader>
@@ -142,7 +142,7 @@ export function BrowserConnectionsPage() {
               <TableCell>
                 {connection.name}
                 <small className="block text-muted-foreground">
-                  {connection.endpoint || '随 Nexus 提供'}
+                  {connection.endpoint || '随 Raccoon 提供'}
                 </small>
               </TableCell>
               <TableCell>

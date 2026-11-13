@@ -140,9 +140,11 @@ export const AgentBatchCreateSchema = z
 const ModelEndpointSchema = z.strictObject({
   baseUrl: z
     .string()
+    .trim()
     .url()
     .max(2048)
     .refine((value) => {
+      if (!URL.canParse(value)) return false
       const url = new URL(value)
       return (
         !url.username &&

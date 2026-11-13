@@ -1,6 +1,6 @@
 {
   "name": "@nexus/plugin-products",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Independent product catalog with owned images and AI generation imports",
   "type": "module",

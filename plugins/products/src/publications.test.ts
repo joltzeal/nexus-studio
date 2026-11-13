@@ -68,7 +68,7 @@ function publicationInput(productId: string, overrides: Record<string, unknown> 
     productId,
     operationId: randomUUID(),
     windowId: randomUUID(),
-    windowName: 'Nexus test window',
+    windowName: 'Raccoon test window',
     platform: 'test-market',
     listingId: 'synthetic-listing-1',
     listingUrl: 'https://example.invalid/listings/synthetic-listing-1',
@@ -279,7 +279,7 @@ describe('confirmed product publications', () => {
   it.each([
     { windowId: randomUUID() },
     { windowName: 'Changed window snapshot' },
-    { windowName: 'Nexus test window ' },
+    { windowName: 'Raccoon test window ' },
     { platform: 'another-test-market' },
     { listingId: 'different-listing' },
     { listingUrl: 'https://example.invalid/listings/different-listing' },

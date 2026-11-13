@@ -139,7 +139,7 @@ impl NetworkProxy {
     pub fn apply_to_node(&self, command: &mut Command, preload: &Path) -> Result<(), String> {
         let proxy = self.resolve()?;
         if !preload.is_file() {
-            return Err("应用缺少代理运行时，请重新安装 Nexus".into());
+            return Err("应用缺少代理运行时，请重新安装 Raccoon".into());
         }
         let preload_url = url::Url::from_file_path(preload).map_err(|_| "代理运行时路径无效")?;
         command

@@ -1,4 +1,4 @@
-# ecom agent 实施审计
+# Ecom Agent 实施审计
 
 审计日期：2026-11-13。依据为[已批准架构](44-sales-agent-architecture.md)、
 [初次实施计划](superpowers/plans/2026-11-13-sales-agent-implementation.md)及
@@ -15,7 +15,7 @@
 原生任务执行与真实平台验收尚未执行。
 源码存在、受控测试通过、真实平台可用是三个不同结论。
 
-本轮审计以本次商品与 Agent 任务为范围，覆盖主程序、插件 SDK、浏览器运行时、ecom agent、
+本轮审计以本次商品与 Agent 任务为范围，覆盖主程序、插件 SDK、浏览器运行时、Ecom Agent、
 账号观察、商品发布记录、桌面页面、依赖和发布流程，包含尚未跟踪的新文件。
 同时执行全仓库 JavaScript/TypeScript 回归和静态检查；
 这不等于重新验收仓库全部历史插件或真实业务链路。

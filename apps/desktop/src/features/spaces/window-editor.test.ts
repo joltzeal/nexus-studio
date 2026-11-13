@@ -428,5 +428,5 @@ it('does not offer AdsPower plugin proxies or unsafe remote edits when capabilit
     components(render(), Input).find((node) => node.props.id === 'window-name')!.props
       .disabled,
   ).toBe(true)
-  expect(text(render())).toContain('仅可修改 Nexus 平台、备注和分组')
+  expect(text(render())).toContain('仅可修改 Raccoon 平台、备注和分组')
 })

@@ -5,7 +5,7 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.address-generator',
-  version: '1.1.0',
+  version: '1.1.1',
   name: '地址生成器',
   minCoreVersion: '0.1.26',
   capabilities: ['address.generator'],

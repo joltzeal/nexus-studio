@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-window-sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "Direct peer transport for opaque encrypted Nexus archives",
+  "description": "Direct peer transport for opaque encrypted Raccoon archives",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

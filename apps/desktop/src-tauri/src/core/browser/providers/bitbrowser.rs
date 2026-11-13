@@ -142,7 +142,9 @@ impl BrowserProvider for BitBrowserProvider {
         let (remote, _) = read_profile(&api, id)
             .map_err(|_| uncertain("比特浏览器已确认创建，但无法读回环境身份，请核对创建结果"))?;
         if reconcile_marker(vec![remote.clone()], operation_id)?.is_none() {
-            return Err(uncertain("比特浏览器未确认 Nexus 创建标记，请核对创建结果"));
+            return Err(uncertain(
+                "比特浏览器未确认 Raccoon 创建标记，请核对创建结果",
+            ));
         }
         Ok(CreatedProfile {
             profile_id: remote.id,
@@ -846,7 +848,7 @@ mod tests {
         previous.provider_config = remote_profile(remote).unwrap().provider_config;
         let mut updated = previous.clone();
         updated.name = "Renamed".into();
-        updated.settings.note = "Nexus note".into();
+        updated.settings.note = "Raccoon note".into();
         BitBrowserProvider::new()
             .update_profile(&connection, &previous, &updated)
             .unwrap();

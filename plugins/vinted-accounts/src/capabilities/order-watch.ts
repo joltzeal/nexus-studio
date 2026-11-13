@@ -158,7 +158,7 @@ export class AccountOrderWatch {
         ])
         const push = sendBark(
           settings.bark,
-          { title: 'Nexus 测试通知', body: 'Vinted 订单提醒已连接' },
+          { title: 'Raccoon 测试通知', body: 'Vinted 订单提醒已连接' },
           { ...this.fetchOptions(), signal },
         )
         this.testPushes.set(controller, push)

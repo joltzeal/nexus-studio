@@ -584,7 +584,7 @@ export function PluginsPage() {
           </DialogHeader>
           <Input
             aria-label="插件商店地址"
-            placeholder="https://market.example.com/nexus-studio-market"
+            placeholder="https://market.example.com/raccoon-market"
             value={storeDraft}
             disabled={storeBusy}
             onChange={(event) => setStoreDraft(event.target.value)}

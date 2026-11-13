@@ -162,7 +162,7 @@ impl ManifestError {
             ManifestError::DuplicateNetworkDomain => "插件清单重复声明了同一域名",
             ManifestError::InvalidSecretSlot => "密钥槽名称只能使用小写字母、数字和连字符",
             ManifestError::DuplicateSecretSlot => "插件清单重复声明了同一密钥槽",
-            ManifestError::IncompatibleCore => "插件要求更高版本的 Nexus 核心",
+            ManifestError::IncompatibleCore => "插件要求更高版本的 Raccoon 核心",
         }
     }
 }

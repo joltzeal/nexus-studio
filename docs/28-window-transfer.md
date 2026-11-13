@@ -68,7 +68,7 @@ Cookies（包括 `Default/Network/Cookies`）、localStorage、IndexedDB、OPFS 
 覆盖只允许显式选择并关闭对应窗口；覆盖失败恢复原资料。
 快照 manifest 只接受 `schemaVersion: 3`。
 每个窗口条目保存 `record: WindowRecord` v2、`capabilities`、可空分组与 `kernelVersion`。
-记录内 `binding` 必须为内置 Provider/连接，内置环境 ID 与 Nexus UUID 一致。
+记录内 `binding` 必须为内置 Provider/连接，内置环境 ID 与 Raccoon UUID 一致。
 记录的 `kernel_version`、条目的完整 `kernelVersion` 及本机受管安装清单必须相同，
 同时核对二进制路径；Chrome 显示值另存于可选 `provider_config.displayVersion`。
 显示值可能省略包修订号，不能拿相同显示版本的其他修订代替。
@@ -126,7 +126,7 @@ manifest 版本变化不修改加密容器、便携站点状态 `schemaVersion: 
 ## 中断与恢复
 
 导入通过临时目录、原目录备份、SQLite 事务和落盘收据协调提交。
-副本模式生成新 Nexus UUID，并同步更新内置环境绑定和插件 `windowIdMap`；
+副本模式生成新 Raccoon UUID，并同步更新内置环境绑定和插件 `windowIdMap`；
 保留标识模式遇到同 UUID 冲突即拒绝，只有显式替换才覆盖已停止且绑定兼容的内置窗口。
 正常导入和日志恢复只接受 v2 内置记录，不保留旧日志字段默认读取器。
 失败时先恢复原生窗口资料，再补偿插件写入；原生恢复完成必须先写入检查点，

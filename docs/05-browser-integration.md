@@ -4,7 +4,7 @@
 
 桌面窗口统一通过 `WindowService` 管理，按
 `BrowserBinding { provider_id, connection_id, profile_id }` 分派到内置 CloakBrowser、
-AdsPower 或比特浏览器。Nexus UUID 是业务窗口和插件关联的 `windowId`，
+AdsPower 或比特浏览器。Raccoon UUID 是业务窗口和插件关联的 `windowId`，
 厂商环境 ID 仅保存在绑定中。`origin: created | attached` 区分创建与接管，
 接管不会复制厂商目录，也不会自动启动环境。
 
@@ -33,7 +33,7 @@ API endpoint 只接受 loopback HTTP(S) 根地址，不接受凭据、查询或 
 请求固定到校验后的 loopback 地址，拒绝重定向、绕过应用/系统代理，并禁用自动重放。
 AdsPower 支持可选 Bearer API Key；当前比特浏览器适配器不接受 API Key 配置。
 发现环境和厂商分组使用 `browser_profile_discover`、`browser_group_list`，
-接管使用 `browser_window_attach`；Nexus 分组关系与厂商默认分组不是同一概念。
+接管使用 `browser_window_attach`；Raccoon 分组关系与厂商默认分组不是同一概念。
 
 | 能力                       | 内置 CloakBrowser            | AdsPower                        | 比特浏览器                             |
 | -------------------------- | ---------------------------- | ------------------------------- | -------------------------------------- |
@@ -41,7 +41,7 @@ AdsPower 支持可选 Bearer API Key；当前比特浏览器适配器不接受 A
 | 接管已有环境               | 不提供外部接管               | 按连接发现并登记                | 按连接发现并登记                       |
 | 编辑厂商配置               | 支持受限配置，身份字段不可变 | 未验证，不可用；在厂商应用编辑  | 已有部分更新路径，未知字段和指纹需保留 |
 | 插件代理                   | 原生解析并在失败时阻断       | 未验证，不可用                  | 已有映射路径，待真实验收               |
-| 指纹种子                   | Nexus 数字种子，创建后固定   | 厂商管理，不接受 Nexus 种子     | 厂商管理，不接受 Nexus 种子            |
+| 指纹种子                   | Raccoon 数字种子，创建后固定 | 厂商管理，不接受 Raccoon 种子   | 厂商管理，不接受 Raccoon 种子          |
 | 内核选择                   | 完整包版本，创建后固定       | 厂商管理                        | 厂商管理                               |
 | 加密导出与同步             | manifest3 内置快照           | 不支持                          | 不支持                                 |
 
@@ -52,8 +52,8 @@ AdsPower 的 `update` 和 `proxyPlugin` 能力均已在适配器关闭，
 
 外部窗口的运行状态来自 Local API 观察。`unknown` 不等于 `stopped`，
 `missing` 不触发插件关联删除；断开时保留历史身份，不按名称寻找替代环境。
-解除 Nexus 关联和删除厂商环境分别由 `deleteEnvironment` 表达。
-退出或更新 Nexus 不自动停止厂商环境。创建响应不明时通过持久操作 ID 协调，
+解除 Raccoon 关联和删除厂商环境分别由 `deleteEnvironment` 表达。
+退出或更新 Raccoon 不自动停止厂商环境。创建响应不明时通过持久操作 ID 协调，
 不能盲目重试，细节见[核心后端](12-core-backend.md)。
 
 ## 内置运行时输入
@@ -235,7 +235,7 @@ SOCKS5 地址校验接受普通 `socks5://host:port` 的空 path（含 IPv4/IPv6
 
 内置 Provider 负责受管目录和进程，`WindowService` 负责业务锁、状态与操作协调；
 Node.js 适配器封装内置官方 SDK。外部环境由厂商应用持有，通过 Local API 控制和观察。
-不同 Profile 的启动和停止可并行；Nexus 不自行猜测或固定 CloakBrowser 并发席位。
+不同 Profile 的启动和停止可并行；Raccoon 不自行猜测或固定 CloakBrowser 并发席位。
 官方包装层未公开可信席位数时，超额由 CloakBrowser 启动错误裁决并反馈给用户。
 UI 只接受稳定 DTO，不持有进程句柄或调试端口。启动前生成不可变、经过验证的快照；
 修改窗口配置不静默改变已运行会话，重启后才应用。
@@ -244,11 +244,11 @@ UI 只接受稳定 DTO，不持有进程句柄或调试端口。启动前生成�
 适配器必须单独约束这类请求，不能凭页面代理配置声称全部流量已受保护。
 日志仅存脱敏摘要，代理密码和许可证不进入 localStorage。
 
-## ecom agent 自动化端口
+## Ecom Agent 自动化端口
 
 当前浏览器工具层采用现有 `playwright-core` 与受管 Node 运行时，供 Rust 宿主网关调用。
 它不包含销售流程、插件权限检查或持久任务协调；这些由
-[ecom agent 架构](44-sales-agent-architecture.md) 所述宿主负责。
+[Ecom Agent 架构](44-sales-agent-architecture.md) 所述宿主负责。
 `WindowService` 提供以下 Rust 接口，均返回 `BrowserResult`，不是直接开放给页面的 IPC：
 
 ```rust

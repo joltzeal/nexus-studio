@@ -3,7 +3,7 @@ import { invokeBrowser } from '@/lib/platform/browser-api'
 import { pluginHostAvailable } from '@/lib/platform/native-plugins'
 
 export function requireAgentHost() {
-  if (!pluginHostAvailable()) throw new Error('ecom agent 需要桌面应用，网页不能执行。')
+  if (!pluginHostAvailable()) throw new Error('Ecom Agent 需要桌面应用，网页不能执行。')
 }
 
 export function agentReply<T>(
@@ -13,7 +13,7 @@ export function agentReply<T>(
   value: unknown,
 ): T {
   const result = schema.safeParse(value)
-  if (!result.success) throw new Error('ecom agent 返回的数据格式无效，请更新后刷新。')
+  if (!result.success) throw new Error('Ecom Agent 返回的数据格式无效，请更新后刷新。')
   return result.data
 }
 
@@ -40,7 +40,7 @@ export function checkAgentPage(
     count > result.pageSize ||
     count > result.total
   )
-    throw new Error('ecom agent 分页资料不一致，请刷新。')
+    throw new Error('Ecom Agent 分页资料不一致，请刷新。')
 }
 
 export async function agentNative(command: string, args: Record<string, unknown>) {

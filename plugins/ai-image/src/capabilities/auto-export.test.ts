@@ -93,7 +93,7 @@ describe('generated image exports', () => {
     vi.stubGlobal('fetch', requests)
     const { record } = await generate(instance)
     const original = await finished(instance, record.id)
-    const downloads = join(instance.root, 'Downloads', 'Nexus AI')
+    const downloads = join(instance.root, 'Downloads', 'Raccoon AI')
     const reopened = await setup(instance.root, downloads)
     const exported = await reopened.call<{ paths: string[] }>('image.records.export', {
       id: record.id,

@@ -21,6 +21,7 @@ import { agentError, readPickedProducts } from './api'
 import { useAgentQuery } from './use-query'
 import { RequestScope } from './state'
 import { AgentProductCover } from './product-cover'
+import { productAddedTime, productPublicationCountLabel } from './product-picker-metadata'
 
 export function ProductPicker({
   existingIds,
@@ -129,6 +130,7 @@ export function ProductPicker({
           {list.loading ? <Skeleton className="h-24 w-full" /> : null}
           {data?.items.map((product) => {
             const unavailable = existing.has(product.id) || product.status === 'archived'
+            const addedAt = productAddedTime(product.createdAt)
             return (
               <div key={product.id} className="sales-agent-product-row">
                 <Checkbox
@@ -158,6 +160,21 @@ export function ProductPicker({
                   <strong>{product.name}</strong>
                   <span>{product.title || '尚未填写标题'}</span>
                 </span>
+                <div className="ml-auto flex shrink-0 flex-col gap-1 text-right text-muted-foreground">
+                  <span>
+                    添加时间{' '}
+                    {addedAt.dateTime ? (
+                      <time dateTime={addedAt.dateTime} title={addedAt.title}>
+                        {addedAt.label}
+                      </time>
+                    ) : (
+                      addedAt.label
+                    )}
+                  </span>
+                  <span>
+                    上架次数 {productPublicationCountLabel(product.publicationCount)}
+                  </span>
+                </div>
                 {unavailable ? (
                   <Badge variant="outline">
                     {existing.has(product.id) ? '已选入' : '已归档'}

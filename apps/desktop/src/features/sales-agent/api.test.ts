@@ -252,7 +252,7 @@ describe('real target and product readers', () => {
     })
   })
 
-  it('joins native Nexus UUIDs to credential-free bindings, and visibly blocks a banned account', async () => {
+  it('joins native Raccoon UUIDs to credential-free bindings, and visibly blocks a banned account', async () => {
     expect(await listAgentTargets()).toEqual([target])
     vi.mocked(listBindings).mockResolvedValue({
       items: [

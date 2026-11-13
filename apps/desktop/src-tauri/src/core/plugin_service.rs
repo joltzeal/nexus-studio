@@ -159,7 +159,7 @@ fn webview_capability(input: &CallInput) -> Result<Capability, String> {
                 | "configuration.import"
         )
     {
-        return Err("ecom agent method is not available through the WebView".into());
+        return Err("Ecom Agent method is not available through the WebView".into());
     }
     if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
         return Err("代理连接解析仅供原生窗口启动调用".into());
@@ -189,7 +189,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         .open(app_data.join("workspace.lock"))?;
     instance_lock
         .try_lock()
-        .map_err(|_| std::io::Error::other("此工作区已在另一个 Nexus 实例中打开"))?;
+        .map_err(|_| std::io::Error::other("此工作区已在另一个 Raccoon 实例中打开"))?;
     app.manage(WorkspaceLock(instance_lock));
     let runtime = RuntimePaths::for_app(app).map_err(std::io::Error::other)?;
     let root = app_data.join("plugins");

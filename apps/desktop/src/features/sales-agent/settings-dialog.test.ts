@@ -54,30 +54,30 @@ describe('model settings persistence and credential boundaries', () => {
   })
   afterEach(() => hooks.dispose())
 
-  it('requires saving changed settings before testing and calls the chosen model kind', async () => {
+  it('saves changed settings before testing instead of disabling the test action', async () => {
     edit('agent-generation-model', 'updated-vision')
-    expect(button('测试生成 / 识图模型').props.disabled).toBe(true)
+    expect(button('保存并测试生成 / 识图模型').props.disabled).toBe(false)
     vi.mocked(saveAgentSettings).mockResolvedValue({
       ...settings,
       generation: { ...settings.generation, model: 'updated-vision' },
     })
-    click('保存模型配置')
-    await flushPromises()
-    expect(saveAgentSettings).toHaveBeenCalledExactlyOnceWith({
-      ...settings,
-      generation: { ...settings.generation, model: 'updated-vision' },
-    })
-    expect(onSaved).toHaveBeenCalledTimes(1)
-    expect(button('测试生成 / 识图模型').props.disabled).toBe(false)
     vi.mocked(testAgentModel).mockResolvedValue({
       ok: true,
       kind: 'generation',
       model: 'updated-vision',
       checks: { vision: true, english: true },
     })
-    click('测试生成 / 识图模型')
+    click('保存并测试生成 / 识图模型')
     await flushPromises()
+    expect(saveAgentSettings).toHaveBeenCalledExactlyOnceWith({
+      ...settings,
+      generation: { ...settings.generation, model: 'updated-vision' },
+    })
+    expect(onSaved).toHaveBeenCalledTimes(1)
     expect(testAgentModel).toHaveBeenCalledExactlyOnceWith('generation')
+    expect(vi.mocked(saveAgentSettings).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(testAgentModel).mock.invocationCallOrder[0]!,
+    )
     expect(text(render())).toContain('图片识别：通过')
     expect(text(render())).toContain('英文文案：通过')
   })
@@ -132,7 +132,42 @@ describe('model settings persistence and credential boundaries', () => {
     await flushPromises()
     edit('agent-decision-model', 'another-model')
     expect(text(render())).not.toContain('结构化判断：通过')
-    expect(button('测试判断模型').props.disabled).toBe(true)
+    expect(button('保存并测试判断模型').props.disabled).toBe(false)
+  })
+
+  it('validates an incomplete first configuration without throwing or losing input', async () => {
+    hooks.dispose()
+    hooks = new KernelHookHarness(state)
+    const tree = () => hooks.render(() => AgentSettingsForm({ initial: null, onSaved }))
+    tree()
+    hooks.flushEffects()
+    const input = (id: string) =>
+      components(tree(), Input).find((node) => node.props.id === id)!
+    input('agent-generation-model').props.onChange?.({
+      target: { value: 'retained-vision-model' },
+    } as React.ChangeEvent<HTMLInputElement>)
+    const save = components(tree(), Button).find(
+      (node) => text(node.props.children) === '保存模型配置',
+    )!
+    expect(() =>
+      save.props.onClick?.({} as React.MouseEvent<HTMLButtonElement>),
+    ).not.toThrow()
+    await flushPromises()
+    expect(text(tree())).toContain('请填写判断模型的接口地址')
+    expect(input('agent-decision-url').props['aria-invalid']).toBe(true)
+    expect(input('agent-generation-model').props.value).toBe('retained-vision-model')
+    expect(saveAgentSettings).not.toHaveBeenCalled()
+    expect(testAgentModel).not.toHaveBeenCalled()
+  })
+
+  it('does not test unsaved credentials when persistence fails', async () => {
+    edit('agent-generation-key', 'fixture-unsaved-key')
+    vi.mocked(saveAgentSettings).mockRejectedValue(new Error('Controlled save failure'))
+    click('保存并测试生成 / 识图模型')
+    await flushPromises()
+    expect(testAgentModel).not.toHaveBeenCalled()
+    expect(text(render())).toContain('保存未确认')
+    expect(button('保存并测试生成 / 识图模型').props.disabled).toBe(false)
   })
 
   it('explains the missing prices when a fee budget fails before saving', async () => {

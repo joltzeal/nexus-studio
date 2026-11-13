@@ -49,18 +49,18 @@ export interface AgentTarget {
 }
 
 export function agentUnavailable(plugin: PluginView | null): string | null {
-  if (!plugin || plugin.state === 'available') return 'ecom agent 插件尚未安装。'
-  if (!plugin.enabled) return 'ecom agent 插件未启用，请在插件中心检查。'
-  if (plugin.state !== 'running') return 'ecom agent 插件尚未运行。'
+  if (!plugin || plugin.state === 'available') return 'Ecom Agent 插件尚未安装。'
+  if (!plugin.enabled) return 'Ecom Agent 插件未启用，请在插件中心检查。'
+  if (plugin.state !== 'running') return 'Ecom Agent 插件尚未运行。'
   if (
     plugin.id !== SALES_AGENT_PLUGIN_ID ||
     !plugin.capabilities.includes(SALES_AGENT_CAPABILITY) ||
     !plugin.granted.includes(SALES_AGENT_CAPABILITY)
   )
-    return 'ecom agent 插件缺少 sales.agent 授权。'
+    return 'Ecom Agent 插件缺少 sales.agent 授权。'
   if (!AGENT_METHODS.every((method) => plugin.methods.includes(method)))
-    return 'ecom agent 插件需要更新，当前方法不完整。'
-  if (!plugin.storageDurable) return 'ecom agent 需要插件持久存储，请检查插件中心。'
+    return 'Ecom Agent 插件需要更新，当前方法不完整。'
+  if (!plugin.storageDurable) return 'Ecom Agent 需要插件持久存储，请检查插件中心。'
   return null
 }
 
@@ -89,7 +89,7 @@ export async function listAgentBatches(page = 1, pageSize = 20): Promise<AgentBa
   )
   checkPage(result, query, result.items.length)
   if (new Set(result.items.map((batch) => batch.id)).size !== result.items.length)
-    throw new Error('ecom agent 批次重复，请刷新。')
+    throw new Error('Ecom Agent 批次重复，请刷新。')
   const lastPage = Math.max(1, Math.ceil(result.total / query.pageSize))
   if (result.page > lastPage) return listAgentBatches(lastPage, pageSize)
   return result
@@ -112,7 +112,7 @@ export async function getAgentBatch(
     new Set(result.jobs.map((job) => job.id)).size !== result.jobs.length ||
     new Set(result.jobs.map((job) => job.windowId)).size !== result.jobs.length
   )
-    throw new Error('ecom agent 作业与批次不一致，请刷新。')
+    throw new Error('Ecom Agent 作业与批次不一致，请刷新。')
   const lastPage = Math.max(1, Math.ceil(result.total / query.pageSize))
   if (result.page > lastPage) return getAgentBatch(id, lastPage, pageSize)
   return result
@@ -283,7 +283,7 @@ export function agentError(cause: unknown): string {
       .replace(/https?:\/\/[^/@\s]+:[^/@\s]+@/gi, '[redacted]@')
       .slice(0, 600)
   }
-  return 'ecom agent 请求失败，请检查配置或刷新后重试。'
+  return 'Ecom Agent 请求失败，请检查配置或刷新后重试。'
 }
 
 export async function readPickedProducts(ids: readonly string[]): Promise<Product[]> {

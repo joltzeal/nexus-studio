@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Settings2 } from 'lucide-react'
+import { Bot, Settings2 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -35,7 +35,7 @@ export function SalesAgentPage({ plugin, hostAvailable }: SalesAgentPageProps) {
   if (!hostAvailable || !plugin || plugin.state !== 'running') {
     return (
       <PluginGate
-        label="ecom agent"
+        label="Ecom Agent"
         hostAvailable={hostAvailable}
         plugin={plugin?.state === 'available' ? null : plugin}
       />
@@ -46,7 +46,7 @@ export function SalesAgentPage({ plugin, hostAvailable }: SalesAgentPageProps) {
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>ecom agent 暂不可用</EmptyTitle>
+          <EmptyTitle>Ecom Agent 暂不可用</EmptyTitle>
           <EmptyDescription>{unavailable}</EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -154,7 +154,10 @@ export function SalesAgentWorkspace() {
         <CardHeader className="sales-agent-page-header">
           <div>
             <CardTitle>
-              <h1 id="sales-agent-heading">ecom agent</h1>
+              <h1 id="sales-agent-heading" className="sales-agent-inline">
+                <Bot aria-hidden="true" />
+                Ecom Agent
+              </h1>
             </CardTitle>
             <CardDescription>
               固定商品与账号归属，查看真实任务进度与待处理结果。
@@ -232,7 +235,7 @@ export function SalesAgentWorkspace() {
           </Tabs>
         </CardContent>
         <CardFooter className="sales-agent-footer">
-          任务在 Nexus 运行期间执行；退出后保留进度，重新打开可核对并继续。
+          任务在 Raccoon 运行期间执行；退出后保留进度，重新打开可核对并继续。
         </CardFooter>
       </Card>
       {settingsOpen ? (

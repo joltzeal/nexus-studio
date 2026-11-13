@@ -23,7 +23,7 @@ function handshake(options: Parameters<typeof createSalesAgentPlugin>[0]) {
   }
 }
 
-describe('ecom agent storage handshake', () => {
+describe('Ecom Agent storage handshake', () => {
   it('advertises durable storage when using the managed settings directory', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'nexus-agent-handshake-'))
     try {

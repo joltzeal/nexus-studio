@@ -5,6 +5,58 @@ const uuid = (index: number) =>
   `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
 
 describe('sales Agent boundaries', () => {
+  const modelSettings = {
+    decision: {
+      baseUrl: 'https://decision.example.invalid',
+      apiKey: 'fixture-decision-key',
+      model: 'fixture-decision',
+    },
+    generation: {
+      baseUrl: 'https://generation.example.invalid/v1',
+      apiKey: 'fixture-generation-key',
+      model: 'fixture-vision',
+    },
+  }
+
+  it.each(['', 'not-a-url', 'https://', 'http://[broken'])(
+    'returns validation issues for malformed model and notification URLs: %j',
+    (baseUrl) => {
+      for (const kind of ['decision', 'generation', 'notifications'] as const) {
+        const input =
+          kind === 'notifications'
+            ? { ...modelSettings, notifications: { baseUrl } }
+            : {
+                ...modelSettings,
+                [kind]: { ...modelSettings[kind], baseUrl },
+              }
+        expect(AgentSettingsSchema.safeParse(input).success).toBe(false)
+      }
+    },
+  )
+
+  it('normalizes pasted endpoint whitespace without weakening endpoint restrictions', () => {
+    expect(
+      AgentSettingsSchema.parse({
+        ...modelSettings,
+        generation: {
+          ...modelSettings.generation,
+          baseUrl: '  https://generation.example.invalid/v1  ',
+        },
+      }).generation.baseUrl,
+    ).toBe('https://generation.example.invalid/v1')
+    for (const baseUrl of [
+      'http://remote.example.invalid',
+      'https://user:password@example.invalid',
+      'https://example.invalid?key=fixture',
+    ])
+      expect(
+        AgentSettingsSchema.safeParse({
+          ...modelSettings,
+          generation: { ...modelSettings.generation, baseUrl },
+        }).success,
+      ).toBe(false)
+  })
+
   it('rejects assigning a product or window twice', () => {
     const draft = {
       operationId: uuid(1),

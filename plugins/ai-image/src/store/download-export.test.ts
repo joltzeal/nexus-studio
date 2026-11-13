@@ -39,7 +39,7 @@ it('the production plugin writes export copies into Downloads instead of its pri
   })
   const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
   const path = await instance.images.exportCopy(bytes, 'image/png', 'product', true)
-  expect(path).toBe(join(destination.home, 'Downloads', 'Nexus AI', 'product.png'))
+  expect(path).toBe(join(destination.home, 'Downloads', 'Raccoon AI', 'product.png'))
   expect(new Uint8Array(await readFile(path!))).toEqual(bytes)
   await expect(readdir(join(storage, 'exports'))).rejects.toMatchObject({
     code: 'ENOENT',
@@ -50,7 +50,7 @@ it('does not silently export into private storage when Downloads cannot be writt
   destination.home = await mkdtemp(join(tmpdir(), 'nexus-blocked-downloads-'))
   directories.push(destination.home)
   await mkdir(join(destination.home, 'Downloads'))
-  await writeFile(join(destination.home, 'Downloads', 'Nexus AI'), 'not a directory')
+  await writeFile(join(destination.home, 'Downloads', 'Raccoon AI'), 'not a directory')
   const storage = join(destination.home, 'private-plugin-data')
   const instance = createAiImagePlugin({
     storageDirectory: storage,

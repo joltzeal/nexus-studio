@@ -2,13 +2,13 @@
 
 ## 1. 文档目的
 
-本文规定 Nexus 插件的开发、接入、运行与验收边界，涵盖代理、地址生成、共享货源、平台账号、接码、图片生成、浏览器环境配置、列表监控、同步、邮箱和商品能力。
+本文规定 Raccoon 插件的开发、接入、运行与验收边界，涵盖代理、地址生成、共享货源、平台账号、接码、图片生成、浏览器环境配置、列表监控、同步、邮箱和商品能力。
 插件负责实现能力，主程序通过统一 `WindowService` 负责业务窗口、Provider 分派、
 连接范围、权限决策、密钥引用和统一交互。
 窗口使用 `WindowRecord` v2 与
 `BrowserBinding { provider_id, connection_id, profile_id }`；
-Nexus UUID 是插件关联的 `windowId`，不以厂商环境 ID 代替。
-内置 Provider 管理 CloakBrowser 进程，外部环境由厂商应用管理，Nexus 通过 Local API 调用。
+Raccoon UUID 是插件关联的 `windowId`，不以厂商环境 ID 代替。
+内置 Provider 管理 CloakBrowser 进程，外部环境由厂商应用管理，Raccoon 通过 Local API 调用。
 
 宿主侧已实现发现、安装、登记表、受管进程、权限检查点与窗口启动阻断，
 代码位于 `apps/desktop/src-tauri/src/core/plugin_host`，实际边界与限制见
@@ -56,8 +56,8 @@ AdsPower 编辑和插件代理能力已关闭，验证前不可用，见[浏览�
 - `ProductCatalog` 与 `product.catalog`：独立商品资料及图片能力，不复用货源目录或生图记录。
   RPC 与图片传输契约公开于 `@nexus/plugin-products/contracts`，见[商品管理插件](43-products-plugin.md)。
   `products.publications.record` 只记录受信任调用方已确认的平台刊登事实，按操作 UUID 幂等，
-  保存 Nexus 窗口与商品快照修订；普通保存和导入不能修改发布历史。
-  商品插件本身不执行刊登；ecom agent 的宿主网关与调用权限见[执行规范](44-sales-agent-architecture.md)。
+  保存 Raccoon 窗口与商品快照修订；普通保存和导入不能修改发布历史。
+  商品插件本身不执行刊登；Ecom Agent 的宿主网关与调用权限见[执行规范](44-sales-agent-architecture.md)。
 - `SalesAgent`、`sales.agent` 与 `@nexus/plugin-sdk/agent`：
   批次输入、不可变快照、作业 scope、模型设置与分页状态的严格校验契约。
   `studio.sales-agent` 只接收宿主派发的单步任务，不在一次普通 RPC 内运行完整批次。
@@ -99,7 +99,7 @@ plugin-root/
 - SDK 的运行入口和子路径导出必须指向 `dist` 中的 JavaScript；类型入口使用 `.d.ts`。
   安装后的依赖位于真实 `node_modules`，不能依赖 Node 直接加载其中的 TypeScript。
   本仓库无构建的 Vitest 通过测试配置解析生命周期源码，不能将测试别名作为发行入口。
-- 插件不得要求用户为 Nexus 主程序配置 `.env`；插件需要的密码与密钥由插件自己保存在私有目录。
+- 插件不得要求用户为 Raccoon 主程序配置 `.env`；插件需要的密码与密钥由插件自己保存在私有目录。
 - 插件 ID 一经发布不得修改；更名使用新的插件 ID，并提供显式迁移。
 
 ## 5. Manifest 规范
@@ -133,7 +133,7 @@ export default definePluginManifest({
 | `id`                             | 反向域名风格，例如 `studio.proxy-example`；全局唯一且不可变  |
 | `version`                        | 完整 SemVer，例如 `1.2.0`                                    |
 | `name`                           | 1–80 个字符，仅用于展示                                      |
-| `minCoreVersion`                 | 最低 Nexus 核心版本，使用完整 SemVer，不使用范围表达式       |
+| `minCoreVersion`                 | 最低 Raccoon 核心版本，使用完整 SemVer，不使用范围表达式     |
 | `capabilities`                   | 至少一个已知能力；运行时只能调用已声明能力                   |
 | `permissions.networkDomains`     | 精确域名列表，不允许 URL、端口、路径、IP、localhost 或通配符 |
 | `permissions.wantsBrowserAccess` | 申请通过宿主操作受控浏览器页面，不代表已获授权               |
@@ -184,7 +184,7 @@ type ResolveResult =
 必要的百分号编码认证信息，仅支持 `http`、`https`、`socks5`、`socks5h`。
 缺少凭据时返回失败，不能省略认证继续启动。此字段只临时经过插件 IPC 和原生宿主内存；
 内置 Provider 经运行时 stdin 使用，支持该能力的外部 Provider 经受限 Local API 映射。
-不进入 UI、Nexus 持久化窗口或普通诊断日志；外部厂商对收到的代理配置如何保存
+不进入 UI、Raccoon 持久化窗口或普通诊断日志；外部厂商对收到的代理配置如何保存
 由厂商管理，不能宣称其也只在内存中使用。外部更新代理失败时阻断启动，不回退直连。
 WebView 的通用 `plugin_call` 不开放此原生启动方法。
 
@@ -300,7 +300,7 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
 
 - 插件不能设置 `binaryPath`、`userDataDir`、许可证、调试端口或进程环境变量。
 - 插件不能修改已经固定的指纹种子、内核版本和 Profile 标识。
-- 外部 Provider 不接受 Nexus 数字种子或内置内核选择；
+- 外部 Provider 不接受 Raccoon 数字种子或内置内核选择；
   不支持的字段明确拒绝，不能用全量指纹覆盖来模拟部分编辑。
 - 多个插件修改同一字段时，由主程序按确定规则报冲突，不静默采用最后一个值。
 - 所有补丁必须在启动前完成；运行中修改仅影响下一次启动。
@@ -340,7 +340,7 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
 - 一个窗口最多关联一个账号；同一账号被多个窗口关联是允许的，但写入前必须返回冲突，
   由页面提示后再确认，不能静默覆盖。
 - 插件只保存窗口标识，不保存窗口名称：窗口名称属于主程序，插件不得复制一份会过期的副本。
-- `windowId` 必须是全局 Nexus UUID；同一厂商环境 ID 在不同连接下不能合并为一个窗口。
+- `windowId` 必须是全局 Raccoon UUID；同一厂商环境 ID 在不同连接下不能合并为一个窗口。
   关联查询使用全部连接的业务窗口集合，不能只用当前浏览器 Tab 的列表清理其他关联。
 - API 失败、范围未确认、环境 `missing` 仅影响观察和操作；
   删除或解除关联必须使用明确的业务操作，不借列表缺失自动清空关联。
@@ -354,9 +354,9 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
 返回为 `{ windowId: string, unbound: boolean }`；
 类型和校验器从 `@nexus/plugin-sdk/lifecycle` 公开导出。
 
-该方法只解除对应 Nexus UUID 的窗口关联，保留账号、手机号和代理记录；
+该方法只解除对应 Raccoon UUID 的窗口关联，保留账号、手机号和代理记录；
 重复调用在没有关联时返回 `unbound: false`，不能报错或删除业务资料。
-宿主在删除浏览器环境或移出 Nexus 得到确认后调用它，并核对回传的窗口 ID。
+宿主在删除浏览器环境或移出 Raccoon 得到确认后调用它，并核对回传的窗口 ID。
 清理失败时保留待完成删除记录，只重试关联清理。
 普通 WebView `plugin_call` 拒绝此保留方法；面向用户的解绑仍使用插件自己的明确业务方法。
 已安装但停用的账号池仍属于清理范围，宿主不会为清理改动启用状态或补授予权限。
@@ -463,14 +463,14 @@ interface PluginResponse<T> {
 
 - `apiVersion` 表示宿主协议主版本；不兼容变更提升该值。
 - 插件自身 `version` 遵循 SemVer。
-- `minCoreVersion` 高于当前 Nexus 版本时拒绝安装。
+- `minCoreVersion` 高于当前 Raccoon 版本时拒绝安装。
 - 新增可选能力或可选字段属于兼容扩展；删除字段、改变语义或收紧已有输入属于不兼容变更。
 - 宿主不得猜测未知能力的行为；未知 capability、method 或字段应返回明确错误。
 - 更新插件前保存旧包和配置迁移结果，迁移失败时保留原版本，不留下半更新状态。
 
 ### 10.1 页面入口与主程序版本
 
-从 Nexus `0.1.8` 起，插件中心二级导航由 `plugin_catalog` 动态生成，
+从 Raccoon `0.1.8` 起，插件中心二级导航由 `plugin_catalog` 动态生成，
 不需要把插件 ID 加进 `AppShell` 的固定菜单。
 记录必须已启用且不是 `available`；标签直接使用 manifest 对应的宿主名称，
 路由使用 `plugin:<id>`，不依赖名称唯一性。启动中、重试中的插件也保留入口。
@@ -538,7 +538,7 @@ SDK 中的抽象能力接口不等于每个插件方法都已经标准化。
 环境配置及浏览器操作仍必须按宿主和 Provider 的实际能力开放。
 插件密码按模块实现保存在私有明文文件中，不能把私有目录称为系统密钥库。
 
-多浏览器改造复用同一宿主，以 Nexus UUID 保留关联，外部环境仍属于厂商应用。
+多浏览器改造复用同一宿主，以 Raccoon UUID 保留关联，外部环境仍属于厂商应用。
 AdsPower 编辑和插件代理尚不可用；支持声明、源码映射和真实验收必须分别说明。
 签名、来源验证和操作系统隔离仍是开放第三方插件前的独立工作，
 见[插件宿主](17-plugin-host.md)第 12 节。以上描述实现边界，不构成测试通过记录。

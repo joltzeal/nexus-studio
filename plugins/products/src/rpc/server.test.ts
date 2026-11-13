@@ -78,7 +78,7 @@ describe('product process protocol', () => {
     expect(t.messages[0]).toMatchObject({
       type: 'hello',
       pluginId: 'studio.products',
-      version: '1.0.0',
+      version: manifest.version,
       capabilities: ['product.catalog'],
     })
     expect(t.messages[1]).toMatchObject({

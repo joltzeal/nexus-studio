@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-proxy-pool",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
-  "description": "Nexus proxy pool plugin: endpoint inventory, connectivity checks, IP reputation and Clash subscriptions",
+  "description": "Raccoon proxy pool plugin: endpoint inventory, connectivity checks, IP reputation and Clash subscriptions",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

@@ -1498,7 +1498,7 @@ pub async fn window_transfer_pick(
         let dialog = app
             .dialog()
             .file()
-            .add_filter("Nexus 窗口", &["nexuswindow"]);
+            .add_filter("Raccoon 窗口", &["nexuswindow"]);
         let path = if save {
             dialog
                 .set_file_name("windows.nexuswindow")

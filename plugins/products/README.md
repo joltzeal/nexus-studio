@@ -1,6 +1,6 @@
 # Products plugin
 
-`studio.products` 1.0.0 provides the `product.catalog` capability for Nexus
+`studio.products` 1.0.0 provides the `product.catalog` capability for Raccoon
 0.1.29 and later. The manifest requests private storage and no network, browser,
 or secret permissions. This trusted Node process is not a security sandbox.
 It performs no platform publishing, Agent execution, or browser automation.

@@ -6,17 +6,17 @@
 ## 当前事实
 
 当前插件版本为 `1.4.0`，最低主程序 `0.1.29`，已发布至 R2。
-新增供 ecom agent 使用的账号身份快照和局部观察写入，保留用户资料及邮箱、地址、号码关系。
+新增供 Ecom Agent 使用的账号身份快照和局部观察写入，保留用户资料及邮箱、地址、号码关系。
 新增完整地址快照、分页账号选择、地址复制与解除关联。已有主页账号的自动已售查询、Bark 推送与配置迁移见
 [订单查询与 Bark 提醒](38-vinted-account-order-watch.md)。
-宿主私有 `window.detach` 仅解除指定 Nexus UUID 的窗口关系，保留账号资料。
+宿主私有 `window.detach` 仅解除指定 Raccoon UUID 的窗口关系，保留账号资料。
 发行构件与商店上传的实际状态分别记录在[质量记录](09-quality-and-testing.md)。
 
 插件包位于 `plugins/vinted-accounts`，实现 `account.pool` 能力的方法、
 私有 JSON 存储与逐行 JSON RPC 服务端。页面位于
 `apps/desktop/src/features/accounts`，在主导航里叫「Vinted 账号」。
 账号与浏览器窗口的关联由插件维护，窗口页可发起关联并直接编辑已关联账号。
-真实ecom agent 可通过独立的只读快照和局部观察写入方法接入账号池；
+真实Ecom Agent 可通过独立的只读快照和局部观察写入方法接入账号池；
 账号池本身不启动浏览器，不读取登录态，也不新增 SQLite 连接。
 
 - 一条账号记录有九个业务字段：登录方式、账号、密码、手机号、邮箱接码地址、
@@ -30,7 +30,7 @@
   不做“猜一个默认值”的补齐。
 - 登录方式只有四种：`email` / `google` / `apple` / `facebook`。
 - 状态只有四种：`active`（正常）/ `pending`（待验证）/ `limited`（受限）/
-  `blocked`（封禁）。状态来自操作者记录或ecom agent 的受限观察写入；
+  `blocked`（封禁）。状态来自操作者记录或Ecom Agent 的受限观察写入；
   插件不自行探测真实账号状态。
 - 密码明文存在插件私有目录（文件权限 0600），宿主不加密、不代管。
   页面在表格里不显示密码，只在编辑弹窗里回读，默认隐藏。
@@ -39,7 +39,7 @@
   明确确认已售后才请求用户配置的 Bark 服务。清单声明已知 Vinted 和默认 Bark 域名，
   `secrets` 为空，
   `wantsBrowserAccess: false`，这些声明不代表网络沙箱。
-- Nexus 主应用 `0.1.17` 在窗口行的手机号旁提供「等待验证码」；
+- Raccoon 主应用 `0.1.17` 在窗口行的手机号旁提供「等待验证码」；
   复用现有 `vinted.accounts.list` / `vinted.accounts.otp`，不新增 RPC 或
   存储字段，也不提升账号插件版本。完整行为见[短信验证码等待](34-sms-waiting.md)。
 
@@ -51,7 +51,7 @@ plugins/vinted-accounts/
 ├── nexus.plugin.ts       # manifest 唯一来源，由 definePluginManifest 校验
 ├── src/
 │   ├── index.ts          # 组装存储、能力与协议；进程入口
-│   ├── agent-contracts.ts # 不含凭据的ecom agent schema、方法常量和类型
+│   ├── agent-contracts.ts # 不含凭据的Ecom Agent schema、方法常量和类型
 │   ├── capabilities/     # account.pool 方法表
 │   ├── domain/           # 类型、zod 校验、表格解析、表头映射与错误码
 │   ├── rpc/              # 协议、服务端、脱敏日志（与其他插件同源，按包自包含）
@@ -88,17 +88,17 @@ plugins/vinted-accounts/
 上限：账号 2000 条，导入报告最多回传 50 条错误。单次导入内容不超过 512 KB
 （宿主单行消息上限 1 MiB，base64 会放大 1.33 倍）。
 
-## ecom agent 账号观察
+## Ecom Agent 账号观察
 
 两个方法继续使用 `account.pool` 能力。公开子路径
 `@nexus/plugin-vinted-accounts/agent-contracts` 仅导出方法常量、严格 zod schema
 与对应 TypeScript 类型，不加载插件入口、存储或浏览器。
 类型入口直接引用随包携带的 `src/agent-contracts.ts`，可在没有本地构建时进行
 TypeScript 消费方检查；运行入口仍为发行构建生成的 `dist/src/agent-contracts.js`。
-宿主协调器核对窄字段，平台采集流程和 Playwright 会话由ecom agent 与浏览器宿主负责。
+宿主协调器核对窄字段，平台采集流程和 Playwright 会话由Ecom Agent 与浏览器宿主负责。
 Rust 仍是 SQLite 的唯一所有者，账号业务继续保存在插件现有明文 JSON 文件中。
 
-`vinted.accounts.agent.snapshot({ windowId })` 要求 Nexus 窗口 UUID，
+`vinted.accounts.agent.snapshot({ windowId })` 要求 Raccoon 窗口 UUID，
 在单份存储读取中取得当前绑定，严格返回：
 
 ```ts

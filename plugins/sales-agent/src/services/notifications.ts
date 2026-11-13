@@ -79,7 +79,7 @@ export async function sendAgentNotification(
           device_key: value.settings.deviceKey,
           title: value.title,
           body: value.body,
-          group: 'Nexus 销售任务',
+          group: 'Raccoon 销售任务',
           url: `nexus://agent/${value.batchId}`,
         }),
         signal,

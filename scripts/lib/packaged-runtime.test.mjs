@@ -9,16 +9,16 @@ describe('packaged runtime paths', () => {
     expect(
       resolvePackagedRuntime({
         platform: 'darwin',
-        bundlePath: '/Applications/Nexus.app',
+        bundlePath: '/Applications/Raccoon.app',
       }),
     ).toEqual({
-      appBundle: '/Applications/Nexus.app',
-      appExecutable: '/Applications/Nexus.app/Contents/MacOS/nexus-desktop',
-      node: '/Applications/Nexus.app/Contents/Helpers/node',
+      appBundle: '/Applications/Raccoon.app',
+      appExecutable: '/Applications/Raccoon.app/Contents/MacOS/nexus-desktop',
+      node: '/Applications/Raccoon.app/Contents/Helpers/node',
       networkPreload:
-        '/Applications/Nexus.app/Contents/Resources/runtime/browser-runtime/dist/network-preload.js',
+        '/Applications/Raccoon.app/Contents/Resources/runtime/browser-runtime/dist/network-preload.js',
       browserModule:
-        '/Applications/Nexus.app/Contents/Resources/runtime/browser-runtime/dist/profile-runtime.js',
+        '/Applications/Raccoon.app/Contents/Resources/runtime/browser-runtime/dist/profile-runtime.js',
     })
   })
 
@@ -26,12 +26,12 @@ describe('packaged runtime paths', () => {
     expect(
       resolvePackagedRuntime({
         platform: 'win32',
-        bundlePath: String.raw`C:\Program Files\Nexus`,
+        bundlePath: String.raw`C:\Program Files\Raccoon`,
       }),
     ).toEqual({
-      node: String.raw`C:\Program Files\Nexus\node.exe`,
-      networkPreload: String.raw`C:\Program Files\Nexus\runtime\browser-runtime\dist\network-preload.js`,
-      browserModule: String.raw`C:\Program Files\Nexus\runtime\browser-runtime\dist\profile-runtime.js`,
+      node: String.raw`C:\Program Files\Raccoon\node.exe`,
+      networkPreload: String.raw`C:\Program Files\Raccoon\runtime\browser-runtime\dist\network-preload.js`,
+      browserModule: String.raw`C:\Program Files\Raccoon\runtime\browser-runtime\dist\profile-runtime.js`,
     })
   })
 })

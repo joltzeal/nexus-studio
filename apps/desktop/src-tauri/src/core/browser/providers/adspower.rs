@@ -174,7 +174,9 @@ impl BrowserProvider for AdsPowerProvider {
         let (remote, _) = read_profile(&api, id)
             .map_err(|_| uncertain("AdsPower 已确认创建，但无法读回环境身份，请核对创建结果"))?;
         if reconcile_marker(vec![remote.clone()], operation_id)?.is_none() {
-            return Err(uncertain("AdsPower 未确认 Nexus 创建标记，请核对创建结果"));
+            return Err(uncertain(
+                "AdsPower 未确认 Raccoon 创建标记，请核对创建结果",
+            ));
         }
         Ok(CreatedProfile {
             profile_id: remote.id,
@@ -867,7 +869,7 @@ mod tests {
             "invalid_config"
         );
         updated = previous.clone();
-        updated.settings.note = "Nexus-only note".into();
+        updated.settings.note = "Raccoon-only note".into();
         assert!(
             provider
                 .update_profile(&connection, &previous, &updated)
@@ -940,7 +942,7 @@ mod tests {
             "invalid_config"
         );
         updated = previous.clone();
-        updated.settings.note = "Nexus-only note".into();
+        updated.settings.note = "Raccoon-only note".into();
         let evidence = provider
             .prepare_update_evidence(&previous, &updated)
             .unwrap();

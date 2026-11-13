@@ -9,16 +9,16 @@
 
 商品管理插件 `studio.products` 以独立的 `product.catalog` 能力接入，
 提供商品资料、图片副本、分页、手动创建、文件导入、生图整组导入及已确认发布历史。
-商品身份与 AI 生成记录分开；ecom agent 从商品库固定执行快照。
+商品身份与 AI 生成记录分开；Ecom Agent 从商品库固定执行快照。
 发布事实与准备状态分开，保留使用窗口，不把分配或模拟执行当成平台成功。
 源码已接入，尚未发行，最低核心版本为 `0.1.29`，见[商品插件](43-products-plugin.md)。
 
-ecom agent 插件 `studio.sales-agent` 声明 `sales.agent`，以 LangGraph.js
+Ecom Agent 插件 `studio.sales-agent` 声明 `sales.agent`，以 LangGraph.js
 推进账号检查、商品上架和指定会话消息。批次、租约、检查点、动作日志和
 发布同步和通知 outbox 由 Rust 持久化；插件只能通过当前作业 scope 调用受控工具。
 Rust 同时保存控制修订、草稿模板、模型许可与用量，负责受保护历史清理。
 专用页面提供商品分配、模型设置、运行前检查、分页任务、审查与人工接管，
-实现与未验证边界见[ecom agent](44-sales-agent-architecture.md)。
+实现与未验证边界见[Ecom Agent](44-sales-agent-architecture.md)。
 
 插件开发者的具体 manifest、能力接口、目标宿主协议与验收要求见
 [插件对接开发规范](14-plugin-integration-guide.md)。本文侧重产品现状与长期边界。
@@ -45,7 +45,7 @@ Rust 同时保存控制修订、草稿模板、模型许可与用量，负责受
 纯浏览器预览没有宿主，因此不展示虚构的已启用插件入口。
 
 `features/plugins/plugin-page.tsx` 只登记随主程序发布的专用 React 页面，
-当前包含代理池、地址生成器、共享货源、AI 生图、Vinted 账号、SIM8 接码、Vinted 监控、邮箱、商品管理和ecom agent。
+当前包含代理池、地址生成器、共享货源、AI 生图、Vinted 账号、SIM8 接码、Vinted 监控、邮箱、商品管理和Ecom Agent。
 其他已启用插件也会出现在侧栏，点击显示名称、版本、状态、能力与方法数量；
 具有 `window.sync` 能力时提供“前往窗口管理”入口。
 动态发现目录不等于动态加载插件前端代码：增加新的专用页面仍需更新主程序。

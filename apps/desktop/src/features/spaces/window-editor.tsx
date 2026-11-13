@@ -456,7 +456,7 @@ export function WindowEditor({
               {window?.state === 'stopped'
                 ? '当前接入未验证安全的配置修改'
                 : '窗口尚未确认已停止'}
-              ，仅可修改 Nexus 平台、备注和分组。其他设置请在官方浏览器中修改。
+              ，仅可修改 Raccoon 平台、备注和分组。其他设置请在官方浏览器中修改。
             </p>
           ) : null}
           <h3>连接与地域</h3>

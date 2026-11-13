@@ -210,6 +210,21 @@ const requiredMethods = {
     'email.messages.get',
     'email.messages.read',
   ],
+  'shared-supply': [
+    'supply.catalog',
+    'supply.stores',
+    'supply.products',
+    'supply.search',
+    'supply.imageSearch',
+    'supply.image.open',
+    'supply.image.read',
+    'supply.image.close',
+    'supply.favorites.list',
+    'supply.favorites.add',
+    'supply.favorites.remove',
+    'supply.favorites.csv',
+  ],
+  'window-sync': ['sync.offer', 'sync.receive', 'sync.status', 'sync.cancel'],
 }
 
 afterEach(() => {
@@ -353,13 +368,13 @@ console.log('   \\u72b6\\u6001 ' + JSON.stringify(report.status ?? {}))
 }
 
 describe('companion plugin release workflow', () => {
-  it('builds companion plugins with dependencies and packs only them into a fresh directory', () => {
+  it('builds and tests all eleven companion plugins before packing them into a fresh directory', () => {
     const directory = temporaryDirectory()
     const calls = join(directory, 'calls.jsonl')
     const output = join(directory, 'output')
     const runnerTemp = join(directory, 'runner temp')
     mkdirSync(runnerTemp)
-    write(join(directory, 'market/plugins/studio.shared-supply/old.nexuspkg'), 'stale')
+    write(join(directory, 'market/plugins/studio.unrelated/old.nexuspkg'), 'stale')
     write(
       join(directory, 'record.mjs'),
       "import { appendFileSync } from 'node:fs'\n" +
@@ -371,7 +386,7 @@ pnpm() { "$TEST_NODE" "$TEST_RECORDER" pnpm "$@"; }
 node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
 `
     const result = run(
-      `${stubs}\n${command('Build companion plugins')}\n${command('Pack companion plugins')}`,
+      `${stubs}\n${command('Build companion plugins')}\n${command('Verify AI requests and application transport')}\n${command('Pack companion plugins')}`,
       directory,
       {
         TEST_NODE: process.execPath,
@@ -404,9 +419,38 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       '@nexus/plugin-products...',
       '--filter',
       '@nexus/plugin-sales-agent...',
+      '--filter',
+      '@nexus/plugin-shared-supply...',
+      '--filter',
+      '@nexus/plugin-window-sync...',
       'build',
     ])
-    expect(commands.slice(1).map((args) => args.slice(0, 3))).toEqual([
+    expect(commands[1]).toEqual([
+      'pnpm',
+      'exec',
+      'vitest',
+      'run',
+      'plugins/ai-image/src',
+      'apps/desktop/src/features/ai-image',
+      'plugins/vinted-monitor/src',
+      'plugins/vinted-accounts/src',
+      'plugins/sim8/src',
+      'plugins/proxy-pool/src',
+      'plugins/address-generator/src',
+      'plugins/email/src',
+      'apps/desktop/src/features/email',
+      'plugins/products/src',
+      'apps/desktop/src/features/products',
+      'plugins/sales-agent/src',
+      'apps/desktop/src/features/sales-agent',
+      'plugins/shared-supply/src',
+      'plugins/window-sync/src',
+      'packages/plugin-sdk/src',
+      'scripts/plugin-configuration.test.mjs',
+      'packages/browser-runtime/src/network-preload.test.ts',
+      '--maxWorkers=2',
+    ])
+    expect(commands.slice(2).map((args) => args.slice(0, 3))).toEqual([
       ['node', 'scripts/pack-plugin.mjs', 'plugins/ai-image'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/vinted-monitor'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/vinted-accounts'],
@@ -416,13 +460,18 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       ['node', 'scripts/pack-plugin.mjs', 'plugins/email'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/products'],
       ['node', 'scripts/pack-plugin.mjs', 'plugins/sales-agent'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/shared-supply'],
+      ['node', 'scripts/pack-plugin.mjs', 'plugins/window-sync'],
       ['node', 'scripts/build-market.mjs', '--out'],
     ])
     const market = readFileSync(output, 'utf8').match(/^directory=(.+)$/m)?.[1]
     expect(dirname(market)).toBe(runnerTemp)
     expect(readdirSync(market)).toEqual([])
-    for (const args of commands.slice(1)) {
+    for (const args of commands.slice(2)) {
       expect(args[args.indexOf('--out') + 1]).toBe(market)
+    }
+    for (const args of commands.slice(2, -1)) {
+      expect(args[args.indexOf('--changelog') + 1]).toContain('Raccoon 0.1.30')
     }
     expect(step('Pack companion plugins')).toContain('id: plugin-market')
     expect(step('Verify packaged plugin startup')).toContain(
@@ -454,11 +503,11 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       .trim()
       .split('\n')
       .map((line) => resolve(data.directory, JSON.parse(line)))
+    expect(verified).toHaveLength(11)
     expect(verified).toEqual(data.plugins.map((plugin) => plugin.file))
-    expect(result.stdout).toContain('ok studio.ai-image 11.2.3')
-    expect(result.stdout).toContain('ok studio.vinted-monitor 17.4.5')
-    expect(result.stdout).toContain('ok studio.vinted-accounts 17.4.5')
-    expect(result.stdout).toContain('ok studio.sim8 17.4.5')
+    for (const { manifest } of data.plugins) {
+      expect(result.stdout).toContain(`ok ${manifest.id} ${manifest.version}`)
+    }
   })
 
   it.each(
@@ -476,7 +525,7 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
   })
 
   it.each(
-    ['sales-agent', 'products', 'vinted-accounts'].flatMap((name) =>
+    ['sales-agent', 'products', 'vinted-accounts', 'shared-supply'].flatMap((name) =>
       [undefined, false, 'true'].map((storageDurable) => [name, storageDurable]),
     ),
   )('rejects %s with an invalid durable-storage status: %s', (name, storageDurable) => {
@@ -489,16 +538,20 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     expect(result.stderr).toContain('durable storage')
   })
 
-  it('does not accept a method name that only contains the required name', () => {
+  it.each([
+    ['ai-image', 'image.plans.create'],
+    ['shared-supply', 'supply.image.open'],
+    ['window-sync', 'sync.offer'],
+  ])('rejects %s when a method only contains the required name %s', (name, required) => {
     const data = fixture()
-    const plugin = data.plugins[0]
+    const plugin = data.plugins.find((entry) => entry.name === name)
     plugin.report.methods = plugin.report.methods.map((method) =>
-      method === 'image.plans.create' ? 'image.plans.createLegacy' : method,
+      method === required ? `${required}Legacy` : method,
     )
     writeJson(`${plugin.file}.report.json`, plugin.report)
     const result = data.verify()
     expect(result.status, result.stdout).toBe(1)
-    expect(result.stderr).toContain('image.plans.create')
+    expect(result.stderr).toContain(required)
   })
 
   it.each([
@@ -543,7 +596,7 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
       (data) => {
         data.catalog.plugins.push({
           ...data.catalog.plugins[0],
-          manifest: { ...data.catalog.plugins[0].manifest, id: 'studio.shared-supply' },
+          manifest: { ...data.catalog.plugins[0].manifest, id: 'studio.unrelated' },
         })
       },
     ],
@@ -554,6 +607,21 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     const result = data.verify()
     expect(result.status, result.stdout).toBe(1)
   })
+
+  it.each(Object.keys(requiredMethods))(
+    'rejects a substituted %s catalog entry even when the plugin count matches',
+    (name) => {
+      const data = fixture()
+      const entry = data.catalog.plugins.find(
+        (plugin) => plugin.manifest.id === `studio.${name}`,
+      )
+      entry.manifest.id = 'studio.unrelated'
+      data.saveCatalog()
+      const result = data.verify()
+      expect(result.status, result.stdout).toBe(1)
+      expect(result.stderr).toContain(`${name}: missing or duplicate catalog entry`)
+    },
+  )
 
   it('rejects a plugin package version that differs from its built manifest', () => {
     const data = fixture()
@@ -566,13 +634,16 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     expect(result.stderr).toContain('version')
   })
 
-  it('rejects stale packages that the upload glob would otherwise include', () => {
-    const data = fixture()
-    write(join(data.market, 'plugins/studio.shared-supply/1.0.1.nexuspkg'), 'stale')
-    const result = data.verify()
-    expect(result.status, result.stdout).toBe(1)
-    expect(result.stderr).toContain('studio.shared-supply')
-  })
+  it.each(['shared-supply', 'window-sync', 'unrelated'])(
+    'rejects stale %s packages that the upload glob would otherwise include',
+    (name) => {
+      const data = fixture()
+      write(join(data.market, `plugins/studio.${name}/0.0.1.nexuspkg`), 'stale')
+      const result = data.verify()
+      expect(result.status, result.stdout).toBe(1)
+      expect(result.stderr).toContain(`studio.${name}`)
+    },
+  )
 
   it('rejects package bytes modified after catalog generation', () => {
     const data = fixture()
@@ -581,22 +652,29 @@ node() { "$TEST_NODE" "$TEST_RECORDER" node "$@"; }
     expect(result.status, result.stdout).toBe(1)
   })
 
-  it('rejects a verifier reporting the wrong package identity', () => {
-    const data = fixture()
-    const plugin = data.plugins[0]
-    plugin.report.id = 'studio.shared-supply'
-    writeJson(`${plugin.file}.report.json`, plugin.report)
-    const result = data.verify()
-    expect(result.status, result.stdout).toBe(1)
-  })
+  it.each(['ai-image', 'shared-supply', 'window-sync'])(
+    'rejects a verifier reporting the wrong %s package identity',
+    (name) => {
+      const data = fixture()
+      const plugin = data.plugins.find((entry) => entry.name === name)
+      plugin.report.id = 'studio.unrelated'
+      writeJson(`${plugin.file}.report.json`, plugin.report)
+      const result = data.verify()
+      expect(result.status, result.stdout).toBe(1)
+      expect(result.stderr).toContain(`${name}: verified package identity mismatch`)
+    },
+  )
 
-  it('propagates packaged startup failure instead of uploading an unusable plugin', () => {
-    const data = fixture()
-    const plugin = data.plugins[0]
-    plugin.report.error = 'fixture plugin failed to start'
-    writeJson(`${plugin.file}.report.json`, plugin.report)
-    const result = data.verify()
-    expect(result.status, result.stdout).toBe(1)
-    expect(result.stderr).toContain('fixture plugin failed to start')
-  })
+  it.each(['ai-image', 'shared-supply', 'window-sync'])(
+    'propagates %s packaged startup failure instead of uploading an unusable plugin',
+    (name) => {
+      const data = fixture()
+      const plugin = data.plugins.find((entry) => entry.name === name)
+      plugin.report.error = 'fixture plugin failed to start'
+      writeJson(`${plugin.file}.report.json`, plugin.report)
+      const result = data.verify()
+      expect(result.status, result.stdout).toBe(1)
+      expect(result.stderr).toContain('fixture plugin failed to start')
+    },
+  )
 })

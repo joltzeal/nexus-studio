@@ -297,7 +297,7 @@ fn fetch_http(url: &str, limit: u64, proxy: &NetworkProxy) -> Result<Vec<u8>, Ma
     let mut builder = reqwest::blocking::Client::builder()
         .no_proxy()
         .timeout(FETCH_TIMEOUT)
-        .user_agent(concat!("NexusStudio/", env!("CARGO_PKG_VERSION")));
+        .user_agent(concat!("Raccoon/", env!("CARGO_PKG_VERSION")));
     if let Some(endpoint) = endpoint {
         builder = builder.proxy(reqwest::Proxy::all(endpoint).map_err(|_| MarketError::Offline)?);
     }

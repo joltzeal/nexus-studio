@@ -85,7 +85,7 @@ export default function SalesAgentDemo() {
 
   useEffect(() => {
     const title = document.title
-    document.title = 'ecom agent · Nexus 交互预览'
+    document.title = 'Ecom Agent · Raccoon 交互预览'
     return () => {
       document.title = title
     }
@@ -179,10 +179,14 @@ export default function SalesAgentDemo() {
     >
       <aside className="app-sidebar">
         <div className="sidebar-brand">
-          <span className="brand-symbol">N</span>
-          <span className="wordmark">
-            Nexus<span className="wordmark-dot">.</span>
-          </span>
+          <img
+            className="brand-symbol"
+            src="/raccoon.png"
+            alt=""
+            width={30}
+            height={30}
+          />
+          <span className="wordmark">Raccoon</span>
         </div>
         <div className="workspace-switcher">
           <span className="workspace-avatar">
@@ -193,7 +197,7 @@ export default function SalesAgentDemo() {
             <small>独立交互预览</small>
           </div>
         </div>
-        <span className="nav-caption">ecom agent</span>
+        <span className="nav-caption">Ecom Agent</span>
         <TabsList variant="navigation" aria-label="Agent 导航">
           <TabsTrigger value="prepare">
             <ClipboardList />
@@ -227,7 +231,7 @@ export default function SalesAgentDemo() {
         <Button asChild variant="ghost" size="sm" className="justify-start">
           <a href="/">
             <ArrowLeft data-icon="inline-start" />
-            返回 Nexus
+            返回 Raccoon
           </a>
         </Button>
       </aside>
@@ -235,7 +239,7 @@ export default function SalesAgentDemo() {
         <div className="header-breadcrumb">
           <span>插件中心</span>
           <ChevronRight />
-          <strong>ecom agent</strong>
+          <strong>Ecom Agent</strong>
         </div>
         <div className="header-actions">
           <Badge variant="outline">交互预览</Badge>
@@ -253,7 +257,7 @@ export default function SalesAgentDemo() {
         <TabsContent value="prepare" className="agent-scroll-page">
           <div className="agent-page-heading">
             <div>
-              <h1 className="page-heading">ecom agent</h1>
+              <h1 className="page-heading">Ecom Agent</h1>
               <p className="page-description">
                 准备资料、分配窗口，让每个账号按自己的任务执行。
               </p>

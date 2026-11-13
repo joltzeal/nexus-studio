@@ -2,7 +2,7 @@ import { checkProxy, getConfig, probeProxy } from '@/features/proxy/api'
 import { message, type CheckResult } from '@/features/proxy/types'
 import { withDeadline } from './transfer-state'
 
-/** Nexus-managed proxy sources; provider-owned proxy settings stay with the provider. */
+/** Raccoon-managed proxy sources; provider-owned proxy settings stay with the provider. */
 export interface WindowProxyRef {
   proxy: string | null
   proxyPlugin: string | null

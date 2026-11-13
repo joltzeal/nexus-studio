@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createWindowSyncPlugin } from './index.js'
+import manifest from '../nexus.plugin.js'
 
 let directory: string
 const instances: ReturnType<typeof createWindowSyncPlugin>[] = []
@@ -73,7 +74,7 @@ describe('window.sync host protocol', () => {
       protocolVersion: 1,
       pluginId: 'studio.window-sync',
       apiVersion: 1,
-      version: '1.0.0',
+      version: manifest.version,
       capabilities: ['window.sync'],
     })
     peer.send({ type: 'handshake', protocolVersion: 1 })

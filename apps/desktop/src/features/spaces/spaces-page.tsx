@@ -896,7 +896,7 @@ export function SpacesPage() {
       ) : null}
       {!native ? (
         <p className="browser-windows-hint" role="status">
-          请在 Nexus 桌面应用中创建和打开窗口；网页预览无法访问本机浏览器。
+          请在 Raccoon 桌面应用中创建和打开窗口；网页预览无法访问本机浏览器。
         </p>
       ) : null}
       <div className="window-notices">
@@ -1391,7 +1391,7 @@ export function SpacesPage() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Nexus' : '删除'} ${window.name}`}
+                        aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Raccoon' : '删除'} ${window.name}`}
                         disabled={
                           busy ||
                           (window.providerId !== 'cloakbrowser' &&
@@ -1430,7 +1430,7 @@ export function SpacesPage() {
                                 setDeleting(window.id)
                               }}
                             >
-                              移出 Nexus
+                              移出 Raccoon
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               variant="destructive"
@@ -1886,12 +1886,12 @@ export function SpacesPage() {
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>
-                {deleteEnvironment ? '删除浏览器环境' : '移出 Nexus'}「{target.name}」？
+                {deleteEnvironment ? '删除浏览器环境' : '移出 Raccoon'}「{target.name}」？
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {deleteEnvironment
-                  ? '将永久删除该浏览器环境及其 Cookie 和登录状态，并清理 Nexus 关联，无法撤销。'
-                  : '仅解除 Nexus 的窗口与插件关联。官方浏览器环境保留，也不会自动关闭。'}
+                  ? '将永久删除该浏览器环境及其 Cookie 和登录状态，并清理 Raccoon 关联，无法撤销。'
+                  : '仅解除 Raccoon 的窗口与插件关联。官方浏览器环境保留，也不会自动关闭。'}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -1927,7 +1927,7 @@ export function SpacesPage() {
                     })
                 }}
               >
-                {deleteEnvironment ? '删除浏览器环境' : '移出 Nexus'}
+                {deleteEnvironment ? '删除浏览器环境' : '移出 Raccoon'}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

@@ -229,7 +229,7 @@ mod tests {
             })
             .unwrap();
         let network = UpdateNetwork::load(&store).unwrap();
-        for path in ["latest.json", "Nexus.app.tar.gz"] {
+        for path in ["latest.json", "Raccoon.app.tar.gz"] {
             assert_eq!(
                 fetch(&network, &format!("http://updates.invalid/{path}")).unwrap(),
                 "ok"
@@ -237,7 +237,7 @@ mod tests {
         }
         let requests = server.join().unwrap();
         assert!(requests[0].starts_with("GET http://updates.invalid/latest.json HTTP/1.1"));
-        assert!(requests[1].starts_with("GET http://updates.invalid/Nexus.app.tar.gz HTTP/1.1"));
+        assert!(requests[1].starts_with("GET http://updates.invalid/Raccoon.app.tar.gz HTTP/1.1"));
     }
 
     #[test]

@@ -64,7 +64,7 @@ export function BatchRuns({
       {list.loading ? <Skeleton className="h-24 w-full" /> : null}
       {data ? (
         <div className="sales-agent-table">
-          <Table aria-label="ecom agent 批次">
+          <Table aria-label="Ecom Agent 批次">
             <TableHeader>
               <TableRow>
                 <TableHead>任务预设 / 创建时间</TableHead>

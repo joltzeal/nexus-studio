@@ -22,7 +22,7 @@ const MAX_BYTES = 2 * 1024 * 1024
 const CACHE_MS = 15 * 60_000
 const COOLDOWN_MS = 5_000
 const OVERALL_TIMEOUT_MS = 50_000
-const USER_AGENT = 'NexusAddressGenerator/1.0 (desktop address generator)'
+const USER_AGENT = 'RaccoonAddressGenerator/1.0 (desktop address generator)'
 
 export interface PublicAddressResult {
   items: AddressRecord[]

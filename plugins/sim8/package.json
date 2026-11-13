@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-sim8",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
-  "description": "Nexus SIM8 plugin: number purchase, SMS extraction and number filtering over the SIM8 API",
+  "description": "Raccoon SIM8 plugin: number purchase, SMS extraction and number filtering over the SIM8 API",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

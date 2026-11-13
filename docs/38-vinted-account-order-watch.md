@@ -105,7 +105,7 @@
 
 参考源码为 `nexus-cart/packages/platform/src/pages/vinted-orders/watch-*`，
 以及同项目 `apps/api/backend/app/vinted/orders/watch_service.py`、
-`watch_scan.py` 和 `bark_settings.py`；Nexus 不依赖该项目运行时或数据库。
+`watch_scan.py` 和 `bark_settings.py`；Raccoon 不依赖该项目运行时或数据库。
 
 本项目入口：
 

@@ -18,7 +18,7 @@ pub(crate) fn validate_settings(value: &Value) -> AgentResult<Value> {
     ];
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("ecom agent model settings are not configured"))?;
+        .ok_or_else(|| invalid("Ecom Agent model settings are not configured"))?;
     if object.keys().any(|key| !fields.contains(&key.as_str())) {
         return Err(invalid("Unknown Agent settings field"));
     }

@@ -1,8 +1,8 @@
-# ecom agent 架构与执行规范
+# Ecom Agent 架构与执行规范
 
 更新日期：2026-11-13。已按获批方案接入 `studio.sales-agent` 源码、
 Rust 持久任务协调器、Playwright 工具层与真实商品库页面。
-核心版本为 `0.1.29`，插件版本为 `1.0.0`，展示名统一为 `ecom agent`。
+当前配套核心版本为 `0.1.30`，插件版本为 `1.0.1`，展示名统一为 `Ecom Agent`。
 已完成本地 macOS Apple Silicon 安装包构建，插件及配套商品库、账号池已发布至 R2。
 已执行的检查与尚未执行的原生、厂商和平台验收见[质量记录](09-quality-and-testing.md)。
 历史[交互原型](42-sales-agent-demo.md)不是生产任务执行入口。
@@ -14,7 +14,7 @@ Rust 持久任务协调器、Playwright 工具层与真实商品库页面。
 依赖和受管 Node 运行时；不引入 DrissionPage 或 Python 运行时。
 LangGraph 只嵌入现有 Node 插件进程；不要求用户安装 Python、Docker、
 独立工作流服务器或数据库，也不依赖 LangSmith 云服务才能运行。
-`@langchain/langgraph` 固定为 `1.7.4`，仅在 ecom agent 插件中运行。
+`@langchain/langgraph` 固定为 `1.7.4`，仅在 Ecom Agent 插件中运行。
 Rust 协调器逐步调用图，每次 RPC 只推进一个有截止时间的节点；
 检查点经反向宿主请求存入 Rust 管理的 SQLite。
 
@@ -37,7 +37,7 @@ LangGraph 的检查点也不能代替平台写入结果的确认。
 - 独立 Node 插件进程，以及宿主到插件的有截止时间 RPC。
 - 商品插件的稳定商品 UUID、有序图片、修订号和发布事实记录。
 - 账号池、生图和其他插件各自拥有的业务资料。
-- 真实ecom agent 页面：商品库选择、批量编辑、固定高度分配、任务与事件分页。
+- 真实Ecom Agent 页面：商品库选择、批量编辑、固定高度分配、任务与事件分页。
 
 新增实现分别位于 `packages/plugin-sdk/src/agent.ts`、
 `plugins/sales-agent`、`apps/desktop/src-tauri/src/core/agent`、
@@ -51,7 +51,7 @@ LangGraph 的检查点也不能代替平台写入结果的确认。
 flowchart TB
     UI["任务表单 / 商品与窗口分配 / 进度"]
     Core["Rust 任务协调器<br/>队列 / SQLite / 锁 / 操作结果核对"]
-    Graph["ecom agent 插件<br/>LangGraph 单窗口流程"]
+    Graph["Ecom Agent 插件<br/>LangGraph 单窗口流程"]
     Gateway["受控宿主网关<br/>工具校验 / 调用路由 / 事件"]
     Actor["浏览器工具运行时<br/>每个窗口一个独占 actor"]
     Provider["WindowService + BrowserProvider"]
@@ -81,14 +81,14 @@ flowchart TB
 | ------------------- | -------------------------------------------------------------------- | ---------------------------------- |
 | React               | 编辑分配、运行前批量表单、确认、暂停、查看进度与异常                 | 不在页面计时器中驱动任务           |
 | Rust 通用任务协调器 | 父任务、子任务、快照、资源占用、调度、取消、事件、恢复与结果同步收据 | Rust 独占 SQLite                   |
-| ecom agent 插件     | 上架、消息、账号检查状态图；平台适配；模型判断与文案步骤             | 工作流检查点通过宿主存储端口持久化 |
+| Ecom Agent 插件     | 上架、消息、账号检查状态图；平台适配；模型判断与文案步骤             | 工作流检查点通过宿主存储端口持久化 |
 | 浏览器工具层        | 绑定窗口的页面、登录态请求、表单操作、证据采集                       | 工件只保存受控引用，句柄只留在内存 |
 | 商品插件            | 可编辑商品、图片和已确认发布历史                                     | 现有插件私有文件                   |
 | 账号池插件          | 账号身份、标签、观察到的余额与账号状态                               | 现有账号业务存储                   |
 | AI 生图插件         | 生成素材，用户导入后成为独立商品                                     | 不作为 Agent 的商品身份来源        |
 
 Rust 核心保持抽象，不包含 Vinted 表单选择器、Jev 提示词或平台余额字段规则。
-平台逻辑放在ecom agent 插件的平台适配器中；跨插件关系继续使用 Nexus UUID。
+平台逻辑放在Ecom Agent 插件的平台适配器中；跨插件关系继续使用 Raccoon UUID。
 账号检查只通过专用局部更新契约写回观察结果，不能用 AI 拼出的完整账号覆盖密码、
 手机号、邮箱绑定或用户备注。当前通过 `vinted.accounts.observations.record`
 幂等写回，并用 `vinted.accounts.agent.snapshot` 获取绑定身份与观察快照。
@@ -132,7 +132,7 @@ Batch
 暂停只停止派发新步骤；已提交的平台写入进入结果核对。
 取消保留已完成事实，不能撤回已经成功的刊登或消息。
 恢复后先核对资源与外部动作，再推进可执行的子任务。
-任务在 Nexus 运行期间执行；退出应用后保留检查点，重新打开后核对并恢复，
+任务在 Raccoon 运行期间执行；退出应用后保留检查点，重新打开后核对并恢复，
 不把本地插件进程描述为应用关闭后仍持续工作的系统服务。
 
 ## 多窗口并发
@@ -143,7 +143,7 @@ Batch
 
 - 用户设置的全局活动窗口数。
 - BrowserProvider 当前能够执行的数量；不能猜测上游许可证席位。
-- 单个 Nexus 窗口、绑定平台账号、`(connectionId, profileId)` 的独占占用。
+- 单个 Raccoon 窗口、绑定平台账号、`(connectionId, profileId)` 的独占占用。
 - 平台与账号级请求速率、冷却时间和模型请求池容量。
 
 同一窗口中的三件商品按顺序执行；不同窗口在这些限制内并行。
@@ -256,7 +256,7 @@ Playwright 官方说明 CDP 只适用于 Chromium 且能力低于原生 Playwrig
 网络遵循现有边界：平台操作使用窗口必需代理，失败时不回退直连；
 模型请求使用应用代理；本机厂商管理 API 仍单独直连并验证 loopback。
 消息正文、商品页面和远端页面都是待处理数据，不可作为更改工具权限的指令。
-ecom agent 是受信任插件进程，不宣称 manifest 能将其变成安全沙箱。
+Ecom Agent 是受信任插件进程，不宣称 manifest 能将其变成安全沙箱。
 
 ## 上架流程与发布记录
 
@@ -282,7 +282,7 @@ queued -> preflight -> reviewing -> preparing -> intent_saved
 8. 宿主幂等调用商品插件 `products.publications.record`，成功后完成同步收据。
 
 商品插件本轮增加的发布记录端口接受已确认事实，**不负责调用平台发布**。
-字段包括商品 UUID、执行操作 ID、Nexus 窗口 UUID 与名称快照、平台、
+字段包括商品 UUID、执行操作 ID、Raccoon 窗口 UUID 与名称快照、平台、
 刊登 ID/URL、发布时的商品修订和时间。普通商品编辑不能删除这些记录。
 详情和写入回执保持有界，完整发布历史单独分页读取。
 商品列表的“已发布”来自持久记录，不来自窗口分配、点击运行或 demo 结果。
@@ -425,7 +425,7 @@ SQLite 草稿与模板只保存稳定关系和用户编辑值，载入时重新�
 避免保存不完整草稿时丢失已编辑内容。
 工作台聚合待处理商品，保留原文、候选、判断原因和首图。
 商品、账号与窗口页可跳转到包含已结束任务的关联历史。
-操作步骤与错误恢复见[ecom agent 操作](46-sales-agent-operations.md)。
+操作步骤与错误恢复见[Ecom Agent 操作](46-sales-agent-operations.md)。
 
 可选 Bark 使用持久通知 outbox，按批次和事件类型去重、有限重试。
 通知链接通过已安装应用的 `nexus` 协议打开只读任务页面；
@@ -466,7 +466,7 @@ token、可取得的 HTTP 状态及费用估算；不返回端点、密钥、sco
 
 ## 官方参考
 
-以下为方案日期核对的官方资料；选型与系统边界是本项目建议，不是上游对 Nexus 的保证。
+以下为方案日期核对的官方资料；选型与系统边界是本项目建议，不是上游对 Raccoon 的保证。
 
 - [LangGraph.js 仓库与 MIT 许可证](https://github.com/langchain-ai/langgraphjs)
 - [LangGraph 持久化](https://docs.langchain.com/oss/javascript/langgraph/persistence)

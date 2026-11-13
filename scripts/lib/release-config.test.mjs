@@ -5,6 +5,18 @@ import { describe, expect, it } from 'vitest'
 const root = resolve(import.meta.dirname, '../..')
 
 describe('desktop release configuration', () => {
+  it('keeps installed application and MSI upgrade identities when the display name changes', () => {
+    const config = JSON.parse(
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    )
+
+    expect(config.productName).toBe('Raccoon')
+    expect(config.identifier).toBe('com.nexusstudio.desktop')
+    expect(config.bundle.windows.wix.upgradeCode).toBe(
+      '2e3e2263-4519-5724-8aaa-441e824cdcc7',
+    )
+  })
+
   it('uses the public repository that actually publishes the updater manifest', () => {
     const releaseConfig = JSON.parse(
       readFileSync(
@@ -50,7 +62,7 @@ describe('desktop release configuration', () => {
     const workflow = readFileSync(resolve(root, '.github/workflows/release.yml'), 'utf8')
 
     expect(workflow).toContain(
-      'pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Nexus.app',
+      'pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Raccoon.app',
     )
     expect(workflow).not.toContain('pnpm run runtime:verify-packaged -- ')
     expect(workflow).toContain('tauri.release.macos.conf.json')

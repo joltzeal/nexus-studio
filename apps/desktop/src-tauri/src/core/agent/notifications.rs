@@ -44,7 +44,7 @@ impl AgentStore {
             let notification_id = Uuid::new_v4().to_string();
             let payload = json!({"notificationId":notification_id,"batchId":id,"kind":kind,"settings":settings,
                 "title":if kind=="attention" {"销售任务需要处理"}else{"销售任务已结束"},
-                "body":format!("已完成 {}/{} 个窗口，{} 个需处理。打开 Nexus 查看执行结果。",
+                "body":format!("已完成 {}/{} 个窗口，{} 个需处理。打开 Raccoon 查看执行结果。",
                     batch["completed"],batch["total"],batch["attention"])});
             tx.execute(
                 "INSERT OR IGNORE INTO agent_notification_outbox(notification_id,batch_id,kind,payload_json)

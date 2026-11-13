@@ -160,7 +160,7 @@ export function parseWindowConfig(input: unknown): WindowConfig {
   }
 }
 
-// Keep Nexus metadata outside the strictly validated browser configuration.
+// Keep Raccoon metadata outside the strictly validated browser configuration.
 export function configOf(profile: BrowserWindow | null): WindowConfig {
   if (profile === null) {
     return createWindowConfig(randomFingerprintSeed())

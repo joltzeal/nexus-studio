@@ -5,7 +5,7 @@ import { definePluginManifest } from '@nexus/plugin-sdk'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.shared-supply',
-  version: '1.0.1',
+  version: '1.0.2',
   name: '共享货源',
   minCoreVersion: '0.1.0',
   capabilities: ['supply.catalog'],

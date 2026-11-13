@@ -1,8 +1,8 @@
 [package]
 name = "nexus-desktop"
-version = "0.1.29"
-description = "Nexus consumer desktop workspace"
-authors = ["Nexus Studio"]
+version = "0.1.30"
+description = "Raccoon consumer desktop workspace"
+authors = ["Raccoon"]
 rust-version = "1.93"
 edition = "2024"
 

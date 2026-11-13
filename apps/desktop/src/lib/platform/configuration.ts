@@ -113,7 +113,7 @@ export function parseConfiguration(content: string): ConfigurationArchive {
   try {
     return ConfigurationArchiveSchema.parse(JSON.parse(content))
   } catch {
-    throw new Error('配置文件无效或版本不受支持，请选择 Nexus 导出的 JSON 文件。')
+    throw new Error('配置文件无效或版本不受支持，请选择 Raccoon 导出的 JSON 文件。')
   }
 }
 

@@ -44,7 +44,7 @@ export function createSettingsStore(directory: string): SettingsStore {
       await rename(temporary, path)
     } catch (error) {
       if (error instanceof AgentFailure) throw error
-      throw new AgentFailure('STORAGE_ERROR', 'ecom agent 设置保存失败，原设置仍然保留')
+      throw new AgentFailure('STORAGE_ERROR', 'Ecom Agent 设置保存失败，原设置仍然保留')
     } finally {
       await rm(temporary, { force: true }).catch(() => {})
     }
@@ -64,7 +64,7 @@ export function createSettingsStore(directory: string): SettingsStore {
             return null
           throw new AgentFailure(
             'STORAGE_ERROR',
-            '无法读取ecom agent 设置，请检查本地文件',
+            '无法读取Ecom Agent 设置，请检查本地文件',
           )
         }
       }),

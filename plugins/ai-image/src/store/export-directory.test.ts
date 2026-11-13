@@ -10,7 +10,7 @@ describe('system Downloads export location', () => {
         homeDirectory: '/Users/seller',
         query: async () => '/Volumes/Photos/Downloads/\n',
       }),
-    ).toBe('/Volumes/Photos/Downloads/Nexus AI')
+    ).toBe('/Volumes/Photos/Downloads/Raccoon AI')
   })
 
   it('respects a relocated Windows Downloads folder with spaces and non-ASCII characters', async () => {
@@ -20,7 +20,7 @@ describe('system Downloads export location', () => {
         homeDirectory: 'C:\\Users\\seller',
         query: async () => 'D:\\商品图片\\My Downloads\r\n',
       }),
-    ).toBe('D:\\商品图片\\My Downloads\\Nexus AI')
+    ).toBe('D:\\商品图片\\My Downloads\\Raccoon AI')
   })
 
   it('accepts a Windows network Downloads folder', async () => {
@@ -30,13 +30,13 @@ describe('system Downloads export location', () => {
         homeDirectory: 'C:\\Users\\seller',
         query: async () => '\\\\server\\seller\\Downloads\r\n',
       }),
-    ).toBe('\\\\server\\seller\\Downloads\\Nexus AI')
+    ).toBe('\\\\server\\seller\\Downloads\\Raccoon AI')
   })
 
   it.each([
-    ['darwin', '/Users/seller', '/Users/seller/Downloads/Nexus AI'],
-    ['win32', 'C:\\Users\\seller', 'C:\\Users\\seller\\Downloads\\Nexus AI'],
-    ['linux', '/home/seller', '/home/seller/Downloads/Nexus AI'],
+    ['darwin', '/Users/seller', '/Users/seller/Downloads/Raccoon AI'],
+    ['win32', 'C:\\Users\\seller', 'C:\\Users\\seller\\Downloads\\Raccoon AI'],
+    ['linux', '/home/seller', '/home/seller/Downloads/Raccoon AI'],
   ] as const)(
     'falls back to the user Downloads folder on %s when lookup is unavailable',
     async (platform, homeDirectory, expected) => {
@@ -61,7 +61,7 @@ describe('system Downloads export location', () => {
           homeDirectory: 'C:\\Users\\seller',
           query: async () => response,
         }),
-      ).toBe('C:\\Users\\seller\\Downloads\\Nexus AI')
+      ).toBe('C:\\Users\\seller\\Downloads\\Raccoon AI')
     },
   )
 })

@@ -44,7 +44,7 @@ impl RuntimePaths {
         // Plugins are installed from the store, so the bundle only has to carry
         // the Node binary and the browser adapter.
         if !node.is_file() || !browser_script.is_file() || !network_preload.is_file() {
-            return Err("安装包缺少浏览器运行时，请重新安装 Nexus".into());
+            return Err("安装包缺少浏览器运行时，请重新安装 Raccoon".into());
         }
         Ok(Self {
             node,
@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn bundled_runtime_requires_node_and_browser_runner() {
         let root = tempfile::tempdir().unwrap();
-        let contents = root.path().join("Nexus.app/Contents");
+        let contents = root.path().join("Raccoon.app/Contents");
         let resources = if cfg!(windows) {
             root.path().join("resources")
         } else {

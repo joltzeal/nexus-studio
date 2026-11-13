@@ -96,7 +96,7 @@ pub fn run() {
             core::agent::commands::sales_agent_related
         ])
         .build(tauri::generate_context!())
-        .expect("Nexus could not initialize its desktop runtime")
+        .expect("Raccoon could not initialize its desktop runtime")
         .run(|app, event| {
             use tauri::Manager;
             if matches!(

@@ -196,7 +196,7 @@ export async function resolveOnlineProxyGeo(
         response = await proxyFetch(url, {
           dispatcher,
           redirect: 'error',
-          headers: { Accept: 'application/json', 'User-Agent': 'Nexus/1.0' },
+          headers: { Accept: 'application/json', 'User-Agent': 'Raccoon/1.0' },
           signal: AbortSignal.any([signal, attempt.signal]),
         })
         return parseGeo(await readJson(response), options)

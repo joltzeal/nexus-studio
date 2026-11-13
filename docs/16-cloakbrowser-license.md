@@ -2,8 +2,8 @@
 
 ## 目标与当前边界
 
-用户只通过 Nexus 桌面应用粘贴 CloakBrowser 密钥，不依赖 CLI、终端或 `.env`。
-Nexus 调用当前锁定版本 CloakBrowser JS wrapper 的公开 `validateLicense` 与
+用户只通过 Raccoon 桌面应用粘贴 CloakBrowser 密钥，不依赖 CLI、终端或 `.env`。
+Raccoon 调用当前锁定版本 CloakBrowser JS wrapper 的公开 `validateLicense` 与
 `ensureBinary` 能力；应用不代用户申请、生成或转售密钥。
 
 本文的许可与内核流程只适用于内置 CloakBrowser。统一 `WindowService` 通过
@@ -16,14 +16,14 @@ AdsPower 与比特浏览器通过各自本机管理 API 接入，不要求 Cloak
 内置窗口默认使用最新稳定内核，也支持 SDK 可提供的指定完整包版本。
 下载、创建内置环境、启动和需要浏览器读取的快照均要求激活码；
 本机有缓存也不允许省略激活码。并发席位最终由 CloakBrowser 服务端和二进制裁决，
-Nexus 不根据 Chromium 主版本号或计划名称硬编码并发上限，也不规避限制。
+Raccoon 不根据 Chromium 主版本号或计划名称硬编码并发上限，也不规避限制。
 
 ## SQLite 凭据生命周期
 
 - 设置页提供输入、校验并保存、删除；读取已存记录时显示“已保存激活码”，不将历史记录当作本次在线校验成功，绝不回显密钥。
   对应命令为 `license_status`、`license_set({ key })` 和 `license_remove`；
   状态接口仅返回 `configured`、`plan` 与 `expires`，没有密钥读回接口。
-- Rust 将授权记录写入 Nexus 应用数据目录中的 `nexus.sqlite`；数据库只由 Rust 打开和修改。
+- Rust 将授权记录写入 Raccoon 应用数据目录中的 `nexus.sqlite`；数据库只由 Rust 打开和修改。
   `LicenseStore` 使用 `cloakbrowser_license` 表，不接系统凭据库或 Keychain。
 - 数据库不加密，密钥以明文保存在本机文件中，访问控制依赖当前操作系统用户权限。
   设置页必须明确提示这一点。Unix 文件权限限制为当前用户；Windows 依赖应用数据目录 ACL。
@@ -70,7 +70,7 @@ Nexus 不根据 Chromium 主版本号或计划名称硬编码并发上限，也�
 
 ## 并发及错误
 
-Nexus 允许不同内置窗口并行尝试，同一浏览器环境仍独占。`browser_window_start({ id })`
+Raccoon 允许不同内置窗口并行尝试，同一浏览器环境仍独占。`browser_window_start({ id })`
 通过已保存绑定交给 provider，CloakBrowser 许可服务和二进制最终裁决
 席位数。启动失败应展示脱敏、可操作的许可拒绝信息，
 且清理失败的子进程，不自动降级、换版本或回退直连。

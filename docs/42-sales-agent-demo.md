@@ -1,4 +1,4 @@
-# ecom agent 交互原型
+# Ecom Agent 交互原型
 
 ## 当前范围
 
@@ -78,7 +78,7 @@ Message 与 Account Check 只保留固定高度的执行窗口列表，不显示
 深浅主题切换同样只作用于当前预览。
 
 本页未实现正式 Agent 的浏览器自动化契约、跨插件业务接口、余额与标签持久化、
-真实执行恢复、模型调用和平台发布。后续实现建议见[ecom agent 架构方案](44-sales-agent-architecture.md)。
+真实执行恢复、模型调用和平台发布。后续实现建议见[Ecom Agent 架构方案](44-sales-agent-architecture.md)。
 
 ### 示例首图来源
 

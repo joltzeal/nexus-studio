@@ -777,7 +777,7 @@ pub(crate) fn create_remark(record: &WindowRecord, operation_id: &str) -> Browse
     {
         return Err(BrowserError::new(
             "invalid_config",
-            "该环境包含其他 Nexus 操作标记，请先核对",
+            "该环境包含其他 Raccoon 操作标记，请先核对",
         ));
     }
     if remark.lines().any(|line| line == marker) {
@@ -802,7 +802,7 @@ pub(crate) fn reconcile_marker(
     let profile = matches.next();
     if matches.next().is_some() {
         return Err(uncertain(
-            "多个远端环境包含相同的 Nexus 操作标记，需要手动核对",
+            "多个远端环境包含相同的 Raccoon 操作标记，需要手动核对",
         ));
     }
     Ok(profile)

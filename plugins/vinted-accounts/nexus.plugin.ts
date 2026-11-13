@@ -6,7 +6,7 @@ import { VINTED_DOMAINS } from './src/services/order-source.js'
 export default definePluginManifest({
   apiVersion: 1,
   id: 'studio.vinted-accounts',
-  version: '1.4.0',
+  version: '1.4.1',
   name: 'Vinted 账号池',
   minCoreVersion: '0.1.29',
   capabilities: ['account.pool'],

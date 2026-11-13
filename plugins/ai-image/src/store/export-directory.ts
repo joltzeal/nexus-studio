@@ -70,5 +70,5 @@ export async function imageExportDirectory(
   } catch {
     // Missing OS helpers still use Downloads; file-write errors never fall back.
   }
-  return path.join(downloads, 'Nexus AI')
+  return path.join(downloads, 'Raccoon AI')
 }

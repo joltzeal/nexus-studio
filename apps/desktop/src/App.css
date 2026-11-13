@@ -234,23 +234,17 @@
   padding-inline: 10px;
 }
 .brand-symbol {
-  display: grid;
+  display: block;
+  flex: 0 0 30px;
   width: 30px;
   height: 30px;
-  place-items: center;
   border-radius: 9px;
-  background: var(--primary);
-  color: var(--primary-foreground);
-  font-size: 20px;
-  font-weight: 800;
+  object-fit: cover;
 }
 .wordmark {
   font-size: 24px;
   font-weight: 800;
   letter-spacing: -1px;
-}
-.wordmark-dot {
-  color: var(--primary);
 }
 .workspace-switcher {
   display: flex;

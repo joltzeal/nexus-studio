@@ -65,8 +65,8 @@ pub async fn configuration_file_export(
         let Some(path) = app
             .dialog()
             .file()
-            .add_filter("Nexus 配置", &["json"])
-            .set_file_name("nexus-configuration.json")
+            .add_filter("Raccoon 配置", &["json"])
+            .set_file_name("raccoon-configuration.json")
             .blocking_save_file()
         else {
             return Ok(None);
@@ -87,7 +87,7 @@ pub async fn configuration_file_import(
         let Some(path) = app
             .dialog()
             .file()
-            .add_filter("Nexus 配置", &["json"])
+            .add_filter("Raccoon 配置", &["json"])
             .blocking_pick_file()
         else {
             return Ok(None);

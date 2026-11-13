@@ -109,7 +109,7 @@ async function call<T>(
   args: Record<string, unknown>,
   parse: (value: unknown) => T,
 ): Promise<T> {
-  if (!isTauri()) throw new Error('窗口迁移仅在 Nexus 桌面应用中可用。')
+  if (!isTauri()) throw new Error('窗口迁移仅在 Raccoon 桌面应用中可用。')
   try {
     return parse(await invoke<unknown>(command, args))
   } catch (cause) {

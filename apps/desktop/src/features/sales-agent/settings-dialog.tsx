@@ -70,7 +70,7 @@ export function AgentSettingsDialog({
     >
       <DialogContent className="sales-agent-dialog">
         <DialogHeader>
-          <DialogTitle>ecom agent 设置</DialogTitle>
+          <DialogTitle>Ecom Agent 设置</DialogTitle>
           <DialogDescription>
             判断模型负责结构化判断；生成模型同时负责识图和英文文案。配置由插件明文持久保存，不写入浏览器存储。
           </DialogDescription>
@@ -105,7 +105,9 @@ export function AgentSettingsForm({
   const [draft, setDraft] = useState<AgentSettings>(() => initial ?? blankSettings())
   const [saved, setSaved] = useState<AgentSettings | null>(initial)
   const [busy, setBusy] = useState<'save' | ModelKind | null>(null)
+  const [tab, setTab] = useState('models')
   const [error, setError] = useState<string | null>(null)
+  const [invalidField, setInvalidField] = useState<string | null>(null)
   const [tests, setTests] = useState<
     Partial<Record<ModelKind, Awaited<ReturnType<typeof testAgentModel>>>>
   >({})
@@ -113,58 +115,78 @@ export function AgentSettingsForm({
   useEffect(() => () => scope.invalidate(), [scope])
   const dirty = saved === null || JSON.stringify(saved) !== JSON.stringify(draft)
 
-  async function save() {
+  async function submit(kind?: ModelKind) {
     if (busy) return
     const parsed = AgentSettingsSchema.safeParse(draft)
     if (!parsed.success) {
+      const issue = parsed.error.issues[0]!
+      const [section, field] = issue.path
+      setTab(
+        section === 'execution' || section === 'pricing'
+          ? 'execution'
+          : section === 'notifications' || section === 'retention'
+            ? 'notifications'
+            : 'models',
+      )
+      setInvalidField(issue.path.join('.'))
+      const model = section === 'decision' ? '判断模型' : '生成 / 识图模型'
       setError(
-        parsed.error.issues.find((issue) => issue.code === 'custom')?.message ??
-          '请检查模型地址（HTTPS 或本机 HTTP）、密钥、模型名与执行限制。',
+        section === 'decision' || section === 'generation'
+          ? field === 'baseUrl'
+            ? `请填写${model}的接口地址，使用 HTTPS 或本机 HTTP 地址。`
+            : field === 'apiKey'
+              ? `请填写${model}的 API Key。`
+              : field === 'model'
+                ? `请填写${model}的模型名称。`
+                : `请检查${model}的协议。`
+          : issue.code === 'custom'
+            ? issue.message
+            : '请检查当前设置中的地址、数字范围与必填项。',
       )
       return
     }
-    setBusy('save')
+    setBusy(kind ?? 'save')
     setError(null)
+    setInvalidField(null)
+    if (kind)
+      setTests((previous) => {
+        const next = { ...previous }
+        delete next[kind]
+        return next
+      })
     const current = scope.begin()
+    let stage: 'save' | 'test' = 'save'
     try {
-      const settings = await saveAgentSettings(parsed.data)
-      if (!current()) return
-      setSaved(settings)
-      setDraft(settings)
-      setTests({})
-      onSaved()
-      toast.success('模型配置已保存。')
+      if (dirty) {
+        const settings = await saveAgentSettings(parsed.data)
+        if (!current()) return
+        setSaved(settings)
+        setDraft(settings)
+        setTests({})
+        onSaved()
+        toast.success('模型配置已保存。')
+      }
+      if (kind) {
+        stage = 'test'
+        const result = await testAgentModel(kind)
+        if (current()) setTests((previous) => ({ ...previous, [kind]: result }))
+      }
     } catch {
       // Provider/transport errors can contain a submitted key; do not echo them.
       if (current())
-        setError('模型配置保存未确认，请保留当前输入并重试，或重新读取核对。')
-    } finally {
-      if (current()) setBusy(null)
-    }
-  }
-
-  async function test(kind: ModelKind) {
-    if (busy || dirty) return
-    setBusy(kind)
-    setError(null)
-    setTests((previous) => {
-      const next = { ...previous }
-      delete next[kind]
-      return next
-    })
-    const current = scope.begin()
-    try {
-      const result = await testAgentModel(kind)
-      if (current()) setTests((previous) => ({ ...previous, [kind]: result }))
-    } catch {
-      if (current())
-        setError('模型测试失败，请检查已保存的地址、密钥、模型名和服务商能力。')
+        setError(
+          stage === 'save'
+            ? '模型配置保存未确认，请保留当前输入并重试，或重新读取核对。'
+            : '模型测试失败，请检查已保存的地址、密钥、模型名和服务商能力。',
+        )
     } finally {
       if (current()) setBusy(null)
     }
   }
 
   function endpoint(kind: ModelKind, key: 'baseUrl' | 'apiKey' | 'model', value: string) {
+    setError(null)
+    setInvalidField(null)
     setDraft((previous) => ({
       ...previous,
       [kind]: { ...previous[kind], [key]: value },
@@ -177,7 +199,7 @@ export function AgentSettingsForm({
   return (
     <>
       <div className="sales-agent-settings-body">
-        <Tabs defaultValue="models">
+        <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="models">模型与测试</TabsTrigger>
             <TabsTrigger value="execution">执行与预算</TabsTrigger>
@@ -212,7 +234,10 @@ export function AgentSettingsForm({
                       />
                     </Field>
                   ) : null}
-                  <Field className="sales-agent-field-wide">
+                  <Field
+                    className="sales-agent-field-wide"
+                    data-invalid={invalidField === `${kind}.baseUrl` || undefined}
+                  >
                     <FieldLabel htmlFor={`agent-${kind}-url`}>接口地址</FieldLabel>
                     <Input
                       id={`agent-${kind}-url`}
@@ -221,10 +246,11 @@ export function AgentSettingsForm({
                       placeholder="https://provider.example/v1"
                       maxLength={2048}
                       autoComplete="off"
+                      aria-invalid={invalidField === `${kind}.baseUrl` || undefined}
                       onChange={(event) => endpoint(kind, 'baseUrl', event.target.value)}
                     />
                   </Field>
-                  <Field>
+                  <Field data-invalid={invalidField === `${kind}.apiKey` || undefined}>
                     <FieldLabel htmlFor={`agent-${kind}-key`}>API Key</FieldLabel>
                     <Input
                       id={`agent-${kind}-key`}
@@ -233,35 +259,37 @@ export function AgentSettingsForm({
                       maxLength={4096}
                       autoComplete="new-password"
                       spellCheck={false}
+                      aria-invalid={invalidField === `${kind}.apiKey` || undefined}
                       onChange={(event) => endpoint(kind, 'apiKey', event.target.value)}
                     />
                   </Field>
-                  <Field>
+                  <Field data-invalid={invalidField === `${kind}.model` || undefined}>
                     <FieldLabel htmlFor={`agent-${kind}-model`}>模型名称</FieldLabel>
                     <Input
                       id={`agent-${kind}-model`}
                       value={draft[kind].model}
                       maxLength={200}
                       autoComplete="off"
+                      aria-invalid={invalidField === `${kind}.model` || undefined}
                       onChange={(event) => endpoint(kind, 'model', event.target.value)}
                     />
                   </Field>
                 </FieldGroup>
                 <Button
                   variant="outline"
-                  disabled={busy !== null || dirty}
+                  disabled={busy !== null}
                   title={
                     dirty
-                      ? '请先保存配置，再测试已保存的模型。'
+                      ? '先保存全部配置，成功后测试所选模型。'
                       : '实际调用插件测试已保存模型'
                   }
                   onClick={() => {
-                    void test(kind)
+                    void submit(kind)
                   }}
                 >
                   {busy === kind
                     ? '正在测试…'
-                    : `测试${kind === 'decision' ? '判断' : '生成 / 识图'}模型`}
+                    : `${dirty ? '保存并测试' : '测试'}${kind === 'decision' ? '判断' : '生成 / 识图'}模型`}
                 </Button>
                 <div
                   className="sales-agent-toolbar"
@@ -342,7 +370,7 @@ export function AgentSettingsForm({
                 ))}
               </FieldGroup>
               <FieldDescription>
-                保存后再测试。生成模型需同时支持图片输入和英文文案输出。
+                两个模型均需填写。测试会先保存修改；生成模型需支持图片输入和英文文案输出。
               </FieldDescription>
             </FieldSet>
           </TabsContent>
@@ -361,17 +389,17 @@ export function AgentSettingsForm({
             />
           </TabsContent>
         </Tabs>
-        {error ? (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
       </div>
+      {error ? (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
       <DialogFooter>
         <Button
           disabled={busy !== null || !dirty}
           onClick={() => {
-            void save()
+            void submit()
           }}
         >
           {busy === 'save' ? '保存中…' : '保存模型配置'}

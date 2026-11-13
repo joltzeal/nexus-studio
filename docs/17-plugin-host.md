@@ -34,7 +34,7 @@ token 刷新调度属于邮箱插件进程，关闭标准输入或收到终止�
 `WindowService` 通过 `builtin: Arc<CloakBrowserProvider>` 访问内置资源，
 外部 provider 则调用厂商的本机管理 API。
 窗口由 `WindowStore` 保存为 schema 2，绑定包含 `provider_id`、`connection_id` 和
-`profile_id`；插件业务关联始终使用 Nexus 窗口 UUID，不使用厂商环境 ID。
+`profile_id`；插件业务关联始终使用 Raccoon 窗口 UUID，不使用厂商环境 ID。
 配置迁移复用已授予的插件能力和 `ready.methods` 检查；宿主不读取插件私有配置文件，
 统一方法见[配置导入导出](37-configuration-transfer.md)。
 
@@ -161,7 +161,7 @@ digest 只在安装时比对，启动时不会重新校验磁盘上的入口文�
 原生操作解析的 `connectionUrl` 可能包含认证信息，只交给对应 provider 使用，不写入日志；
 `ResolvedBrowserProxy` 的 `Debug` 实现隐藏完整连接地址。
 
-### 6.1 ecom agent 反向宿主调用
+### 6.1 Ecom Agent 反向宿主调用
 
 `core::agent` 注册当前进程代次下的反向处理器。读取线程识别
 `{ type: "host.request", hostVersion: 1, requestId, scope, method, payload, deadlineMs }`，
@@ -177,7 +177,7 @@ Agent 任务由原生命令创建和查询，模型设置由插件私有存储�
 `salesAgent.notifications.send` 仅由原生通知 outbox 调用，普通 WebView 不能直接发送。
 模型申请固定到创建时的端点和 scope，完成收据幂等保存；
 单商品控制不能清除已有提交意图或修改原始素材快照。
-完整方法、恢复流程和验证范围见[ecom agent](44-sales-agent-architecture.md)。
+完整方法、恢复流程和验证范围见[Ecom Agent](44-sales-agent-architecture.md)。
 
 ## 7. 密码归属
 
@@ -193,7 +193,7 @@ Agent 任务由原生命令创建和查询，模型设置由插件私有存储�
   宿主不提供密钥库状态，页面只能展示槽位名，无法据此报告“已保存”。
 - `proxy.resolve` 的 `configHandle` 与 `secretRef` 仍是不透明引用，由插件自己解析；
   调度快照与 `ProxyReference` 只保存句柄和引用，不保存连接地址或密码。
-- 插件解析的 `connectionUrl` 只用于本次原生操作，不写回 Nexus 的 `WindowRecord`、
+- 插件解析的 `connectionUrl` 只用于本次原生操作，不写回 Raccoon 的 `WindowRecord`、
   不进入 UI，也不进入日志或错误消息。
   插件无法解析必需密码时必须失败，不得生成省略认证的地址。
 - WebView 的通用 `plugin_call` 不允许调用原生启动专用的 `proxy.resolve`，
@@ -233,7 +233,7 @@ Agent 任务由原生命令创建和查询，模型设置由插件私有存储�
 解析代理、持久化启动意图并预留调度快照，再交给 provider 启动。
 代理解析失败时不会预留启动槽位。
 AdsPower 当前的 `update` 与 `proxy_plugin` 能力均关闭，不能使用插件代理启动或修改厂商配置；
-Nexus 备注等本地元数据仍可编辑。
+Raccoon 备注等本地元数据仍可编辑。
 
 1. `proxy_mode: plugin` 时，调用 `resolve_browser_proxy(plugin_id, window_id, endpoint_id)`，
    内部只发一次 `proxy.resolve`，截止时间 20 秒。RPC payload 只有 `{ endpointId }`，
@@ -250,7 +250,7 @@ Nexus 备注等本地元数据仍可编辑。
    无效地址返回不含输入内容的协议错误。
 4. `reference` 用于调度器的必需代理绑定；`connection_url` 只填入本次启动的临时配置，
    内置 provider 经标准输入传给 `profile-runner.js`，支持的外部 provider 经独立直连的
-   loopback 管理 API 应用到指定环境。Nexus 不将解析地址写入窗口记录、调度快照或 UI；
+   loopback 管理 API 应用到指定环境。Raccoon 不将解析地址写入窗口记录、调度快照或 UI；
    外部厂商的持久化边界见第 7 节。调用方直接使用该结果，
    不再调用 `resolve_proxy` 重新解析，避免两次解析选择不同配置。
 5. `resolve_proxy(plugin_id, window_id, endpoint_id) -> Result<ProxyReference, HostError>`

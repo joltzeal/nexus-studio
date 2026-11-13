@@ -1,8 +1,8 @@
 {
   "name": "@nexus/plugin-vinted-accounts",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
-  "description": "Nexus Vinted account pool plugin: credential records, CSV/XLSX import, window bindings, order-watch and Bark notifications",
+  "description": "Raccoon Vinted account pool plugin: credential records, CSV/XLSX import, window bindings, order-watch and Bark notifications",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

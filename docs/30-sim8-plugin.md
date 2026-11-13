@@ -12,7 +12,7 @@
 
 插件包位于 `plugins/sim8`，实现 `verification.provider` 能力的方法、私有 JSON
 存储与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/sim8`，
-安装后显示在「插件中心 → SIM8 接码」。Nexus `0.1.8` 包含此专用页面，
+安装后显示在「插件中心 → SIM8 接码」。Raccoon `0.1.8` 包含此专用页面，
 侧栏根据宿主启用状态动态显示，未安装时不展示；单独安装插件包不会给旧版主程序增加页面。
 
 - 覆盖 SIM8 OpenAPI 的全部 15 个 HTTP 端点，加上本地管理与接码链接请求共 24 个业务 RPC 方法（另有 3 个通用配置迁移方法）：

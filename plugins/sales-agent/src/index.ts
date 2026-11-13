@@ -15,7 +15,7 @@ export interface SalesAgentOptions {
 
 export function createSalesAgentPlugin(options: SalesAgentOptions = {}) {
   if (!options.store && !options.storageDirectory)
-    throw new AgentFailure('STORAGE_ERROR', 'ecom agent 需要受管持久化目录')
+    throw new AgentFailure('STORAGE_ERROR', 'Ecom Agent 需要受管持久化目录')
   const store = options.store ?? createSettingsStore(options.storageDirectory!)
   const service = new SalesAgentService(store)
   const server = createAgentServer({

@@ -26,24 +26,26 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' --filter '@nexus/plugin-email...' --filter '@nexus/plugin-products...' --filter '@nexus/plugin-sales-agent...' build
+        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' --filter '@nexus/plugin-email...' --filter '@nexus/plugin-products...' --filter '@nexus/plugin-sales-agent...' --filter '@nexus/plugin-shared-supply...' --filter '@nexus/plugin-window-sync...' build
       - name: Verify AI requests and application transport
-        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src plugins/email/src apps/desktop/src/features/email plugins/products/src apps/desktop/src/features/products plugins/sales-agent/src apps/desktop/src/features/sales-agent packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
+        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src plugins/email/src apps/desktop/src/features/email plugins/products/src apps/desktop/src/features/products plugins/sales-agent/src apps/desktop/src/features/sales-agent plugins/shared-supply/src plugins/window-sync/src packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
       - name: Pack companion plugins
         id: plugin-market
         shell: bash
         run: |
           market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
           echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "配套主程序 0.1.26：生图按批次排队，最多两个批次同时执行，支持按商品、批次和方案检索完整记录，重启后保留结果并允许手动重试。"
-          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移采集代理、密码及默认代理，采集运行期间阻止导入。"
-          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套主程序 0.1.29：支持 Agent 幂等回写账号标签、摘要、评分、余额及强状态，保留地址、邮箱、窗口关联、订单查询与 Bark 设置。"
-          node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套主程序 0.1.21：支持离线迁移 API 地址和 Token，导入后清理旧账户缓存。"
-          node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套主程序 0.1.21：支持迁移默认代理及密码、风险检查设置及 API Key。"
-          node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套主程序 0.1.26：支持保存、搜索、分页和移除地址，选定地址可关联账号，地图选点自动保存，美国城市扩充至 21 个。"
-          node scripts/pack-plugin.mjs plugins/email --out "$market_dir" --changelog "配套主程序 0.1.28：优化邮件列表与格式化阅读，支持已读未读筛选和批量同步、独立定时收信及账号池双向关联，保留 token 定时刷新与轮换持久化。"
-          node scripts/pack-plugin.mjs plugins/products --out "$market_dir" --changelog "独立商品库：手动创建、CSV/JSON 导入、生图整组导入与图片副本，支持分页、修订检查和来源去重；分类可留空。"
-          node scripts/pack-plugin.mjs plugins/sales-agent --out "$market_dir" --changelog "ecom agent：商品与窗口明确分配、账号检查、上架及指定会话消息，支持模型设置、任务检查点、暂停取消、结果核对与发布记录同步。"
+          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/email --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/products --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/sales-agent --out "$market_dir" --changelog "Ecom Agent（配套 Raccoon 0.1.30）：修复模型地址校验导致的保存异常，支持保存并测试；主程序增加商品添加时间、上架次数与执行窗口账号状态筛选，使用机器人图标。"
+          node scripts/pack-plugin.mjs plugins/shared-supply --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
+          node scripts/pack-plugin.mjs plugins/window-sync --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
           node scripts/build-market.mjs --out "$market_dir"
       - name: Verify packaged plugin startup
         shell: bash
@@ -250,6 +252,21 @@ jobs:
               'email.messages.get',
               'email.messages.read',
             ],
+            'shared-supply': [
+              'supply.catalog',
+              'supply.stores',
+              'supply.products',
+              'supply.search',
+              'supply.imageSearch',
+              'supply.image.open',
+              'supply.image.read',
+              'supply.image.close',
+              'supply.favorites.list',
+              'supply.favorites.add',
+              'supply.favorites.remove',
+              'supply.favorites.csv',
+            ],
+            'window-sync': ['sync.offer', 'sync.receive', 'sync.status', 'sync.cancel'],
           }
           const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
           const market = resolve(process.env.PLUGIN_MARKET_DIR)
@@ -292,7 +309,7 @@ jobs:
             for (const method of methods) {
               assert.ok(advertised.includes(method), `${name}: missing RPC ${method}`)
             }
-            if (['sales-agent', 'products', 'vinted-accounts'].includes(name)) {
+            if (['sales-agent', 'products', 'vinted-accounts', 'shared-supply'].includes(name)) {
               const statusLine = report.match(/^\s+\u72B6\u6001 ([^\r\n]*)$/m)
               assert.ok(statusLine, `${name}: missing durable storage status`)
               assert.equal(JSON.parse(statusLine[1]).storageDurable, true,
@@ -358,22 +375,22 @@ jobs:
         with:
           projectPath: apps/desktop
           tagName: v__VERSION__
-          releaseName: 'Nexus v__VERSION__'
+          releaseName: 'Raccoon v__VERSION__'
           releaseBody: |
-            - 新增 ecom agent，支持商品与窗口分配、批量账号检查、商品上架与指定会话消息任务。
-            - 新增独立商品管理插件，支持手动建档、导入 AI 生图商品和查看发布窗口记录。
-            - 账号池接入账号标签、状态及余额观察记录，可从任务定位关联账号和商品。
-            - 提供任务草稿、运行前检查、暂停取消、人工接管、商品审查及结果核对。
-            - 支持模型配置、请求与用量明细、通知和历史保留设置。
+            - 主程序更名为 Raccoon，统一全局品牌文案与浣熊图标。
+            - Ecom Agent 修复模型配置保存异常，支持保存并测试；商品选择显示添加时间和上架次数，执行窗口支持账号状态筛选。
+            - 沿用原有应用标识、数据目录和更新通道，原有窗口、分组、插件与本地资料可连续升级使用。
+            - 全部 11 个配套插件同步 Raccoon 品牌文案与元数据，保留插件标识、能力和业务协议。
+            - 修复 Agent 原生 CI 回归用例，验证任务协调与恢复行为。
 
-            更新主程序后，在插件中心安装 ecom agent 1.0.0、商品管理 1.0.0，并更新 Vinted 账号池至 1.4.0。
+            更新至 Raccoon 0.1.30 后，请在插件中心检查并更新全部配套插件；插件包由 CI 构建后独立发布至插件商店。
             macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
           uploadUpdaterJson: true
           args: ${{ matrix.tauriArgs }}
       - name: Verify signed macOS runtime
         if: runner.os == 'macOS'
-        run: pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Nexus.app
+        run: pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Raccoon.app
 
   publish:
     if: github.repository == 'joltzeal/nexus-studio'
