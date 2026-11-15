@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { callPlugin } from '@/lib/platform/native-plugins'
 import { getRecord, listRecords } from './api'
 import { RecordImage } from './record-image'
+import { BatchSummary } from './batch-summary'
 import { makeSceneRecord } from './scene-plan.test-data'
 import {
   recordTitle,
@@ -58,6 +59,17 @@ beforeEach(() => {
 })
 
 describe('generation summaries', () => {
+  it('shows the persisted level in batch history without inventing one for old history', () => {
+    const summary = makeSummary()
+    const markup = renderToStaticMarkup(
+      createElement(BatchSummary, { record: { ...summary, agingLevel: 'heavy' } }),
+    )
+    expect(markup).toContain('做旧：明显')
+    expect(
+      renderToStaticMarkup(createElement(BatchSummary, { record: summary })),
+    ).not.toContain('做旧：')
+  })
+
   it('renders progress and titles from only the small display fields', () => {
     expect(
       statusText({

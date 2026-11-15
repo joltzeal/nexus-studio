@@ -5,7 +5,7 @@ import {
   MAX_PRODUCT_IMAGES,
   type Product,
   type ProductImage,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 import { ArrowLeft, ArrowRight, Loader2, Trash2 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -40,6 +40,7 @@ import {
   type ProductForm,
 } from './product-form'
 import { ProductImagePreview } from './product-image'
+import { ProductPlatformFactsEditor } from './product-platform-facts-editor'
 import {
   ProductPublicationDialog,
   ProductPublicationOverview,
@@ -75,24 +76,23 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
   const newlyUploaded = useRef(new Map<string, ProductImage>())
   const uploadController = useRef<AbortController | null>(null)
   const uploadTask = useRef<Promise<void> | null>(null)
+  const pendingSaved = useRef<Product | null>(null)
   const busy = saving || uploading || discarding
 
   useEffect(() => {
     active.current = true
-    const uploads = newlyUploaded.current
+    if (pendingSaved.current) {
+      const saved = pendingSaved.current
+      pendingSaved.current = null
+      onSaved(saved)
+    }
     return () => {
       active.current = false
-      uploadController.current?.abort()
-      if (uploads.size) {
-        void discardUploads([...uploads.keys()]).catch((cause: unknown) => {
-          toast.error(`未使用图片清理失败：${productError(cause)}`)
-        })
-      }
     }
-  }, [])
+  }, [onSaved])
 
   useEffect(() => {
-    if (productId === null) return
+    if (productId === null || loaded) return
     let current = true
     void getProduct(productId).then(
       (value) => {
@@ -110,7 +110,7 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
     return () => {
       current = false
     }
-  }, [productId, loadAttempt])
+  }, [productId, loadAttempt, loaded])
 
   function update<K extends keyof ProductForm>(field: K, value: ProductForm[K]) {
     setForm((current) => ({ ...current, [field]: value }))
@@ -165,25 +165,14 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
           if (controller.signal.aborted) break
           const image = await uploadProductImage(file, controller.signal)
           newlyUploaded.current.set(image.id, image)
-          if (!active.current) {
-            try {
-              await discardUploads([image.id])
-              newlyUploaded.current.delete(image.id)
-            } catch (cause) {
-              toast.error(`未使用图片清理失败：${productError(cause)}`)
-            }
-            break
-          }
           setImages((current) => [...current, image])
         }
       } catch (cause) {
-        if (active.current && !controller.signal.aborted) setError(productError(cause))
-        else if (!active.current && !controller.signal.aborted)
-          toast.error(productError(cause))
+        if (!controller.signal.aborted) setError(productError(cause))
       } finally {
         uploadController.current = null
         if (operation.current === 'upload') operation.current = null
-        if (active.current) setUploading(false)
+        setUploading(false)
       }
     }
     uploadTask.current = task()
@@ -226,16 +215,20 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
         toast.error(`商品已保存，但未使用图片清理失败：${productError(cause)}`)
       }
       if (active.current) onSaved(value)
+      else pendingSaved.current = value
     } catch (cause) {
-      if (active.current) setError(productError(cause))
+      setError(productError(cause))
     } finally {
       operation.current = null
-      if (active.current) setSaving(false)
+      setSaving(false)
     }
   }
 
   function textField(
-    field: Exclude<keyof ProductForm, 'currency' | 'status' | 'description' | 'note'>,
+    field: Exclude<
+      keyof ProductForm,
+      'currency' | 'status' | 'description' | 'note' | 'vintedFacts'
+    >,
     label: string,
     maxLength: number,
     options: { required?: boolean; placeholder?: string } = {},
@@ -419,6 +412,11 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
                   </FieldDescription>
                 </Field>
               </FieldGroup>
+              <ProductPlatformFactsEditor
+                value={form.vintedFacts}
+                onChange={(value) => update('vintedFacts', value)}
+                disabled={busy}
+              />
             </FieldSet>
             {images.length > 0 && (
               <ol

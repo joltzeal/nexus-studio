@@ -13,7 +13,7 @@ import {
   ProductSourceReplySchema,
   type Product,
   type ProductImage,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 import { callPlugin, listPlugins, type PluginView } from '@/lib/platform/native-plugins'
 import { getRecord } from '@/features/ai-image/api'
 import {

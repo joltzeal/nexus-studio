@@ -46,6 +46,7 @@ pub(super) fn admit(
             "SELECT COUNT(*),MIN(COALESCE(json_extract(b.settings_json,?2),3))
          FROM agent_jobs j JOIN agent_batches b ON b.id=j.batch_id
          WHERE (j.state='running' OR j.actor_owned=1)
+           AND EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=j.id AND e.mode='browser')
            AND json_extract(j.snapshot_json,'$.providerId')=?1",
             params![
                 provider,
@@ -63,6 +64,7 @@ pub(super) fn admit(
             db,
             "SELECT json_extract(snapshot_json,'$.profileId') FROM agent_jobs
              WHERE (state='running' OR actor_owned=1)
+               AND EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=agent_jobs.id AND e.mode='browser')
                AND json_extract(snapshot_json,'$.connectionId')=?1",
             [&job.snapshot.connection_id],
         )?);
@@ -126,6 +128,33 @@ pub(super) fn record_step(db: &Connection, job: &Job, output: &StepOutput) -> Ag
             [&job.id]).map_err(storage_error)?;
         return Ok(false);
     };
+    if retry.code == "WAITING_FOR_FORM" {
+        let now = now_ms();
+        let requested = super::schema::millis(db, &retry.next_attempt_at)?;
+        if job.mode != AgentMode::Browser
+            || job.preset != Preset::PostListing
+            || job.reconcile_only
+            || output.state != StepState::Continue
+            || retry.attempt != 1
+            || retry.max_attempts != 1
+            || requested < now - 1000
+            || requested > now + 5000
+        {
+            return Err(invalid("Form waits require a bounded active browser poll"));
+        }
+        let next = requested.max(now + 250);
+        let mut stored = serde_json::to_value(retry).map_err(storage_error)?;
+        stored["nextAttemptAt"] = json!(super::schema::timestamp(db, next)?);
+        db.execute(
+            "UPDATE agent_dispatch SET retry_json=?2,next_attempt=?3,retry_attempt=0,
+            retry_code='WAITING_FOR_FORM' WHERE job_id=?1",
+            params![job.id, canonical(&stored), next],
+        )
+        .map_err(storage_error)?;
+        // Keep the actor and its browser ownership. The service waits for this
+        // deadline while independently checking controls and renewing the lease.
+        return Ok(false);
+    }
     let configured = job.settings["execution"]["maxReadRetries"]
         .as_u64()
         .unwrap_or(2);
@@ -183,11 +212,13 @@ pub(super) fn record_step(db: &Connection, job: &Job, output: &StepOutput) -> Ag
         "UPDATE agent_dispatch SET retry_json=?2,next_attempt=?3,retry_attempt=?4,retry_code=?5 WHERE job_id=?1",
         params![job.id,canonical(&stored),next,retry.attempt,retry.code],
     ).map_err(storage_error)?;
-    for resource in job
-        .snapshot
-        .resources()?
-        .into_iter()
-        .filter(|key| key.starts_with("account:") || key.starts_with("vinted-identity:"))
+    for resource in if job.mode == AgentMode::ContentPreparation {
+        vec![]
+    } else {
+        job.snapshot.resources()?
+    }
+    .into_iter()
+    .filter(|key| key.starts_with("account:") || key.starts_with("vinted-identity:"))
     {
         db.execute(
             "INSERT INTO agent_cooldowns(resource_key,until_ms) VALUES(?1,?2)

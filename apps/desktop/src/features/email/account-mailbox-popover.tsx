@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Copy, Link2, Loader2, Mail, Unlink } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { FieldError } from '@/components/ui/field'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -29,6 +39,12 @@ export function AccountMailboxPopover({
 }) {
   const [open, setOpen] = useState(false)
   const [linking, setLinking] = useState(false)
+  const [unlinking, setUnlinking] = useState<{
+    accountId: string
+    accountName: string
+    mailboxId: string
+    email: string
+  } | null>(null)
   const [reader, setReader] = useState<{ account: MailboxView; scope: string } | null>(
     null,
   )
@@ -89,18 +105,30 @@ export function AccountMailboxPopover({
   }
 
   function unlink() {
-    if (!ready || !link) return
+    if (!ready || !link || busy || unlinking) return
+    setUnlinking({
+      accountId: account.id,
+      accountName: account.account,
+      mailboxId: link.mailboxId,
+      email: link.email,
+    })
+    setOpen(false)
+  }
+
+  function confirmUnlink() {
+    if (!ready || !unlinking) return
     void action.run(
       async () => {
         onPendingChange?.(true)
         try {
-          return await unlinkMailboxFromAccount(account.id, link.mailboxId)
+          return await unlinkMailboxFromAccount(unlinking.accountId, unlinking.mailboxId)
         } finally {
           onPendingChange?.(false)
         }
       },
       (result) => {
         onChanged(result)
+        setUnlinking(null)
         setOpen(false)
         toast.success(
           result.storageDurable
@@ -195,6 +223,39 @@ export function AccountMailboxPopover({
           onSaved={onChanged}
           {...(onPendingChange ? { onPendingChange } : {})}
         />
+      ) : null}
+      {unlinking ? (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !busy) setUnlinking(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>解除邮箱关联？</AlertDialogTitle>
+              <AlertDialogDescription className="break-all">
+                解除账号 {unlinking.accountName} 与邮箱 {unlinking.email} 的关联。
+                邮箱资料和邮件仍会保留。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {error ? <FieldError role="alert">{error}</FieldError> : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={busy} onClick={() => setUnlinking(null)}>
+                取消
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={!ready || busy}
+                onClick={(event) => {
+                  event.preventDefault()
+                  confirmUnlink()
+                }}
+              >
+                {busy ? '正在解除…' : '确认解除'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       ) : null}
       {ready && reader ? (
         <MailReader

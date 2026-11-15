@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
 import { verifySdkDependencies } from './sdk-dependencies.js'
@@ -31,12 +31,14 @@ it('rejects a deployment that can import the SDK but omits its browser dependenc
     await writeFile(join(sdk, 'package.json'), '{"main":"index.js","type":"module"}')
     await writeFile(join(sdk, 'index.js'), 'export const launchPersistentContext=()=>{}')
     // Use native Node resolution without Vitest's global pnpm NODE_PATH fallback.
-    const module = new URL('../dist/sdk-dependencies.js', import.meta.url).href
+    const module = new URL('./sdk-dependencies.ts', import.meta.url).href
     const entry = pathToFileURL(join(directory, 'entry.js')).href
     await expect(
       promisify(execFile)(
         process.execPath,
         [
+          '--import',
+          fileURLToPath(new URL('../fixtures/source-loader.mjs', import.meta.url)),
           '--input-type=module',
           '-e',
           `import {verifySdkDependencies} from ${JSON.stringify(module)};

@@ -1,6 +1,10 @@
 import { MAX_PROMPT_CHARACTERS } from './selection'
 import {
   message,
+  DEFAULT_AGING_LEVEL,
+  isAgingLevel,
+  validateAgingLevel,
+  type AgingLevel,
   type Provider,
   type ScenePlan,
   type ScenePlanResult,
@@ -8,7 +12,8 @@ import {
 } from './types'
 
 export const SCENE_PLAN_UPDATE_HINT = '请更新 AI 生图插件后使用智能识图与场景推荐。'
-export const SCENE_PLAN_STALE_HINT = '参考图、识图模型、要求或张数已变化，请重新识图。'
+export const SCENE_PLAN_STALE_HINT =
+  '参考图、识图模型、要求、张数或做旧程度已变化，请重新识图。'
 export const SCENE_PLAN_METHODS = ['image.plans.create', 'image.plans.get'] as const
 export const MAX_SCENE_PROMPT = 6000
 export const MAX_VIEW_PROMPT = 4000
@@ -19,6 +24,7 @@ export interface ScenePlanInput {
   model: string
   inputFileId: string
   requirements: string
+  agingLevel?: AgingLevel
   count: number
 }
 
@@ -88,10 +94,12 @@ export function sceneContextKey(context: ScenePlanContext): string {
     context.inputFileId,
     context.requirements,
     context.count,
+    context.agingLevel ?? DEFAULT_AGING_LEVEL,
   ])
 }
 
 export function validateScenePlanInput(input: ScenePlanInput): void {
+  validateAgingLevel(input.agingLevel)
   if (!input.providerId || !input.model.trim() || !input.inputFileId)
     throw new Error('请选择识图模型和一张已上传的参考图。')
   if (!Number.isInteger(input.count) || input.count < 1 || input.count > 4)
@@ -126,6 +134,7 @@ function distinctViews(views: SceneView[]): boolean {
 
 export function parseScenePlan(value: unknown): ScenePlan {
   const plan = object(value)
+  validateAgingLevel(plan.agingLevel)
   if (
     typeof plan.status !== 'string' ||
     !['running', 'success', 'failed'].includes(plan.status) ||
@@ -180,6 +189,7 @@ export function parseScenePlan(value: unknown): ScenePlan {
     model: text(plan.model, true),
     inputFileId: text(plan.inputFileId, true),
     requirements: text(plan.requirements),
+    ...(isAgingLevel(plan.agingLevel) ? { agingLevel: plan.agingLevel } : {}),
     count: plan.count,
     result,
     error: nullableText(plan.error),
@@ -199,9 +209,14 @@ export function sceneDraft(
     plan.inputFileId !== context.inputFileId ||
     plan.count !== context.count ||
     plan.requirements !== context.requirements ||
+    (context.agingLevel !== undefined && plan.agingLevel !== context.agingLevel) ||
+    (plan.agingLevel !== undefined &&
+      plan.agingLevel !== (context.agingLevel ?? DEFAULT_AGING_LEVEL)) ||
     plan.result.views.length !== context.count
   ) {
-    throw new Error('返回的方案与当前参考图、模型、要求或张数不一致，请重新识图。')
+    throw new Error(
+      '返回的方案与当前参考图、模型、要求、张数或做旧程度不一致，请重新识图。',
+    )
   }
   return {
     plan,
@@ -254,6 +269,7 @@ export function plannedGeneration(
   return {
     mode: 'edit' as const,
     count: draft.views.length,
+    ...(draft.plan.agingLevel === undefined ? {} : { agingLevel: draft.plan.agingLevel }),
     scenePlan: {
       id: draft.plan.id,
       prompt: draft.prompt,

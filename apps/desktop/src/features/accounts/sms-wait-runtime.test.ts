@@ -52,6 +52,7 @@ vi.mock('@/lib/platform/native-plugins', () => ({
                   {
                     accountId: 'account-one',
                     windowId: 'window-one',
+                    revision: '33333333-3333-4333-8333-333333333333',
                     boundAt: '2026-10-27T00:00:00Z',
                   },
                 ]
@@ -205,7 +206,14 @@ describe('SMS wait integration', () => {
     pending.resolve({
       items: [state.account!],
       total: 1,
-      bindings: [{ accountId: target.accountId, windowId: target.windowId, boundAt: '' }],
+      bindings: [
+        {
+          accountId: target.accountId,
+          windowId: target.windowId,
+          revision: '33333333-3333-4333-8333-333333333333',
+          boundAt: '',
+        },
+      ],
       storageDurable: true,
     })
     await flush()

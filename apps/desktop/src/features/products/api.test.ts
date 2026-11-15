@@ -4,7 +4,7 @@ import {
   ProductDraftSchema,
   ProductSchema,
   type ProductImage,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 import { callPlugin } from '@/lib/platform/native-plugins'
 import {
   discardProductImages,
@@ -27,6 +27,7 @@ const id = '1198ca69-4f78-4705-ac59-2d48bc790194'
 const imageId = '2198ca69-4f78-4705-ac59-2d48bc790194'
 const uploadId = '3198ca69-4f78-4705-ac59-2d48bc790194'
 const product = ProductSchema.parse({
+  platformFacts: { vinted: [] },
   id,
   name: 'Used mug',
   revision: 1,

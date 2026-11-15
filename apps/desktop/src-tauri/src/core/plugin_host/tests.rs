@@ -1586,6 +1586,7 @@ fn proxy_pool_call(
 }
 
 #[test]
+#[ignore = "local integration: requires the privately built plugins/proxy-pool package"]
 fn workspace_proxy_plugin_resolves_an_explicit_endpoint_without_a_default() {
     let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();
@@ -1622,6 +1623,7 @@ fn workspace_proxy_plugin_resolves_an_explicit_endpoint_without_a_default() {
 }
 
 #[test]
+#[ignore = "local integration: requires the privately built plugins/proxy-pool package"]
 fn workspace_proxy_plugin_materializes_auth_and_blocks_disabled_or_deleted_pins() {
     let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();
@@ -1709,6 +1711,7 @@ fn workspace_proxy_plugin_materializes_auth_and_blocks_disabled_or_deleted_pins(
 }
 
 #[test]
+#[ignore = "local integration: requires the privately built plugins/proxy-pool package"]
 fn workspace_proxy_plugin_blocks_a_pin_whose_password_is_missing() {
     let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();
@@ -1889,6 +1892,7 @@ fn reverse_host_process(
 
 fn reverse_scope() -> serde_json::Value {
     serde_json::json!({
+        "mode":"browser",
         "batchId":uuid::Uuid::new_v4().to_string(),
         "jobId":uuid::Uuid::new_v4().to_string(),
         "windowId":uuid::Uuid::new_v4().to_string(),
@@ -2631,4 +2635,17 @@ fn a_package_installs_from_an_http_store() {
     let view = host.install_from_market("test.fixture-plugin").unwrap();
     assert_eq!(view.state, "running", "lastError: {:?}", view.last_error);
     host.shutdown();
+}
+
+#[test]
+fn agent_scope_requires_explicit_execution_mode_without_a_compatibility_default() {
+    let mut scope = reverse_scope();
+    for mode in ["content_preparation", "browser"] {
+        scope["mode"] = serde_json::json!(mode);
+        assert!(serde_json::from_value::<super::process::AgentScope>(scope.clone()).is_ok());
+    }
+    scope.as_object_mut().unwrap().remove("mode");
+    assert!(serde_json::from_value::<super::process::AgentScope>(scope.clone()).is_err());
+    scope["mode"] = serde_json::json!("ready");
+    assert!(serde_json::from_value::<super::process::AgentScope>(scope).is_err());
 }

@@ -21,12 +21,17 @@ import { RecordSession } from './record-session'
 import { MAX_PROMPT_CHARACTERS } from './selection'
 import {
   formatDuration,
+  AGING_LEVEL_OPTIONS,
+  AGING_LEVEL_HINT,
+  DEFAULT_AGING_LEVEL,
+  isAgingLevel,
   message,
   PROVIDER_IMAGE_TEST_METHOD,
   PROVIDER_IMAGE_TEST_UPDATE_HINT,
   SIZES,
   statusText,
   type GenerationMode,
+  type AgingLevel,
   type GenerationRecord,
   type ImageSize,
   type Provider,
@@ -57,6 +62,7 @@ export function ProviderImageTestDialog({
     'A blue ceramic cup on a plain wooden table in natural daylight.',
   )
   const [size, setSize] = useState<ImageSize>('1024x1024')
+  const [agingLevel, setAgingLevel] = useState<AgingLevel>(DEFAULT_AGING_LEVEL)
   const [reference, setReference] = useState<StoredFile | null>(null)
   const [uploading, setUploading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -177,6 +183,7 @@ export function ProviderImageTestDialog({
         mode,
         prompt,
         size,
+        agingLevel,
         inputFileIds: mode === 'edit' && reference !== null ? [reference.id] : [],
       })
       // Acceptance belongs to history even if this dialog has already closed.
@@ -282,6 +289,27 @@ export function ProviderImageTestDialog({
               />
             </Field>
           </div>
+
+          <Field>
+            <FieldLabel htmlFor="ai-test-aging-level">做旧程度</FieldLabel>
+            <LabeledSelect
+              id="ai-test-aging-level"
+              ariaLabel="做旧程度"
+              value={agingLevel}
+              disabled={locked || !available}
+              options={AGING_LEVEL_OPTIONS}
+              onValueChange={(value) => {
+                if (
+                  active.current &&
+                  !requestLocked.current &&
+                  available &&
+                  isAgingLevel(value)
+                )
+                  setAgingLevel(value)
+              }}
+            />
+            <FieldDescription>{AGING_LEVEL_HINT}</FieldDescription>
+          </Field>
 
           <Field data-invalid={invalidPrompt}>
             <FieldLabel htmlFor="ai-test-prompt">测试提示词</FieldLabel>

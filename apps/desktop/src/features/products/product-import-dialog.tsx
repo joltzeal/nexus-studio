@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ProductImportReport } from '@nexus/plugin-products/contracts'
+import type { ProductImportReport } from '@nexus/plugin-contracts/products'
 import { Download, Loader2 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'

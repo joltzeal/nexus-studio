@@ -1,5 +1,5 @@
 import type { DependencyList, EffectCallback, ReactNode } from 'react'
-import type { ProductPage, ProductSummary } from '@nexus/plugin-products/contracts'
+import type { ProductPage, ProductSummary } from '@nexus/plugin-contracts/products'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'

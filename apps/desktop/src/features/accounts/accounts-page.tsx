@@ -67,9 +67,13 @@ import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-b
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { AccountEditor } from './account-editor'
+import { AccountInspectionAction } from './account-inspection-action'
 import {
   AccountObservationBalance,
   AccountObservationSummary,
+  AccountWindowSessions,
+  AccountBankSummary,
+  AccountBankDetails,
 } from './account-observation'
 import { AccountAddressPopover } from './address-popover'
 import { OrderWatchPanel } from './order-watch-panel'
@@ -145,6 +149,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [batchAccounts, setBatchAccounts] = useState<BatchAccount[] | null>(null)
   const [editing, setEditing] = useState<{ account: Account | null } | null>(null)
+  const [bankDetailId, setBankDetailId] = useState<string | null>(null)
   const [detailRequest, setDetailRequest] = useState<{ id: string } | null>(null)
   useDetailNavigation(
     'account',
@@ -159,7 +164,10 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       (result) => {
         if (!active) return
         const account = result.items.find((item) => item.id === detailRequest.id)
-        if (account) setEditing((current) => current ?? { account })
+        if (account)
+          setEditing((current) =>
+            current?.account?.id === account.id ? current : { account },
+          )
         else toast.error('该账号已不存在，请检查账号池。')
         setDetailRequest(null)
       },
@@ -175,6 +183,11 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   }, [detailRequest])
   const [importing, setImporting] = useState(false)
   const [removing, setRemoving] = useState<Account | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const deleteRequest = useRef<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [phoneConfirmation, setPhoneConfirmation] = useState<Account | null>(null)
+  const [phoneUnlinkError, setPhoneUnlinkError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
@@ -260,6 +273,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
   }
 
   const accounts = data?.items ?? []
+  const bankDetailAccount = accounts.find((account) => account.id === bankDetailId)
   const bindings = data?.bindings ?? []
   const visible = filterAccounts(accounts, bindings, filters)
   const pagination = paginateAccounts(visible, page, pageSize)
@@ -279,18 +293,45 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     setPage(1)
   }
 
-  async function unlinkPhone(accountId: string) {
+  function requestPhoneUnlink(account: Account) {
+    if (
+      !running ||
+      phoneUnlinkRequests.current.has(account.id) ||
+      addressUnlinkRequests.current.has(account.id) ||
+      mailboxRequests.current.has(account.id) ||
+      deleteRequest.current === account.id ||
+      editing?.account?.id === account.id ||
+      removing?.id === account.id
+    )
+      return
+    setPhoneUnlinkError(null)
+    setPhoneConfirmation(account)
+  }
+
+  async function unlinkPhone(target: Account) {
+    const accountId = target.id
     if (
       !running ||
       phoneUnlinkRequests.current.has(accountId) ||
       addressUnlinkRequests.current.has(accountId) ||
       mailboxRequests.current.has(accountId) ||
+      deleteRequest.current === accountId ||
       editing?.account?.id === accountId ||
       removing?.id === accountId
     )
       return
+    const current = accounts.find((account) => account.id === accountId)
+    if (
+      !current ||
+      current.phone !== target.phone ||
+      current.smsOtpUrl !== target.smsOtpUrl
+    ) {
+      setPhoneUnlinkError('账号联系方式已变化，请取消并刷新资料后重新确认。')
+      return
+    }
     phoneUnlinkRequests.current.add(accountId)
     setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    setPhoneUnlinkError(null)
     // Invalidate the request identity, so a late response or finally handler
     // cannot restore the old SMS code/dialog or clear a newer request's busy state.
     if (otpRequest.current?.key === `${accountId}:sms`) {
@@ -324,12 +365,79 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
         delete next[accountId]
         return next
       })
+      setPhoneConfirmation(null)
       toast.success('手机号与短信接码链接已解绑')
-    } catch (cause) {
-      toast.error(`解绑手机号失败：${message(cause)}`)
+    } catch {
+      setPhoneUnlinkError('解绑手机号失败，请检查插件状态或刷新账号资料后重试。')
     } finally {
       phoneUnlinkRequests.current.delete(accountId)
       setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    }
+  }
+
+  async function deleteAccount() {
+    const target = removing
+    if (
+      !target ||
+      !running ||
+      deleteRequest.current !== null ||
+      phoneUnlinkRequests.current.has(target.id) ||
+      addressUnlinkRequests.current.has(target.id) ||
+      mailboxRequests.current.has(target.id)
+    )
+      return
+    const current = accounts.find((account) => account.id === target.id)
+    if (!current || current.updatedAt !== target.updatedAt) {
+      setDeleteError('账号资料已变化，请取消并刷新资料后重新确认。')
+      return
+    }
+    deleteRequest.current = target.id
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await removeAccount(target.id)
+      // A confirmed deletion is authoritative even if the following list read fails.
+      listReadSequence.current += 1
+      contactSnapshots.current.delete(target.id)
+      if (otpRequest.current?.key.startsWith(`${target.id}:`)) {
+        otpRequest.current = null
+        setOtpBusy(null)
+      }
+      setOtpView((current) => (current?.account.id === target.id ? null : current))
+      setCodes((current) => {
+        const next = { ...current }
+        delete next[target.id]
+        return next
+      })
+      setData((previous) => {
+        if (!previous) return previous
+        const items = previous.items.filter((account) => account.id !== target.id)
+        return {
+          ...previous,
+          items,
+          total: items.length,
+          bindings: previous.bindings.filter(
+            (binding) => binding.accountId !== target.id,
+          ),
+        }
+      })
+      setSelectedIds((previous) => {
+        const next = new Set(previous)
+        next.delete(target.id)
+        return next
+      })
+      setRemoving(null)
+      toast.success('账号已删除')
+      try {
+        await load()
+      } catch {
+        setError('账号已删除，刷新账号列表失败，请点击刷新重试。')
+      }
+    } catch {
+      setDeleteError('删除账号失败，请检查插件状态或刷新账号资料后重试。')
+    } finally {
+      deleteRequest.current = null
+      setDeleting(false)
     }
   }
 
@@ -572,6 +680,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                   {hasOtpLinks ? <TableHead>验证码</TableHead> : null}
                   <TableHead>状态</TableHead>
                   <TableHead>余额</TableHead>
+                  <TableHead>收款账户</TableHead>
+                  <TableHead>窗口登录</TableHead>
                   <TableHead>关联窗口</TableHead>
                   <TableHead>创建时间</TableHead>
                   <TableHead className="text-right">操作</TableHead>
@@ -684,11 +794,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                             title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
                             disabled={
                               !running ||
+                              (deleting && removing?.id === account.id) ||
                               unlinkingPhones.has(account.id) ||
                               unlinkingAddresses.has(account.id) ||
                               savingMailboxes.has(account.id)
                             }
-                            onClick={() => void unlinkPhone(account.id)}
+                            onClick={() => requestPhoneUnlink(account)}
                           >
                             {unlinkingPhones.has(account.id) ? (
                               <Loader2 className="animate-spin" aria-hidden="true" />
@@ -763,12 +874,31 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                         observation={account.observation}
                       />
                     </TableCell>
+                    <TableCell>
+                      <AccountBankSummary
+                        accountName={account.account}
+                        observation={account.observation}
+                        onDetails={() => setBankDetailId(account.id)}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <AccountWindowSessions
+                        accountId={account.id}
+                        observation={account.observation}
+                        bindings={bindings}
+                      />
+                    </TableCell>
                     <TableCell>{windowCountText(bindings, account.id)}</TableCell>
                     <TableCell className="whitespace-nowrap tabular-nums">
                       {formatAccountCreatedAt(account.createdAt)}
                     </TableCell>
                     <TableCell>
                       <div className="table-actions">
+                        <AccountInspectionAction
+                          accountId={account.id}
+                          accountName={account.account}
+                          bindings={bindings}
+                        />
                         <Button
                           variant="ghost"
                           size="icon"
@@ -795,6 +925,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           size="icon"
                           aria-label={`编辑 ${account.account}`}
                           disabled={
+                            (deleting && removing?.id === account.id) ||
                             unlinkingPhones.has(account.id) ||
                             unlinkingAddresses.has(account.id) ||
                             savingMailboxes.has(account.id)
@@ -803,7 +934,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                             if (
                               !phoneUnlinkRequests.current.has(account.id) &&
                               !addressUnlinkRequests.current.has(account.id) &&
-                              !mailboxRequests.current.has(account.id)
+                              !mailboxRequests.current.has(account.id) &&
+                              deleteRequest.current !== account.id
                             ) {
                               setEditing({ account })
                             }
@@ -816,6 +948,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                           size="icon"
                           aria-label={`删除 ${account.account}`}
                           disabled={
+                            deleting ||
                             unlinkingPhones.has(account.id) ||
                             unlinkingAddresses.has(account.id) ||
                             savingMailboxes.has(account.id)
@@ -824,8 +957,10 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
                             if (
                               !phoneUnlinkRequests.current.has(account.id) &&
                               !addressUnlinkRequests.current.has(account.id) &&
-                              !mailboxRequests.current.has(account.id)
+                              !mailboxRequests.current.has(account.id) &&
+                              deleteRequest.current === null
                             ) {
+                              setDeleteError(null)
                               setRemoving(account)
                             }
                           }}
@@ -928,6 +1063,25 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       ) : null}
 
       <Dialog
+        open={bankDetailAccount?.observation?.bankAccounts !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setBankDetailId(null)
+        }}
+      >
+        {bankDetailAccount?.observation?.bankAccounts === undefined ? null : (
+          <DialogContent className="max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>收款账户资料</DialogTitle>
+              <DialogDescription>{bankDetailAccount.account}</DialogDescription>
+            </DialogHeader>
+            <AccountBankDetails
+              bankAccounts={bankDetailAccount.observation.bankAccounts}
+            />
+          </DialogContent>
+        )}
+      </Dialog>
+
+      <Dialog
         open={editing !== null}
         onOpenChange={(open) => {
           if (!open) setEditing(null)
@@ -971,6 +1125,12 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       >
         {importing ? (
           <ImportDialog
+            ready={running}
+            existingAccounts={accounts.map(({ id, account, loginMethod }) => ({
+              id,
+              account,
+              loginMethod,
+            }))}
             onImported={async () => {
               await load()
             }}
@@ -982,43 +1142,114 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
       <AlertDialog
         open={removing !== null}
         onOpenChange={(open) => {
-          if (!open) setRemoving(null)
+          if (!open && deleteRequest.current === null) {
+            setRemoving(null)
+            setDeleteError(null)
+          }
         }}
       >
         {removing !== null ? (
-          <AlertDialogContent>
+          <AlertDialogContent
+            onEscapeKeyDown={(event) => {
+              if (deleteRequest.current !== null) event.preventDefault()
+            }}
+          >
             <AlertDialogHeader>
               <AlertDialogTitle>删除账号「{removing.account}」？</AlertDialogTitle>
               <AlertDialogDescription>
-                该账号与它关联的窗口会一起解除关联，删除后无法撤销。
+                高风险操作：将永久删除账号「{removing.account}」及其保存的登录资料， 解除{' '}
+                {bindings.filter((binding) => binding.accountId === removing.id).length}{' '}
+                个窗口关联
+                {removing.phone.trim() || removing.smsOtpUrl.trim()
+                  ? '，移除手机号和短信接码资料'
+                  : ''}
+                {removing.emailOtpUrl.trim() ? '，移除邮箱接码资料' : ''}
+                {removing.mailbox ? `，解除邮箱「${removing.mailbox.email}」关联` : ''}
+                {removing.address
+                  ? `，移除地址「${removing.address.postalCode} ${removing.address.city}」快照`
+                  : ''}
+                。删除后无法撤销。浏览器窗口、SIM8
+                号码池、邮箱池与地址库中的原记录会保留， 不会注销 Vinted 平台账号。
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {deleteError ? <FieldError role="alert">{deleteError}</FieldError> : null}
             <AlertDialogFooter>
-              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
               <AlertDialogAction
                 variant="destructive"
                 disabled={
+                  !running ||
+                  deleting ||
                   unlinkingPhones.has(removing.id) ||
                   unlinkingAddresses.has(removing.id) ||
                   savingMailboxes.has(removing.id)
                 }
                 onClick={(event) => {
                   event.preventDefault()
-                  const target = removing
-                  if (
-                    phoneUnlinkRequests.current.has(target.id) ||
-                    addressUnlinkRequests.current.has(target.id) ||
-                    mailboxRequests.current.has(target.id)
-                  )
-                    return
-                  setRemoving(null)
-                  void removeAccount(target.id)
-                    .then(load)
-                    .then(() => toast.success('账号已删除'))
-                    .catch((cause: unknown) => setError(message(cause)))
+                  void deleteAccount()
                 }}
               >
-                删除账号
+                {deleting ? '正在删除…' : '删除账号'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        ) : null}
+      </AlertDialog>
+
+      <AlertDialog
+        open={phoneConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open && !phoneUnlinkRequests.current.has(phoneConfirmation?.id ?? '')) {
+            setPhoneConfirmation(null)
+            setPhoneUnlinkError(null)
+          }
+        }}
+      >
+        {phoneConfirmation ? (
+          <AlertDialogContent
+            onEscapeKeyDown={(event) => {
+              if (phoneUnlinkRequests.current.has(phoneConfirmation.id)) {
+                event.preventDefault()
+              }
+            }}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认解绑手机号？</AlertDialogTitle>
+              <AlertDialogDescription>
+                高风险操作：将清空账号「{phoneConfirmation.account}」的手机号「
+                {phoneConfirmation.phone}」及短信接码链接，影响{' '}
+                {
+                  bindings.filter((binding) => binding.accountId === phoneConfirmation.id)
+                    .length
+                }{' '}
+                个关联窗口，可能导致无法接收登录或找回验证码。SIM8 号码池中的号码会保留，
+                不会在 Vinted 平台解绑手机号。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {phoneUnlinkError ? (
+              <FieldError role="alert">{phoneUnlinkError}</FieldError>
+            ) : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={unlinkingPhones.has(phoneConfirmation.id)}>
+                取消
+              </AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={
+                  !running ||
+                  unlinkingPhones.has(phoneConfirmation.id) ||
+                  unlinkingAddresses.has(phoneConfirmation.id) ||
+                  savingMailboxes.has(phoneConfirmation.id) ||
+                  (deleting && removing?.id === phoneConfirmation.id)
+                }
+                onClick={(event) => {
+                  event.preventDefault()
+                  void unlinkPhone(phoneConfirmation)
+                }}
+              >
+                {unlinkingPhones.has(phoneConfirmation.id)
+                  ? '正在解绑…'
+                  : '确认解绑手机号'}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -1231,9 +1462,13 @@ function OtpCell({
 }
 
 function ImportDialog({
+  ready,
+  existingAccounts,
   onImported,
   onClose,
 }: {
+  ready: boolean
+  existingAccounts: Pick<Account, 'id' | 'account' | 'loginMethod'>[]
   onImported: () => Promise<void>
   onClose: () => void
 }) {
@@ -1241,8 +1476,11 @@ function ImportDialog({
   const [report, setReport] = useState<ImportReport | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirmation, setConfirmation] = useState<File | null>(null)
+  const request = useRef(false)
 
-  async function run() {
+  function requestImport() {
+    if (!ready || request.current || confirmation !== null) return
     if (file === null) {
       setError('请选择要导入的文件。')
       return
@@ -1251,22 +1489,39 @@ function ImportDialog({
       setError(`文件超过 ${String(MAX_IMPORT_BYTES / 1024)} KB，请拆分后再导入。`)
       return
     }
+    setError(null)
+    if (existingAccounts.length) {
+      setConfirmation(file)
+      return
+    }
+    void run(file)
+  }
+
+  async function run(target: File) {
+    if (!ready || request.current) return
+    request.current = true
     setPending(true)
     setError(null)
     try {
-      const text = await file.text()
-      const binary = /\.(csv|txt)$/i.test(file.name)
+      const text = await target.text()
+      const binary = /\.(csv|txt)$/i.test(target.name)
       const result = binary
-        ? await importAccounts(file.name, { text })
-        : await importAccounts(file.name, {
-            base64: toBase64(new Uint8Array(await file.arrayBuffer())),
+        ? await importAccounts(target.name, { text })
+        : await importAccounts(target.name, {
+            base64: toBase64(new Uint8Array(await target.arrayBuffer())),
           })
       setReport(result)
-      await onImported()
+      setConfirmation(null)
       toast.success(`导入完成：新增 ${String(result.inserted)} 个`)
-    } catch (cause) {
-      setError(message(cause))
+      try {
+        await onImported()
+      } catch {
+        setError('导入已完成，刷新账号列表失败，请关闭弹窗后刷新。')
+      }
+    } catch {
+      setError('导入失败，请检查文件和插件状态，刷新账号资料后重试。')
     } finally {
+      request.current = false
       setPending(false)
     }
   }
@@ -1282,7 +1537,15 @@ function ImportDialog({
   }
 
   return (
-    <DialogContent>
+    <DialogContent
+      showCloseButton={!pending && confirmation === null}
+      onEscapeKeyDown={(event) => {
+        if (request.current || confirmation !== null) event.preventDefault()
+      }}
+      onInteractOutside={(event) => {
+        if (request.current || confirmation !== null) event.preventDefault()
+      }}
+    >
       <DialogHeader>
         <DialogTitle>导入账号</DialogTitle>
         <DialogDescription>
@@ -1296,8 +1559,9 @@ function ImportDialog({
             id="account-file"
             type="file"
             accept=".csv,.xlsx,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            disabled={pending}
+            disabled={pending || !ready || confirmation !== null}
             onChange={(event) => {
+              if (request.current || confirmation !== null) return
               setFile(event.target.files?.[0] ?? null)
               setReport(null)
               setError(null)
@@ -1343,19 +1607,82 @@ function ImportDialog({
             )}
           </div>
         )}
-        {error ? <FieldError role="alert">{error}</FieldError> : null}
+        {error && confirmation === null ? (
+          <FieldError role="alert">{error}</FieldError>
+        ) : null}
       </div>
       <DialogFooter>
-        <Button variant="ghost" disabled={pending} onClick={onClose}>
+        <Button
+          variant="ghost"
+          disabled={pending || confirmation !== null}
+          onClick={() => {
+            if (!request.current && confirmation === null) onClose()
+          }}
+        >
           关闭
         </Button>
-        <Button disabled={pending || file === null} onClick={() => void run()}>
+        <Button
+          disabled={pending || !ready || file === null || confirmation !== null}
+          onClick={requestImport}
+        >
           {pending ? (
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
           ) : null}
           {pending ? '正在导入…' : '开始导入'}
         </Button>
       </DialogFooter>
+      <AlertDialog
+        open={confirmation !== null}
+        onOpenChange={(open) => {
+          if (!open && !request.current) {
+            setConfirmation(null)
+            setError(null)
+          }
+        }}
+      >
+        {confirmation ? (
+          <AlertDialogContent
+            onEscapeKeyDown={(event) => {
+              if (request.current) event.preventDefault()
+            }}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认导入并更新已有账号？</AlertDialogTitle>
+              <AlertDialogDescription>
+                高风险操作：导入「{confirmation.name}
+                」时，同登录方式和账号的记录会被更新，
+                可能覆盖已有登录资料、手机号、短信和邮箱接码链接，影响所有关联窗口。
+                下方列出现有账号范围，实际更新哪些账号由文件内容决定。
+                地址快照、邮箱池关联和窗口关联会保留，不会修改 Vinted 平台资料。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <ul
+              className="max-h-40 overflow-y-auto text-sm break-words"
+              aria-label="可能被更新的现有账号"
+            >
+              {existingAccounts.map((account) => (
+                <li key={account.id}>
+                  {account.account} · {LOGIN_METHOD_LABELS[account.loginMethod]}登录
+                </li>
+              ))}
+            </ul>
+            {error ? <FieldError role="alert">{error}</FieldError> : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={pending}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={pending || !ready}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void run(confirmation)
+                }}
+              >
+                {pending ? '正在导入…' : '确认导入'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        ) : null}
+      </AlertDialog>
     </DialogContent>
   )
 }

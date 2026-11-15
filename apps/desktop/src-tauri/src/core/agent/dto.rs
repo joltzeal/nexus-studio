@@ -5,7 +5,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{AgentResult, invalid};
-pub use crate::core::plugin_host::process::AgentScope;
+pub use crate::core::plugin_host::process::{AgentMode, AgentScope};
 
 pub const MAX_PRODUCTS: usize = 100;
 pub const MAX_WINDOWS: usize = 100;
@@ -307,8 +307,10 @@ pub struct ModelComplete {
 #[serde(rename_all = "snake_case")]
 pub enum StepState {
     Continue,
+    Prepared,
     Completed,
     Blocked,
+    LoginRequired,
     ReviewRequired,
     ResultUnknown,
     SyncPending,
@@ -319,8 +321,10 @@ impl StepState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Continue => "running",
+            Self::Prepared => "queued",
             Self::Completed => "completed",
             Self::Blocked => "blocked",
+            Self::LoginRequired => "login_required",
             Self::ReviewRequired => "review_required",
             Self::ResultUnknown => "result_unknown",
             Self::SyncPending => "sync_pending",

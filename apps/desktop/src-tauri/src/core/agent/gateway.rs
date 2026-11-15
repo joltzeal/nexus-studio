@@ -25,7 +25,55 @@ impl AgentService {
         let payload = &request.payload;
         let scope = &request.scope;
         let generation = &caller.generation;
+        if scope.mode == AgentMode::ContentPreparation
+            && !matches!(
+                request.method.as_str(),
+                "agent.controls.get"
+                    | "agent.content.get"
+                    | "agent.content.put"
+                    | "agent.model.acquire"
+                    | "agent.model.complete"
+                    | "agent.artifact.read"
+                    | "agent.checkpoint.get"
+                    | "agent.checkpoint.list"
+                    | "agent.checkpoint.put"
+                    | "agent.checkpoint.putWrites"
+                    | "agent.checkpoint.delete"
+            )
+        {
+            return Err(denied(
+                "Content preparation cannot use browser, action or plugin methods",
+            ));
+        }
+        if scope.mode == AgentMode::Browser
+            && job.preset == Preset::PostListing
+            && matches!(
+                request.method.as_str(),
+                "agent.model.acquire" | "agent.model.complete"
+            )
+        {
+            return Err(denied("Post Listing browser execution cannot use models"));
+        }
         match request.method.as_str() {
+            "agent.content.get" => {
+                fields(payload, &["productId", "contentKey"])?;
+                self.store.content_get(
+                    scope,
+                    generation,
+                    string(payload, "productId")?,
+                    string(payload, "contentKey")?,
+                )
+            }
+            "agent.content.put" => {
+                fields(payload, &["productId", "contentKey", "preparation"])?;
+                self.store.content_put(
+                    scope,
+                    generation,
+                    string(payload, "productId")?,
+                    string(payload, "contentKey")?,
+                    &payload["preparation"],
+                )
+            }
             "agent.controls.get" => {
                 fields(payload, &[])?;
                 self.store.controls_get(&job.id)
@@ -175,6 +223,10 @@ impl AgentService {
     }
 
     fn require_dispatching(&self, job: &Job) -> AgentResult<()> {
+        if self.storage_halted.load(Ordering::Acquire) {
+            return Err(denied("Observation storage failed; dispatch is halted"));
+        }
+        self.store.require_dispatch_writes(&job.id)?;
         if job.reconcile_only || self.store.job_action(&job.id)? != "run" {
             return Err(denied(
                 "Pause, cancellation, or reconciliation prevents new external writes",
@@ -191,6 +243,7 @@ impl AgentService {
         payload: &Value,
         deadline: Instant,
     ) -> AgentResult<Value> {
+        super::execution::require_browser(job)?;
         fields(payload, &["operation", "origin", "input", "timeoutMs"])?;
         if canonical(payload).len() > 240 * 1024 {
             return Err(invalid("Browser request exceeds its byte budget"));
@@ -225,10 +278,23 @@ impl AgentService {
         }
         let uncertain = self.store.has_uncertain(&job.id)?;
         let initialize_origin =
-            origin_initialization(job, operation, &payload["input"], uncertain)?;
+            origin_initialization(job, operation, &payload["input"], uncertain)?
+                || (operation == "navigate"
+                    && (job.preset == Preset::InspectAccounts
+                        || self.store.job_needs_login(&job.id)?)
+                    && payload["input"]["url"].as_str()
+                        == Some(format!("{}/", job.snapshot.platform_origin).as_str())
+                    && payload["input"]
+                        .as_object()
+                        .is_some_and(|input| input.len() == 1));
         let safe_read =
             initialize_origin || matches!(operation, "snapshot" | "readFields" | "request");
         if !safe_read {
+            if job.preset == Preset::InspectAccounts {
+                return Err(denied(
+                    "Account inspections permit only origin initialization and read-only tools",
+                ));
+            }
             self.require_dispatching(job)?;
             if uncertain && operation != "submit" {
                 return Err(denied(
@@ -237,10 +303,11 @@ impl AgentService {
             }
         }
         if operation == "request" {
-            fields(&payload["input"], &["path", "method"])?;
-            if payload["input"]["method"] != "GET" {
-                return Err(denied("Only same-origin GET requests are allowed"));
-            }
+            crate::core::browser::provider::automation::validate_read_policy(
+                &job.snapshot.platform_origin,
+                &payload["input"],
+            )
+            .map_err(browser_error)?;
         }
         let _tool = guard
             .0
@@ -329,6 +396,7 @@ impl AgentService {
         job: &Job,
         payload: &Value,
     ) -> AgentResult<Value> {
+        super::execution::require_browser(job)?;
         fields(payload, &["pluginId", "capability", "method", "payload"])?;
         let plugin = string(payload, "pluginId")?;
         let capability = string(payload, "capability")?;
@@ -349,46 +417,27 @@ impl AgentService {
                 if input["windowId"].as_str() != Some(scope.window_id.as_str()) {
                     return Err(denied("Account snapshot belongs to another window"));
                 }
-                let (account, origin) = self.account_snapshot(&scope.window_id)?;
+                let (mut account, origin, session) =
+                    self.account_snapshot_projection(&scope.window_id)?;
                 if account["accountId"] != job.snapshot.account["accountId"]
                     || account["platformUserId"] != job.snapshot.account["platformUserId"]
                     || origin != job.snapshot.platform_origin
+                    || account["bindingRevision"] != job.snapshot.account["bindingRevision"]
                 {
                     return Err(denied("Account identity changed after job creation"));
                 }
-                Ok(json!({"windowId":scope.window_id,"account":account}))
+                account["observation"] = Value::Null;
+                Ok(
+                    json!({"windowId":scope.window_id,"bindingRevision":account["bindingRevision"],"account":account,"session":session}),
+                )
             }
-            ("studio.vinted-accounts", "account.pool", "vinted.accounts.observations.record") => {
-                fields(
-                    input,
-                    &[
-                        "operationId",
-                        "accountId",
-                        "windowId",
-                        "observedAt",
-                        "source",
-                        "platformUserId",
-                        "status",
-                        "tags",
-                        "summary",
-                        "rating",
-                        "balance",
-                    ],
-                )?;
-                uuid(string(input, "operationId")?)?;
-                if input["windowId"].as_str() != Some(scope.window_id.as_str())
-                    || input["accountId"].as_str() != Some(scope.account_id.as_str())
-                    || input
-                        .get("platformUserId")
-                        .is_some_and(|id| id != &job.snapshot.account["platformUserId"])
-                {
-                    return Err(denied(
-                        "Observation is outside the bound account/window identity",
-                    ));
-                }
+            ("studio.vinted-accounts", "account.pool", "vinted.accounts.observations.reserve") => {
                 self.verify_binding(&job.snapshot)?;
                 self.verify_account(&job.snapshot, true)?;
                 self.recheck(caller, scope)?;
+                // Persist the fenced reservation intent before collection is authorized.
+                self.store
+                    .reserve_observation(scope, &caller.generation, input, None)?;
                 let reply = self
                     .host()?
                     .call(
@@ -399,16 +448,25 @@ impl AgentService {
                         Duration::from_secs(30),
                     )
                     .map_err(host_error)?;
-                if reply["operationId"] != input["operationId"]
-                    || reply["accountId"] != input["accountId"]
-                    || reply["storageDurable"] != true
-                    || reply["applied"].as_bool().is_none()
-                {
-                    return Err(invalid(
-                        "Account plugin did not acknowledge the observation receipt",
-                    ));
-                }
+                self.store
+                    .reserve_observation(scope, &caller.generation, input, Some(&reply))?;
                 Ok(reply)
+            }
+            ("studio.vinted-accounts", "account.pool", "vinted.accounts.observations.record") => {
+                self.verify_binding(&job.snapshot)?;
+                self.verify_account(&job.snapshot, true)?;
+                self.recheck(caller, scope)?;
+                self.record_account_observation(scope, &caller.generation, input, || {
+                    self.host()?
+                        .call(
+                            plugin,
+                            Capability::AccountPool,
+                            method,
+                            input.clone(),
+                            Duration::from_secs(30),
+                        )
+                        .map_err(host_error)
+                })
             }
             ("studio.products", "product.catalog", "products.publications.record") => {
                 let operation = self.store.require_publication(scope, input)?;
@@ -452,6 +510,29 @@ impl AgentService {
                 "Cross-plugin method, target, or capability is outside the allowlist",
             )),
         }
+    }
+
+    pub(super) fn record_account_observation(
+        &self,
+        scope: &AgentScope,
+        generation: &str,
+        input: &Value,
+        persist_account: impl FnOnce() -> AgentResult<Value>,
+    ) -> AgentResult<Value> {
+        self.store
+            .observation_record_intent(scope, generation, input)
+            .map_err(|failure| {
+                if failure.halt_dispatch {
+                    self.storage_halted.store(true, Ordering::Release);
+                }
+                failure.error
+            })?;
+        // A validated strong stop is already durable before the account call.
+        // Rejected or conflicting intents never reach any halt fallback.
+        let reply = persist_account()?;
+        self.store
+            .observation_recorded(scope, generation, input, &reply)?;
+        Ok(reply)
     }
 }
 

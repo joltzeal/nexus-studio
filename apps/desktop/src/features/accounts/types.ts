@@ -1,4 +1,4 @@
-import type { AccountObservationState } from '@nexus/plugin-vinted-accounts/agent-contracts'
+import type { AccountObservationState } from '@nexus/plugin-contracts/vinted-accounts'
 import type { Profile } from '@/features/addresses/types'
 
 export const ACCOUNTS_PLUGIN_ID = 'studio.vinted-accounts'
@@ -99,6 +99,8 @@ export interface Binding {
   windowId: string
   accountId: string
   boundAt: string
+  /** Required by account-list validation; other relationship views may omit evidence. */
+  revision?: string
 }
 
 export interface BindingView extends Binding {
@@ -127,6 +129,7 @@ export interface AccountPage extends AccountList {
 
 export interface AccountInput {
   id?: string
+  expectedUpdatedAt?: string
   loginMethod: LoginMethod
   account: string
   password: string

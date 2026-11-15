@@ -25,7 +25,10 @@ import { copyText } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
 import { getMessage, listMessages, setMessagesRead } from './api'
 import { EmailReaderStore, type EmailReaderSnapshot } from './async-state'
+import { EmailAuthorizationDialog } from './authorization-dialog'
+import { readStateRecoveryMessage } from './errors'
 import { useEmailAction, useEmailReader } from './hooks'
+import { MailboxEditor } from './mailbox-editor'
 import { formatMailTime, mailHtmlDocument, type MailboxView } from './types'
 
 interface MailReaderProps {
@@ -50,20 +53,26 @@ export function MailReader(props: MailReaderProps) {
   )
 }
 
-function ReaderSession({ account, onClose, onChanged }: MailReaderProps) {
-  const [store] = useState(
-    () =>
-      new EmailReaderStore(account, {
-        list: listMessages,
-        get: getMessage,
-        setRead: setMessagesRead,
-      }),
-  )
+function readerStore(account: MailboxView) {
+  return new EmailReaderStore(account, {
+    list: listMessages,
+    get: getMessage,
+    setRead: setMessagesRead,
+  })
+}
+
+function ReaderSession({ account: initialAccount, onClose, onChanged }: MailReaderProps) {
+  const [account, setAccount] = useState(initialAccount)
+  const [editing, setEditing] = useState(false)
+  const [authorizing, setAuthorizing] = useState(false)
+  const [store, setStore] = useState(() => readerStore(account))
   const state = useEmailReader(store, onChanged)
   const items = state.list?.items ?? []
   const allSelected = items.length > 0 && state.selectedIds.length === items.length
   const repeatedCursor = store.repeatedCursor()
   const counts = state.list ?? account.reception[state.folder]
+  const needsRecovery =
+    state.writeErrorCode === 'PERMISSION_DENIED' || state.writeErrorCode === 'AUTH_FAILED'
   function close() {
     store.dispose()
     onClose()
@@ -74,6 +83,18 @@ function ReaderSession({ account, onClose, onChanged }: MailReaderProps) {
       isRead,
       state.scope,
     )
+  }
+  function saved(updated: MailboxView) {
+    store.dispose()
+    setEditing(false)
+    setAuthorizing(false)
+    onChanged?.()
+    if (!updated.enabled) {
+      onClose()
+      return
+    }
+    setAccount(updated)
+    setStore(readerStore(updated))
   }
 
   return (
@@ -88,7 +109,9 @@ function ReaderSession({ account, onClose, onChanged }: MailReaderProps) {
           <DialogTitle className="truncate">{account.email}</DialogTitle>
           <DialogDescription>
             {account.transport === 'graph' ? 'Graph' : 'IMAP'} · 收件箱与垃圾箱 ·
-            打开正文后同步已读状态
+            {state.readOnlyMode
+              ? '只读模式：打开正文不自动标记，手动标记仍需远端权限'
+              : '打开正文后同步已读状态'}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -107,7 +130,48 @@ function ReaderSession({ account, onClose, onChanged }: MailReaderProps) {
             共 {counts?.total ?? '—'} 封 · 未读 {counts?.unread ?? '—'}
           </span>
         </div>
-        {state.writeError ? <FieldError>{state.writeError}</FieldError> : null}
+        {state.writeError ? (
+          <div className="flex flex-col gap-2">
+            <FieldError>{state.writeError}</FieldError>
+            {needsRecovery ? (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  {readStateRecoveryMessage(account.transport)}
+                </p>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+        {needsRecovery || state.listError || state.readOnlyMode ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={state.writing}
+              onClick={() => setAuthorizing(true)}
+            >
+              授予 Graph 读写权限
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={state.writing}
+              onClick={() => setEditing(true)}
+            >
+              编辑授权或切换通道
+            </Button>
+            {!state.readOnlyMode ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={state.writing}
+                onClick={store.continueReadOnly}
+              >
+                继续只读
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 md:grid-cols-[minmax(16rem,0.8fr)_minmax(0,1.4fr)]">
           <section
             className={cn(
@@ -327,6 +391,20 @@ function ReaderSession({ account, onClose, onChanged }: MailReaderProps) {
           </section>
         </div>
       </DialogContent>
+      {editing ? (
+        <MailboxEditor
+          account={account}
+          onClose={() => setEditing(false)}
+          onSaved={saved}
+        />
+      ) : null}
+      {authorizing ? (
+        <EmailAuthorizationDialog
+          account={account}
+          onClose={() => setAuthorizing(false)}
+          onAuthorized={saved}
+        />
+      ) : null}
     </Dialog>
   )
 }

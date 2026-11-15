@@ -20,7 +20,8 @@ const state = vi.hoisted(() => ({
   saveResponses: [] as Promise<{ item: Account; created: boolean }>[],
 }))
 
-vi.mock('@/lib/platform/native-plugins', () => ({
+vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/platform/native-plugins')>()),
   callPlugin: (
     _id: string,
     _capability: string,
@@ -47,8 +48,13 @@ vi.mock('@/lib/platform/native-plugins', () => ({
       if (state.saveError) return Promise.reject(state.saveError)
       const response = state.saveResponses.shift()
       if (response) return response
+      const fields = Object.fromEntries(
+        Object.entries(payload as Record<string, unknown>).filter(
+          ([key]) => key !== 'expectedUpdatedAt',
+        ),
+      )
       return Promise.resolve({
-        item: state.saved ?? { ...state.items[0], ...(payload as object) },
+        item: state.saved ?? { ...state.items[0], ...fields },
         created: false,
       })
     }
@@ -93,6 +99,7 @@ describe('account number bridge', () => {
       [
         'account',
         'emailOtpUrl',
+        'expectedUpdatedAt',
         'homepageUrl',
         'id',
         'loginMethod',
@@ -109,6 +116,7 @@ describe('account number bridge', () => {
     const input = mergeAccountNumber(account(), '+14155550100', 'https://api.cc/r')
     expect('createdAt' in input).toBe(false)
     expect('updatedAt' in input).toBe(false)
+    expect(input.expectedUpdatedAt).toBe(account().updatedAt)
   })
 
   it('preserves a password with trailing spaces', () => {
@@ -187,6 +195,7 @@ describe('contact updates', () => {
         method: 'vinted.accounts.save',
         payload: {
           id: latest.id,
+          expectedUpdatedAt: latest.updatedAt,
           loginMethod: latest.loginMethod,
           account: latest.account,
           password: latest.password,
@@ -385,6 +394,7 @@ describe('contact updates', () => {
     const save = state.calls.find((entry) => entry.method === 'vinted.accounts.save')
     expect(save?.payload).toEqual({
       id: 'acc-2',
+      expectedUpdatedAt: account().updatedAt,
       loginMethod: 'email',
       account: 'second@example.com',
       password: 'p@ss word ',

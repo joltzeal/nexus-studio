@@ -51,10 +51,11 @@ impl AgentService {
                 .and_then(parse_window);
             let account = self.account_snapshot(&assignment.window_id);
             let ready = window.as_ref().is_ok_and(|w| {
-                !matches!(
-                    w.state.as_str(),
-                    "unknown" | "missing" | "starting" | "stopping"
-                )
+                input.preset == Preset::PostListing
+                    || !matches!(
+                        w.state.as_str(),
+                        "unknown" | "missing" | "starting" | "stopping"
+                    )
             });
             let mut account_ready = account
                 .as_ref()
@@ -182,7 +183,9 @@ impl AgentService {
                         super::canonical(&json!({"snapshot":snapshot,"settings":settings})).len()
                             <= 800 * 1024;
                 }
-                let free = self.store.preflight_resources(&snapshot)?;
+                let free = self
+                    .store
+                    .preflight_resources(&snapshot, input.preset == Preset::PostListing)?;
                 checks.push(check(
                     Some(&assignment.window_id),
                     None,
@@ -261,9 +264,17 @@ impl AgentService {
 }
 
 impl super::store::AgentStore {
-    pub fn preflight_resources(&self, snapshot: &JobSnapshot) -> AgentResult<bool> {
+    pub fn preflight_resources(
+        &self,
+        snapshot: &JobSnapshot,
+        preparation: bool,
+    ) -> AgentResult<bool> {
         let db = self.open()?;
-        for key in snapshot.resources()? {
+        for key in if preparation {
+            vec![]
+        } else {
+            snapshot.resources()?
+        } {
             let occupied: bool = db
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM agent_resources WHERE resource_key=?1)",

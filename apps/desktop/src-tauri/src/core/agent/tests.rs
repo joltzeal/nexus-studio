@@ -13,8 +13,14 @@ use crate::core::database::open_database;
 use crate::core::plugin_host::PluginHost;
 use crate::core::plugin_host::process::{HostRequest, PluginCaller};
 
+#[path = "content_tests.rs"]
+mod content_preparation;
+#[path = "message_recovery_tests.rs"]
+mod message_recovery;
 #[path = "model_history_tests.rs"]
 mod model_history;
+#[path = "native_review_fix_tests.rs"]
+mod native_review_fixes;
 
 fn id() -> String {
     Uuid::new_v4().to_string()
@@ -41,8 +47,8 @@ fn snapshot() -> JobSnapshot {
         connection_id: "builtin".into(),
         profile_id: id(),
         platform_origin: "https://www.vinted.com".into(),
-        account: json!({"accountId":id(),"account":"fixture-account","status":"active",
-            "homepageUrl":"https://www.vinted.com/member/42-fixture","platformUserId":"42","observation":null}),
+        account: json!({"accountId":id(),"bindingRevision":id(),"account":"fixture-account","status":"active",
+            "homepageUrl":"https://www.vinted.com/member/42-fixture","platformUserId":"42"}),
         products: vec![],
         messages: vec![],
     }
@@ -76,9 +82,13 @@ fn create(
     store
         .create(&batch, &input, &[(job.clone(), snapshot)], &settings())
         .unwrap();
+    if preset == Preset::PostListing {
+        content_preparation::prepare_for_browser(store, &job);
+    }
     (batch, job, input)
 }
 fn claim(store: &AgentStore, job: &str) -> Job {
+    content_preparation::prepare_for_browser(store, job);
     store.claim(job, "fixture-generation").unwrap().unwrap()
 }
 fn output(state: StepState) -> StepOutput {
@@ -94,7 +104,7 @@ fn output(state: StepState) -> StepOutput {
 fn product() -> Value {
     json!({"id":id(),"revision":2,"name":"Fixture product","title":"Used cotton shirt",
     "description":"A used cotton shirt.","price":12.5,"currency":"USD","condition":"Good",
-    "category":"","brand":"","size":"","tags":[],"status":"ready","publicationCount":0,
+    "category":"","brand":"","size":"","tags":[],"platformFacts":{"vinted":[]},"status":"ready","publicationCount":0,
     "latestPublication":null,"images":[{
         "id":id(),"artifactId":id(),"name":"fixture.png","mime":"image/png",
         "bytes":8,"sha256":"a".repeat(64)
@@ -2073,6 +2083,17 @@ fn gateway_fixture() -> (
     PluginCaller,
     AgentScope,
 ) {
+    gateway_fixture_with_mode(AgentMode::Browser)
+}
+fn gateway_fixture_with_mode(
+    mode: AgentMode,
+) -> (
+    TempDir,
+    Arc<PluginHost>,
+    Arc<AgentService>,
+    PluginCaller,
+    AgentScope,
+) {
     let (temp, store) = fixture();
     let source = temp.path().join("source");
     std::fs::create_dir_all(&source).unwrap();
@@ -2103,7 +2124,22 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     let host = Arc::new(PluginHost::open(temp.path().join("host"), vec![]).unwrap());
     host.install(&source).unwrap();
     let caller = host.agent_caller().unwrap();
-    let (_, job, _) = create(&store, snapshot(), Preset::InspectAccounts);
+    let job = if mode == AgentMode::ContentPreparation {
+        let mut snap = snapshot();
+        snap.products.push(product());
+        let job = id();
+        store
+            .create(
+                &id(),
+                &input(&snap, Preset::PostListing),
+                &[(job.clone(), snap)],
+                &settings(),
+            )
+            .unwrap();
+        job
+    } else {
+        create(&store, snapshot(), Preset::InspectAccounts).1
+    };
     let job = store.claim(&job, &caller.generation).unwrap().unwrap();
     let scope = job.scope.unwrap();
     let service = AgentService::gateway_fixture(

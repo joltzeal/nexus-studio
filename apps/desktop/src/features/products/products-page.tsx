@@ -6,7 +6,7 @@ import {
   type ProductPage,
   type ProductQuery,
   type ProductSummary,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 import {
   ChevronLeft,
   ChevronRight,
@@ -117,7 +117,8 @@ export function ProductsWorkspace() {
   useDetailNavigation(
     'product',
     useCallback((request) => {
-      setEditing((current) => current ?? { id: request.id })
+      setPublicationProduct(null)
+      setEditing({ id: request.id })
     }, []),
   )
   const [catalog, setCatalog] = useState<{

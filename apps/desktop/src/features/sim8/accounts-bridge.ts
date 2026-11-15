@@ -70,6 +70,7 @@ export function mergeAccountNumber(
 ): AccountInput {
   return {
     id: account.id,
+    expectedUpdatedAt: account.updatedAt,
     loginMethod: account.loginMethod,
     account: account.account,
     password: account.password,

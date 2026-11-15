@@ -20,7 +20,7 @@ import {
   type ModelRole,
 } from './model-selection'
 import { transferInitialImage } from './reference-transfer'
-import { SCENE_PLAN_METHODS, supportsScenePlans } from './scene-plan'
+import { SCENE_PLAN_METHODS, sceneDraft, supportsScenePlans } from './scene-plan'
 import { makeProvider, makeSceneRecord } from './scene-plan.test-data'
 import type { ModelSelection, ModelSelections, StoredFile } from './types'
 import { useScenePlanner } from './use-scene-planner'
@@ -190,6 +190,62 @@ beforeEach(() => {
 })
 afterEach(() => hooks.dispose())
 
+describe('independent photo aging selection', () => {
+  it.each(['generate', 'edit', 'plan'] as const)(
+    'defaults to moderate and submits a separately chosen level for %s',
+    async (path) => {
+      props.selections = remembered
+      if (path !== 'generate') props.initialImages = [reference]
+      await settle()
+      const aging = select('ai-aging-level')
+      expect(aging.value).toBe('moderate')
+      expect(aging.options).toEqual([
+        { value: 'none', label: '无' },
+        { value: 'light', label: '轻微' },
+        { value: 'moderate', label: '适中' },
+        { value: 'heavy', label: '明显' },
+      ])
+      expect(text(render())).toContain('不新增商品磨损')
+      aging.onValueChange('heavy')
+      await settle()
+      const context = vi.mocked(useScenePlanner).mock.lastCall![0]
+      expect(context.agingLevel).toBe('heavy')
+      if (path === 'plan') {
+        const snapshot = makeSceneRecord().scenePlan!.plan
+        const plan = {
+          ...snapshot,
+          providerId: context.providerId,
+          model: context.model,
+          inputFileId: context.inputFileId,
+          requirements: context.requirements,
+          agingLevel: 'heavy' as const,
+          count: 1,
+          result: { ...snapshot.result!, views: snapshot.result!.views.slice(0, 1) },
+        }
+        planner.smart = true
+        planner.ready = true
+        planner.draft = sceneDraft(plan, context)
+      }
+      await submit()
+      expect(generate).toHaveBeenCalledOnce()
+      expect(vi.mocked(generate).mock.lastCall![0]).toMatchObject({
+        agingLevel: 'heavy',
+        presetId: null,
+        mode: path === 'generate' ? 'generate' : 'edit',
+      })
+    },
+  )
+
+  it('keeps the selected level while model configuration is refreshed', async () => {
+    await settle()
+    select('ai-aging-level').onValueChange('light')
+    props.providers = [...props.providers].reverse()
+    await settle()
+    expect(select('ai-aging-level').value).toBe('light')
+    expect(vi.mocked(useScenePlanner).mock.lastCall![0].agingLevel).toBe('light')
+  })
+})
+
 describe('generation model selection', () => {
   it('does not select the first provider on mount or list reorder', async () => {
     await settle()
@@ -297,6 +353,7 @@ describe('generation model selection', () => {
         prompt,
         size: '1024x1024',
         count: 1,
+        agingLevel: 'moderate',
         inputFileIds: ['reference-1'],
         visionProviderId: role === 'vision' ? 'other-provider' : 'vision-provider',
         visionModel: role === 'vision' ? 'vision-v2' : 'vision-v1',
@@ -379,6 +436,7 @@ describe('generation model validation and payloads', () => {
         prompt,
         size: '1024x1024',
         count: 1,
+        agingLevel: 'moderate',
         inputFileIds: [],
       })
       expect(props.onSubmitted).toHaveBeenCalledTimes(1)
@@ -416,6 +474,7 @@ describe('generation model validation and payloads', () => {
       prompt,
       size: '1024x1024',
       count: 1,
+      agingLevel: 'moderate',
       inputFileIds: ['reference-1', 'reference-2'],
       visionProviderId: 'vision-provider',
       visionModel: 'vision-v1',

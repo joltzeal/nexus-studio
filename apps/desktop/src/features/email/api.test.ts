@@ -14,6 +14,9 @@ import {
   saveMailbox,
   saveSettings,
   setMessagesRead,
+  startEmailAuthorization,
+  pollEmailAuthorization,
+  cancelEmailAuthorization,
 } from './api'
 import { mailbox, message } from './test-fixtures'
 import { EmailResource } from './async-state'
@@ -28,6 +31,69 @@ beforeEach(() => {
 })
 
 describe('email RPC boundary', () => {
+  it('starts explicit Graph consent and only accepts a Microsoft verification URL without private device credentials', async () => {
+    const challenge = {
+      authorizationId: 'consent-1',
+      userCode: 'ABCD-EFGH',
+      verificationUri: 'https://microsoft.com/devicelogin',
+      expiresAt: '2026-11-14T01:15:00Z',
+      intervalSeconds: 5,
+    }
+    vi.mocked(callPlugin).mockResolvedValue(challenge)
+    expect(await startEmailAuthorization('mailbox-1', 'reader@example.test')).toEqual(
+      challenge,
+    )
+    expect(callPlugin).toHaveBeenLastCalledWith(
+      'studio.email',
+      'email.provider',
+      'email.authorization.start',
+      {
+        accountId: 'mailbox-1',
+        expectedEmail: 'reader@example.test',
+        transport: 'graph',
+      },
+      60_000,
+    )
+    for (const patch of [
+      { verificationUri: 'https://microsoft.com.evil.test/devicelogin' },
+      { verificationUri: 'javascript:alert(1)' },
+      { deviceCode: 'private-device-code' },
+      { intervalSeconds: 0 },
+    ]) {
+      vi.mocked(callPlugin).mockResolvedValue({ ...challenge, ...patch })
+      await expect(
+        startEmailAuthorization('mailbox-1', 'reader@example.test'),
+      ).rejects.toThrow()
+    }
+  })
+
+  it('validates consent results against the requested mailbox before returning a saved account', async () => {
+    vi.mocked(callPlugin).mockResolvedValue({ status: 'pending', retryAfterSeconds: 10 })
+    expect(await pollEmailAuthorization('consent-1', 'mailbox-1')).toEqual({
+      status: 'pending',
+      retryAfterSeconds: 10,
+    })
+    vi.mocked(callPlugin).mockResolvedValue({ status: 'authorized', account: mailbox() })
+    expect(await pollEmailAuthorization('consent-1', 'mailbox-1')).toMatchObject({
+      status: 'authorized',
+      account: { id: 'mailbox-1' },
+    })
+    vi.mocked(callPlugin).mockResolvedValue({
+      status: 'authorized',
+      account: mailbox({ id: 'other-mailbox' }),
+    })
+    await expect(pollEmailAuthorization('consent-1', 'mailbox-1')).rejects.toThrow()
+    vi.mocked(callPlugin).mockResolvedValue({ cancelled: true })
+    await cancelEmailAuthorization('consent-1')
+    expect(callPlugin).toHaveBeenLastCalledWith(
+      'studio.email',
+      'email.provider',
+      'email.authorization.cancel',
+      { authorizationId: 'consent-1' },
+      undefined,
+    )
+  })
+
   it('reads a single server page with filters instead of loading the entire pool', async () => {
     vi.mocked(callPlugin).mockResolvedValue({
       items: [mailbox()],

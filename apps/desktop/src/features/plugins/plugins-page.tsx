@@ -62,7 +62,6 @@ import {
   type MarketStatus,
   type PluginView,
 } from '@/lib/platform/native-plugins'
-import { BUNDLED_PLUGINS } from './bundled-plugins'
 
 const capabilityIcons = {
   'proxy.provider': Cable,
@@ -88,7 +87,7 @@ function capabilityLabel(capability: string) {
   return capability === 'window.sync' ? '设备同步 (window.sync)' : capability
 }
 
-type RowState = 'available' | 'starting' | 'running' | 'retrying' | 'bundled'
+type RowState = 'available' | 'starting' | 'running' | 'retrying'
 
 interface Row {
   id: string
@@ -105,7 +104,6 @@ const stateText: Record<RowState, string> = {
   starting: '启动中',
   running: '运行中',
   retrying: '重试中',
-  bundled: '仅桌面应用',
 }
 
 /** How often the table re-reads the catalog while a process is coming up. */
@@ -197,15 +195,7 @@ export function PluginsPage() {
         plugin,
         sourceDirectory: plugin.sourceDirectory,
       }))
-    : BUNDLED_PLUGINS.map((manifest) => ({
-        id: manifest.id,
-        name: manifest.name,
-        version: manifest.version,
-        capabilities: [...manifest.capabilities],
-        state: 'bundled' as const,
-        plugin: null,
-        sourceDirectory: null,
-      }))
+    : []
 
   const inspected = plugins.find((plugin) => plugin.id === inspecting) ?? null
   const removingRow = rows.find((row) => row.id === removing) ?? null
@@ -275,14 +265,16 @@ export function PluginsPage() {
 
       {error ? <FieldError role="alert">{error}</FieldError> : null}
 
-      {native && rows.length === 0 ? (
+      {rows.length === 0 ? (
         <Empty>
           <EmptyHeader>
-            <EmptyTitle>还没有插件</EmptyTitle>
+            <EmptyTitle>{native ? '还没有插件' : '仅桌面应用'}</EmptyTitle>
             <EmptyDescription>
-              {market?.storeUrl
-                ? '到下面的插件商店安装需要的插件。'
-                : '配置插件商店地址后即可安装。'}
+              {native
+                ? market?.storeUrl
+                  ? '到下面的插件商店安装需要的插件。'
+                  : '配置插件商店地址后即可安装。'
+                : '请在桌面应用中查看与管理插件。'}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>

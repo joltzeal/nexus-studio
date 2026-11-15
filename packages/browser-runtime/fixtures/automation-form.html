@@ -1,0 +1,97 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Controlled form observations</title>
+<style>
+  [hidden] {
+    display: none;
+  }
+  [role='option'] {
+    padding: 8px;
+  }
+</style>
+<form
+  onsubmit="
+    event.preventDefault()
+    document.body.dataset.committed = 'true'
+  "
+>
+  <label for="category">Category</label>
+  <select id="category" name="catalog_id" data-testid="category" required>
+    <option value="">Choose</option>
+    <option value="999001" selected>Page-only category</option>
+    <option value="999002" disabled>Unavailable category</option>
+    <optgroup label="Unavailable group" disabled>
+      <option value="999003">Grouped category</option>
+    </optgroup>
+  </select>
+  <span id="brand-label">Brand</span>
+  <button
+    type="button"
+    id="brand"
+    name="brand_id"
+    role="combobox"
+    aria-labelledby="brand-label"
+    aria-controls="brand-options"
+    aria-expanded="true"
+    data-value="brand-1"
+  >
+    First brand
+  </button>
+  <div role="listbox" id="brand-options" aria-label="Brand choices">
+    <div role="option" data-value="brand-1" aria-selected="true">First brand</div>
+    <div role="option" data-value="brand-2" aria-selected="false">
+      <span>Second brand</span>
+    </div>
+    <div role="option" data-value="brand-disabled" aria-disabled="true">
+      Unavailable brand
+    </div>
+    <div role="option" data-value="brand-hidden" hidden>Hidden brand</div>
+  </div>
+  <label
+    >Price<input
+      name="price"
+      required
+      aria-invalid="true"
+      aria-errormessage="price-error"
+      value="invalid"
+  /></label>
+  <p id="price-error" role="alert">Enter a valid price</p>
+  <fieldset disabled>
+    <label>Disabled title<input name="disabled_title" value="Cannot edit" /></label>
+  </fieldset>
+  <label
+    >Password<input type="password" name="password" value="synthetic-secret"
+  /></label>
+  <input type="hidden" id="hidden-token" name="access_token" value="synthetic-secret" />
+  <section id="photo-upload" aria-label="Photo transfer" aria-busy="true">
+    <label>Photos<input id="photos" type="file" multiple accept="image/*" /></label>
+    <img id="preview" alt="Uploaded preview" hidden />
+    <progress id="transfer-progress" max="100"></progress>
+    <p role="status">Waiting for transfer</p>
+  </section>
+  <button type="button" id="finish-transfer">Finish transfer</button>
+  <button type="submit">Publish</button>
+</form>
+<script>
+  document.querySelector('#brand-options').addEventListener('click', (event) => {
+    const option = event.target.closest('[role=option]')
+    if (!option || option.getAttribute('aria-disabled') === 'true') return
+    document.querySelectorAll('#brand-options [role=option]').forEach((item) => {
+      item.setAttribute('aria-selected', String(item === option))
+    })
+    const control = document.querySelector('#brand')
+    control.dataset.value = option.dataset.value
+    control.textContent = option.textContent
+  })
+  document.querySelector('#photos').addEventListener('change', (event) => {
+    const preview = document.querySelector('#preview')
+    preview.hidden = false
+    preview.src = URL.createObjectURL(event.target.files[0])
+    document.querySelector('#photo-upload [role=status]').textContent = 'Transferring'
+  })
+  document.querySelector('#finish-transfer').addEventListener('click', () => {
+    document.querySelector('#photo-upload').setAttribute('aria-busy', 'false')
+    document.querySelector('#transfer-progress').value = 100
+    document.querySelector('#photo-upload [role=status]').textContent = 'Transfer stored'
+  })
+</script>

@@ -75,6 +75,10 @@ fn item_decisions_continue_halted_unsubmitted_work_through_dispatch_admission() 
             store.job(&id).unwrap().snapshot.products,
             job.snapshot.products
         );
+        assert_eq!(store.job(&id).unwrap().state, "review_required");
+        assert!(store.claim(&id, "replacement").unwrap().is_none());
+        store.actor_stopped(&id, true).unwrap();
+        assert_eq!(store.job(&id).unwrap().mode, AgentMode::ContentPreparation);
         assert_eq!(store.job(&id).unwrap().state, "queued");
         assert!(store.queued().unwrap().contains(&id));
         let resumed = claim(&store, &id);
@@ -103,7 +107,7 @@ fn item_continuation_waits_for_quiescence_and_survives_restart() {
     assert!(reopened.stopped_control_jobs().unwrap().contains(&id));
     assert!(reopened.claim(&id, "replacement").unwrap().is_none());
     // The service calls this only after host drain and confirmed provider quiescence.
-    reopened.actor_stopped(&id, false).unwrap();
+    reopened.actor_stopped(&id, true).unwrap();
     assert_eq!(reopened.job(&id).unwrap().state, "queued");
     assert!(reopened.claim(&id, "replacement").unwrap().is_some());
 }
@@ -165,6 +169,8 @@ fn running_item_decision_survives_an_older_model_review_and_waits_for_actor_drai
         assert!(store.stopped_control_jobs().unwrap().contains(&job.id));
         assert!(store.claim(&job.id, "replacement").unwrap().is_none());
         store.actor_stopped(&job.id, false).unwrap();
+        assert_eq!(store.job(&job.id).unwrap().state, "review_required");
+        store.actor_stopped(&job.id, true).unwrap();
         assert_eq!(store.job(&job.id).unwrap().state, "queued");
         let resumed = claim(&store, &job.id);
         assert_eq!(store.controls_get(&resumed.id).unwrap(), controls);
@@ -196,9 +202,11 @@ fn observed_running_decision_cannot_wake_a_later_review_for_another_item() {
         .mark_step(
             job.scope.as_ref().unwrap(),
             "fixture-generation",
-            &output(StepState::Continue),
+            &output(StepState::ReviewRequired),
         )
         .unwrap();
+    store.actor_stopped(&job.id, true).unwrap();
+    let resumed = claim(&store, &job.id);
     let mut later = output(StepState::ReviewRequired);
     later.item_updates = vec![ItemUpdate {
         product_id: job.snapshot.products[1]["id"].as_str().unwrap().into(),
@@ -208,7 +216,11 @@ fn observed_running_decision_cannot_wake_a_later_review_for_another_item() {
         description: None,
     }];
     store
-        .mark_step(job.scope.as_ref().unwrap(), "fixture-generation", &later)
+        .mark_step(
+            resumed.scope.as_ref().unwrap(),
+            "fixture-generation",
+            &later,
+        )
         .unwrap();
     store.actor_stopped(&job.id, false).unwrap();
     assert_eq!(store.job(&job.id).unwrap().state, "review_required");
@@ -235,7 +247,7 @@ fn a_new_running_revision_after_an_acknowledged_decision_still_requests_continua
     let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
     store.recover().unwrap();
     assert!(store.stopped_control_jobs().unwrap().contains(&job.id));
-    store.actor_stopped(&job.id, false).unwrap();
+    store.actor_stopped(&job.id, true).unwrap();
     assert_eq!(store.job(&job.id).unwrap().state, "queued");
     let _resumed = claim(&store, &job.id);
     assert_eq!(store.controls_get(&job.id).unwrap(), latest);
@@ -284,7 +296,6 @@ fn running_decision_does_not_override_explicit_controls_or_unsafe_stop_results()
     for confirmed in [false, true] {
         let (_temp, store) = fixture();
         let job = running_listing(&store);
-        decide_running_item(&store, &job, "revise");
         let operation = listing_operation(&job, 1);
         store
             .action_prepare(
@@ -317,6 +328,7 @@ fn running_decision_does_not_override_explicit_controls_or_unsafe_stop_results()
                 )
                 .unwrap();
         }
+        decide_running_item(&store, &job, "revise");
         store
             .mark_step(
                 job.scope.as_ref().unwrap(),
@@ -691,6 +703,28 @@ fn item_revision_closes_the_controls_read_to_intent_race_without_mutating_snapsh
         store.controls_get(&job).unwrap()["items"][0]["override"]["title"],
         "Approved amended title"
     );
+    assert!(
+        store
+            .action_prepare(
+                scope,
+                "fixture-generation",
+                &operation,
+                "listing",
+                &"a".repeat(64)
+            )
+            .is_err()
+    );
+    store
+        .mark_step(
+            scope,
+            "fixture-generation",
+            &output(StepState::ReviewRequired),
+        )
+        .unwrap();
+    store.actor_stopped(&job, true).unwrap();
+    let resumed = claim(&store, &job);
+    let scope = resumed.scope.as_ref().unwrap();
+    store.controls_get(&job).unwrap();
     store
         .action_prepare(
             scope,

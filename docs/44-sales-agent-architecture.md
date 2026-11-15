@@ -2,11 +2,18 @@
 
 更新日期：2026-11-14。已按获批方案接入 `studio.sales-agent` 源码、
 Rust 持久任务协调器、Playwright 工具层与真实商品库页面。
-当前配套核心版本为 `0.1.30`，插件版本为 `1.0.1`，展示名统一为 `Ecom Agent`。
+当前配套核心版本为 `0.1.31`，插件版本为 `1.1.1`，展示名统一为 `Ecom Agent`。
 `0.1.29` 曾按用户要求执行本地 macOS Apple Silicon 构建；
-本次 `0.1.30` 由 CI 完成三平台发行，Ecom Agent 及全部配套插件已发布至 R2。
+`0.1.30` 已由 CI 完成三平台发行；本次插件已独立发布至 R2，`0.1.31` 安装包由 CI 生成。
 已执行的检查与尚未执行的原生、厂商和平台验收见[质量记录](09-quality-and-testing.md)。
 历史[交互原型](42-sales-agent-demo.md)不是生产任务执行入口。
+
+2026-11-14 已按[业务工具重构设计](superpowers/specs/2026-11-14-vinted-listing-tools-design.md)
+将正常上架表单改为确定性工具，审核移至无浏览器准备阶段，
+优先沿用页面自动分类，手动确认的本地分类只提供兜底；
+同时接入 current、wardrobe、余额和收款资料，见[账号读取方案](49-vinted-account-read-tools.md)。
+Jev 逐层推荐库已实现，用户确认入口尚未接入，因此当前链路不自动采纳它的分类。
+分类资源与清洗见[分类规范](48-vinted-catalog-data.md)。
 
 ## 选型结论
 
@@ -219,20 +226,21 @@ Jev 用于标签选择、状态判断、文案是否符合预设、置信度与�
 下表是工具职责划分；实际公开协议与方法见下文“宿主扩展与长任务协议”，
 不能将示例名称当成任意插件均可调用的通用 RPC：
 
-| 工具组   | 示例                                                                                       |
-| -------- | ------------------------------------------------------------------------------------------ |
-| 商品     | `getProductSnapshot`、`getProductImage`、`validateListingMaterial`                         |
-| 账号     | `readAuthenticatedIdentity`、`readAccountState`、`readBalance`、`recordAccountObservation` |
-| 浏览器   | `readPage`、`navigateAllowed`、`fillListing`、`readListingForm`                            |
-| 外部写入 | `submitListingOnce`、`reconcileListing`、`sendMessageOnce`                                 |
-| 模型     | `classifyAccount`、`reviewImage`、`reviewCopy`、`rewriteCopy`                              |
-| 结果     | `confirmAction`、`enqueuePublicationSync`、`emitProgress`                                  |
+| 工具组   | 示例                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| 商品     | `getProductSnapshot`、`getProductImage`、`validateListingMaterial`                                            |
+| 账号     | `readAuthenticatedIdentity`、`readAccountState`、`readWallet`、`readBankAccounts`、`recordAccountObservation` |
+| 浏览器   | `readPage`、`navigateAllowed`、`fillListing`、`readListingForm`                                               |
+| 外部写入 | `submitListingOnce`、`reconcileListing`、`sendMessageOnce`                                                    |
+| 模型     | `classifyAccount`、`reviewImage`、`reviewCopy`、`rewriteCopy`                                                 |
+| 结果     | `confirmAction`、`enqueuePublicationSync`、`emitProgress`                                                     |
 
 优先封装平台允许使用的登录态结构化接口；重复的字段读取、余额查询和表单校验
 采用确定性函数，减少整页截图和重复模型调用。
 接口不可用时切换经过验证的页面流程，不能让模型猜一个私有端点反复请求。
 
-需要当前指纹环境时，在绑定窗口的真实页面中执行受控的同源请求。
+需要当前指纹环境时，在绑定窗口的真实页面中执行受控请求。
+默认仅同源；美国站财务读取另有准确 origin、路径和 GET 白名单，仍遵守浏览器 CORS 与 Cookie 规则。
 直接把 Cookie 放进 Node `fetch` 或 Playwright API 请求，
 不代表拥有该浏览器的 TLS 指纹和网络路径。
 登录态 HTTP 适配与页面适配都要验证实际身份、响应和代理，不新建一个丢失 profile 的上下文。
@@ -261,22 +269,23 @@ Ecom Agent 是受信任插件进程，不宣称 manifest 能将其变成安全�
 
 ## 上架流程与发布记录
 
-建议单件商品状态流：
+单件商品的业务阶段：
 
 ```text
-queued -> preflight -> reviewing -> preparing -> intent_saved
-       -> submitting -> confirming -> published -> syncing -> completed
+queued -> preflight -> content_preparation -> prepared
+       -> browser -> preparing -> intent_saved -> submitting
+       -> confirming -> published -> syncing -> completed
 ```
 
-其他分支包括 `skipped`、`blocked`、`review_required`、`failed`、`cancelled`；
+其他分支包括 `skipped`、`blocked`、`login_required`、`review_required`、`failed`、`cancelled`；
 提交后的超时进入 `result_unknown -> reconciling`，不直接回到 submitting。
 
 正常执行顺序：
 
-1. 校验商品快照、图片组、指定窗口、绑定账号和必需字段，取得独占资源。
-2. 附着真实环境，确认登录身份符合绑定；读取状态、余额和必要账号资料。
-3. 评估图片及英文文案，必要时有限次改写，再验证商品事实没有变化。
-4. 准备表单并保存提交前核对基线；读回标题、描述、价格和币种，确认与快照一致。
+1. 校验并冻结商品、图片、指定窗口、账号和设置，不启动浏览器。
+2. 无浏览器准备任务读取图片实际内容，审核英文文案、有限次改写并持久化结果。
+3. 获准内容就绪后取得窗口独占资源，附着环境并核对登录与账号状态；完整财务和画像另用账号检查任务。
+4. 固定工具上传图片，优先沿用页面分类，按已知事实填写属性，读回表单并保存核对基线。
 5. 再次核对身份、封禁状态和租约，将发布意图、内容摘要、账号、快照 revision 和稳定操作 ID 写入 Rust。
 6. 提交一次，获取并验证平台刊登 ID、URL、归属账号及成功证据。
 7. Rust 原子保存确认事实和待同步 outbox，避免结果确认后因进程退出丢失记录。

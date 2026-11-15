@@ -25,6 +25,10 @@
 
 ## 场景与提示词
 
+2026-11-14 起，参考图用于确认商品身份、风格与可见设计，场景重新组织，
+不再将原图背景、布局和光线作为复刻目标。独立做旧选项和英文卖家文案要求见
+[场景重建与做旧程度](51-ai-reconstruction-and-photo-aging.md)。
+
 识图模型读取所选的一张参考图、用户填写的要求和现有 100 个场景的目录，
 一次返回商品标题、描述、商品观察、适合的场景 ID、推荐理由、公共提示词和各视角提示词。
 场景必须来自插件现有预设，不能返回不存在的 ID。
@@ -65,6 +69,7 @@
   inputFileId: string
   requirements: string
   count: number // 1–4
+  agingLevel?: 'none' | 'light' | 'moderate' | 'heavy' // 新任务默认 moderate
 }
 ```
 

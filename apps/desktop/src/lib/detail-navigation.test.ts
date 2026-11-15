@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   consumeDetailNavigation,
+  cancelDetailNavigation,
+  cancelUnavailableDetailNavigation,
+  pendingDetailNavigation,
   navigateDetail,
   parseAgentDeepLink,
   watchDetailNavigation,
@@ -12,6 +15,7 @@ const other = '22222222-2222-4222-8222-222222222222'
 
 describe('business detail navigation', () => {
   beforeEach(() => {
+    cancelDetailNavigation()
     for (const kind of ['product', 'account', 'window', 'agent'] as const)
       consumeDetailNavigation(kind)
   })
@@ -54,6 +58,35 @@ describe('business detail navigation', () => {
         related: 'account',
       } as unknown as DetailNavigation),
     ).toThrow()
+  })
+
+  it('cancels an abandoned gated detail without replaying it on a later visit', () => {
+    navigateDetail({ kind: 'agent', id, related: 'account' })
+    const intent = pendingDetailNavigation()
+    expect(intent?.request.related).toBe('account')
+    cancelDetailNavigation(intent!.intentId)
+    const destination = vi.fn()
+    const stop = watchDetailNavigation(destination)
+    expect(destination).not.toHaveBeenCalled()
+    expect(consumeDetailNavigation('agent')).toBeNull()
+    stop()
+  })
+
+  it('does not let an older intent cancellation erase a newer destination', () => {
+    navigateDetail({ kind: 'agent', id })
+    const abandoned = pendingDetailNavigation()!
+    navigateDetail({ kind: 'product', id: other })
+    cancelDetailNavigation(abandoned.intentId)
+    expect(consumeDetailNavigation('product')?.id).toBe(other)
+  })
+
+  it('clears an unavailable destination while retaining a still-enabled gated plugin', () => {
+    navigateDetail({ kind: 'agent', id })
+    cancelUnavailableDetailNavigation(new Set(['plugin:studio.sales-agent']))
+    expect(pendingDetailNavigation()).not.toBeNull()
+    cancelUnavailableDetailNavigation(new Set(['spaces', 'plugins']))
+    expect(pendingDetailNavigation()).toBeNull()
+    expect(consumeDetailNavigation('agent')).toBeNull()
   })
 
   it('accepts only a read-only batch navigation link and rejects arbitrary link payloads', () => {

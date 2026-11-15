@@ -4,6 +4,7 @@ const STAGES: Record<string, string> = {
   inspect: '检查账号状态',
   record_inspection: '保存账号检查结果',
   read_balance: '读取账号余额',
+  read_bank_accounts: '读取收款信息',
   record_balance: '保存余额记录',
   read_evidence: '读取账号资料',
   classify: '判断账号状态',
@@ -11,6 +12,15 @@ const STAGES: Record<string, string> = {
   image_review: '检查商品图片',
   copy_review: '检查商品文案',
   rewrite: '生成英文文案',
+  'content.lookup': '核对内容准备记录',
+  'content.image_review': '执行前检查商品图片',
+  'content.copy_review': '执行前检查英文文案',
+  'content.rewrite': '执行前调整英文文案',
+  'content.catalog': '准备本地分类兜底',
+  'content.persist': '保存内容准备结果',
+  'content.advance': '准备下一件商品',
+  'content.finished': '内容准备完成',
+  load_content: '读取已批准商品资料',
   open: '打开操作页面',
   prepare: '准备商品资料',
   capture_baseline: '核对提交前记录',
@@ -62,6 +72,8 @@ export function recoveryHint(state: string): string {
       return '外部结果已确认，请同步记录；无需重新上架或重发消息。'
     case 'blocked':
       return '账号已封禁，禁止写入。请查看账号资料并处理限制。'
+    case 'login_required':
+      return '请在对应窗口重新登录后核对账号；如有未决提交，先核对结果，避免重复发布。'
     case 'review_required':
       return '查看原文、候选文案和判断原因，再修订、跳过或确认继续。'
     case 'failed':

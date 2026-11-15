@@ -150,6 +150,7 @@ const { pathToFileURL } = require('node:url')
 
 const MAGIC = '${PAYLOAD_MAGIC.replace(/\n/g, '\\n')}'
 const PAYLOAD = path.join(__dirname, 'payload.bin')
+process.env.NEXUS_PLUGIN_PACKAGE_DIR = __dirname
 
 function fail(reason) {
   process.stderr.write('[nexus] ' + reason + '\\n')

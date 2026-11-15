@@ -9,328 +9,6 @@ permissions:
   contents: write
 
 jobs:
-  plugins:
-    if: github.repository == 'joltzeal/nexus-studio'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.17.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Build companion plugins
-        run: pnpm -r --filter '@nexus/plugin-ai-image...' --filter '@nexus/plugin-vinted-monitor...' --filter '@nexus/plugin-vinted-accounts...' --filter '@nexus/plugin-sim8...' --filter '@nexus/plugin-proxy-pool...' --filter '@nexus/plugin-address-generator...' --filter '@nexus/plugin-email...' --filter '@nexus/plugin-products...' --filter '@nexus/plugin-sales-agent...' --filter '@nexus/plugin-shared-supply...' --filter '@nexus/plugin-window-sync...' build
-      - name: Verify AI requests and application transport
-        run: pnpm exec vitest run plugins/ai-image/src apps/desktop/src/features/ai-image plugins/vinted-monitor/src plugins/vinted-accounts/src plugins/sim8/src plugins/proxy-pool/src plugins/address-generator/src plugins/email/src apps/desktop/src/features/email plugins/products/src apps/desktop/src/features/products plugins/sales-agent/src apps/desktop/src/features/sales-agent plugins/shared-supply/src plugins/window-sync/src packages/plugin-sdk/src scripts/plugin-configuration.test.mjs packages/browser-runtime/src/network-preload.test.ts --maxWorkers=2
-      - name: Pack companion plugins
-        id: plugin-market
-        shell: bash
-        run: |
-          market_dir="$(mktemp -d "$RUNNER_TEMP/plugin-market.XXXXXX")"
-          echo "directory=$market_dir" >> "$GITHUB_OUTPUT"
-          node scripts/pack-plugin.mjs plugins/ai-image --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/vinted-monitor --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/vinted-accounts --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/sim8 --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/proxy-pool --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/address-generator --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/email --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/products --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/sales-agent --out "$market_dir" --changelog "Ecom Agent（配套 Raccoon 0.1.30）：修复模型地址校验导致的保存异常，支持保存并测试；主程序增加商品添加时间、上架次数与执行窗口账号状态筛选，使用机器人图标。"
-          node scripts/pack-plugin.mjs plugins/shared-supply --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/pack-plugin.mjs plugins/window-sync --out "$market_dir" --changelog "配套 Raccoon 0.1.30：统一插件品牌文案与元数据，保留插件标识、能力和已有数据。"
-          node scripts/build-market.mjs --out "$market_dir"
-      - name: Verify packaged plugin startup
-        shell: bash
-        env:
-          PLUGIN_MARKET_DIR: ${{ steps.plugin-market.outputs.directory }}
-        run: |
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict'
-          import { execFileSync } from 'node:child_process'
-          import { createHash } from 'node:crypto'
-          import { readFileSync, readdirSync } from 'node:fs'
-          import { join, resolve, sep } from 'node:path'
-
-          const configurationMethods = [
-            'configuration.export',
-            'configuration.validate',
-            'configuration.import',
-          ]
-          const required = {
-            'ai-image': [
-              ...configurationMethods,
-              'image.plans.create',
-              'image.plans.get',
-              'image.providers.list',
-              'image.providers.save',
-              'image.providers.remove',
-              'image.providers.test',
-              'image.providers.testImage',
-              'image.presets',
-              'image.upload.begin',
-              'image.upload.chunk',
-              'image.upload.finish',
-              'image.upload.abort',
-              'image.upload.remote',
-              'image.file.chunk',
-              'image.records.list',
-              'image.records.get',
-              'image.records.remove',
-              'image.records.retry',
-              'image.records.recognize',
-              'image.records.export',
-              'image.generate',
-            ],
-            'vinted-monitor': [
-              ...configurationMethods,
-              'vinted.monitors.list',
-              'vinted.monitors.save',
-              'vinted.monitors.remove',
-              'vinted.monitors.run',
-              'vinted.runs.list',
-              'vinted.runs.get',
-              'vinted.items.list',
-              'vinted.items.get',
-              'vinted.items.star',
-              'vinted.items.availability',
-              'vinted.items.remove',
-              'vinted.items.monitorSeller',
-              'vinted.proxies.list',
-              'vinted.proxies.save',
-              'vinted.proxies.remove',
-              'vinted.proxies.default',
-              'vinted.image.open',
-              'vinted.image.read',
-              'vinted.image.close',
-              'vinted.url.inspect',
-            ],
-            'vinted-accounts': [
-              ...configurationMethods,
-              'vinted.accounts.list',
-              'vinted.accounts.save',
-              'vinted.accounts.remove',
-              'vinted.accounts.import',
-              'vinted.accounts.template',
-              'vinted.accounts.otp',
-              'vinted.accounts.bind',
-              'vinted.accounts.unbind',
-              'vinted.accounts.bindings',
-              'vinted.accounts.agent.snapshot',
-              'vinted.accounts.observations.record',
-              'vinted.accounts.address.targets',
-              'vinted.accounts.address.set',
-              'vinted.accounts.mailbox.targets',
-              'vinted.accounts.mailbox.set',
-              'window.detach',
-              'transfer.export',
-              'transfer.import',
-              'transfer.rollback',
-              'transfer.commit',
-              'vinted.accounts.orders.settings.get',
-              'vinted.accounts.orders.settings.save',
-              'vinted.accounts.orders.bark.test',
-              'vinted.accounts.orders.list',
-              'vinted.accounts.orders.run',
-              'vinted.accounts.orders.enabled',
-            ],
-            sim8: [
-              ...configurationMethods,
-              'sim8.config.get',
-              'sim8.config.set',
-              'sim8.profile',
-              'sim8.catalog.categories',
-              'sim8.catalog.apps',
-              'sim8.buy.prefixes',
-              'sim8.buy.create',
-              'sim8.buy.deferred',
-              'sim8.orders.list',
-              'sim8.orders.apis',
-              'sim8.orders.one',
-              'sim8.orders.changeToken',
-              'sim8.orders.renewText',
-              'sim8.orders.renewIds',
-              'sim8.filter.apps',
-              'sim8.filter.create',
-              'sim8.filter.detail',
-              'sim8.records.list',
-              'sim8.records.remove',
-              'sim8.records.clear',
-              'sim8.expiry.list',
-              'sim8.expiry.refresh',
-              'sim8.expiry.dismiss',
-              'sim8.sms.read',
-            ],
-            'proxy-pool': [
-              ...configurationMethods,
-              'proxy.list',
-              'proxy.get',
-              'proxy.create',
-              'proxy.update',
-              'proxy.delete',
-              'proxy.import',
-              'proxy.strategy.decodo',
-              'proxy.check',
-              'proxy.probe',
-              'proxy.exportUrls',
-              'proxy.resolve',
-              'proxy.describe',
-              'proxy.groups.list',
-              'proxy.groups.create',
-              'proxy.config.get',
-              'proxy.config.set',
-              'proxy.subscriptions.list',
-              'proxy.subscriptions.get',
-              'proxy.subscriptions.create',
-              'proxy.subscriptions.update',
-              'proxy.subscriptions.delete',
-              'proxy.subscriptions.preview',
-              'proxy.subscriptions.export',
-              'proxy.subscriptions.download',
-              'proxy.subscriptions.link',
-              'proxy.subscriptions.resetToken',
-              'proxy.subscriptions.append',
-            ],
-            'address-generator': [
-              ...configurationMethods,
-              'address.catalog',
-              'address.generate',
-              'address.profile',
-              'address.csv',
-              'address.export',
-              'address.config.get',
-              'address.config.set',
-              'address.saved.list',
-              'address.saved.save',
-              'address.saved.remove',
-            ],
-            products: [
-              'products.list',
-              'products.get',
-              'products.save',
-              'products.remove',
-              'products.import',
-              'products.sources.find',
-              'products.importAi',
-              'products.upload.begin',
-              'products.upload.chunk',
-              'products.upload.finish',
-              'products.upload.abort',
-              'products.images.read',
-              'products.images.discard',
-              'products.publications.list',
-              'products.publications.record',
-            ],
-            'sales-agent': [
-              ...configurationMethods,
-              'salesAgent.settings.get',
-              'salesAgent.settings.save',
-              'salesAgent.models.test',
-              'salesAgent.notifications.send',
-              'salesAgent.jobs.step',
-            ],
-            email: [
-              ...configurationMethods,
-              'email.accounts.list',
-              'email.accounts.get',
-              'email.accounts.targets',
-              'email.accounts.save',
-              'email.accounts.import',
-              'email.accounts.remove',
-              'email.refresh.queue',
-              'email.receive.queue',
-              'email.settings.get',
-              'email.settings.save',
-              'email.messages.list',
-              'email.messages.get',
-              'email.messages.read',
-            ],
-            'shared-supply': [
-              'supply.catalog',
-              'supply.stores',
-              'supply.products',
-              'supply.search',
-              'supply.imageSearch',
-              'supply.image.open',
-              'supply.image.read',
-              'supply.image.close',
-              'supply.favorites.list',
-              'supply.favorites.add',
-              'supply.favorites.remove',
-              'supply.favorites.csv',
-            ],
-            'window-sync': ['sync.offer', 'sync.receive', 'sync.status', 'sync.cancel'],
-          }
-          const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
-          const market = resolve(process.env.PLUGIN_MARKET_DIR)
-          const catalog = readJson(join(market, 'catalog.json'))
-          assert.equal(catalog.schemaVersion, 1, 'Unsupported catalog schema')
-          assert.equal(catalog.plugins.length, Object.keys(required).length,
-            'The partial catalog must contain only this release companion plugins')
-
-          const expectedPackages = []
-          for (const [name, methods] of Object.entries(required)) {
-            const directory = join('plugins', name)
-            const manifest = readJson(join(directory, 'dist/nexus.plugin.json'))
-            const pkg = readJson(join(directory, 'package.json'))
-            assert.equal(manifest.version, pkg.version, `${name}: package/manifest version mismatch`)
-            const entries = catalog.plugins.filter((entry) => entry.manifest.id === manifest.id)
-            assert.equal(entries.length, 1, `${name}: missing or duplicate catalog entry`)
-            const entry = entries[0]
-            assert.deepEqual(entry.manifest, manifest, `${name}: catalog manifest mismatch`)
-            const path = `plugins/${manifest.id}/${manifest.version}.nexuspkg`
-            assert.equal(entry.package.url, path, `${name}: unexpected package path`)
-            const file = join(market, path)
-            const bytes = readFileSync(file)
-            assert.equal(entry.package.size, bytes.length, `${name}: package size mismatch`)
-            assert.equal(entry.package.sha256, createHash('sha256').update(bytes).digest('hex'),
-              `${name}: package digest mismatch`)
-            expectedPackages.push(path)
-
-            const report = execFileSync(process.execPath, ['scripts/verify-package.mjs', file], {
-              encoding: 'utf8',
-              timeout: 15_000,
-            })
-            process.stdout.write(report)
-            assert.equal(report.split('\n')[0], `ok ${manifest.id} ${manifest.version}`,
-              `${name}: verified package identity mismatch`)
-            // The existing verifier prints the ready handshake's localized method list.
-            const methodLine = report.match(/^\s+\S+ (\d+) \S+\uFF1A([^\r\n]*)$/m)
-            assert.ok(methodLine, `${name}: missing handshake method report`)
-            const advertised = methodLine[2].split(', ').filter(Boolean)
-            assert.equal(advertised.length, Number(methodLine[1]), `${name}: invalid method count`)
-            for (const method of methods) {
-              assert.ok(advertised.includes(method), `${name}: missing RPC ${method}`)
-            }
-            if (['sales-agent', 'products', 'vinted-accounts', 'shared-supply'].includes(name)) {
-              const statusLine = report.match(/^\s+\u72B6\u6001 ([^\r\n]*)$/m)
-              assert.ok(statusLine, `${name}: missing durable storage status`)
-              assert.equal(JSON.parse(statusLine[1]).storageDurable, true,
-                `${name}: durable storage is required`)
-            }
-          }
-          const packages = readdirSync(join(market, 'plugins'), { recursive: true })
-            .filter((file) => file.endsWith('.nexuspkg'))
-            .map((file) => `plugins/${file.split(sep).join('/')}`)
-          assert.deepEqual(packages.sort(), expectedPackages.sort(),
-            'The artifact must not include stale or unrelated plugin packages')
-          NODE
-      - uses: actions/upload-artifact@v4
-        with:
-          name: plugin-market-${{ github.ref_name }}
-          path: |
-            ${{ steps.plugin-market.outputs.directory }}/catalog.json
-            ${{ steps.plugin-market.outputs.directory }}/plugins/**/*.nexuspkg
-          if-no-files-found: error
-          retention-days: 14
-
   package:
     if: github.repository == 'joltzeal/nexus-studio'
     strategy:
@@ -349,6 +27,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check public source boundary
+        run: node scripts/check-public-boundary.mjs
       - uses: pnpm/action-setup@v4
         with:
           version: 11.17.0
@@ -361,6 +41,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm runtime:stage
+      - name: Run native regression tests
+        run: pnpm rust:test
+      - name: Check native formatting and lint
+        run: pnpm rust:lint
       - name: Verify staged runtime
         shell: bash
         run: |
@@ -377,13 +61,14 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Raccoon v__VERSION__'
           releaseBody: |
-            - 主程序更名为 Raccoon，统一全局品牌文案与浣熊图标。
-            - Ecom Agent 修复模型配置保存异常，支持保存并测试；商品选择显示添加时间和上架次数，执行窗口支持账号状态筛选。
-            - 沿用原有应用标识、数据目录和更新通道，原有窗口、分组、插件与本地资料可连续升级使用。
-            - 全部 11 个配套插件同步 Raccoon 品牌文案与元数据，保留插件标识、能力和业务协议。
-            - 修复 Agent 原生 CI 回归用例，验证任务协调与恢复行为。
+            - Vinted 上架使用固定流程工具，执行前准备商品内容，窗口只负责表单操作与发布核对。
+            - 账号检查区分封禁和掉登，并回填主页、余额及收款资料。
+            - AI 生图增加做旧程度，采用生活化手机拍摄场景与自然英文卖家文案。
+            - 邮箱阅读器增加 Microsoft Graph 写权限授权入口，失败时保留已读状态和原凭据。
+            - 账号联系方式与窗口关联操作增加确认；插件页面返回保留列表筛选、页码和滚动位置。
+            - 插件在本地开发并独立发布至插件商店，桌面应用构建不包含插件源码。
 
-            更新至 Raccoon 0.1.30 后，请在插件中心检查并更新全部配套插件；插件包由 CI 构建后独立发布至插件商店。
+            请在插件中心检查并更新配套插件。
             macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
           uploadUpdaterJson: true
@@ -394,7 +79,7 @@ jobs:
 
   publish:
     if: github.repository == 'joltzeal/nexus-studio'
-    needs: [package, plugins]
+    needs: [package]
     runs-on: ubuntu-latest
     steps:
       - name: Publish completed release

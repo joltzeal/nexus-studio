@@ -50,6 +50,11 @@ SQLite 持久化窗口、分组、接入、操作意图、状态观察、激活�
 根 `typecheck`、`test`、`check` 脚本会先构建共享包，不作为本地检查入口；
 应直接调用对应工具，并在验证记录中注明未执行的编译和安装检查。
 
+2026-11-14 用户要求插件仅在本地开发并直接发布对象存储，因此插件单独编译、
+调试和打包作为明确例外；不包含应用构建或 Rust 检查。
+`plugins/` 与 `market/` 不提交 Git。公开契约位于 `packages/plugin-contracts/`，
+主应用构建不依赖私有插件目录，具体入口见[插件本地开发](50-local-plugin-development.md)。
+
 ## TypeScript 与页面
 
 启用 strict TypeScript，外部输入与持久化读取先校验再缩窄类型。

@@ -36,6 +36,7 @@ pub(super) fn prepare_item(db: &Connection, job: &Job, op: &str, kind: &str) -> 
     let id = product["id"]
         .as_str()
         .ok_or_else(|| invalid("Invalid product identity"))?;
+    super::content::approved(db, job, id)?;
     let (action, revision, observed, submitted): (Option<String>, u64, u64, bool) = db
         .query_row(
             "SELECT control_action,control_revision,observed_revision,submitted FROM agent_items
@@ -61,6 +62,14 @@ pub(super) fn submit_item(db: &Connection, job: &Job, op: &str) -> AgentResult<(
     if job.preset != Preset::PostListing {
         return Ok(());
     }
+    let id: String = db
+        .query_row(
+            "SELECT product_id FROM agent_items WHERE job_id=?1 AND operation_id=?2",
+            params![job.id, op],
+            |r| r.get(0),
+        )
+        .map_err(storage_error)?;
+    super::content::approved(db, job, &id)?;
     let changed = db.execute(
         "UPDATE agent_items SET submitted=1,state='submitting' WHERE job_id=?1 AND operation_id=?2
          AND submitted=0 AND COALESCE(control_action,'')!='skip' AND control_revision=observed_revision",
@@ -98,6 +107,7 @@ pub(super) fn record_updates(db: &Connection, job: &Job, output: &StepOutput) ->
                     | "sync_pending"
                     | "failed"
                     | "cancelled"
+                    | "login_required"
             )
         {
             return Err(invalid("Invalid item progress update"));
@@ -118,6 +128,26 @@ pub(super) fn record_updates(db: &Connection, job: &Job, output: &StepOutput) ->
         if !exists {
             return Err(denied("Item update is outside the immutable assignment"));
         }
+        // Advancing past an item must retain its durable preparation attention.
+        let outcome: Option<(String, String)> = if job.preset == Preset::PostListing {
+            db.query_row(
+                "SELECT c.state,json_extract(c.package_json,'$.reason') FROM agent_content_receipts c
+                 JOIN agent_items i ON i.job_id=c.job_id AND i.product_id=c.product_id
+                 WHERE c.job_id=?1 AND c.product_id=?2 AND c.control_revision=i.control_revision
+                   AND c.invalidation_reason IS NULL AND c.state IN ('review_required','failed','skipped')
+                   AND i.submitted=0",
+                params![job.id, update.product_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?
+        } else {
+            None
+        };
+        let (state, reason) = outcome
+            .as_ref()
+            .map(|(state, reason)| (state.as_str(), reason.as_str()))
+            .unwrap_or((&update.state, &update.reason));
         // Publication and uncertain states are projected from the journal, never graph claims.
         db.execute(
             "UPDATE agent_items SET
@@ -132,7 +162,7 @@ pub(super) fn record_updates(db: &Connection, job: &Job, output: &StepOutput) ->
                ELSE ?3 END,
              reason=?4,title=COALESCE(?5,title),description=COALESCE(?6,description)
              WHERE job_id=?1 AND product_id=?2 AND control_revision=observed_revision",
-            params![job.id,update.product_id,update.state,update.reason,update.title,update.description],
+            params![job.id,update.product_id,state,reason,update.title,update.description],
         ).map_err(storage_error)?;
     }
     Ok(())
@@ -185,6 +215,11 @@ impl AgentStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         let job = read_job(&tx, &input.job_id)?;
+        if job.reconcile_only {
+            return Err(denied(
+                "Reconciliation must settle before accepting new item content",
+            ));
+        }
         if matches!(
             job.state.as_str(),
             "blocked" | "completed" | "cancelled" | "skipped"
@@ -240,6 +275,42 @@ impl AgentStore {
         )
         .map_err(storage_error)?;
         let result = controls(&tx, &job.id)?;
+        if job.preset == Preset::PostListing {
+            tx.execute(
+                "UPDATE agent_content_receipts SET invalidation_reason='item_control'
+                WHERE job_id=?1 AND product_id=?2 AND invalidation_reason IS NULL",
+                params![job.id, input.product_id],
+            )
+            .map_err(storage_error)?;
+            tx.execute(
+                "UPDATE agent_execution SET needs_reprepare=1 WHERE job_id=?1",
+                [&job.id],
+            )
+            .map_err(storage_error)?;
+            let worker: bool = tx
+                .query_row(
+                    "SELECT worker_owned FROM agent_execution WHERE job_id=?1",
+                    [&job.id],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)?;
+            if !super::execution::owns_browser(&tx, &job.id)?
+                && !worker
+                && !super::store::uncertain_actions(&tx, &job.id)?
+                && !super::store::pending_outbox(&tx, &job.id)?
+                && job.state != "result_unknown"
+            {
+                tx.execute("UPDATE agent_execution SET mode='content_preparation',needs_reprepare=0 WHERE job_id=?1",
+                    [&job.id]).map_err(storage_error)?;
+                super::execution::clear_checkpoints(&tx, &job.id)?;
+                tx.execute(
+                    "UPDATE agent_jobs SET state=CASE WHEN ?2='run' THEN 'queued' ELSE state END,
+                    phase='needs_reprepare',scope_json=NULL WHERE id=?1",
+                    params![job.id, super::controls::effective_action(&tx, &job.id)?],
+                )
+                .map_err(storage_error)?;
+            }
+        }
         // Preserve decisions accepted after a running step read its controls.
         let continuation = tx.execute(
             "INSERT INTO agent_item_continuations(job_id,product_id,revision)
@@ -389,6 +460,7 @@ pub(super) fn continue_after_item_control(db: &Connection, id: &str) -> AgentRes
         "UPDATE agent_jobs SET state='queued',phase='item_control',message='',revision=revision+1,
          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE id=?1 AND actor_owned=0 AND state='review_required' AND reconcile_only=0
+           AND NOT EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=?1 AND (e.worker_owned=1 OR e.needs_reprepare=1))
            AND EXISTS(SELECT 1 FROM agent_batches b JOIN agent_dispatch d ON d.job_id=?1
              WHERE b.id=agent_jobs.batch_id AND b.preset='post_listing' AND b.control='run' AND d.action='run')
            AND EXISTS(SELECT 1 FROM agent_item_continuations c JOIN agent_items i

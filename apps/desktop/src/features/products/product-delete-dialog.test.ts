@@ -1,6 +1,6 @@
 import type { DependencyList, EffectCallback } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { ProductSummarySchema } from '@nexus/plugin-products/contracts'
+import { ProductSummarySchema } from '@nexus/plugin-contracts/products'
 import { AlertDialogAction } from '@/components/ui/alert-dialog'
 import {
   components,

@@ -1,5 +1,54 @@
 # 插件商店与在线更新
 
+## Raccoon 0.1.31 补充发布（2026-11-15）
+
+以下三个私有插件包已直接发布至 R2，最低主程序均为 `0.1.31`。
+包内清单、实际启动握手、R2 对象及公开入口的 SHA-256 均已核对。
+完整目录仍有 11 项，另外八项保持不变，历史对象没有覆盖。
+
+| 插件 | 版本 | 包大小（字节） | SHA-256 |
+| --- | --- | ---: | --- |
+| AI 生图 | `1.6.1` | 194501 | `c560cc1fb24e7562bf2784248fabc7d2937775909e9f92f9089ea8fa2b01a572` |
+| Ecom Agent | `1.1.1` | 1440061 | `b98c5919397b7e3c6815faeba4b77cad2c21ff35c82222bd77fa6b57e27ef753` |
+| 邮箱管理 | `1.2.0` | 1502561 | `38ef488cead5e40264030124df3ba4a6c7153fd8570be1d7859d8116615d9628` |
+
+完整目录为 17,655 字节，SHA-256 为
+`09808ff4b3a8e9dc545ee7e6e18f8c68e0890682d485a33cc3cb9697d4c56411`。
+本地发布回执位于 `.superpowers/sdd/2026-11-14-vinted-listing-tools/publication-patches.json`。
+授权入口、确认弹窗和插件间返回由主程序页面提供，安装插件包后仍须更新主程序。
+
+## Raccoon 0.1.31 配套插件（2026-11-14）
+
+2026-11-14 18:16（Asia/Shanghai）已从本地发布以下四个插件，
+最低主程序均为 `0.1.31`。先升级主程序，再在插件中心检查更新。
+
+| 插件          | 版本    | 包大小（字节） | SHA-256                                                            |
+| ------------- | ------- | -------------- | ------------------------------------------------------------------ |
+| AI 生图       | `1.6.0` | 194469         | `55be426a6ec9d8548a7a18852d281c0486d62ad6ac99677e6134bed9dc9f3baf` |
+| 商品管理      | `1.1.0` | 116167         | `2906d8d7b574c008dd324f3516c6c368fd346c15e08171eeb2e3a08e5a29a45c` |
+| Vinted 账号池 | `1.5.0` | 371536         | `cf1e12d3912b14b4f7a78c68ad3a933897366621e7bfd3d1a2db6400c2a04d39` |
+| Ecom Agent    | `1.1.0` | 1440115        | `a6416b83016246dd568a32d5e2f2bd25706546ea17bc1a42a44cf910b63efe28` |
+
+AI 生图增加独立做旧程度、商品风格场景重建与自然英文卖家文案；
+商品管理保存分站点确认分类与属性；账号池增加逐窗口登录、主页和财务观察；
+Ecom Agent 使用无浏览器内容准备和固定上架工具，恢复时优先核对原提交。
+当前上架链路使用页面分类或手动确认的本地兜底，Jev 分类推荐库尚未接入用户确认界面。
+
+四个最终加密包已校验内部摘要并实际启动握手。
+Ecom Agent 从最终解包目录离线读取 2,916 节点分类资源，
+内容 revision 为 `686e8dba7c6f647820c15b6693d8bf9d59a66ebed44f47670e1fdb338b92ee76`。
+包及完整索引均从 R2 和公开入口回读，字节摘要一致。
+
+发布前核对线上完整索引与同版本对象，先上传包，再次检查索引没有并发变化后才合并发布。
+完整索引保留 11 项，其他七个插件逐项保持原值，所有历史对象保留，
+未覆盖已发布同版本包。新索引为 17,820 字节，SHA-256：
+`20ec5359780b0bf40eb00a2718b8dfe51e36e2e7f6dfeba10a8d092ae65e28c3`。
+本地回执位于 `.superpowers/sdd/2026-11-14-vinted-listing-tools/publication.json`。
+
+本次插件单独在本机编译、打包并上传对象存储，插件源码和 `market/` 不提交 Git。
+主程序页面与原生能力由独立桌面 CI 发行；对象存储发布成功不代表应用安装包已经产出。
+目录职责及公开契约边界见[插件本地开发](50-local-plugin-development.md)。
+
 ## Raccoon 0.1.30 配套插件（2026-11-14）
 
 本次插件版本如下。Ecom Agent 保留 `studio.sales-agent` 标识，
@@ -561,7 +610,7 @@ key = SHA-256(salt + "\n" + pluginId + "\n" + version)
 ### 6.1 打包一个插件
 
 ```bash
-pnpm build:packages                 # 编译 packages/* 与 plugins/*
+pnpm plugins:build                 # 仅在本地编译插件；源码不提交 Git
 pnpm market:pack                    # 产物写到 market/plugins/<id>/<version>.nexuspkg
 pnpm market:catalog                 # 汇总成 market/catalog.json
 ```
@@ -687,7 +736,7 @@ https://market.example.com
 ### 6.5 发一个新版本
 
 1. 改 `plugins/<name>/nexus.plugin.ts` 的 `version`。
-2. `pnpm build:packages && pnpm market:build`。
+2. `pnpm plugins:build && pnpm market:build`。
 3. `pnpm market:verify market/plugins/<id>/<新版本>.nexuspkg`。
 4. `pnpm market:publish`。
 5. 应用侧最迟 30 分钟看到更新；点「检查更新」立即生效。

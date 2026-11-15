@@ -5,7 +5,7 @@ import {
   type AgentPreset,
   type AgentProductOverride,
 } from '@nexus/plugin-sdk/agent'
-import type { Product } from '@nexus/plugin-products/contracts'
+import type { Product } from '@nexus/plugin-contracts/products'
 import type { AgentTarget } from './api'
 
 export interface MessageDraft {

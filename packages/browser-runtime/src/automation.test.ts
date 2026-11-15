@@ -56,7 +56,9 @@ function fixture() {
           ? true
           : String(script).includes('AUTOMATION_UPLOAD_TARGET')
             ? 'input'
-            : 'field value',
+            : String(script).includes('AUTOMATION_SELECT_KIND')
+              ? 'native'
+              : 'field value',
     ),
     evaluateHandle: vi.fn<(...args: unknown[]) => Promise<typeof optionHandle>>(
       async () => optionHandle,
@@ -661,6 +663,11 @@ describe('bounded browser tools', () => {
       value: 'synthetic-secret',
       innerText: '',
       getAttribute: (key: string) => (key === 'type' ? 'password' : null),
+      hasAttribute: () => false,
+      matches: () => false,
+      closest: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
       getBoundingClientRect: () => ({ width: 20, height: 20 }),
     }
     page.evaluate.mockImplementationOnce(async (...args: unknown[]) => {

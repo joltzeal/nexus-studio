@@ -3,7 +3,6 @@ import {
   MAX_IMAGE_BYTES,
   PRODUCTS_PLUGIN_ID,
   PRODUCT_CAPABILITY,
-  compareProductPublicationRecency,
   ImageChunkSchema,
   ImageDiscardReplySchema,
   ImageDiscardSchema,
@@ -32,8 +31,9 @@ import {
   type ProductPublicationQuery,
   type ProductQuery,
   type ProductSave,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 import { callPlugin } from '@/lib/platform/native-plugins'
+import { compareProductPublicationRecency } from './publication-order'
 
 const DEADLINE = 30_000
 

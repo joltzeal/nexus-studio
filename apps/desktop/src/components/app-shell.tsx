@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useReducer, useState } from 'react'
 import {
   AlertCircle,
+  ArrowLeft,
   Blocks,
   Bot,
   ChevronDown,
@@ -22,7 +23,8 @@ import {
   Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { RetainedPage } from '@/components/retained-page'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -43,7 +45,14 @@ import {
   reconcileSmsWaitPlugin,
 } from '@/features/accounts/sms-wait-runtime'
 import { onAiImageHandoff, type AiImageHandoff } from '@/lib/page-handoff'
-import { watchDetailNavigation } from '@/lib/detail-navigation'
+import {
+  cancelDetailNavigation,
+  cancelUnavailableDetailNavigation,
+  detailNavigationPage,
+  pendingDetailNavigation,
+  watchDetailNavigation,
+  type DetailNavigationIntent,
+} from '@/lib/detail-navigation'
 import { APP_VERSION } from '@/lib/platform/app-info'
 import { notifyPluginCatalogChanged } from '@/lib/platform/plugin-catalog-events'
 
@@ -74,10 +83,11 @@ const PAGE_LABELS: Record<string, string> = {
 }
 
 export function AppShell() {
-  const [{ page, plugins, catalogError }, navigate] = useReducer(
-    pluginNavigationReducer,
-    initialPluginNavigation,
-  )
+  const [
+    { page, history, visitedPages, plugins, catalogLoaded, catalogError },
+    navigate,
+  ] = useReducer(pluginNavigationReducer, initialPluginNavigation)
+  const [detailIntent, setDetailIntent] = useState<DetailNavigationIntent | null>(null)
   const [pluginsOpen, setPluginsOpen] = useState(true)
   // The shell keeps the editor payload until close, including in-place dialogs.
   const [aiImageHandoff, setAiImageHandoff] = useState<AiImageHandoff | null>(null)
@@ -97,11 +107,26 @@ export function AppShell() {
   const aiImagePlugin = plugins.find((plugin) => plugin.id === 'studio.ai-image') ?? null
   const aiImageReady = aiImagePlugin?.state === 'running'
   const dialogHandoff = aiImageHandoff?.presentation === 'dialog' ? aiImageHandoff : null
+  const previousPage = history[history.length - 1]
+  const previousPageName = previousPage?.startsWith('plugin:')
+    ? plugins.find((entry) => pluginPageValue(entry.id) === previousPage)?.name
+    : previousPage
+      ? PAGE_LABELS[previousPage]
+      : undefined
+  const retained = { activePage: page, visitedPages }
 
   useEffect(() => {
     const stop = watchPluginCatalog(
       (catalog) => {
         reconcileSmsWaitPlugin(catalog)
+        cancelUnavailableDetailNavigation(
+          new Set([
+            'spaces',
+            ...catalog
+              .filter((entry) => entry.enabled && entry.state !== 'available')
+              .map((entry) => pluginPageValue(entry.id)),
+          ]),
+        )
         navigate({ type: 'catalog', plugins: catalog })
       },
       () => navigate({ type: 'error' }),
@@ -115,10 +140,18 @@ export function AppShell() {
   }, [])
 
   function openPage(value: string) {
+    cancelDetailNavigation()
+    setDetailIntent(null)
     navigate({ type: 'navigate', page: value })
     if (value === 'plugins' || value.startsWith('plugin:')) {
       setPluginsOpen(true)
     }
+  }
+
+  function goBack() {
+    cancelDetailNavigation()
+    setDetailIntent(null)
+    navigate({ type: 'back' })
   }
 
   useEffect(
@@ -126,6 +159,8 @@ export function AppShell() {
       onAiImageHandoff((payload) => {
         setAiImageHandoff(payload)
         if (payload.presentation !== 'dialog') {
+          cancelDetailNavigation()
+          setDetailIntent(null)
           navigate({ type: 'navigate', page: pluginPageValue('studio.ai-image') })
           setPluginsOpen(true)
         }
@@ -138,17 +173,19 @@ export function AppShell() {
   useEffect(
     () =>
       watchDetailNavigation((request) => {
-        const target = {
-          product: pluginPageValue('studio.products'),
-          account: pluginPageValue('studio.vinted-accounts'),
-          window: 'spaces',
-          agent: pluginPageValue('studio.sales-agent'),
-        }[request.kind]
-        navigate({ type: 'navigate', page: target })
+        const target = detailNavigationPage(request.kind)
+        setDetailIntent(pendingDetailNavigation())
+        navigate({ type: 'navigate', page: target, awaitCatalog: true })
         if (request.kind !== 'window') setPluginsOpen(true)
       }),
-    [plugins],
+    [],
   )
+
+  useEffect(() => {
+    if (detailIntent && page !== detailNavigationPage(detailIntent.request.kind)) {
+      cancelDetailNavigation(detailIntent.intentId)
+    }
+  }, [detailIntent, page])
 
   return (
     <Tabs
@@ -243,11 +280,23 @@ export function AppShell() {
         </div>
       </aside>
       <header className="app-header">
+        {previousPageName ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`返回${previousPageName}`}
+            title={`返回${previousPageName}`}
+            onClick={goBack}
+          >
+            <ArrowLeft data-icon="inline-start" />
+            返回
+          </Button>
+        ) : null}
         <div className="header-breadcrumb">
           <span>工作区</span>
           <ChevronRight />
           {pluginPage === null ? (
-            <strong>{PAGE_LABELS[page]}</strong>
+            <strong>{PAGE_LABELS[page] ?? '正在读取插件'}</strong>
           ) : (
             <>
               <span>插件中心</span>
@@ -305,17 +354,28 @@ export function AppShell() {
                 </AlertDescription>
               </Alert>
             ) : null}
-            <TabsContent value="spaces">
+            {!catalogLoaded && page.startsWith('plugin:') ? (
+              <Skeleton
+                className="h-44 w-full max-w-lg"
+                aria-label="正在读取目标插件"
+                role="status"
+              />
+            ) : null}
+            <RetainedPage value="spaces" {...retained}>
               <SpacesPage />
-            </TabsContent>
-            <TabsContent value="groups">
+            </RetainedPage>
+            <RetainedPage value="groups" {...retained}>
               <GroupsPage />
-            </TabsContent>
-            <TabsContent value="plugins">
+            </RetainedPage>
+            <RetainedPage value="plugins" {...retained}>
               <PluginsPage />
-            </TabsContent>
+            </RetainedPage>
             {plugins.map((plugin) => (
-              <TabsContent key={plugin.id} value={pluginPageValue(plugin.id)}>
+              <RetainedPage
+                key={plugin.id}
+                value={pluginPageValue(plugin.id)}
+                {...retained}
+              >
                 <PluginPage
                   plugin={plugin}
                   hostAvailable
@@ -325,9 +385,9 @@ export function AppShell() {
                   onManage={() => openPage('plugins')}
                   onWindows={() => openPage('spaces')}
                 />
-              </TabsContent>
+              </RetainedPage>
             ))}
-            <TabsContent value="settings">
+            <RetainedPage value="settings" {...retained}>
               <Suspense
                 fallback={
                   <Skeleton
@@ -339,7 +399,7 @@ export function AppShell() {
               >
                 <SettingsPage />
               </Suspense>
-            </TabsContent>
+            </RetainedPage>
             {dialogHandoff === null ? null : (
               <AiImagePage
                 plugin={aiImagePlugin}

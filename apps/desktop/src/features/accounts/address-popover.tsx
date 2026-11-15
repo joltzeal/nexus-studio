@@ -1,6 +1,16 @@
 import { useRef, useState } from 'react'
 import { Copy, Loader2, MapPin, Unlink } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   Popover,
@@ -13,8 +23,7 @@ import { toast } from '@/components/ui/toast'
 import { streetLine } from '@/features/addresses/types'
 import { copyText } from '@/lib/clipboard'
 import { assignAccountAddress } from './api'
-import { message } from './types'
-import type { Account, AccountAddressSetResult } from './types'
+import type { Account, AccountAddressSetResult, AssignedAccountAddress } from './types'
 
 interface AccountAddressPopoverProps {
   account: Pick<Account, 'id' | 'account' | 'address'>
@@ -30,6 +39,12 @@ export function AccountAddressPopover({
   onPendingChange,
 }: AccountAddressPopoverProps) {
   const [pending, setPending] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [confirmation, setConfirmation] = useState<{
+    accountId: string
+    accountName: string
+    address: AssignedAccountAddress
+  } | null>(null)
   const request = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const address = account.address ?? null
@@ -60,7 +75,15 @@ export function AccountAddressPopover({
   }
 
   async function unlink() {
-    if (!ready || request.current || address === null) return
+    if (!ready || request.current || !confirmation) return
+    if (
+      account.id !== confirmation.accountId ||
+      address?.id !== confirmation.address.id ||
+      address.linkedAt !== confirmation.address.linkedAt
+    ) {
+      setError('账号地址已变化，请取消并刷新资料后重新确认。')
+      return
+    }
     request.current = true
     setPending(true)
     setError(null)
@@ -68,9 +91,10 @@ export function AccountAddressPopover({
     try {
       const saved = await assignAccountAddress(account.id, null, address.id)
       await onUnlinked(saved)
+      setConfirmation(null)
       toast.success(saved.storageDurable ? '地址已解绑' : '地址已解绑（仅本次运行）')
-    } catch (cause) {
-      setError(message(cause))
+    } catch {
+      setError('解绑地址失败，请检查插件状态或刷新账号资料后重试。')
     } finally {
       request.current = false
       setPending(false)
@@ -79,7 +103,12 @@ export function AccountAddressPopover({
   }
 
   return (
-    <Popover>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (!request.current && confirmation === null) setOpen(next)
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -109,7 +138,7 @@ export function AccountAddressPopover({
           关联于 {new Date(address.linkedAt).toLocaleString('zh-CN', { hour12: false })}
           {address.approximate ? ' · 近似地址' : ''}
         </p>
-        {error ? (
+        {error && confirmation === null ? (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
@@ -125,7 +154,15 @@ export function AccountAddressPopover({
             size="sm"
             disabled={!ready || pending}
             aria-busy={pending}
-            onClick={() => void unlink()}
+            onClick={() => {
+              if (!ready || request.current) return
+              setError(null)
+              setConfirmation({
+                accountId: account.id,
+                accountName: account.account,
+                address,
+              })
+            }}
           >
             {pending ? (
               <Loader2 data-icon="inline-start" className="animate-spin" />
@@ -136,6 +173,51 @@ export function AccountAddressPopover({
           </Button>
         </div>
       </PopoverContent>
+      <AlertDialog
+        open={confirmation !== null}
+        onOpenChange={(next) => {
+          if (!next && !request.current) {
+            setConfirmation(null)
+            setError(null)
+          }
+        }}
+      >
+        {confirmation ? (
+          <AlertDialogContent
+            onEscapeKeyDown={(event) => {
+              if (request.current) event.preventDefault()
+            }}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认解绑账号地址？</AlertDialogTitle>
+              <AlertDialogDescription>
+                将解除账号「{confirmation.accountName}」与地址「
+                {confirmation.address.postalCode} {confirmation.address.city}
+                」的关联，移除此账号保存的完整地址快照，影响所有关联窗口。
+                地址生成器中的原资料会保留，Vinted 平台上的地址不会改变。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {error ? (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={pending}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={!ready || pending}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void unlink()
+                }}
+              >
+                {pending ? '正在解绑…' : '确认解绑地址'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        ) : null}
+      </AlertDialog>
     </Popover>
   )
 }

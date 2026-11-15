@@ -1,5 +1,5 @@
 import { Badge } from '@/components/ui/badge'
-import type { GenerationSummary } from './types'
+import { AGING_LEVEL_OPTIONS, type GenerationSummary } from './types'
 
 /** One summary per persisted submission, with every scene view kept in its parent. */
 export function BatchSummary({ record }: { record: GenerationSummary }) {
@@ -19,10 +19,12 @@ export function BatchSummary({ record }: { record: GenerationSummary }) {
   const failed = views?.filter((view) => view.status === 'failed').length ?? 0
   const queued = views?.filter((view) => view.status === 'queued').length ?? 0
   const active = views?.filter((view) => view.status === 'running').length ?? 0
+  const aging = AGING_LEVEL_OPTIONS.find((option) => option.value === record.agingLevel)
   return (
     <div className="mt-1 flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <Badge variant="outline">{label}</Badge>
+        {aging ? <span>做旧：{aging.label}</span> : null}
         <span>
           {views ? '已完成' : '成片'} {completed} / {record.count}
         </span>

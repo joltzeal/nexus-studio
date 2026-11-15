@@ -1,4 +1,4 @@
-import type { AccountObservationState } from '@nexus/plugin-vinted-accounts/agent-contracts'
+import type { AccountObservationState } from '@nexus/plugin-contracts/vinted-accounts'
 
 const SOURCE_LABELS = {
   official: '官方接口',
@@ -13,21 +13,21 @@ const AMOUNT_LABELS = {
 
 export function accountBalanceData(observation: AccountObservationState | undefined) {
   if (observation === undefined) return null
-  const balance = observation.balance
+  const balance = observation.wallet
   if (balance === undefined) return null
 
   return {
-    currency: balance.currency,
     amounts: (['available', 'pending'] as const).map((key) => {
-      const evidence = balance[`${key}Evidence`]
+      const money = balance[key]
       return {
         key,
         label: AMOUNT_LABELS[key],
-        amount: balance[key] ?? '—',
-        sourceLabel: evidence === null ? null : SOURCE_LABELS[evidence.source],
-        observedAt: evidence?.observedAt ?? null,
+        amount: money?.amount ?? '—',
+        currency: money?.currency ?? null,
+        sourceLabel: money === null ? null : SOURCE_LABELS[money.source],
+        observedAt: money?.observedAt ?? null,
         retained:
-          balance[key] !== null && observation.lastObservation.balance?.[key] === null,
+          money !== null && observation.checks[`wallet.${key}`]?.outcome === 'failed',
       }
     }),
   }

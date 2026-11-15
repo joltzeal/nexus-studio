@@ -19,7 +19,12 @@ import {
 } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AlertDialog, AlertDialogAction } from '@/components/ui/alert-dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogDescription,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -32,6 +37,7 @@ import { Select, SelectGroup, SelectItem, SelectTrigger } from '@/components/ui/
 import { TableRow } from '@/components/ui/table'
 import { toast } from '@/components/ui/toast'
 import { AccountEditor } from '@/features/accounts/account-editor'
+import { smsWaits } from '@/features/accounts/sms-wait-runtime'
 import {
   ACCOUNT_STATUSES,
   type Account,
@@ -59,7 +65,7 @@ import { SpacesPage } from './spaces-page'
 import { WindowEditor } from './window-editor'
 import { BatchWindowDialog } from './batch-window-dialog'
 import { TransferToolbar } from './transfer-toolbar'
-import { flushPromises } from '@/features/settings/kernel-test-support'
+import { flushPromises, text } from '@/features/settings/kernel-test-support'
 import { checkWindowProxy, type ProxyCheckOutcome } from './window-proxy'
 
 const state = vi.hoisted(() => ({
@@ -81,6 +87,9 @@ const state = vi.hoisted(() => ({
   saveResponse: null as Promise<{ item: Account; created: boolean }> | null,
   bindResponse: { bound: true, duplicates: [] as string[] },
   bindPendingResponse: null as Promise<{ bound: boolean; duplicates: string[] }> | null,
+  bindError: null as Error | null,
+  unbindError: null as Error | null,
+  unbindResponse: null as Promise<{ unbound: boolean }> | null,
   realLaunch: false,
   startingIds: [] as string[],
   profileReadResponse: null as Promise<BrowserWindow[]> | null,
@@ -158,9 +167,14 @@ vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
       if (state.saveError) throw state.saveError
       return state.saveResponse ?? { item: state.saved, created: false }
     }
-    if (method === 'vinted.accounts.bind')
+    if (method === 'vinted.accounts.bind') {
+      if (state.bindError) throw state.bindError
       return state.bindPendingResponse ?? state.bindResponse
-    if (method === 'vinted.accounts.unbind') return { unbound: true }
+    }
+    if (method === 'vinted.accounts.unbind') {
+      if (state.unbindError) throw state.unbindError
+      return state.unbindResponse ?? { unbound: true }
+    }
     throw new Error(`Unexpected account method: ${method}`)
   },
 }))
@@ -224,6 +238,7 @@ vi.mock('@/components/ui/toast', () => ({
 
 class HookHarness {
   private values: unknown[] = []
+  private setters = new Map<number, (next: unknown) => void>()
   private cursor = 0
   private effectCursor = 0
   private effects: {
@@ -237,13 +252,11 @@ class HookHarness {
     const index = this.cursor++
     if (index === this.values.length) {
       this.values.push(typeof initial === 'function' ? initial() : initial)
-    }
-    return [
-      this.values[index],
-      (next) => {
+      this.setters.set(index, (next) => {
         this.values[index] = typeof next === 'function' ? next(this.values[index]) : next
-      },
-    ]
+      })
+    }
+    return [this.values[index], this.setters.get(index)!]
   }
 
   memo<T>(value: T, deps: DependencyList): T {
@@ -346,6 +359,7 @@ function bind(windowId: string, item: Account): BindingView {
     windowId,
     accountId: item.id,
     boundAt: '2026-10-03T00:00:00.000Z',
+    revision: '00000000-0000-4000-8000-000000000040',
     account: {
       id: item.id,
       account: item.account,
@@ -400,6 +414,9 @@ beforeEach(() => {
   state.saveResponse = null
   state.bindResponse = { bound: true, duplicates: [] }
   state.bindPendingResponse = null
+  state.bindError = null
+  state.unbindError = null
+  state.unbindResponse = null
   state.realLaunch = false
   state.startingIds = []
   state.profileReadResponse = null
@@ -525,6 +542,44 @@ function unlinkButtons(tree: ReactNode, login = 'shared@example.com') {
   )
 }
 
+function relationConfirmation(tree: ReactNode, action: string) {
+  return components(tree, AlertDialog).find(
+    (node) =>
+      node.props.open &&
+      components(node, AlertDialogAction).some(
+        (button) => text(button.props.children) === action,
+      ),
+  )!
+}
+
+function confirmRelation(tree: ReactNode, action: string) {
+  const dialog = relationConfirmation(tree, action)
+  expect(dialog, `Missing confirmation: ${action}`).toBeDefined()
+  components(dialog, AlertDialogAction)[0]!.props.onClick?.({
+    preventDefault() {},
+  } as never)
+}
+
+function confirmPhone(tree: ReactNode) {
+  confirmRelation(tree, '确认解绑手机号')
+}
+
+function accountMenu(tree: ReactNode, window: string, label: string) {
+  return components(windowRow(tree, window), DropdownMenuItem).find(
+    (node) => text(node.props.children) === label,
+  )!
+}
+
+function chooseReplacement(
+  page: Awaited<ReturnType<typeof mountedPage>>,
+  window = 'first',
+  accountId = 'other',
+) {
+  accountMenu(page.render(), window, '更换账号').props.onSelect?.({} as Event)
+  const dialog = localComponents(page.render(), 'AccountBindDialog')[0]!
+  ;(dialog.props.onConfirm as (id: string) => void)(accountId)
+}
+
 function localComponents(tree: ReactNode, name: string) {
   return elements(tree).filter(
     (node) => typeof node.type === 'function' && node.type.name === name,
@@ -584,6 +639,11 @@ function editorSession(props: ComponentProps<typeof AccountEditor>) {
       const form = elements(tree).find((node) => node.type === 'form')
       const submit = form?.props.onSubmit as (event: FormEvent) => void
       submit({ preventDefault: () => undefined } as FormEvent)
+    },
+    confirm() {
+      const action = components(render(), AlertDialogAction)[0]!
+      expect(action).toBeDefined()
+      action.props.onClick?.({ preventDefault() {} } as never)
     },
   }
 }
@@ -1271,6 +1331,243 @@ describe('batch window grouping', () => {
   })
 })
 
+describe('window account relation confirmations', () => {
+  it.each(['更换账号', '解除关联'])(
+    'describes and cancels %s without a request or stopping SMS waits',
+    async (operation) => {
+      const stop = vi.spyOn(smsWaits, 'stopWindow')
+      const page = await mountedPage()
+      const calls = state.calls.length
+      if (operation === '更换账号') chooseReplacement(page)
+      else accountMenu(page.render(), 'first', operation).props.onSelect?.({} as Event)
+      expect(state.calls).toHaveLength(calls)
+      expect(stop).not.toHaveBeenCalled()
+      const dialog = relationConfirmation(page.render(), `确认${operation}`)
+      expect(dialog).toBeDefined()
+      const description = text(components(dialog, AlertDialogDescription)[0]!)
+      expect(description).toContain('first')
+      expect(description).toContain('shared@example.com')
+      if (operation === '更换账号') expect(description).toContain('other@example.com')
+      expect(description).not.toContain(account().password)
+      expect(description).not.toContain(account().smsOtpUrl)
+      dialog.props.onOpenChange?.(false)
+      expect(relationConfirmation(page.render(), `确认${operation}`)).toBeUndefined()
+      expect(state.calls).toHaveLength(calls)
+      expect(stop).not.toHaveBeenCalled()
+      expect(state.bindings[0]).toEqual(bind('first', account()))
+    },
+  )
+
+  it.each(['更换账号', '解除关联'])(
+    'locks %s while busy and preserves a sanitized failure for retry',
+    async (operation) => {
+      const page = await mountedPage()
+      const response = deferred<never>()
+      if (operation === '更换账号') {
+        state.bindPendingResponse = response.promise
+        chooseReplacement(page)
+      } else {
+        state.unbindResponse = response.promise
+        accountMenu(page.render(), 'first', operation).props.onSelect?.({} as Event)
+      }
+      const dialog = relationConfirmation(page.render(), `确认${operation}`)
+      const action = components(dialog, AlertDialogAction)[0]!.props.onClick!
+      action({ preventDefault() {} } as never)
+      action({ preventDefault() {} } as never)
+      await flushPromises()
+      const method =
+        operation === '更换账号' ? 'vinted.accounts.bind' : 'vinted.accounts.unbind'
+      expect(state.calls.filter((call) => call.method === method)).toHaveLength(1)
+      const busyDialog = components(page.render(), AlertDialog).find(
+        (node) => node.props.open,
+      )!
+      expect(components(busyDialog, AlertDialogCancel)[0]!.props.disabled).toBe(true)
+      expect(components(busyDialog, AlertDialogAction)[0]!.props.disabled).toBe(true)
+      busyDialog.props.onOpenChange?.(false)
+      expect(components(page.render(), AlertDialog).some((node) => node.props.open)).toBe(
+        true,
+      )
+      response.reject(
+        new Error(`write failed: ${account().password} ${account().smsOtpUrl}`),
+      )
+      await flushPromises()
+      const failed = relationConfirmation(page.render(), `确认${operation}`)
+      expect(failed).toBeDefined()
+      expect(text(failed)).toContain('失败')
+      expect(text(failed)).not.toContain(account().password)
+      expect(text(failed)).not.toContain(account().smsOtpUrl)
+      expect(toast.success).not.toHaveBeenCalled()
+      state.bindPendingResponse = null
+      state.unbindResponse = null
+      confirmRelation(page.render(), `确认${operation}`)
+      await flushPromises()
+      expect(state.calls.filter((call) => call.method === method)).toHaveLength(2)
+      expect(components(page.render(), AlertDialog).some((node) => node.props.open)).toBe(
+        false,
+      )
+    },
+  )
+
+  it.each(['更换账号', '解除关联'])(
+    'rejects a stale window relation before %s even when the table has not refreshed',
+    async (operation) => {
+      const stop = vi.spyOn(smsWaits, 'stopWindow')
+      const page = await mountedPage()
+      if (operation === '更换账号') chooseReplacement(page)
+      else accountMenu(page.render(), 'first', operation).props.onSelect?.({} as Event)
+      state.bindings = state.bindings.map((entry) =>
+        entry.windowId === 'first' ? { ...entry, revision: 'new-relation' } : entry,
+      )
+      confirmRelation(page.render(), `确认${operation}`)
+      await flushPromises()
+      expect(
+        state.calls.filter((call) =>
+          ['vinted.accounts.bind', 'vinted.accounts.unbind'].includes(call.method),
+        ),
+      ).toEqual([])
+      expect(text(relationConfirmation(page.render(), `确认${operation}`))).toContain(
+        '已变化',
+      )
+      expect(stop).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps the duplicate warning on failure and rechecks its affected windows before retrying', async () => {
+    const page = await mountedPage()
+    const stop = vi.spyOn(smsWaits, 'stopWindow')
+    state.bindResponse = { bound: false, duplicates: ['third'] }
+    chooseReplacement(page)
+    confirmRelation(page.render(), '确认更换账号')
+    await flushPromises()
+    expect(relationConfirmation(page.render(), '仍然关联')).toBeDefined()
+    expect(stop).not.toHaveBeenCalled()
+    state.bindError = new Error(`private ${account().smsOtpUrl}`)
+    confirmRelation(page.render(), '仍然关联')
+    await flushPromises()
+    expect(relationConfirmation(page.render(), '仍然关联')).toBeDefined()
+    expect(text(relationConfirmation(page.render(), '仍然关联'))).toContain('失败')
+    expect(text(relationConfirmation(page.render(), '仍然关联'))).not.toContain(
+      account().smsOtpUrl,
+    )
+    state.bindError = null
+    state.bindResponse = { bound: true, duplicates: [] }
+    confirmRelation(page.render(), '仍然关联')
+    await flushPromises()
+    expect(state.calls.filter((call) => call.method === 'vinted.accounts.bind')).toEqual([
+      {
+        method: 'vinted.accounts.bind',
+        input: { accountId: 'other', windowId: 'first', confirmDuplicates: false },
+      },
+      {
+        method: 'vinted.accounts.bind',
+        input: { accountId: 'other', windowId: 'first', confirmDuplicates: true },
+      },
+      {
+        method: 'vinted.accounts.bind',
+        input: { accountId: 'other', windowId: 'first', confirmDuplicates: true },
+      },
+    ])
+  })
+
+  it('does not confirm duplicate association against a changed set of windows', async () => {
+    const page = await mountedPage()
+    state.bindResponse = { bound: false, duplicates: ['third'] }
+    chooseReplacement(page)
+    confirmRelation(page.render(), '确认更换账号')
+    await flushPromises()
+    state.bindings.push(bind('new-owner', state.accounts[1]!))
+    confirmRelation(page.render(), '仍然关联')
+    await flushPromises()
+    expect(
+      state.calls.filter((call) => call.method === 'vinted.accounts.bind'),
+    ).toHaveLength(1)
+    expect(text(relationConfirmation(page.render(), '仍然关联'))).toContain('已变化')
+  })
+
+  it('blocks a retained quick-add handler after an unbound window gains an account', async () => {
+    state.windows.push(profile('unbound'))
+    const page = await mountedPage()
+    const quick = localComponents(page.render(), 'AccountQuickAdd')[0]!
+    const QuickAdd = quick.type as (props: Record<string, unknown>) => ReactElement
+    const quickHooks = harness()
+    const render = () => quickHooks.render(() => QuickAdd(quick.props))
+    const option = elements(render()).find((node) => node.props.role === 'option')!
+    state.bindings.push(bind('unbound', state.accounts[1]!))
+    refreshButton(page.render()).props.onClick?.({} as never)
+    await vi.waitFor(() =>
+      expect(refreshButton(page.render()).props.disabled).toBe(false),
+    )
+    ;(option.props.onClick as () => void)()
+    await flushPromises()
+    expect(state.calls.filter((call) => call.method === 'vinted.accounts.bind')).toEqual(
+      [],
+    )
+    expect(text(render())).toContain('已变化')
+  })
+
+  it('does not invite a repeated write when binding succeeds but its refresh fails', async () => {
+    const page = await mountedPage()
+    chooseReplacement(page)
+    state.listError = new Error('refresh failed')
+    confirmRelation(page.render(), '确认更换账号')
+    await flushPromises()
+    expect(
+      state.calls.filter((call) => call.method === 'vinted.accounts.bind'),
+    ).toHaveLength(1)
+    expect(relationConfirmation(page.render(), '确认更换账号')).toBeUndefined()
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('已更新'))
+  })
+})
+
+describe('window phone unlink confirmations', () => {
+  it('identifies the shared contact and cancels without requests or stopping a wait', async () => {
+    const stop = vi.spyOn(smsWaits, 'stop')
+    const page = await mountedPage()
+    const calls = state.calls.length
+    unlinkButtons(page.render())[0]!.props.onClick?.({} as never)
+    expect(state.calls).toHaveLength(calls)
+    expect(stop).not.toHaveBeenCalled()
+    const dialog = relationConfirmation(page.render(), '确认解绑手机号')
+    expect(dialog).toBeDefined()
+    const description = text(components(dialog, AlertDialogDescription)[0]!)
+    for (const part of ['高风险', 'first', 'shared@example.com', '+14155550100', '2']) {
+      expect(description).toContain(part)
+    }
+    expect(description).not.toContain(account().smsOtpUrl)
+    dialog.props.onOpenChange?.(false)
+    expect(relationConfirmation(page.render(), '确认解绑手机号')).toBeUndefined()
+    expect(state.calls).toHaveLength(calls)
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it.each(['contact', 'window relation'])(
+    'keeps a stale %s unchanged when confirmation reads newer data',
+    async (change) => {
+      const stop = vi.spyOn(smsWaits, 'stop')
+      const page = await mountedPage()
+      unlinkButtons(page.render())[0]!.props.onClick?.({} as never)
+      if (change === 'contact')
+        state.accounts[0] = account({
+          phone: '+442079460000',
+          smsOtpUrl: 'https://new.example.test/secret',
+        })
+      else
+        state.bindings = state.bindings.map((entry) =>
+          entry.windowId === 'first' ? bind('first', state.accounts[1]!) : entry,
+        )
+      confirmRelation(page.render(), '确认解绑手机号')
+      await flushPromises()
+      expect(
+        state.calls.filter((call) => call.method === 'vinted.accounts.save'),
+      ).toEqual([])
+      expect(text(relationConfirmation(page.render(), '确认解绑手机号'))).toContain(
+        '已变化',
+      )
+      expect(stop).not.toHaveBeenCalled()
+    },
+  )
+})
+
 describe('account binding view guards', () => {
   function openBinding(tree: ReactNode, name: string) {
     components(windowRow(tree, name), DropdownMenuItem)
@@ -1278,9 +1575,12 @@ describe('account binding view guards', () => {
       .props.onSelect?.({} as Event)
   }
   function dismissBinding(tree: ReactNode) {
-    components(tree, Dialog)
-      .find((node) => localComponents(node, 'AccountBindDialog').length > 0)!
-      .props.onOpenChange?.(false)
+    const confirmation = relationConfirmation(tree, '确认更换账号')
+    if (confirmation) confirmation.props.onOpenChange?.(false)
+    else
+      components(tree, Dialog)
+        .find((node) => localComponents(node, 'AccountBindDialog').length > 0)!
+        .props.onOpenChange?.(false)
   }
   async function changeView(
     page: Awaited<ReturnType<typeof mountedPage>>,
@@ -1315,6 +1615,12 @@ describe('account binding view guards', () => {
     openBinding(page.render(), 'first')
     const original = localComponents(page.render(), 'AccountBindDialog')[0]!
     ;(original.props.onConfirm as (id: string) => void)('other')
+    confirmRelation(page.render(), '确认更换账号')
+    await vi.waitFor(() =>
+      expect(state.calls.some((call) => call.method === 'vinted.accounts.bind')).toBe(
+        true,
+      ),
+    )
     dismissBinding(page.render())
     await changeView(page, change)
     openBinding(page.render(), 'third')
@@ -1345,18 +1651,23 @@ describe('account binding view guards', () => {
       openBinding(page.render(), 'first')
       const original = localComponents(page.render(), 'AccountBindDialog')[0]!
       ;(original.props.onConfirm as (id: string) => void)('other')
+      confirmRelation(page.render(), '确认更换账号')
       await vi.waitFor(() =>
-        expect(components(page.render(), AlertDialogAction)).toHaveLength(1),
+        expect(relationConfirmation(page.render(), '仍然关联')).toBeDefined(),
       )
       const response = deferred<{ bound: boolean; duplicates: string[] }>()
       state.bindPendingResponse = response.promise
       components(page.render(), AlertDialogAction)[0]!.props.onClick?.({
         preventDefault() {},
       } as never)
+      await vi.waitFor(() =>
+        expect(
+          state.calls.filter((call) => call.method === 'vinted.accounts.bind'),
+        ).toHaveLength(2),
+      )
       components(page.render(), AlertDialog)
         .find((node) => node.props.open)!
         .props.onOpenChange?.(false)
-      dismissBinding(page.render())
       await changeView(page, 'provider')
       openBinding(page.render(), 'third')
       if (result === 'failure') response.reject(new Error('old conflict failure'))
@@ -2177,12 +2488,10 @@ describe('account refresh consistency', () => {
     )!
     change.props.onSelect?.({} as Event)
     const dialog = localComponents(page.render(), 'AccountBindDialog')[0]!
-    const BindingDialog = dialog.type as (props: Record<string, unknown>) => ReactElement
-    const binding = harness()
-    binding.render(() => BindingDialog(dialog.props))
     const confirm = dialog.props.onConfirm as (id: string) => void
     state.bindResponse = { bound: false, duplicates: ['third'] }
     confirm('other')
+    confirmRelation(page.render(), '确认更换账号')
     await vi.waitFor(() => {
       expect(
         components(page.render(), AlertDialogAction).some(
@@ -2198,21 +2507,13 @@ describe('account refresh consistency', () => {
     await vi.waitFor(() => {
       expect(filterControl(page.render(), '筛选账号状态').props.disabled).toBe(true)
     })
-    const unavailable = localComponents(page.render(), 'AccountBindDialog')[0]!
-    expect(unavailable.props.ready).toBe(false)
-    expect(unavailable.props.accounts).toEqual([])
-    const content = binding.render(() => BindingDialog(unavailable.props))
-    const submit = components(content, Button).find(
-      (node) => node.props.children === '关联',
-    )!
-    expect(submit.props.disabled).toBe(true)
+    expect(localComponents(page.render(), 'AccountBindDialog')).toHaveLength(0)
     expect(
       components(page.render(), AlertDialogAction).find(
         (node) => node.props.children === '仍然关联',
       )!.props.disabled,
     ).toBe(true)
     const calls = state.calls.length
-    submit.props.onClick?.({} as never)
     confirm('other')
     duplicate.props.onClick?.({ preventDefault: () => undefined } as never)
     expect(state.calls).toHaveLength(calls)
@@ -2290,6 +2591,7 @@ describe('account refresh consistency', () => {
     const secondSave = deferred<{ item: Account; created: boolean }>()
     state.saveResponse = firstSave.promise
     unlinkButtons(page.render())[0]!.props.onClick?.({} as never)
+    confirmPhone(page.render())
     await vi.waitFor(() => {
       expect(
         state.calls.filter((call) => call.method === 'vinted.accounts.save'),
@@ -2297,6 +2599,7 @@ describe('account refresh consistency', () => {
     })
     state.saveResponse = secondSave.promise
     unlinkButtons(page.render(), 'other@example.com')[0]!.props.onClick?.({} as never)
+    confirmPhone(page.render())
     await vi.waitFor(() => {
       expect(
         state.calls.filter((call) => call.method === 'vinted.accounts.save'),
@@ -2426,6 +2729,7 @@ describe('quick account phone unlinking', () => {
       updatedAt: '2026-10-26T00:00:00.000Z',
     }
     buttons[0]!.props.onClick?.({} as never)
+    confirmPhone(page.render())
 
     await vi.waitFor(() => expect(unlinkButtons(page.render())).toHaveLength(0))
     const popovers = components(page.render(), AccountSmsPopover)
@@ -2441,6 +2745,7 @@ describe('quick account phone unlinking', () => {
     expect(state.calls.map((call) => call.method)).toEqual([
       'vinted.accounts.bindings',
       'vinted.accounts.list',
+      'vinted.accounts.bindings',
       'vinted.accounts.list',
       'vinted.accounts.save',
     ])
@@ -2448,6 +2753,7 @@ describe('quick account phone unlinking', () => {
       state.calls.find((call) => call.method === 'vinted.accounts.save')?.input,
     ).toEqual({
       id: latest.id,
+      expectedUpdatedAt: latest.updatedAt,
       account: latest.account,
       loginMethod: latest.loginMethod,
       password: latest.password,
@@ -2488,6 +2794,7 @@ describe('quick account phone unlinking', () => {
     buttons[0]!.props.onClick?.({} as never)
     buttons[0]!.props.onClick?.({} as never)
     buttons[1]!.props.onClick?.({} as never)
+    confirmPhone(page.render())
     await vi.waitFor(() => {
       expect(
         state.calls.filter((call) => call.method === 'vinted.accounts.save'),
@@ -2537,9 +2844,10 @@ describe('quick account phone unlinking', () => {
       if (stage === 'lookup') state.listError = new Error('账号读取失败')
       else state.saveError = new Error('账号写入失败')
       unlinkButtons(page.render())[0]!.props.onClick?.({} as never)
+      confirmPhone(page.render())
       await vi.waitFor(() => {
-        expect(toast.error).toHaveBeenCalledExactlyOnceWith(
-          `解绑手机号失败：${stage === 'lookup' ? '账号读取失败' : '账号写入失败'}`,
+        expect(text(relationConfirmation(page.render(), '确认解绑手机号'))).toContain(
+          '解绑手机号失败',
         )
         expect(unlinkButtons(page.render()).every((node) => !node.props.disabled)).toBe(
           true,
@@ -2557,7 +2865,7 @@ describe('quick account phone unlinking', () => {
       state.listError = null
       state.saveError = null
       state.saved = account({ phone: '', smsOtpUrl: '' })
-      unlinkButtons(page.render())[1]!.props.onClick?.({} as never)
+      confirmPhone(page.render())
       await vi.waitFor(() => expect(unlinkButtons(page.render())).toHaveLength(0))
       expect(toast.success).toHaveBeenCalledExactlyOnceWith('手机号与短信接码链接已解绑')
     },
@@ -2628,6 +2936,7 @@ describe('linked Vinted account editing', () => {
         method: 'vinted.accounts.save',
         input: {
           id: 'shared',
+          expectedUpdatedAt: account().updatedAt,
           loginMethod: 'email',
           account: 'shared@example.com',
           password: '  example password  ',
@@ -2709,12 +3018,13 @@ describe('linked Vinted account editing', () => {
       updatedAt: '2026-10-25T00:00:00.000Z',
     })
     editor.submit()
+    editor.confirm()
     await vi.waitFor(() => {
       expect(components(page.render(), AccountEditor)).toHaveLength(0)
     })
     expect(
       state.calls.find((call) => call.method === 'vinted.accounts.save')?.input,
-    ).toEqual(draft)
+    ).toEqual({ ...draft, expectedUpdatedAt: account().updatedAt })
     const tree = page.render()
     expect(components(tree, AccountSmsPopover).map((node) => node.props.account)).toEqual(
       [state.saved, state.saved, state.accounts[1]!],
@@ -2744,9 +3054,10 @@ describe('linked Vinted account editing', () => {
     editor.change('account-sms-otp', '')
     state.saveError = new Error('账号写入失败')
     editor.submit()
+    editor.confirm()
     await vi.waitFor(() => {
       expect(components(editor.render(), FieldError)[0]?.props.children).toBe(
-        '账号写入失败',
+        '保存失败，请检查插件状态或刷新账号资料后重试。',
       )
     })
     expect(components(page.render(), AccountEditor)).toHaveLength(1)
@@ -2765,7 +3076,7 @@ describe('linked Vinted account editing', () => {
 
     state.saveError = null
     state.saved = account({ status: 'blocked', note: 'keep this draft', smsOtpUrl: '' })
-    editor.submit()
+    editor.confirm()
     await vi.waitFor(() => {
       expect(components(page.render(), AccountEditor)).toHaveLength(0)
     })

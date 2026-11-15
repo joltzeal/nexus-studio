@@ -5,7 +5,7 @@ import {
   type AgentJobView,
   type AgentSettings,
 } from '@nexus/plugin-sdk/agent'
-import { PRODUCT_METHODS, ProductSchema } from '@nexus/plugin-products/contracts'
+import { PRODUCT_METHODS, ProductSchema } from '@nexus/plugin-contracts/products'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import type { BrowserWindow } from '@/lib/platform/windows'
 import type { AgentTarget } from './api'
@@ -22,6 +22,7 @@ export const ids = {
 }
 export const now = '2026-11-13T00:00:00.000Z'
 export const product = ProductSchema.parse({
+  platformFacts: { vinted: [] },
   id: ids.product,
   revision: 1,
   sequence: 1,
@@ -177,6 +178,7 @@ export function agentDependencyPlugins(): PluginView[] {
         'vinted.accounts.bindings',
         'vinted.accounts.agent.snapshot',
         'vinted.accounts.observations.record',
+        'vinted.accounts.observations.reserve',
       ],
     }),
   ]

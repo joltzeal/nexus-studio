@@ -1,14 +1,18 @@
 mod artifacts;
 pub mod commands;
+mod content;
 mod controls;
 pub mod dto;
+mod execution;
 mod gateway;
 mod items;
 mod model_history;
 mod models;
 mod notifications;
+mod observations;
 mod preflight;
 mod queries;
+mod recovery;
 mod retention;
 mod scheduling;
 mod schema;

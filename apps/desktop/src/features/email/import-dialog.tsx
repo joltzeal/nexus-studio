@@ -19,6 +19,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toast'
 import { importMailboxes } from './api'
+import { mailTransportPermissionMessage } from './errors'
 import { useEmailAction } from './hooks'
 import type { ImportReport, MailTransport } from './types'
 
@@ -96,7 +97,7 @@ export function ImportMailboxesDialog({
                 <ToggleGroupItem value="imap">IMAP</ToggleGroupItem>
               </ToggleGroup>
               <FieldDescription>
-                默认 Graph。仅导入已获得所选通道权限的凭据。
+                {mailTransportPermissionMessage(transport)}
               </FieldDescription>
             </Field>
             <Field>

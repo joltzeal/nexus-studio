@@ -4,6 +4,15 @@ import { fileURLToPath } from 'node:url'
 export default defineConfig({
   resolve: {
     alias: {
+      '@nexus/contracts/browser': fileURLToPath(
+        new URL('./packages/contracts/src/browser.ts', import.meta.url),
+      ),
+      '@nexus/contracts/configuration': fileURLToPath(
+        new URL('./packages/contracts/src/configuration.ts', import.meta.url),
+      ),
+      '@nexus/contracts': fileURLToPath(
+        new URL('./packages/contracts/src/index.ts', import.meta.url),
+      ),
       '@nexus/plugin-sdk/agent': fileURLToPath(
         new URL('./packages/plugin-sdk/src/agent.ts', import.meta.url),
       ),
@@ -17,20 +26,11 @@ export default defineConfig({
       '@nexus/plugin-sdk': fileURLToPath(
         new URL('./packages/plugin-sdk/src/index.ts', import.meta.url),
       ),
-      '@nexus/plugin-email/manifest': fileURLToPath(
-        new URL('./plugins/email/nexus.plugin.ts', import.meta.url),
+      '@nexus/plugin-contracts/products': fileURLToPath(
+        new URL('./packages/plugin-contracts/src/products.ts', import.meta.url),
       ),
-      '@nexus/plugin-products/contracts': fileURLToPath(
-        new URL('./plugins/products/src/contracts.ts', import.meta.url),
-      ),
-      '@nexus/plugin-products/manifest': fileURLToPath(
-        new URL('./plugins/products/nexus.plugin.ts', import.meta.url),
-      ),
-      '@nexus/plugin-sales-agent/manifest': fileURLToPath(
-        new URL('./plugins/sales-agent/nexus.plugin.ts', import.meta.url),
-      ),
-      '@nexus/plugin-vinted-accounts/agent-contracts': fileURLToPath(
-        new URL('./plugins/vinted-accounts/src/agent-contracts.ts', import.meta.url),
+      '@nexus/plugin-contracts/vinted-accounts': fileURLToPath(
+        new URL('./packages/plugin-contracts/src/vinted-accounts.ts', import.meta.url),
       ),
     },
   },
@@ -38,6 +38,7 @@ export default defineConfig({
     include: [
       'packages/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.ts',
+      'plugins/*/src/**/*.test.mjs',
       'apps/desktop/src/**/*.test.ts',
       'scripts/**/*.test.mjs',
     ],

@@ -77,6 +77,7 @@ export function useScenePlanner(
           inputFileId: context.inputFileId,
           requirements: context.requirements,
           count: context.count,
+          ...(context.agingLevel === undefined ? {} : { agingLevel: context.agingLevel }),
         },
         (state) => notify(state, presetRevision),
         () => void onAccepted().catch(() => undefined),

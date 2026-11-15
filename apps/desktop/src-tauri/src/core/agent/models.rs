@@ -24,6 +24,9 @@ impl AgentStore {
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
         let job = read_job(&tx, &scope.job_id)?;
+        if job.preset == Preset::PostListing && scope.mode == AgentMode::Browser {
+            return Err(denied("Post Listing browser execution cannot use models"));
+        }
         super::controls::require_writes(&tx, &scope.job_id)?;
         let encoded_scope = canonical(&serde_json::to_value(scope).map_err(storage_error)?);
         let existing:Option<(String,String,String,String,i64)>=tx.query_row(
@@ -187,6 +190,10 @@ impl AgentStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
+        let job = read_job(&tx, &scope.job_id)?;
+        if job.preset == Preset::PostListing && scope.mode == AgentMode::Browser {
+            return Err(denied("Post Listing browser execution cannot use models"));
+        }
         let row:Option<(String,String,String,Option<String>)>=tx.query_row(
             "SELECT scope_json,generation,kind,receipt_json FROM agent_model_requests WHERE request_id=?1",
             [&input.request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),

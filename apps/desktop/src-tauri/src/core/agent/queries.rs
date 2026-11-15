@@ -7,7 +7,7 @@ use super::store::AgentStore;
 use super::{AgentResult, invalid, storage_error};
 
 const RELATED: &str =
-    "(?1='attention' AND j.state IN ('blocked','review_required','result_unknown','sync_pending','failed'))
+    "(?1='attention' AND j.state IN ('blocked','login_required','review_required','result_unknown','sync_pending','failed'))
      OR (?1='window' AND (json_extract(j.snapshot_json,'$.windowId')=?2 OR EXISTS(
          SELECT 1 FROM agent_actions a WHERE a.job_id=j.id AND json_extract(a.result_json,'$.windowId')=?2)))
      OR (?1='account' AND json_extract(j.snapshot_json,'$.account.accountId')=?2)

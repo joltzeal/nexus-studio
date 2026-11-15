@@ -72,6 +72,14 @@ export class KernelHookHarness {
     }
   }
 
+  suspend() {
+    for (const [index, effect] of this.effects.entries()) {
+      effect.cleanup?.()
+      delete effect.cleanup
+      this.queued.push(index)
+    }
+  }
+
   dispose() {
     for (const effect of this.effects) effect.cleanup?.()
   }

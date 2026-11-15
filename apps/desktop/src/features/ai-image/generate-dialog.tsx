@@ -42,6 +42,7 @@ import { SourceLink } from './source-link'
 import { ScenePlanEditor } from './scene-plan-editor'
 import {
   plannedGeneration,
+  SCENE_PLAN_STALE_HINT,
   SCENE_PLAN_UPDATE_HINT,
   applySceneRecommendation,
   visionProviderKey,
@@ -56,7 +57,12 @@ import {
 } from './model-selection'
 import {
   SIZES,
+  AGING_LEVEL_OPTIONS,
+  AGING_LEVEL_HINT,
+  DEFAULT_AGING_LEVEL,
+  isAgingLevel,
   message,
+  type AgingLevel,
   type GenerationSource,
   type Provider,
   type ModelSelections,
@@ -141,6 +147,7 @@ export function GenerateDialog({
   const [visionChoice, setVisionChoice] = useState(FIRST_REFERENCE)
   const [size, setSize] = useState('1024x1024')
   const [count, setCount] = useState(1)
+  const [agingLevel, setAgingLevel] = useState<AgingLevel>(DEFAULT_AGING_LEVEL)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
@@ -168,6 +175,7 @@ export function GenerateDialog({
     inputFileId: planningFileId,
     requirements: prompt,
     count,
+    agingLevel,
   }
   const planner = useScenePlanner(
     planContext,
@@ -378,6 +386,7 @@ export function GenerateDialog({
         prompt,
         size,
         count,
+        agingLevel,
         inputFileIds: files.map((entry) => entry.id),
         ...(origin === undefined ? {} : { source: origin }),
         ...(planner.smart && planner.draft
@@ -698,7 +707,7 @@ export function GenerateDialog({
                 <FieldError>{planner.problem}</FieldError>
               ) : null}
               {planner.smart && planner.stale && !planner.draft ? (
-                <FieldError>参考图、识图模型、要求或张数已变化，请重新识图。</FieldError>
+                <FieldError>{SCENE_PLAN_STALE_HINT}</FieldError>
               ) : null}
             </FieldGroup>
           </section>
@@ -710,6 +719,22 @@ export function GenerateDialog({
               disabled={busy}
               onChange={setPresetId}
             />
+            <Field>
+              <FieldLabel htmlFor="ai-aging-level">做旧程度</FieldLabel>
+              <LabeledSelect
+                id="ai-aging-level"
+                ariaLabel="做旧程度"
+                value={agingLevel}
+                disabled={busy}
+                options={AGING_LEVEL_OPTIONS}
+                onValueChange={(value) => {
+                  if (!isAgingLevel(value) || value === agingLevel) return
+                  planner.cancel()
+                  setAgingLevel(value)
+                }}
+              />
+              <FieldDescription>{AGING_LEVEL_HINT}</FieldDescription>
+            </Field>
             {planner.smart && planner.draft ? (
               <ScenePlanEditor
                 key={planner.draft.plan.id}

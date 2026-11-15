@@ -21,6 +21,26 @@ pub(super) fn require_writes(db: &Connection, id: &str) -> AgentResult<()> {
     if effective_action(db, id)? != "run" || job.reconcile_only {
         return Err(denied("Job controls prevent new external writes"));
     }
+    let needs: bool = db
+        .query_row(
+            "SELECT needs_reprepare FROM agent_execution WHERE job_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(storage_error)?;
+    if needs {
+        return Err(denied(
+            "Item controls require a fresh content preparation actor",
+        ));
+    }
+    if job.mode == AgentMode::Browser {
+        if super::execution::login_required(db, &job)? {
+            return Err(denied(
+                "Browser writes require current login and approved content",
+            ));
+        }
+        super::observations::require_no_halt(db, &job)?;
+    }
     Ok(())
 }
 
@@ -28,7 +48,8 @@ fn apply(db: &Connection, id: &str, action: ControlAction) -> AgentResult<()> {
     let job = read_job(db, id)?;
     let owned: bool = db
         .query_row(
-            "SELECT actor_owned FROM agent_jobs WHERE id=?1",
+            "SELECT actor_owned OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=agent_jobs.id AND e.worker_owned=1)
+             FROM agent_jobs WHERE id=?1",
             [id],
             |r| r.get(0),
         )
@@ -60,6 +81,13 @@ fn apply(db: &Connection, id: &str, action: ControlAction) -> AgentResult<()> {
         params![id,next],
     ).map_err(storage_error)?;
     let uncertain = uncertain_actions(db, id)?;
+    let recovery_only: bool = db
+        .query_row(
+            "SELECT reconcile_only FROM agent_execution WHERE job_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(storage_error)?;
     let mutable = !matches!(
         job.state.as_str(),
         "completed" | "blocked" | "cancelled" | "skipped"
@@ -67,13 +95,18 @@ fn apply(db: &Connection, id: &str, action: ControlAction) -> AgentResult<()> {
     if !owned && mutable {
         let state = match action {
             ControlAction::Resume
-                if matches!(job.state.as_str(), "paused" | "review_required" | "failed")
-                    && !uncertain =>
+                if matches!(
+                    job.state.as_str(),
+                    "paused" | "review_required" | "failed" | "login_required"
+                ) && !uncertain =>
             {
                 Some("queued")
             }
             ControlAction::Reconcile
-                if matches!(job.state.as_str(), "review_required" | "result_unknown") =>
+                if matches!(
+                    job.state.as_str(),
+                    "review_required" | "result_unknown" | "login_required"
+                ) =>
             {
                 Some("queued")
             }
@@ -90,7 +123,7 @@ fn apply(db: &Connection, id: &str, action: ControlAction) -> AgentResult<()> {
                     id,
                     state,
                     matches!(action, ControlAction::Reconcile | ControlAction::Resume),
-                    uncertain
+                    uncertain || recovery_only
                 ],
             )
             .map_err(storage_error)?;
@@ -117,13 +150,15 @@ impl AgentStore {
             "SELECT j.id FROM agent_jobs j JOIN agent_dispatch d ON d.job_id=j.id
              JOIN agent_batches b ON b.id=j.batch_id
              WHERE (((d.action IN ('pause','cancel','takeover') OR b.control IN ('pause','cancel','takeover'))
-               AND (j.actor_owned=1 OR EXISTS(SELECT 1 FROM agent_resources r WHERE r.job_id=j.id)
+               AND (j.actor_owned=1 OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=j.id AND e.worker_owned=1)
+                    OR EXISTS(SELECT 1 FROM agent_resources r WHERE r.job_id=j.id)
                     OR d.takeover IN ('stopping','blocked')))
                OR (j.state='review_required' AND j.reconcile_only=0 AND b.control='run' AND d.action='run'
-                 AND EXISTS(SELECT 1 FROM agent_item_continuations c JOIN agent_items i
+                 AND (EXISTS(SELECT 1 FROM agent_item_continuations c JOIN agent_items i
                    ON i.job_id=c.job_id AND i.product_id=c.product_id
                    WHERE c.job_id=j.id AND i.control_revision=c.revision AND i.control_revision>i.observed_revision
                      AND i.submitted=0 AND i.operation_id IS NULL)
+                  OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=j.id AND e.needs_reprepare=1))
                  AND NOT EXISTS(SELECT 1 FROM agent_actions WHERE job_id=j.id AND state IN ('prepared','unknown'))
                  AND NOT EXISTS(SELECT 1 FROM agent_publication_outbox WHERE job_id=j.id AND state!='synced')))
               AND d.control_retry_at<=?1
@@ -165,7 +200,8 @@ impl AgentStore {
                 || (input.action == ControlAction::Resume
                     && tx
                         .query_row(
-                            "SELECT actor_owned FROM agent_jobs WHERE id=?1",
+                            "SELECT actor_owned OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=agent_jobs.id AND e.worker_owned=1)
+                             FROM agent_jobs WHERE id=?1",
                             [&id],
                             |r| r.get::<_, bool>(0),
                         )
@@ -247,7 +283,7 @@ pub(super) fn job_view(db: &Connection, id: &str) -> AgentResult<Value> {
         .map_err(storage_error)?;
     let mut view = json!({"id":id,"windowId":job.snapshot.window_id,"windowName":job.snapshot.window_name,
         "accountId":job.snapshot.account_id()?,"account":job.snapshot.account["account"],
-        "state":job.state,"phase":phase,"message":message,"productCount":job.snapshot.products.len(),
+        "state":job.state,"mode":job.mode,"phase":phase,"message":message,"productCount":job.snapshot.products.len(),
         "createdAt":created,"updatedAt":updated});
     super::scheduling::job_view(db, id, &mut view)?;
     Ok(view)

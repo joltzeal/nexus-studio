@@ -15,125 +15,81 @@ import {
 } from './account-observation-test-support'
 
 describe('account observation render data', () => {
-  it('pairs exact retained amounts with their own evidence instead of the latest observation', () => {
+  it('pairs independent amounts and currencies with their retained evidence', () => {
     expect(accountBalanceData(accountObservation())).toEqual({
-      currency: 'EUR',
       amounts: [
         {
           key: 'available',
           label: '可用',
           amount: '123456789012.3400',
+          currency: 'EUR',
           sourceLabel: '官方接口',
-          observedAt: '2026-11-12T05:00:00.000Z',
+          observedAt: balanceTime,
           retained: true,
         },
         {
           key: 'pending',
           label: '待结算',
           amount: '0.00',
+          currency: 'GBP',
           sourceLabel: '页面',
-          observedAt: '2026-11-13T06:00:00.000Z',
+          observedAt: observationTime,
           retained: false,
         },
       ],
     })
   })
-
-  it('shows null amounts as unknown without inventing evidence from the latest read', () => {
-    const observation = accountObservation()
+  it('shows null amounts as unknown without inventing currency or evidence', () => {
     expect(
       accountBalanceData({
-        ...observation,
-        balance: {
-          currency: 'GBP',
-          available: null,
-          pending: null,
-          availableEvidence: null,
-          pendingEvidence: null,
-        },
-        lastObservation: {
-          ...observation.lastObservation,
-          balance: { currency: 'GBP', available: null, pending: null },
-        },
-      }),
-    ).toEqual({
-      currency: 'GBP',
-      amounts: [
-        {
-          key: 'available',
-          label: '可用',
-          amount: '—',
-          sourceLabel: null,
-          observedAt: null,
-          retained: false,
-        },
-        {
-          key: 'pending',
-          label: '待结算',
-          amount: '—',
-          sourceLabel: null,
-          observedAt: null,
-          retained: false,
-        },
-      ],
-    })
-  })
-
-  it('does not mistake a later observation without a balance read for a failed read', () => {
-    const observation = accountObservation()
-    delete observation.lastObservation.balance
-    const data = accountBalanceData(observation)
-
-    expect(data?.amounts.map((entry) => entry.retained)).toEqual([false, false])
-    expect(data?.amounts[0]?.observedAt).toBe(balanceTime)
-  })
-
-  it('keeps the stored currency when an unknown read in a different currency retained old amounts', () => {
-    const observation = accountObservation()
-    const data = accountBalanceData({
-      ...observation,
-      lastObservation: {
-        ...observation.lastObservation,
-        balance: { currency: 'USD', available: null, pending: null },
+        ...accountObservation(),
+        wallet: { available: null, pending: null },
+      })?.amounts,
+    ).toEqual([
+      {
+        key: 'available',
+        label: '可用',
+        amount: '—',
+        currency: null,
+        sourceLabel: null,
+        observedAt: null,
+        retained: false,
       },
-    })
-
-    expect(data?.currency).toBe('EUR')
-    expect(data?.amounts.map((entry) => entry.amount)).toEqual([
-      '123456789012.3400',
-      '0.00',
+      {
+        key: 'pending',
+        label: '待结算',
+        amount: '—',
+        currency: null,
+        sourceLabel: null,
+        observedAt: null,
+        retained: false,
+      },
     ])
-    expect(data?.amounts.map((entry) => entry.retained)).toEqual([true, true])
-    expect(data?.amounts[0]?.sourceLabel).toBe('官方接口')
   })
-
-  it('keeps negative decimal text and marks model evidence explicitly', () => {
+  it('does not mark a different failed check as a failed wallet read', () => {
     const observation = accountObservation()
-    const data = accountBalanceData({
-      ...observation,
-      balance: {
-        currency: 'EUR',
-        available: '-0.0001',
-        pending: null,
-        availableEvidence: { source: 'model', observedAt: balanceTime },
-        pendingEvidence: null,
-      },
-    })
-
-    expect(data?.amounts[0]).toMatchObject({
+    observation.checks = {}
+    expect(
+      accountBalanceData(observation)?.amounts.map((entry) => entry.retained),
+    ).toEqual([false, false])
+  })
+  it('keeps negative decimals and legacy model evidence explicit', () => {
+    const observation = accountObservation()
+    observation.wallet!.available = {
+      amount: '-0.0001',
+      currency: 'EUR',
+      source: 'model',
+      observedAt: balanceTime,
+    }
+    expect(accountBalanceData(observation)?.amounts[0]).toMatchObject({
       amount: '-0.0001',
       sourceLabel: '模型',
       observedAt: balanceTime,
     })
-    expect(data?.amounts[1]?.amount).toBe('—')
   })
-
-  it('does not infer aggregate balances from the raw last observation', () => {
-    const observation = accountObservation()
-    delete observation.balance
-
+  it('does not invent wallet state before inspection', () => {
     expect(accountBalanceData(undefined)).toBeNull()
-    expect(accountBalanceData(observation)).toBeNull()
+    expect(accountBalanceData({ sessions: {}, checks: {} })).toBeNull()
   })
 })
 
@@ -167,7 +123,8 @@ describe('read-only account observation components', () => {
       renderToStaticMarkup(
         createElement(AccountObservationSummary, {
           observation: {
-            lastObservation: accountObservation().lastObservation,
+            sessions: {},
+            checks: {},
             tags: [],
             summary: '',
           },

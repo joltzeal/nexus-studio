@@ -5,16 +5,27 @@ import {
   type EffectCallback,
   type MouseEvent,
   type ReactElement,
+  type ReactNode,
 } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AlertDialog, AlertDialogAction } from '@/components/ui/alert-dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogDescription,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { toast } from '@/components/ui/toast'
+import {
+  cancelDetailNavigation,
+  navigateDetail,
+  pendingDetailNavigation,
+} from '@/lib/detail-navigation'
 import {
   components,
   deferred,
@@ -29,7 +40,7 @@ import { BatchWindowDialog } from '@/features/spaces/batch-window-dialog'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountEditor } from './account-editor'
 import { AccountAddressPopover } from './address-popover'
-import { listAccounts, readOtp, removeAccount, saveAccount } from './api'
+import { importAccounts, listAccounts, readOtp, removeAccount, saveAccount } from './api'
 import { AccountsPage } from './accounts-page'
 import {
   ACCOUNT_STATUSES,
@@ -57,7 +68,19 @@ vi.mock('react', async (importOriginal) => {
     useCallback: <T extends (...args: never[]) => unknown>(
       callback: T,
       deps: DependencyList,
-    ) => (state.hooks ? callback : react.useCallback(callback, deps)),
+    ) => {
+      if (!state.hooks) return react.useCallback(callback, deps)
+      const [value] = state.hooks.state(() => ({ callback, deps }))
+      const saved = value as { callback: T; deps: DependencyList }
+      if (
+        saved.deps.length !== deps.length ||
+        deps.some((dep, index) => !Object.is(dep, saved.deps[index]))
+      ) {
+        saved.callback = callback
+        saved.deps = deps
+      }
+      return saved.callback
+    },
   }
 })
 vi.mock('./api', async (importOriginal) => ({
@@ -66,6 +89,7 @@ vi.mock('./api', async (importOriginal) => ({
   readOtp: vi.fn(),
   removeAccount: vi.fn(),
   saveAccount: vi.fn(),
+  importAccounts: vi.fn(),
 }))
 vi.mock('@/features/sim8/accounts-bridge', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/features/sim8/accounts-bridge')>()),
@@ -189,6 +213,7 @@ function inventory(
       .map((item) => ({
         accountId: item.id,
         windowId: `window-${item.id}`,
+        revision: '33333333-3333-4333-8333-333333333333',
         boundAt: '2026-10-26T12:00:00Z',
       })),
     storageDurable: true,
@@ -215,6 +240,14 @@ const button = (label: string) =>
   )!
 const click = (label: string) =>
   button(label).props.onClick?.({} as MouseEvent<HTMLButtonElement>)
+const confirmation = () => components(tree(), AlertDialog).find((node) => node.props.open)
+function confirm() {
+  const dialog = confirmation()
+  expect(dialog, 'destructive action must show a confirmation').toBeDefined()
+  components(dialog!, AlertDialogAction)[0]!.props.onClick?.({
+    preventDefault: vi.fn(),
+  } as unknown as MouseEvent<HTMLButtonElement>)
+}
 const select = (label: string, value: string) =>
   components(tree(), LabeledSelect)
     .find((node) => node.props.ariaLabel === label)!
@@ -270,7 +303,47 @@ beforeEach(() => {
   props = { plugin: plugin(), hostAvailable: true }
   vi.mocked(listAccounts).mockResolvedValue(inventory([]))
 })
-afterEach(() => hooks.dispose())
+afterEach(() => {
+  hooks.dispose()
+  cancelDetailNavigation()
+})
+
+describe('retained account detail navigation', () => {
+  it('honors a fresh different record request while an earlier editor remains open', async () => {
+    const first = account(0, { id: '11111111-1111-4111-8111-111111111111' })
+    const second = account(1, { id: '22222222-2222-4222-8222-222222222222' })
+    await mount(inventory([first, second]))
+    click('编辑 seller-00')
+    expect(components(tree(), AccountEditor)[0]!.props.account).toEqual(first)
+    search('keep workspace filter')
+    navigateDetail({ kind: 'account', id: second.id })
+    tree()
+    hooks.flushEffects()
+    await flushPromises()
+    expect(components(tree(), AccountEditor)[0]!.props.account).toEqual(second)
+    expect(pendingDetailNavigation()).toBeNull()
+    expect(
+      components(tree(), Input).find((node) => node.props['aria-label'] === '搜索账号')
+        ?.props.value,
+    ).toBe('keep workspace filter')
+    expect(saveAccount).not.toHaveBeenCalled()
+  })
+
+  it('keeps the active editor for a repeated request to the same record', async () => {
+    const first = account(0, { id: '11111111-1111-4111-8111-111111111111' })
+    await mount(inventory([first]))
+    click('编辑 seller-00')
+    const original = components(tree(), AccountEditor)[0]!.props.account
+    vi.mocked(listAccounts).mockResolvedValueOnce(
+      inventory([{ ...first, note: 'new server snapshot' }]),
+    )
+    navigateDetail({ kind: 'account', id: first.id })
+    tree()
+    hooks.flushEffects()
+    await flushPromises()
+    expect(components(tree(), AccountEditor)[0]!.props.account).toBe(original)
+  })
+})
 
 const assignedAddress: AssignedAccountAddress = {
   id: 'profile-paris',
@@ -515,10 +588,42 @@ describe('account table controls', () => {
 })
 
 describe('unlinking account phone numbers', () => {
+  it('names the phone, account and shared windows before any request and cancels without changing codes or data', async () => {
+    const original = account(0)
+    await mount(inventory([original]))
+    vi.mocked(readOtp).mockResolvedValueOnce(otp('sms'))
+    otpCell(original.id).props.onFetch('sms')
+    await flushPromises()
+    click('解绑 seller-00 的手机号')
+
+    expect(updateContact).not.toHaveBeenCalled()
+    expect(confirmation()).toBeDefined()
+    const description = text(components(confirmation()!, AlertDialogDescription)[0]!)
+    expect(description).toContain(original.account)
+    expect(description).toContain(original.phone)
+    expect(description).toContain('短信接码链接')
+    expect(description).toContain('1 个关联窗口')
+    expect(description).toContain('高风险')
+    expect(description).not.toContain(original.password)
+    expect(description).not.toContain(original.smsOtpUrl)
+    confirmation()!.props.onOpenChange?.(false)
+    expect(confirmation()).toBeUndefined()
+    expect(updateContact).not.toHaveBeenCalled()
+    expect(otpCell(original.id).props.account).toEqual(original)
+    expect(otpCell(original.id).props.state?.code).toBe('123456')
+    expect(otpDialogs()).toHaveLength(1)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
   it('merges the latest saved account, keeps bindings, and clears only SMS results', async () => {
     const original = account(0)
     const data = inventory([original])
-    data.bindings.push({ accountId: original.id, windowId: 'second-window', boundAt: '' })
+    data.bindings.push({
+      accountId: original.id,
+      windowId: 'second-window',
+      revision: '33333333-3333-4333-8333-333333333333',
+      boundAt: '',
+    })
     await mount(data)
     vi.mocked(readOtp).mockResolvedValueOnce(otp('sms'))
     otpCell(original.id).props.onFetch('sms')
@@ -534,6 +639,8 @@ describe('unlinking account phone numbers', () => {
     }
     vi.mocked(updateContact).mockResolvedValueOnce(saved)
     click('解绑 seller-00 的手机号')
+    expect(updateContact).not.toHaveBeenCalled()
+    confirm()
     await flushPromises()
     expect(updateContact).toHaveBeenCalledExactlyOnceWith(original.id, {
       phone: '',
@@ -566,6 +673,11 @@ describe('unlinking account phone numbers', () => {
     const remove = button('删除 seller-00').props.onClick!
     unlink({} as MouseEvent<HTMLButtonElement>)
     unlink({} as MouseEvent<HTMLButtonElement>)
+    const dialog = confirmation()!
+    const action = components(dialog, AlertDialogAction)[0]!.props.onClick!
+    action({ preventDefault: vi.fn() } as unknown as MouseEvent<HTMLButtonElement>)
+    action({ preventDefault: vi.fn() } as unknown as MouseEvent<HTMLButtonElement>)
+    dialog.props.onOpenChange?.(false)
     edit({} as MouseEvent<HTMLButtonElement>)
     remove({} as MouseEvent<HTMLButtonElement>)
     otpCell(original.id).props.onFetch('sms')
@@ -576,19 +688,21 @@ describe('unlinking account phone numbers', () => {
     expect(button('删除 seller-00').props.disabled).toBe(true)
     expect(otpCell(original.id).props.smsDisabled).toBe(true)
     expect(components(tree(), AccountEditor)).toHaveLength(0)
-    expect(components(tree(), AlertDialog)[0]!.props.open).toBe(false)
+    expect(confirmation()).toBeDefined()
+    expect(components(confirmation()!, AlertDialogCancel)[0]!.props.disabled).toBe(true)
     pending.reject(new Error('storage failed'))
     await flushPromises()
     expect(otpCell(original.id).props.account).toEqual(original)
     expect(button('解绑 seller-00 的手机号').props.disabled).toBe(false)
-    expect(toast.error).toHaveBeenCalledWith('解绑手机号失败：storage failed')
+    expect(text(confirmation())).toContain('解绑手机号失败')
+    expect(confirmation()).toBeDefined()
     expect(toast.success).not.toHaveBeenCalled()
     vi.mocked(updateContact).mockResolvedValueOnce({
       ...original,
       phone: '',
       smsOtpUrl: '',
     })
-    click('解绑 seller-00 的手机号')
+    confirm()
     await flushPromises()
     expect(updateContact).toHaveBeenCalledTimes(2)
     expect(otpCell(original.id).props.account.phone).toBe('')
@@ -611,6 +725,7 @@ describe('unlinking account phone numbers', () => {
         smsOtpUrl: '',
       })
       click('解绑 seller-00 的手机号')
+      confirm()
       await flushPromises()
       otpCell(original.id).props.onFetch('email')
       if (outcome === 'success') sms.resolve(otp('sms', '999999'))
@@ -640,6 +755,7 @@ describe('unlinking account phone numbers', () => {
       smsOtpUrl: '',
     })
     click('解绑 seller-00 的手机号')
+    confirm()
     await flushPromises()
     expect(otpCell(original.id).props.state?.code).toBe('654321')
     expect(otpDialogs()).toHaveLength(1)
@@ -659,6 +775,7 @@ describe('unlinking account phone numbers', () => {
       smsOtpUrl: '',
     })
     click('解绑 seller-00 的手机号')
+    confirm()
     await flushPromises()
     stale.resolve(data)
     await flushPromises()
@@ -675,6 +792,7 @@ describe('unlinking account phone numbers', () => {
       data.bindings.push({
         accountId: removed.id,
         windowId: 'removed-window',
+        revision: '33333333-3333-4333-8333-333333333333',
         boundAt: '',
       })
       await mount(data)
@@ -700,6 +818,7 @@ describe('unlinking account phone numbers', () => {
         vi.mocked(updateContact).mockRejectedValueOnce(new Error('unlink failed'))
       }
       click('解绑 seller-00 的手机号')
+      confirm()
       await flushPromises()
       reload.resolve(inventory([kept]))
       await flushPromises()
@@ -745,6 +864,7 @@ describe('unlinking account phone numbers', () => {
       smsOtpUrl: '',
     })
     click('解绑 seller-00 的手机号')
+    confirm()
     await flushPromises()
 
     newer.resolve(inventory([kept]))
@@ -761,6 +881,235 @@ describe('unlinking account phone numbers', () => {
     await flushPromises()
     expect(otpCell(kept.id).props.account).toEqual(externallyUpdated)
     expect(listAccounts).toHaveBeenCalledTimes(4)
+  })
+
+  it('blocks confirmation when the plugin stops or the displayed phone changes', async () => {
+    const original = account(0)
+    await mount(inventory([original]))
+    click('解绑 seller-00 的手机号')
+    props.plugin = plugin({ state: 'retrying' })
+    expect(components(confirmation()!, AlertDialogAction)[0]!.props.disabled).toBe(true)
+    confirm()
+    expect(updateContact).not.toHaveBeenCalled()
+    props.plugin = plugin()
+    vi.mocked(listAccounts).mockResolvedValueOnce(
+      inventory([{ ...original, phone: '+14155550199' }]),
+    )
+    click('刷新')
+    await flushPromises()
+    confirm()
+    expect(updateContact).not.toHaveBeenCalled()
+    expect(text(confirmation())).toContain('已变化')
+  })
+})
+
+describe('account deletion confirmation', () => {
+  it('identifies the account and cascading relations, cancelling without sending a delete', async () => {
+    const original = account(0, {
+      address: assignedAddress,
+      mailbox: {
+        pluginId: 'studio.email',
+        mailboxId: 'mailbox-1',
+        email: 'inbox@example.test',
+        linkedAt: '2026-11-12T10:00:00Z',
+      },
+    })
+    await mount(inventory([original]))
+    click('删除 seller-00')
+    expect(removeAccount).not.toHaveBeenCalled()
+    const description = text(components(confirmation()!, AlertDialogDescription)[0]!)
+    expect(text(confirmation())).toContain(original.account)
+    expect(description).toContain('1 个窗口')
+    expect(description).toContain('手机号')
+    expect(description).toContain('邮箱')
+    expect(description).toContain('地址')
+    expect(description).not.toContain(original.password)
+    expect(description).not.toContain('https://')
+    confirmation()!.props.onOpenChange?.(false)
+    expect(confirmation()).toBeUndefined()
+    expect(removeAccount).not.toHaveBeenCalled()
+    expect(rowCheckboxes()).toHaveLength(1)
+  })
+
+  it('prevents duplicate deletes and closing while busy, retaining a failed confirmation for retry', async () => {
+    const original = account(0)
+    await mount(inventory([original]))
+    const write = deferred<{ removed: boolean }>()
+    vi.mocked(removeAccount).mockReturnValueOnce(write.promise)
+    click('删除 seller-00')
+    const dialog = confirmation()!
+    const action = components(dialog, AlertDialogAction)[0]!.props.onClick!
+    const event = { preventDefault: vi.fn() } as unknown as MouseEvent<HTMLButtonElement>
+    action(event)
+    action(event)
+    dialog.props.onOpenChange?.(false)
+    expect(removeAccount).toHaveBeenCalledExactlyOnceWith(original.id)
+    expect(confirmation()).toBeDefined()
+    expect(components(confirmation()!, AlertDialogCancel)[0]!.props.disabled).toBe(true)
+    expect(components(confirmation()!, AlertDialogAction)[0]!.props.disabled).toBe(true)
+    write.reject(new Error(`storage failed ${original.password} ${original.smsOtpUrl}`))
+    await flushPromises()
+    expect(confirmation()).toBeDefined()
+    expect(text(confirmation())).toContain('删除账号失败')
+    expect(text(confirmation())).not.toContain(original.password)
+    expect(text(confirmation())).not.toContain(original.smsOtpUrl)
+    expect(rowCheckboxes()).toHaveLength(1)
+    vi.mocked(removeAccount).mockResolvedValueOnce({ removed: true })
+    vi.mocked(listAccounts).mockResolvedValueOnce(inventory([]))
+    confirm()
+    await flushPromises()
+    expect(removeAccount).toHaveBeenCalledTimes(2)
+    expect(confirmation()).toBeUndefined()
+    expect(rowCheckboxes()).toHaveLength(0)
+  })
+
+  it('removes confirmed local rows after success even if the following refresh fails', async () => {
+    await mount(inventory([account(0)]))
+    header().props.onCheckedChange?.(true)
+    click('删除 seller-00')
+    vi.mocked(removeAccount).mockResolvedValueOnce({ removed: true })
+    vi.mocked(listAccounts).mockRejectedValueOnce(new Error('offline'))
+    confirm()
+    await flushPromises()
+    expect(confirmation()).toBeUndefined()
+    expect(rowCheckboxes()).toHaveLength(0)
+    expect(text(selectedCount() as string)).toBe('已选 0')
+    expect(text(tree())).toContain('账号已删除，刷新账号列表失败')
+    expect(removeAccount).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards OTP data and a late response for the deleted account', async () => {
+    const original = account(0)
+    await mount(inventory([original]))
+    const response = deferred<OtpResult>()
+    vi.mocked(readOtp).mockReturnValueOnce(response.promise)
+    otpCell(original.id).props.onFetch('sms')
+    click('删除 seller-00')
+    vi.mocked(removeAccount).mockResolvedValueOnce({ removed: true })
+    vi.mocked(listAccounts).mockResolvedValueOnce(inventory([]))
+    confirm()
+    await flushPromises()
+    response.resolve(otp('sms'))
+    await flushPromises()
+    expect(rowCheckboxes()).toHaveLength(0)
+    expect(otpDialogs()).toHaveLength(0)
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('does not delete after the plugin becomes unavailable', async () => {
+    await mount(inventory([account(0)]))
+    click('删除 seller-00')
+    props.plugin = plugin({ state: 'retrying' })
+    expect(components(confirmation()!, AlertDialogAction)[0]!.props.disabled).toBe(true)
+    confirm()
+    expect(removeAccount).not.toHaveBeenCalled()
+    expect(confirmation()).toBeDefined()
+  })
+})
+
+describe('account imports that can replace existing contacts', () => {
+  function importSession() {
+    click('导入')
+    const dialog = () =>
+      elements(tree()).find(
+        (node) => typeof node.type === 'function' && node.type.name === 'ImportDialog',
+      )!
+    const formHooks = new HookHarness(state)
+    const render = () => {
+      const node = dialog()
+      const Component = node.type as (props: Record<string, unknown>) => ReactNode
+      return formHooks.render(() => Component(node.props))
+    }
+    return {
+      render,
+      selectFile() {
+        components(render(), Input)
+          .find((node) => node.props.type === 'file')!
+          .props.onChange?.({
+            target: {
+              files: [
+                new File(['account,password\nseller-00,synthetic'], 'accounts.csv', {
+                  type: 'text/csv',
+                }),
+              ],
+            },
+          } as unknown as ChangeEvent<HTMLInputElement>)
+      },
+      start() {
+        components(render(), Button)
+          .find((node) => text(node.props.children) === '开始导入')!
+          .props.onClick?.({} as MouseEvent<HTMLButtonElement>)
+      },
+      confirm() {
+        components(render(), AlertDialogAction)[0]!.props.onClick?.({
+          preventDefault: vi.fn(),
+        } as unknown as MouseEvent<HTMLButtonElement>)
+      },
+      dispose: () => formHooks.dispose(),
+    }
+  }
+
+  it('reviews existing accounts and the relations an import can overwrite before any request; cancel keeps the file', async () => {
+    await mount(inventory([account(0)]))
+    const session = importSession()
+    try {
+      session.selectFile()
+      session.start()
+      await flushPromises()
+      expect(importAccounts).not.toHaveBeenCalled()
+      const dialog = components(session.render(), AlertDialog).find(
+        (node) => node.props.open,
+      )
+      expect(dialog).toBeDefined()
+      expect(text(dialog)).toContain('seller-00')
+      expect(text(dialog)).toContain('手机号')
+      expect(text(dialog)).toContain('接码链接')
+      expect(text(dialog)).not.toContain('synthetic password')
+      expect(text(dialog)).not.toContain('https://')
+      dialog!.props.onOpenChange?.(false)
+      expect(importAccounts).not.toHaveBeenCalled()
+      expect(
+        components(session.render(), Button).find(
+          (node) => text(node.props.children) === '开始导入',
+        )!.props.disabled,
+      ).toBe(false)
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it('retains a failed import confirmation and prevents duplicate submissions', async () => {
+    await mount(inventory([account(0)]))
+    const session = importSession()
+    try {
+      session.selectFile()
+      session.start()
+      const write = deferred<Awaited<ReturnType<typeof importAccounts>>>()
+      vi.mocked(importAccounts).mockReturnValueOnce(write.promise)
+      session.confirm()
+      session.confirm()
+      await flushPromises()
+      expect(importAccounts).toHaveBeenCalledTimes(1)
+      const dialog = components(session.render(), AlertDialog).find(
+        (node) => node.props.open,
+      )!
+      dialog.props.onOpenChange?.(false)
+      expect(components(session.render(), AlertDialogCancel)[0]!.props.disabled).toBe(
+        true,
+      )
+      write.reject(new Error('synthetic credential must stay private'))
+      await flushPromises()
+      expect(
+        components(session.render(), AlertDialog).some((node) => node.props.open),
+      ).toBe(true)
+      expect(text(session.render())).toContain('导入失败')
+      expect(text(session.render())).not.toContain('synthetic credential')
+      expect(components(session.render(), AlertDialogAction)[0]!.props.disabled).toBe(
+        false,
+      )
+    } finally {
+      session.dispose()
+    }
   })
 })
 

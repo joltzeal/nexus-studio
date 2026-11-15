@@ -6,7 +6,7 @@ import {
   PRODUCTS_PLUGIN_ID,
   ProductSummarySchema,
   type ProductPage,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,6 +24,8 @@ import { ProductsPage, ProductsWorkspace } from './products-page'
 import { listProducts } from './api'
 import { ProductPublicationDialog } from './product-publication-history'
 import { publication } from './publication.test-data'
+import { ProductEditor } from './product-editor'
+import { cancelDetailNavigation, navigateDetail } from '@/lib/detail-navigation'
 
 const state = vi.hoisted(() => ({ hooks: null as KernelHookHarness | null }))
 vi.mock('react', async (original) => {
@@ -142,10 +144,29 @@ describe('product list request ordering', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    cancelDetailNavigation()
     hooks = new KernelHookHarness(state)
     vi.mocked(listProducts).mockResolvedValue(result(0))
   })
   afterEach(() => hooks.dispose())
+
+  it('honors a different detail request while retaining the existing list filters', async () => {
+    await settle()
+    const search = components(render(), Input)[0]!
+    search.props.onChange!({
+      target: { value: 'mug' },
+    } as React.ChangeEvent<HTMLInputElement>)
+    await settle()
+    const first = '11111111-1111-4111-8111-111111111111'
+    const second = '22222222-2222-4222-8222-222222222222'
+    navigateDetail({ kind: 'product', id: first })
+    await settle()
+    expect(components(render(), ProductEditor)[0]!.props.productId).toBe(first)
+    navigateDetail({ kind: 'product', id: second })
+    await settle()
+    expect(components(render(), ProductEditor)[0]!.props.productId).toBe(second)
+    expect(components(render(), Input)[0]!.props.value).toBe('mug')
+  })
 
   it('uses backend filters and ignores an old response after a search changes', async () => {
     const old = deferred<ProductPage>()

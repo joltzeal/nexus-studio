@@ -98,6 +98,78 @@ describe('installed plugin navigation', () => {
     expect(reduce(state, { type: 'catalog', plugins: [plugin()] }).page).toBe('settings')
   })
 
+  it('returns from a related plugin to the source and retains both visited pages', () => {
+    let state = reduce(initialPluginNavigation, {
+      type: 'catalog',
+      plugins: [
+        plugin({ id: 'studio.vinted-accounts' }),
+        plugin({ id: 'studio.sales-agent' }),
+      ],
+    })
+    state = reduce(state, { type: 'navigate', page: 'plugin:studio.vinted-accounts' })
+    state = reduce(state, { type: 'navigate', page: 'plugin:studio.sales-agent' })
+    state = reduce(state, { type: 'navigate', page: 'plugin:studio.sales-agent' })
+    state = reduce(state, { type: 'back' })
+    expect(state.page).toBe('plugin:studio.vinted-accounts')
+    expect(state.history).toEqual(['spaces'])
+    expect(state.visitedPages).toEqual([
+      'spaces',
+      'plugin:studio.vinted-accounts',
+      'plugin:studio.sales-agent',
+    ])
+    state = reduce(state, { type: 'back' })
+    expect(state.page).toBe('spaces')
+    expect(reduce(state, { type: 'back' })).toEqual(state)
+  })
+
+  it('discards removed plugin pages and their return targets without erasing valid history', () => {
+    let state = reduce(initialPluginNavigation, {
+      type: 'catalog',
+      plugins: [plugin(), plugin({ id: 'studio.sales-agent' })],
+    })
+    state = reduce(state, { type: 'navigate', page: 'plugin:studio.sim8' })
+    state = reduce(state, { type: 'navigate', page: 'plugin:studio.sales-agent' })
+    const failed = reduce(state, { type: 'error' })
+    expect(failed.history).toEqual(state.history)
+    expect(failed.visitedPages).toEqual(state.visitedPages)
+    state = reduce(failed, {
+      type: 'catalog',
+      plugins: [plugin({ id: 'studio.sales-agent' })],
+    })
+    expect(state.history).toEqual(['spaces'])
+    expect(state.visitedPages).not.toContain('plugin:studio.sim8')
+    expect(reduce(state, { type: 'back' }).page).toBe('spaces')
+  })
+
+  it('keeps earlier visits in their original order across periodic catalog refreshes', () => {
+    let state = reduce(initialPluginNavigation, { type: 'catalog', plugins: [plugin()] })
+    for (const page of ['plugin:studio.sim8', 'groups', 'plugin:studio.sim8']) {
+      state = reduce(state, { type: 'navigate', page })
+    }
+    const refreshed = reduce(state, { type: 'catalog', plugins: [plugin()] })
+    expect(refreshed.history).toEqual(state.history)
+    expect(reduce(reduce(refreshed, { type: 'back' }), { type: 'back' }).page).toBe(
+      'plugin:studio.sim8',
+    )
+  })
+
+  it('opens a startup detail after the initial delayed catalog without replaying abandoned navigation', () => {
+    let state = reduce(initialPluginNavigation, {
+      type: 'navigate',
+      page: 'plugin:studio.sales-agent',
+      awaitCatalog: true,
+    })
+    expect(state.page).toBe('plugin:studio.sales-agent')
+    expect(state.catalogLoaded).toBe(false)
+    const catalog = [plugin({ id: 'studio.sales-agent' })]
+    const resolved = reduce(state, { type: 'catalog', plugins: catalog })
+    expect(resolved.catalogLoaded).toBe(true)
+    expect(resolved.page).toBe('plugin:studio.sales-agent')
+    state = reduce(state, { type: 'back' })
+    expect(reduce(state, { type: 'catalog', plugins: catalog }).page).toBe('spaces')
+    expect(reduce(resolved, { type: 'catalog', plugins: [] }).page).toBe('plugins')
+  })
+
   it('routes missing handoff targets to the plugin center and keeps failures distinct from removal', () => {
     expect(
       reduce(initialPluginNavigation, {

@@ -6,6 +6,7 @@ export const AGENT_METHODS = [
   'salesAgent.settings.get',
   'salesAgent.settings.save',
   'salesAgent.models.test',
+  'salesAgent.catalog.search',
   'salesAgent.notifications.send',
   'salesAgent.jobs.step',
   'configuration.export',
@@ -43,6 +44,7 @@ export const AgentJobStateSchema = z.enum([
   'paused',
   'completed',
   'blocked',
+  'login_required',
   'review_required',
   'result_unknown',
   'sync_pending',
@@ -59,6 +61,7 @@ export const AgentBatchStateSchema = z.enum([
   'cancelled',
 ])
 export const AgentScopeSchema = z.strictObject({
+  mode: z.enum(['content_preparation', 'browser']),
   batchId: uuid,
   jobId: uuid,
   windowId: uuid,
@@ -240,6 +243,27 @@ export const AgentImageSchema = z.strictObject({
     .max(8 * 1024 * 1024),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 })
+const digest = z.string().regex(/^[a-f0-9]{64}$/)
+export const AgentContentContextSchema = z.strictObject({
+  contentKey: digest,
+  sourceDigest: digest,
+  modelDigest: digest,
+  rulesVersion: z.literal('vinted-listing-v2'),
+  platformOrigin: origin,
+})
+export const AgentCatalogFallbackSchema = z.strictObject({
+  market: z.literal('US'),
+  catalogId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  pathIds: z
+    .array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER))
+    .min(1)
+    .max(10),
+  pathTitles: z.array(z.string().trim().min(1).max(200)).min(1).max(10),
+  catalogRevision: digest,
+  source: z.enum(['manual', 'jev']),
+  modelVersion: z.string().min(1).max(200).nullable(),
+  rulesVersion: z.string().min(1).max(100),
+})
 export const AgentProductSnapshotSchema = z.object({
   id: uuid,
   revision: z.number().int().positive(),
@@ -253,10 +277,72 @@ export const AgentProductSnapshotSchema = z.object({
   brand: z.string().max(120).default(''),
   size: z.string().max(120).default(''),
   tags: z.array(z.string().max(64)).max(20).default([]),
+  platformFacts: z
+    .strictObject({
+      vinted: z
+        .array(
+          z.strictObject({
+            platformOrigin: origin,
+            catalogId: z
+              .number()
+              .int()
+              .positive()
+              .max(Number.MAX_SAFE_INTEGER)
+              .nullable(),
+            catalogRevision: digest.nullable(),
+            attributes: z
+              .record(
+                z.string().trim().min(1).max(120),
+                z.string().trim().min(1).max(200),
+              )
+              .refine((value) => Object.keys(value).length <= 20),
+          }),
+        )
+        .max(24),
+    })
+    .default({ vinted: [] }),
   images: z.array(AgentImageSchema).min(1).max(12),
+  preparationInput: AgentContentContextSchema.optional(),
 })
+export const AgentPreparedContentSchema = z
+  .strictObject({
+    version: z.literal(1),
+    state: z.enum(['approved', 'review_required', 'failed', 'skipped']),
+    reason: z.string().max(1000),
+    productId: uuid,
+    productRevision: z.number().int().positive(),
+    sourceDigest: digest,
+    modelDigest: digest,
+    rulesVersion: z.literal('vinted-listing-v2'),
+    platformOrigin: origin,
+    product: AgentProductSnapshotSchema.omit({ preparationInput: true })
+      .strict()
+      .nullable(),
+    fallback: AgentCatalogFallbackSchema.nullable(),
+    reviewedAt: timestamp,
+  })
+  .superRefine((value, context) => {
+    if (value.state === 'approved') {
+      if (
+        !value.product ||
+        value.product.id !== value.productId ||
+        value.product.revision !== value.productRevision ||
+        !value.product.title.trim() ||
+        !value.product.description.trim()
+      )
+        context.addIssue({ code: 'custom', message: '批准内容必须属于当前商品修订' })
+    } else if (value.product !== null)
+      context.addIssue({ code: 'custom', message: '未批准内容不能带有可发布商品' })
+    if (
+      value.fallback &&
+      (value.fallback.pathIds.length !== value.fallback.pathTitles.length ||
+        value.fallback.pathIds.at(-1) !== value.fallback.catalogId)
+    )
+      context.addIssue({ code: 'custom', message: '分类兜底路径无效' })
+  })
 export const AgentAccountSnapshotSchema = z.object({
   accountId: uuid,
+  bindingRevision: uuid,
   account: z.string().max(320),
   status: z.enum(['active', 'pending', 'limited', 'blocked']),
   homepageUrl: z.string().max(2048),
@@ -274,6 +360,7 @@ export const AgentJobSnapshotSchema = z.object({
   messages: z.array(AgentMessageSchema).max(100),
 })
 export const AgentStepInputSchema = z.strictObject({
+  reconcileOnly: z.boolean().default(false),
   scope: AgentScopeSchema,
   snapshot: AgentJobSnapshotSchema,
   preset: AgentPresetSchema,
@@ -283,8 +370,10 @@ export const AgentStepInputSchema = z.strictObject({
 export const AgentStepResultSchema = z.strictObject({
   state: z.enum([
     'continue',
+    'prepared',
     'completed',
     'blocked',
+    'login_required',
     'review_required',
     'result_unknown',
     'sync_pending',
@@ -397,6 +486,10 @@ export type AgentStepInput = z.infer<typeof AgentStepInputSchema>
 export type AgentStepResult = z.infer<typeof AgentStepResultSchema>
 export type AgentJobSnapshot = z.infer<typeof AgentJobSnapshotSchema>
 export type AgentProductSnapshot = z.infer<typeof AgentProductSnapshotSchema>
+export type AgentImage = z.infer<typeof AgentImageSchema>
+export type AgentPreparedContent = z.infer<typeof AgentPreparedContentSchema>
+export type AgentContentContext = z.infer<typeof AgentContentContextSchema>
+export type AgentCatalogFallback = z.infer<typeof AgentCatalogFallbackSchema>
 export type AgentProductOverride = z.infer<typeof AgentProductOverrideSchema>
 export type AgentBatchView = z.infer<typeof AgentBatchViewSchema>
 export type AgentBatchPage = z.infer<typeof AgentBatchPageSchema>

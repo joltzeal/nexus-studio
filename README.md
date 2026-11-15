@@ -49,16 +49,20 @@ Vite 默认地址为 `http://localhost:1420`，以实际输出为准。
 真实窗口操作使用桌面应用。构建工具链仅供开发者使用，最终用户无需配置 Node、Rust 或 `.env`。
 外部指纹浏览器仍需其官方应用处于登录且开放本机 API 的状态。
 
-| 路径                       | 职责                                       |
-| -------------------------- | ------------------------------------------ |
-| `apps/desktop`             | React 页面、Tauri、Rust 窗口服务与插件宿主 |
-| `packages/contracts`       | 共享严格 DTO 与校验                        |
-| `packages/plugin-sdk`      | 插件 manifest、协议与生命周期              |
-| `packages/browser-runtime` | 内置浏览器运行时、内核与便携站点状态       |
-| `plugins`                  | 仓库内插件实现                             |
-| `docs`                     | 分模块设计、开发规范与验证证据             |
+| 路径                        | 职责                                       |
+| --------------------------- | ------------------------------------------ |
+| `apps/desktop`              | React 页面、Tauri、Rust 窗口服务与插件宿主 |
+| `packages/contracts`        | 共享严格 DTO 与校验                        |
+| `packages/plugin-sdk`       | 插件 manifest、协议与生命周期              |
+| `packages/browser-runtime`  | 内置浏览器运行时、内核与便携站点状态       |
+| `packages/plugin-contracts` | 主应用使用的公开插件数据契约               |
+| `plugins`                   | 本地插件实现，不提交 Git                   |
+| `market`                    | 本地插件发布包和商店索引，不提交 Git       |
+| `docs`                      | 分模块设计、开发规范与验证证据             |
 
-按当前协作要求，本地不执行构建、打包、Rust 编译/测试或 Clippy。
+按当前协作要求，本地不执行应用构建、Rust 编译/测试或 Clippy。
+插件单独在本地编译、调试和打包后直接发布对象存储，主应用 CI 不包含插件源码；
+目录与操作步骤见[插件本地开发](docs/50-local-plugin-development.md)。
 可直接运行 Vitest、ESLint、Prettier、`tsc --noEmit` 与 rustfmt；根检查脚本可能构建依赖，不能替代直接检查。
 具体结果与 CI、厂商集成、Windows 安装的未验证边界见[质量记录](docs/09-quality-and-testing.md)。
 

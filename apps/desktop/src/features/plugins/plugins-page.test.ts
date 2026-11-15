@@ -1,4 +1,3 @@
-import proxyManifest from '@nexus/plugin-proxy-pool/manifest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
@@ -7,19 +6,21 @@ import { PluginsPage } from './plugins-page'
 const html = renderToStaticMarkup(createElement(PluginsPage))
 
 describe('plugin center without a host', () => {
-  it('lists the bundled packages in one table', () => {
+  it('shows a desktop-only empty catalog instead of bundled private packages', () => {
     expect(html).toContain('插件中心')
-    expect(html).toContain('aria-label="插件列表"')
-    expect(html).toContain('代理池')
-    expect(html).toContain('studio.proxy-pool')
-    expect(html).toContain('proxy.provider')
-    expect(html).toContain(`v${proxyManifest.version}`)
     expect(html).toContain('仅桌面应用')
-    // SIM8 is the bundled plugin that owns the verification capability; the
-    // demo row used to be the only place it appeared.
-    expect(html).toContain('SIM8 接码')
-    expect(html).toContain('studio.sim8')
-    expect(html).toContain('verification.provider')
+    expect(html).not.toContain('aria-label="插件列表"')
+    expect(html).not.toContain('studio.')
+    expect(html).not.toContain('proxy.provider')
+    expect(html).not.toContain('verification.provider')
+    expect(html).not.toContain('SIM8 接码')
+  })
+
+  it('disables host actions without offering fake installations', () => {
+    expect(html).toMatch(/<button\b[^>]*disabled=""[^>]*>.*?检查更新<\/button>/s)
+    expect(html).toMatch(/<button\b[^>]*disabled=""[^>]*>.*?商店设置<\/button>/s)
+    expect(html).not.toMatch(/>安装<\/button>/)
+    expect(html).not.toMatch(/>重新安装<\/button>/)
   })
 
   it('never claims a plugin is installed or running', () => {

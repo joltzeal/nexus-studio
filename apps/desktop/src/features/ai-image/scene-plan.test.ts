@@ -97,6 +97,7 @@ describe('scene plan contract and editable draft', () => {
     { inputFileId: 'other-reference' },
     { requirements: 'Changed requirements' },
     { count: 4 },
+    { agingLevel: 'heavy' as const },
   ])('blocks a stale draft without discarding edits: %o', (change) => {
     const draft = sceneDraft(makePlan(), planContext)
     draft.prompt = 'Keep these edits.'
@@ -106,6 +107,18 @@ describe('scene plan contract and editable draft', () => {
       plannedGeneration(draft, context, ['reference', 'other-reference']),
     ).toThrow(SCENE_PLAN_STALE_HINT)
     expect(draft.prompt).toBe('Keep these edits.')
+  })
+
+  it('retains and validates the level through parsing, edited drafts and generation payloads', () => {
+    const plan = { ...makePlan(), agingLevel: 'light' as const }
+    const context = { ...planContext, agingLevel: 'light' as const }
+    const parsed = parseScenePlan(plan)
+    expect(parsed.agingLevel).toBe('light')
+    const draft = sceneDraft(parsed, context)
+    expect(plannedGeneration(draft, context, ['reference']).agingLevel).toBe('light')
+    expect(() => parseScenePlan({ ...plan, agingLevel: 'extreme' })).toThrow('做旧')
+    expect(() => sceneDraft(plan, { ...context, agingLevel: 'heavy' })).toThrow('不一致')
+    expect(parseScenePlan(makePlan())).not.toHaveProperty('agingLevel')
   })
 
   it('does not accept a plan for another request or silently trim the original requirements', () => {

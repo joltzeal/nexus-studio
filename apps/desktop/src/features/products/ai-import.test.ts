@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProductSchema } from '@nexus/plugin-products/contracts'
+import { ProductSchema } from '@nexus/plugin-contracts/products'
 import { callPlugin, listPlugins, type PluginView } from '@/lib/platform/native-plugins'
 import { getRecord } from '@/features/ai-image/api'
 import { discardProductImages, uploadProductBytes } from './api'
@@ -27,6 +27,7 @@ const image = {
   sha256: 'a'.repeat(64),
 }
 const product = ProductSchema.parse({
+  platformFacts: { vinted: [] },
   id: productId,
   name: 'Used mug',
   title: 'Used mug',
@@ -150,6 +151,7 @@ describe('generation to independent product import', () => {
           status: 'draft',
           price: null,
           category: '',
+          platformFacts: { vinted: [] },
           imageIds: [imageId],
         }),
       },

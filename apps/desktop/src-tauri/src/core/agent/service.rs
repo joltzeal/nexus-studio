@@ -29,6 +29,7 @@ pub struct AgentService {
     dispatch_cursor: Mutex<Option<(String, String)>>,
     running: AtomicBool,
     shutdown_started: AtomicBool,
+    pub(super) storage_halted: AtomicBool,
 }
 
 pub(crate) struct ActiveActor {
@@ -94,6 +95,7 @@ impl AgentService {
             dispatch_cursor: Mutex::new(None),
             running: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
+            storage_halted: AtomicBool::new(false),
         })
     }
 
@@ -123,6 +125,7 @@ impl AgentService {
             dispatch_cursor: Mutex::new(None),
             running: AtomicBool::new(false),
             shutdown_started: AtomicBool::new(false),
+            storage_halted: AtomicBool::new(false),
         }))
     }
 
@@ -262,17 +265,18 @@ impl AgentService {
                         .map_err(browser_error)?,
                 )?;
                 if window.id != assignment.window_id
-                    || matches!(
-                        window.state.as_str(),
-                        "unknown" | "missing" | "starting" | "stopping"
-                    )
+                    || (input.preset != Preset::PostListing
+                        && matches!(
+                            window.state.as_str(),
+                            "unknown" | "missing" | "starting" | "stopping"
+                        ))
                 {
                     return Err(conflict(
                         "Window availability must be known before creating a job",
                     ));
                 }
                 let (account, platform_origin) = self.account_snapshot(&assignment.window_id)?;
-                if account["status"] == "blocked" {
+                if input.preset != Preset::InspectAccounts && account["status"] == "blocked" {
                     return Err(denied("Confirmed blocked accounts cannot start Agent jobs"));
                 }
                 let identity = account["platformUserId"]
@@ -355,8 +359,12 @@ impl AgentService {
             }
             // Bindings and accounts are checked again after slow image copies, before any DB write.
             for (_, snapshot) in &snapshots {
-                self.verify_binding(snapshot)?;
-                self.verify_account(snapshot, false)?;
+                if input.preset == Preset::PostListing {
+                    self.verify_assigned_binding(snapshot)?;
+                } else {
+                    self.verify_binding(snapshot)?;
+                }
+                self.verify_account(snapshot, input.preset == Preset::InspectAccounts)?;
             }
             self.artifacts.seal(&batch_id)?;
             self.store.create(&batch_id, &input, &snapshots, &settings)
@@ -433,6 +441,9 @@ impl AgentService {
     }
 
     fn isolate_retained(&self, job: &Job, reconcile: bool) -> AgentResult<()> {
+        if !self.store.has_browser_ownership(&job.id)? {
+            return self.store.actor_stopped(&job.id, false);
+        }
         let windows = self.windows()?;
         windows
             .restore_agent_window(&job.snapshot.window_id, &job.id)
@@ -464,10 +475,7 @@ impl AgentService {
             let result = (|| {
                 let job = self.store.job(&id)?;
                 let action = self.store.job_action(&id)?;
-                if action == "run" {
-                    return self.isolate_retained(&job, false);
-                }
-                if action == "takeover" {
+                if action == "takeover" && job.mode == AgentMode::Browser {
                     self.verify_account(&job.snapshot, false)?;
                 }
                 self.isolate_retained(&job, false)?;
@@ -483,12 +491,16 @@ impl AgentService {
                 }
                 let job = self.store.job(&id)?;
                 let release = !self.store.has_uncertain(&id)?
-                    && !matches!(
-                        job.state.as_str(),
-                        "running" | "review_required" | "result_unknown" | "blocked"
-                    );
+                    && (job.mode == AgentMode::ContentPreparation
+                        || (self.store.needs_reprepare(&id)?
+                            && !matches!(job.state.as_str(), "blocked" | "result_unknown"))
+                        || !matches!(
+                            job.state.as_str(),
+                            "running" | "review_required" | "result_unknown" | "blocked"
+                        ));
+                let had_browser = self.store.has_browser_ownership(&id)?;
                 self.store.actor_stopped(&id, release)?;
-                if release {
+                if release && had_browser {
                     self.windows()?
                         .release_agent_window(&job.snapshot.window_id, &id)
                         .map_err(browser_error)?;
@@ -504,6 +516,14 @@ impl AgentService {
     }
 
     pub(crate) fn account_snapshot(&self, window_id: &str) -> AgentResult<(Value, String)> {
+        let (account, origin, _) = self.account_snapshot_projection(window_id)?;
+        Ok((account, origin))
+    }
+
+    pub(super) fn account_snapshot_projection(
+        &self,
+        window_id: &str,
+    ) -> AgentResult<(Value, String, Value)> {
         let reply = self
             .host()?
             .call(
@@ -517,7 +537,20 @@ impl AgentService {
         if reply["windowId"].as_str() != Some(window_id) {
             return Err(denied("Account snapshot belongs to another window"));
         }
-        validate_account(&reply["account"])
+        let mut account = reply["account"].clone();
+        account
+            .as_object_mut()
+            .ok_or_else(|| invalid("Account snapshot is missing"))?
+            .insert("bindingRevision".into(), reply["bindingRevision"].clone());
+        let (account, origin) = validate_account(&account)?;
+        let session = super::observations::project_session(
+            reply
+                .get("session")
+                .ok_or_else(|| invalid("Account snapshot session projection is missing"))?,
+            &account,
+            window_id,
+        )?;
+        Ok((account, origin, session))
     }
 
     pub(crate) fn verify_account(
@@ -525,10 +558,11 @@ impl AgentService {
         snapshot: &JobSnapshot,
         read_only: bool,
     ) -> AgentResult<()> {
-        let (current, origin) = self.account_snapshot(&snapshot.window_id)?;
+        let (current, origin, session) = self.account_snapshot_projection(&snapshot.window_id)?;
         if current["accountId"] != snapshot.account["accountId"]
             || current["platformUserId"] != snapshot.account["platformUserId"]
             || origin != snapshot.platform_origin
+            || current["bindingRevision"] != snapshot.account["bindingRevision"]
         {
             return Err(denied(
                 "Bound platform account identity changed after the job was created",
@@ -537,6 +571,11 @@ impl AgentService {
         if !read_only && current["status"] == "blocked" {
             return Err(denied(
                 "Confirmed blocked accounts cannot perform browser writes",
+            ));
+        }
+        if !read_only && session["status"] == "logged_out" {
+            return Err(denied(
+                "Current window session requires login before browser writes",
             ));
         }
         Ok(())
@@ -561,6 +600,20 @@ impl AgentService {
         Ok(())
     }
 
+    fn verify_assigned_binding(&self, snapshot: &JobSnapshot) -> AgentResult<()> {
+        let current = parse_window(
+            self.windows()?
+                .agent_window_snapshot(&snapshot.window_id)
+                .map_err(browser_error)?,
+        )?;
+        if !snapshot.binding_matches(&current) {
+            return Err(denied(
+                "Assigned window binding changed while freezing content",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn read_product(&self, id: &str) -> AgentResult<Value> {
         let reply = self
             .host()?
@@ -573,6 +626,7 @@ impl AgentService {
             )
             .map_err(host_error)?;
         let product = reply["product"].clone();
+        super::content::validate_platform_facts(&product["platformFacts"])?;
         if product["id"].as_str() != Some(id)
             || product["revision"]
                 .as_u64()
@@ -599,15 +653,15 @@ impl AgentService {
             ids
         };
         for id in ids {
+            if self.storage_halted.load(Ordering::Acquire) {
+                break;
+            }
             if !self.running.load(Ordering::Acquire) {
                 break;
             }
             let Ok(mut active) = self.active.lock() else {
                 return;
             };
-            if active.len() >= MAX_GLOBAL_ACTORS {
-                break;
-            }
             if active.contains_key(&id) {
                 continue;
             }
@@ -619,11 +673,19 @@ impl AgentService {
                 Ok(caller) => caller,
                 Err(_) => return,
             };
-            let capacity = match self.store.job(&id).and_then(|job| {
-                self.windows()?
-                    .agent_provider_capacity(&job.snapshot.window_id)
-                    .map_err(browser_error)
-            }) {
+            let candidate = match self.store.job(&id) {
+                Ok(job) => job,
+                Err(_) => continue,
+            };
+            let capacity = match if candidate.mode == AgentMode::ContentPreparation {
+                Ok(None)
+            } else {
+                self.windows().and_then(|windows| {
+                    windows
+                        .agent_provider_capacity(&candidate.snapshot.window_id)
+                        .map_err(browser_error)
+                })
+            } {
                 Ok(value) => value,
                 Err(_) => continue,
             };
@@ -631,7 +693,16 @@ impl AgentService {
                 Ok(active) => active,
                 Err(_) => return,
             };
-            if active.len() >= MAX_GLOBAL_ACTORS
+            let limit = if candidate.mode == AgentMode::ContentPreparation {
+                super::execution::MAX_PREPARATION_WORKERS as usize
+            } else {
+                MAX_GLOBAL_ACTORS
+            };
+            if active
+                .values()
+                .filter(|a| a.scope.mode == candidate.mode)
+                .count()
+                >= limit
                 || active.contains_key(&id)
                 || self
                     .isolating
@@ -673,33 +744,46 @@ impl AgentService {
     fn run_job(self: Arc<Self>, mut job: Job, actor: Arc<ActiveActor>) {
         let (step_budget, time_budget) = job_budgets(&job);
         let result = (|| {
-            let windows = self.windows()?;
-            windows
-                .acquire_agent_window(&job.snapshot.window_id, &job.id)
-                .map_err(browser_error)?;
-            actor.reserved.store(true, Ordering::Release);
-            self.verify_binding(&job.snapshot)?;
-            self.verify_account(&job.snapshot, job.reconcile_only)?;
-            if !job.reconcile_only {
-                for product in &job.snapshot.products {
-                    if self.store.product_confirmed(&job.id, &product["id"])? {
-                        continue;
-                    }
-                    let current = self.read_product(
-                        product["id"]
-                            .as_str()
-                            .ok_or_else(|| invalid("Invalid frozen product identity"))?,
-                    )?;
-                    if current["revision"] != product["revision"] {
-                        return Err(conflict(
-                            "An unsubmitted product changed while its job was queued",
-                        ));
+            if self.store.requires_binding_refresh(&job.id)? {
+                let (account, origin) = self.account_snapshot(&job.snapshot.window_id)?;
+                self.store
+                    .refresh_migrated_binding(&job.id, &account, &origin)?;
+                job = self.store.job(&job.id)?;
+            }
+            if actor.scope.mode == AgentMode::Browser {
+                let windows = self.windows()?;
+                windows
+                    .acquire_agent_window(&job.snapshot.window_id, &job.id)
+                    .map_err(browser_error)?;
+                actor.reserved.store(true, Ordering::Release);
+                self.verify_binding(&job.snapshot)?;
+                self.verify_account(&job.snapshot, true)?;
+                if !job.reconcile_only {
+                    for product in &job.snapshot.products {
+                        if self.store.product_confirmed(&job.id, &product["id"])? {
+                            continue;
+                        }
+                        if job.preset == Preset::PostListing
+                            && !self.store.product_approved(&job.id, &product["id"])?
+                        {
+                            continue;
+                        }
+                        let current = self.read_product(
+                            product["id"]
+                                .as_str()
+                                .ok_or_else(|| invalid("Invalid frozen product identity"))?,
+                        )?;
+                        if current["revision"] != product["revision"] {
+                            return Err(conflict(
+                                "An unsubmitted product changed while its job was queued",
+                            ));
+                        }
                     }
                 }
+                windows
+                    .start_agent_window(&job.snapshot.window_id, &job.id)
+                    .map_err(browser_error)?;
             }
-            windows
-                .start_agent_window(&job.snapshot.window_id, &job.id)
-                .map_err(browser_error)?;
             self.store
                 .heartbeat(&actor.scope, &actor.caller.generation)?;
             loop {
@@ -711,6 +795,27 @@ impl AgentService {
                     self.store.settle_control(&job.id, control == "cancel")?;
                     return Ok(());
                 }
+                let wait_until = self.store.form_wait_until(&job.id)?;
+                if wait_until > super::now_ms() {
+                    if actor.started.elapsed() > time_budget {
+                        return Err(invalid("Browser form wait exceeded the job deadline"));
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                if self.store.should_reprepare(&job.id)? {
+                    let output = StepOutput {
+                        state: StepState::ReviewRequired,
+                        phase: "needs_reprepare".into(),
+                        message: Some("Item changed; content needs reprepare".into()),
+                        retry: None,
+                        progress: None,
+                        item_updates: vec![],
+                    };
+                    self.store
+                        .mark_step(&actor.scope, &actor.caller.generation, &output)?;
+                    return Ok(());
+                }
                 if actor.started.elapsed() > time_budget || job.steps as u64 >= step_budget {
                     return Err(invalid("Agent job reached its bounded step or time budget"));
                 }
@@ -719,8 +824,10 @@ impl AgentService {
                     .map_err(host_error)?;
                 self.store
                     .heartbeat(&actor.scope, &actor.caller.generation)?;
-                let input = json!({"scope":actor.scope,"snapshot":job.snapshot,"preset":job.preset,
-                    "instruction":job.instruction,"settings":job.settings});
+                let snapshot = self.store.step_snapshot(&job)?;
+                let input = json!({"scope":actor.scope,"snapshot":snapshot,"preset":job.preset,
+                    "instruction":job.instruction,"settings":job.settings,
+                    "reconcileOnly":job.reconcile_only});
                 if canonical(&input).len() > 900 * 1024 {
                     return Err(invalid("Graph step request exceeds the protocol budget"));
                 }
@@ -814,6 +921,26 @@ impl AgentService {
             if actor.releasing.swap(true, Ordering::AcqRel) {
                 continue;
             }
+            if actor.scope.mode == AgentMode::ContentPreparation {
+                let result = (|| {
+                    let control = self.store.job_action(&actor.scope.job_id)?;
+                    if control != "run" {
+                        self.store
+                            .settle_control(&actor.scope.job_id, control == "cancel")?;
+                    }
+                    self.store.actor_stopped(&actor.scope.job_id, false)?;
+                    self.store.takeover_settled(&actor.scope.job_id, true)?;
+                    self.active
+                        .lock()
+                        .map_err(storage_error)?
+                        .remove(&actor.scope.job_id);
+                    Ok::<(), crate::core::plugin_host::process::PluginErrorPayload>(())
+                })();
+                if result.is_err() {
+                    actor.releasing.store(false, Ordering::Release);
+                }
+                continue;
+            }
             let Ok(windows) = self.windows() else {
                 actor.releasing.store(false, Ordering::Release);
                 continue;
@@ -868,10 +995,12 @@ impl AgentService {
             };
             let release = !uncertain
                 && (control != "takeover" || self.verify_account(&job.snapshot, false).is_ok())
-                && !matches!(
-                    job.state.as_str(),
-                    "running" | "review_required" | "result_unknown" | "blocked"
-                );
+                && ((self.store.needs_reprepare(&job.id).unwrap_or(false)
+                    && !matches!(job.state.as_str(), "blocked" | "result_unknown"))
+                    || !matches!(
+                        job.state.as_str(),
+                        "running" | "review_required" | "result_unknown" | "blocked"
+                    ));
             let Ok(mut active) = self.active.lock() else {
                 actor.releasing.store(false, Ordering::Release);
                 continue;
@@ -1036,17 +1165,16 @@ pub(crate) fn parse_window(value: Value) -> AgentResult<WindowSnapshot> {
 }
 
 pub(crate) fn validate_account(value: &Value) -> AgentResult<(Value, String)> {
-    let object = value
-        .as_object()
+    let id = value["accountId"]
+        .as_str()
         .ok_or_else(|| invalid("Window has no bound platform account"))?;
-    let id = object
-        .get("accountId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("Account ID is missing"))?;
     uuid(id)?;
-    let account = object
-        .get("account")
-        .and_then(Value::as_str)
+    let binding = value["bindingRevision"]
+        .as_str()
+        .ok_or_else(|| invalid("Account binding revision is missing"))?;
+    uuid(binding)?;
+    let account = value["account"]
+        .as_str()
         .ok_or_else(|| invalid("Account name is missing"))?;
     text(account, 0, 320)?;
     let status = value["status"]
@@ -1055,72 +1183,100 @@ pub(crate) fn validate_account(value: &Value) -> AgentResult<(Value, String)> {
     if !matches!(status, "active" | "pending" | "limited" | "blocked") {
         return Err(invalid("Invalid account status"));
     }
-    let homepage = value["homepageUrl"]
-        .as_str()
-        .ok_or_else(|| invalid("Account homepage is missing"))?;
-    text(homepage, 1, 2048)?;
-    if homepage
-        .chars()
-        .any(|ch| ch.is_control() || ch.is_whitespace())
-        || homepage.contains('\\')
-    {
-        return Err(invalid("Invalid account homepage URL"));
-    }
-    let url = url::Url::parse(homepage).map_err(|_| invalid("Invalid account homepage URL"))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| invalid("Invalid account homepage host"))?;
-    let suffix = host
-        .strip_prefix("www.vinted.")
-        .ok_or_else(|| invalid("Account homepage requires an exact www.vinted site"))?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || ![
-            "com", "co.uk", "fr", "de", "it", "es", "nl", "be", "at", "pl", "pt", "cz", "sk", "lt",
-            "lu", "se", "dk", "fi", "hr", "hu", "ro", "gr", "ie",
-        ]
-        .contains(&suffix)
-    {
-        return Err(invalid(
-            "Account homepage is outside the supported HTTPS Vinted origins",
-        ));
-    }
-    let member = url
-        .path()
-        .strip_prefix("/member/")
-        .ok_or_else(|| invalid("Account homepage must identify a numeric member"))?;
-    let member = member.strip_suffix('/').unwrap_or(member);
-    let numeric = member.split('-').next().unwrap_or("");
-    if member.contains('/')
-        || numeric.is_empty()
-        || numeric.len() > 32
-        || !numeric.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(invalid("Account homepage must identify a numeric member"));
-    }
     let identity = value["platformUserId"]
         .as_str()
-        .ok_or_else(|| invalid("Account platform identity must be known"))?;
-    if identity != numeric {
-        return Err(denied(
-            "Account platform identity does not match its homepage",
+        .ok_or_else(|| invalid("Account platform identity must be independently known"))?;
+    if identity.is_empty()
+        || identity.len() > 32
+        || identity.starts_with('0')
+        || !identity.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(invalid("Invalid bound platform identity"));
+    }
+    let homepage = value["homepageUrl"]
+        .as_str()
+        .ok_or_else(|| invalid("Account homepage must be explicit text"))?;
+    text(homepage, 0, 2048)?;
+    // Empty homepages can be inspected using an independently confirmed ID.
+    // The product's explicit default market is US; identity is never inferred.
+    let origin = if homepage.is_empty() {
+        let origin = value
+            .get("platformOrigin")
+            .and_then(Value::as_str)
+            .unwrap_or("https://www.vinted.com");
+        validate_platform_origin(origin)?;
+        origin.to_owned()
+    } else {
+        if homepage
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
+            || homepage.contains('\\')
+        {
+            return Err(invalid("Invalid account homepage URL"));
+        }
+        let url = url::Url::parse(homepage).map_err(|_| invalid("Invalid account homepage URL"))?;
+        let origin = url.origin().ascii_serialization();
+        validate_platform_origin(&origin)?;
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(invalid("Invalid account homepage URL"));
+        }
+        let member = url
+            .path()
+            .strip_prefix("/member/")
+            .ok_or_else(|| invalid("Homepage requires a numeric member"))?;
+        let member = member.trim_end_matches('/');
+        let numeric = member.split('-').next().unwrap_or("");
+        if member.contains('/') || numeric != identity {
+            return Err(denied("Homepage does not match the bound identity"));
+        }
+        if let Some(explicit) = value.get("platformOrigin")
+            && explicit.as_str() != Some(origin.as_str())
+        {
+            return Err(denied("Account market differs from its homepage"));
+        }
+        origin
+    };
+    // Explicit projection: account plugin observations may contain financial PII.
+    // Neither arbitrary observations nor their nested fields enter Agent snapshots.
+    Ok((
+        json!({"accountId":id,"bindingRevision":binding,"account":account,"status":status,
+        "homepageUrl":homepage,"platformUserId":identity}),
+        origin,
+    ))
+}
+
+pub(super) fn validate_platform_origin(origin: &str) -> AgentResult<()> {
+    let url = url::Url::parse(origin).map_err(|_| invalid("Invalid Vinted market origin"))?;
+    if origin != url.origin().ascii_serialization()
+        || url.scheme() != "https"
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url
+            .host_str()
+            .and_then(|host| host.strip_prefix("www.vinted."))
+            .is_none_or(|market| {
+                ![
+                    "com", "co.uk", "fr", "de", "it", "es", "nl", "be", "at", "pl", "pt", "cz",
+                    "sk", "lt", "lu", "se", "dk", "fi", "hr", "hu", "ro", "gr", "ie",
+                ]
+                .contains(&market)
+            })
+    {
+        return Err(invalid(
+            "Account market requires an exact supported HTTPS www.vinted origin",
         ));
     }
-    let mut snapshot = json!({"accountId":id,"account":account,"status":status,"homepageUrl":homepage,"platformUserId":identity});
-    if let Some(observation) = value.get("observation") {
-        if canonical(observation).len() > 16 * 1024 {
-            return Err(invalid("Account observation exceeds its snapshot budget"));
-        }
-        snapshot["observation"] = observation.clone();
-    }
-    Ok((snapshot, url.origin().ascii_serialization()))
+    Ok(())
 }
 
 pub(super) fn validate_listing_product(product: &Value) -> AgentResult<()> {
+    super::content::validate_platform_facts(&product["platformFacts"])?;
     for (key, max) in [
         ("name", 200),
         ("title", 500),

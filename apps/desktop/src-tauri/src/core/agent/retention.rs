@@ -14,7 +14,8 @@ const ELIGIBLE: &str =
     "b.updated_at<?1
      AND EXISTS(SELECT 1 FROM agent_jobs j WHERE j.batch_id=b.id)
      AND NOT EXISTS(SELECT 1 FROM agent_jobs j WHERE j.batch_id=b.id AND
-       (j.state NOT IN ('completed','cancelled','skipped','failed') OR j.actor_owned=1 OR j.updated_at>=?1))
+       (j.state NOT IN ('completed','cancelled','skipped','failed') OR j.actor_owned=1 OR j.updated_at>=?1
+         OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=j.id AND e.worker_owned=1)))
      AND NOT EXISTS(SELECT 1 FROM agent_resources r JOIN agent_jobs j ON j.id=r.job_id WHERE j.batch_id=b.id)
      AND NOT EXISTS(SELECT 1 FROM agent_actions a JOIN agent_jobs j ON j.id=a.job_id
        WHERE j.batch_id=b.id AND a.state IN ('prepared','unknown'))
@@ -126,11 +127,16 @@ impl AgentStore {
                 "agent_artifacts",
                 "agent_product_assignments",
                 "agent_publication_outbox",
+                "agent_action_recovery",
+                "agent_message_recovery",
                 "agent_actions",
                 "agent_model_requests",
                 "agent_item_continuations",
                 "agent_items",
                 "agent_dispatch",
+                "agent_content_receipts",
+                "agent_account_reservations",
+                "agent_execution",
             ] {
                 tx.execute(&format!("DELETE FROM {table} WHERE job_id IN(SELECT id FROM agent_jobs WHERE batch_id=?1)"),
                     [id]).map_err(storage_error)?;

@@ -83,10 +83,12 @@ it.each([
       if (!address || typeof address === 'string')
         throw new Error('Missing proxy listener')
       const url = `${protocol}://account:p%40ss%3Aword@localhost:${address.port}`
-      const module = new URL('../dist/online-proxy-geo.js', import.meta.url).href
+      const module = new URL('./online-proxy-geo.ts', import.meta.url).href
       const result = await promisify(execFile)(
         process.execPath,
         [
+          '--import',
+          fileURLToPath(new URL('../fixtures/source-loader.mjs', import.meta.url)),
           '--input-type=module',
           '-e',
           `globalThis.fetch = () => { throw new Error('No direct or database requests') };

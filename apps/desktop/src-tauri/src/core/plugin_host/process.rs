@@ -35,12 +35,20 @@ pub struct PluginCaller {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AgentScope {
+    pub mode: AgentMode,
     pub batch_id: String,
     pub job_id: String,
     pub window_id: String,
     pub account_id: String,
     pub lease_id: String,
     pub fence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMode {
+    ContentPreparation,
+    Browser,
 }
 
 #[derive(Debug, Clone, Deserialize)]

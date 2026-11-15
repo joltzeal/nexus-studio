@@ -185,6 +185,9 @@ pub fn validate_request(request: &Value) -> BrowserResult<Duration> {
             return Err(invalid());
         }
     }
+    if request["operation"] == "request" {
+        validate_read_policy(raw, &request["input"])?;
+    }
     if request["operation"] == "submit" {
         let raw = request["input"]["operationId"]
             .as_str()
@@ -202,6 +205,75 @@ pub fn validate_request(request: &Value) -> BrowserResult<Duration> {
             .ok_or_else(invalid)?,
     };
     Ok(Duration::from_millis(timeout))
+}
+
+pub fn validate_read_policy(origin: &str, input: &Value) -> BrowserResult<()> {
+    let invalid = || {
+        BrowserError::new(
+            "invalid_config",
+            "Browser read is outside the authorized policy",
+        )
+    };
+    let object = input.as_object().ok_or_else(invalid)?;
+    if object
+        .keys()
+        .any(|key| !["path", "method", "readPolicy"].contains(&key.as_str()))
+        || input["method"] != "GET"
+    {
+        return Err(invalid());
+    }
+    let path = input["path"].as_str().ok_or_else(invalid)?;
+    if path.is_empty()
+        || path.len() > 2048
+        || path.contains('\\')
+        || path.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(invalid());
+    }
+    let base = Url::parse(origin).map_err(|_| invalid())?;
+    if let Some(policy) = object.get("readPolicy") {
+        if policy != "vinted_account_financials"
+            || origin != base.origin().ascii_serialization()
+            || base.scheme() != "https"
+            || base.port().is_some()
+            || !base.username().is_empty()
+            || base.password().is_some()
+        {
+            return Err(invalid());
+        }
+        let market = base
+            .host_str()
+            .and_then(|host| host.strip_prefix("www.vinted."))
+            .ok_or_else(invalid)?;
+        // Both the page and API must be the exact same market. No suffix
+        // wildcards, URL normalization, query options or request overrides.
+        if ![
+            "com", "co.uk", "fr", "de", "nl", "be", "es", "it", "pt", "pl", "cz", "sk", "lt", "at",
+            "lu", "se", "dk", "fi", "ro", "hu", "hr", "gr", "ie", "ee", "lv", "si",
+        ]
+        .contains(&market)
+            || ![
+                format!("https://api.www.vinted.{market}/ledger/wallet/balance"),
+                format!("https://api.www.vinted.{market}/payments/public/api/bank_accounts"),
+            ]
+            .iter()
+            .any(|target| target == path)
+        {
+            return Err(invalid());
+        }
+    } else {
+        if !path.starts_with('/') || path.starts_with("//") || path.contains('#') {
+            return Err(invalid());
+        }
+        let target = base.join(path).map_err(|_| invalid())?;
+        if target.origin() != base.origin()
+            || !target.username().is_empty()
+            || target.password().is_some()
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
 }
 
 struct Pending {
@@ -516,6 +588,81 @@ impl Drop for CdpActor {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn financial_reads_allow_only_the_two_exact_same_market_gets() {
+        for market in ["com", "fr", "co.uk"] {
+            for path in [
+                "/ledger/wallet/balance",
+                "/payments/public/api/bank_accounts",
+            ] {
+                let request = json!({"operation":"request","origin":format!("https://www.vinted.{market}"),
+                    "input":{"method":"GET","path":format!("https://api.www.vinted.{market}{path}"),
+                        "readPolicy":"vinted_account_financials"}});
+                assert!(validate_request(&request).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn financial_policy_rejects_alternate_targets_options_and_url_normalization() {
+        let valid = json!({"operation":"request","origin":"https://www.vinted.com",
+            "input":{"method":"GET","path":"https://api.www.vinted.com/ledger/wallet/balance",
+                "readPolicy":"vinted_account_financials"}});
+        for path in [
+            "https://api.www.vinted.fr/ledger/wallet/balance",
+            "https://api.www.vinted.com.evil.invalid/ledger/wallet/balance",
+            "http://api.www.vinted.com/ledger/wallet/balance",
+            "https://api.www.vinted.com:443/ledger/wallet/balance",
+            "https://user:password@api.www.vinted.com/ledger/wallet/balance",
+            "https://API.www.vinted.com/ledger/wallet/balance",
+            "https://api.www.vinted.com/ledger/wallet/balance?x=1",
+            "https://api.www.vinted.com/ledger/wallet/balance#value",
+            "https://api.www.vinted.com/ledger/wallet/balance/",
+            "https://api.www.vinted.com/ledger/wallet/%62alance",
+            "/ledger/wallet/balance",
+        ] {
+            let mut request = valid.clone();
+            request["input"]["path"] = json!(path);
+            assert!(validate_request(&request).is_err(), "{path}");
+        }
+        for (key, value) in [
+            ("method", json!("POST")),
+            ("readPolicy", json!("other")),
+            ("readPolicy", Value::Null),
+            ("headers", json!({"Authorization":"fixture"})),
+            ("body", json!("fixture")),
+            ("credentials", json!("include")),
+            ("redirect", json!("follow")),
+            ("url", json!("https://other.invalid")),
+        ] {
+            let mut request = valid.clone();
+            request["input"][key] = value;
+            assert!(validate_request(&request).is_err(), "{key}");
+        }
+        let mut no_policy = valid;
+        no_policy["input"]
+            .as_object_mut()
+            .unwrap()
+            .remove("readPolicy");
+        assert!(validate_request(&no_policy).is_err());
+    }
+
+    #[test]
+    fn default_read_policy_remains_relative_same_origin_get_only() {
+        let mut request = json!({"operation":"request","origin":"https://www.vinted.com",
+            "input":{"method":"GET","path":"/api/v2/users/current"}});
+        assert!(validate_request(&request).is_ok());
+        for path in [
+            "//other.invalid/api",
+            "https://www.vinted.com/api/v2/users/current",
+            "/api/v2/users/current#raw",
+            "/\\other.invalid/api",
+        ] {
+            request["input"]["path"] = json!(path);
+            assert!(validate_request(&request).is_err());
+        }
+    }
 
     #[test]
     fn endpoints_reject_remote_hosts_credentials_and_non_browser_targets() {

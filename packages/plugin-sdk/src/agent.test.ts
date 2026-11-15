@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { AgentBatchCreateSchema, AgentScopeSchema, AgentSettingsSchema } from './agent.js'
+import {
+  AgentBatchCreateSchema,
+  AgentJobStateSchema,
+  AgentScopeSchema,
+  AgentSettingsSchema,
+  AgentStepResultSchema,
+} from './agent.js'
 
 const uuid = (index: number) =>
   `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
@@ -135,5 +141,30 @@ describe('sales Agent boundaries', () => {
         fence: 0,
       }).success,
     ).toBe(false)
+  })
+
+  it('requires an explicit execution mode without inventing a browser lease', () => {
+    const lease = {
+      batchId: uuid(1),
+      jobId: uuid(2),
+      windowId: uuid(3),
+      accountId: uuid(4),
+      leaseId: uuid(5),
+      fence: 1,
+    }
+    expect(AgentScopeSchema.safeParse(lease).success).toBe(false)
+    for (const mode of ['content_preparation', 'browser']) {
+      expect(AgentScopeSchema.parse({ ...lease, mode }).mode).toBe(mode)
+    }
+  })
+
+  it('distinguishes preparation completion and a window requiring login', () => {
+    expect(AgentStepResultSchema.parse({ state: 'prepared', phase: 'ready' }).state).toBe(
+      'prepared',
+    )
+    expect(AgentJobStateSchema.parse('login_required')).toBe('login_required')
+    expect(
+      AgentStepResultSchema.parse({ state: 'login_required', phase: 'inspect' }).state,
+    ).toBe('login_required')
   })
 })

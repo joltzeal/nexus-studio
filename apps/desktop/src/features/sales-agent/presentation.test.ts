@@ -18,6 +18,14 @@ describe('Agent business progress', () => {
     expect(recoveryHint('blocked')).toContain('禁止写入')
   })
 
+  it('separates browserless review from publishing and directs logged-out windows to login', () => {
+    expect(stageLabel('content.image_review')).toBe('执行前检查商品图片')
+    expect(stageLabel('content.copy_review')).toBe('执行前检查英文文案')
+    expect(stageLabel('load_content')).toBe('读取已批准商品资料')
+    expect(recoveryHint('login_required')).toContain('登录')
+    expect(recoveryHint('login_required')).toContain('核对')
+  })
+
   it('counts down from a persisted retry time and distinguishes missing times', () => {
     const now = Date.parse('2026-11-13T00:00:00Z')
     expect(retrySeconds('2026-11-13T00:00:02.001Z', now)).toBe(3)

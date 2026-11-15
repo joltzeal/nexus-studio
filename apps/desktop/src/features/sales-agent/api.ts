@@ -18,7 +18,7 @@ import {
 import { listBindings } from '@/features/accounts/api'
 import type { BindingView } from '@/features/accounts/types'
 import { getProduct } from '@/features/products/api'
-import type { Product } from '@nexus/plugin-products/contracts'
+import type { Product } from '@nexus/plugin-contracts/products'
 import { callPlugin, type PluginView } from '@/lib/platform/native-plugins'
 import { listBrowserWindows } from '@/lib/platform/windows'
 import {

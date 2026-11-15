@@ -85,6 +85,8 @@ pub(super) fn initialize(db: &Connection) -> AgentResult<()> {
             WHERE job_id=?1 AND product_id=?2 AND EXISTS(SELECT 1 FROM agent_actions WHERE operation_id=?3 AND job_id=?1)",
             rusqlite::params![job,product,operation]).map_err(storage_error)?;
     }
+    super::execution::initialize(db)?;
+    super::observations::initialize(db)?;
     db.execute_batch("COMMIT;").map_err(storage_error)
 }
 

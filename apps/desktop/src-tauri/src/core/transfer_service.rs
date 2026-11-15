@@ -3396,6 +3396,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     }
 
     #[test]
+    #[ignore = "local integration: requires privately built proxy-pool and vinted-accounts plugins"]
     fn encrypted_bundle_remaps_plugin_proxy_credentials_and_account_binding() {
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("a"));
@@ -3489,6 +3490,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
     }
 
     #[test]
+    #[ignore = "local integration: requires the privately built plugins/window-sync package"]
     fn two_native_hosts_sync_an_encrypted_window_and_keep_independent_copies() {
         let root = tempfile::tempdir().unwrap();
         let source = service(&root.path().join("a"));

@@ -1,6 +1,6 @@
 import type { DependencyList, EffectCallback, ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProductSchema, type ProductImage } from '@nexus/plugin-products/contracts'
+import { ProductSchema, type ProductImage } from '@nexus/plugin-contracts/products'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,7 @@ import {
   uploadProductImage,
 } from './api'
 import { ProductEditor, type ProductEditorProps } from './product-editor'
+import { ProductPlatformFactsEditor } from './product-platform-facts-editor'
 import {
   ProductPublicationDialog,
   ProductPublicationHistory,
@@ -60,6 +61,7 @@ const image: ProductImage = {
 }
 const uploaded = { ...image, id: '7789c134-f3fe-4b63-bb41-dd259979ea21', name: 'new.png' }
 const product = ProductSchema.parse({
+  platformFacts: { vinted: [] },
   id: '741204de-e426-4a97-9d1a-a8b420e6eac4',
   revision: 3,
   sequence: 1,
@@ -112,6 +114,30 @@ afterEach(async () => {
 })
 
 describe('product edit failure recovery', () => {
+  it('retains dirty fields and uploaded images while the page is hidden', async () => {
+    props.productId = product.id
+    await settle()
+    change('product-name', 'Draft while hidden')
+    const pending = deferred<ProductImage>()
+    vi.mocked(uploadProductImage).mockReturnValueOnce(pending.promise)
+    input('product-images').props.onChange?.({
+      target: {
+        files: [new File(['x'], 'new.png', { type: 'image/png' })],
+        value: 'file',
+      },
+    } as unknown as React.ChangeEvent<HTMLInputElement>)
+    hooks.suspend()
+    pending.resolve(uploaded)
+    await flushPromises()
+    expect(discardProductImages).not.toHaveBeenCalled()
+    render()
+    hooks.flushEffects()
+    await flushPromises()
+    expect(input('product-name').props.value).toBe('Draft while hidden')
+    expect(text(render())).toContain('new.png')
+    expect(getProduct).toHaveBeenCalledTimes(1)
+  })
+
   it('uses a bounded publication overview and only offers history on demand', async () => {
     props.productId = product.id
     await settle()
@@ -209,6 +235,67 @@ describe('product edit failure recovery', () => {
     expect(first![0].data.price).toBeNull()
     expect(first![0].data.title).toBe('')
     expect(props.onSaved).toHaveBeenCalledWith(product)
+  })
+
+  it('edits optional exact-market facts and preserves them through a failed save and text edit', async () => {
+    props.productId = product.id
+    vi.mocked(getProduct).mockResolvedValue({
+      ...product,
+      category: 'Clothing',
+      platformFacts: {
+        vinted: [
+          {
+            platformOrigin: 'https://www.vinted.com',
+            catalogId: 1904,
+            catalogRevision: 'a'.repeat(64),
+            attributes: { Material: 'Cotton' },
+          },
+        ],
+      },
+    })
+    await settle()
+    let editor = components(render(), ProductPlatformFactsEditor)[0]!
+    expect(editor.props.value).toEqual([
+      {
+        platformOrigin: 'https://www.vinted.com',
+        catalogId: '1904',
+        catalogRevision: 'a'.repeat(64),
+        attributes: [{ name: 'Material', value: 'Cotton' }],
+      },
+    ])
+    editor.props.onChange([
+      {
+        ...editor.props.value[0]!,
+        catalogId: '1905',
+        catalogRevision: '',
+        attributes: [{ name: 'Color', value: 'Blue' }],
+      },
+    ])
+    change('product-name', 'Renamed')
+    vi.mocked(saveProduct).mockRejectedValueOnce(new Error('写入失败'))
+    await submit()
+    editor = components(render(), ProductPlatformFactsEditor)[0]!
+    expect(editor.props.value[0]).toMatchObject({ catalogId: '1905' })
+    expect(text(render())).toContain('写入失败')
+    expect(vi.mocked(saveProduct).mock.calls[0]![0]).toMatchObject({
+      id: product.id,
+      expectedRevision: 3,
+      data: {
+        name: 'Renamed',
+        category: 'Clothing',
+        platformFacts: {
+          vinted: [
+            {
+              platformOrigin: 'https://www.vinted.com',
+              catalogId: 1905,
+              catalogRevision: null,
+              attributes: { Color: 'Blue' },
+            },
+          ],
+        },
+      },
+    })
+    expect(props.onSaved).not.toHaveBeenCalled()
   })
 })
 

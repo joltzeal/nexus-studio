@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentBatchView, AgentJobView } from '@nexus/plugin-sdk/agent'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { agentError, controlAgentBatch, controlAgentJob, type AgentControl } from './api'
-import { controlReason, jobControlReason, RequestScope } from './state'
+import { controlReason, jobControlReason } from './state'
 
 const LABELS = {
   pause: '暂停',
@@ -42,8 +42,21 @@ export function RunControls({
   const [confirm, setConfirm] = useState<'cancel' | 'takeover' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [scope] = useState(() => new RequestScope())
-  useEffect(() => () => scope.invalidate(), [scope])
+  const active = useRef(false)
+  const inFlight = useRef(false)
+  const settlement = useRef<(() => void) | null>(null)
+  const changed = useRef(onChanged)
+  useEffect(() => {
+    changed.current = onChanged
+  }, [onChanged])
+  useEffect(() => {
+    active.current = true
+    settlement.current?.()
+    settlement.current = null
+    return () => {
+      active.current = false
+    }
+  }, [])
   const actions: Action[] = job
     ? ['pause', 'resume', 'takeover', 'cancel']
     : ['pause', 'resume', 'reconcile', 'sync', 'takeover', 'cancel']
@@ -59,8 +72,8 @@ export function RunControls({
   }
 
   async function control(action: Action) {
-    if (busy || stale || error || reason(action)) return
-    const current = scope.begin()
+    if (inFlight.current || busy || stale || error || reason(action)) return
+    inFlight.current = true
     setBusy(action)
     setNotice(null)
     try {
@@ -68,22 +81,33 @@ export function RunControls({
         await controlAgentJob(job.id, action)
       else if (batch)
         await controlAgentBatch(batch.id, action === 'sync' ? 'reconcile' : action)
-      if (!current()) return
-      setConfirm(null)
-      setNotice(
+      const notice =
         action === 'takeover'
           ? '已请求接管。请等待窗口显示“已隔离，可人工操作”，再开始人工操作。'
           : action === 'sync'
             ? '已请求同步已有结果，请查看更新后的记录。'
             : action === 'reconcile'
               ? '已请求核对已有结果，不会重新提交。'
-              : '操作已确认。',
-      )
-      onChanged()
+              : '操作已确认。'
+      settlement.current = () => {
+        setConfirm(null)
+        setNotice(notice)
+        changed.current()
+        setBusy(null)
+        inFlight.current = false
+      }
     } catch (cause) {
-      if (current()) setError(`${agentError(cause)} 操作结果未确认，请刷新核对。`)
+      const error = `${agentError(cause)} 操作结果未确认，请刷新核对。`
+      settlement.current = () => {
+        setError(error)
+        setBusy(null)
+        inFlight.current = false
+      }
     } finally {
-      if (current()) setBusy(null)
+      if (active.current) {
+        settlement.current?.()
+        settlement.current = null
+      }
     }
   }
 

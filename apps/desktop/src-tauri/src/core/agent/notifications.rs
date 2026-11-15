@@ -17,7 +17,7 @@ impl AgentStore {
             "SELECT b.id FROM agent_batches b WHERE json_extract(settings_json,'$.notifications.enabled')=1
              AND ((COALESCE(json_extract(settings_json,'$.notifications.onAttention'),1)=1
                AND EXISTS(SELECT 1 FROM agent_jobs j WHERE j.batch_id=b.id AND j.state IN
-                   ('blocked','review_required','result_unknown','sync_pending','failed'))
+                   ('blocked','login_required','review_required','result_unknown','sync_pending','failed'))
                AND NOT EXISTS(SELECT 1 FROM agent_notification_outbox n WHERE n.batch_id=b.id AND n.kind='attention'))
               OR (COALESCE(json_extract(settings_json,'$.notifications.onCompleted'),1)=1
                AND NOT EXISTS(SELECT 1 FROM agent_jobs j WHERE j.batch_id=b.id AND j.state NOT IN ('completed','cancelled','skipped'))

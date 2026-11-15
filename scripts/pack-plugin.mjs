@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { bundleEntry } from './lib/bundler.mjs'
+import { collectPluginResources } from './lib/plugin-resources.mjs'
 import {
   bootstrapSource,
   deriveKey,
@@ -19,14 +20,13 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
  *
  * The compiled entry is bundled into one file, encrypted with AES-256-GCM and
  * stored as `payload.bin`; a generated loader decrypts it in memory at start
- * time. The key is derived from the plugin id and version plus a salt that only
- * lives in the desktop binary, so the published package alone is not enough to
- * read the source.
+ * time using the host's distribution key derivation. This packaging format does
+ * not make executable plugin code inaccessible to someone running the app.
  */
 async function pack(directory, { out, changelog }) {
   const manifestPath = join(directory, 'dist/nexus.plugin.json')
   if (!existsSync(manifestPath)) {
-    throw new Error(`${directory} 还没有构建，先执行 pnpm build:packages`)
+    throw new Error(`${directory} 还没有构建，先执行 pnpm plugins:build`)
   }
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
   const pkg = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'))
@@ -56,6 +56,7 @@ async function pack(directory, { out, changelog }) {
       ),
     },
     { path: 'payload.bin', data: payload },
+    ...(await collectPluginResources(join(directory, 'dist'), pkg.nexusResources)),
   ]
 
   const archive = writePackage({
@@ -103,7 +104,7 @@ async function pluginDirectories(explicit) {
 const options = parseArgs(process.argv.slice(2))
 const directories = await pluginDirectories(options.plugins)
 if (directories.length === 0) {
-  console.error('没有可打包的插件：先执行 pnpm build:packages')
+  console.error('没有可打包的插件：先执行 pnpm plugins:build')
   process.exit(1)
 }
 

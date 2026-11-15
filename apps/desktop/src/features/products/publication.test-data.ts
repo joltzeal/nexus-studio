@@ -1,7 +1,7 @@
 import type {
   ProductPublication,
   ProductPublicationPage,
-} from '@nexus/plugin-products/contracts'
+} from '@nexus/plugin-contracts/products'
 
 export const publication: ProductPublication = {
   id: '3198ca69-4f78-4705-ac59-2d48bc790194',

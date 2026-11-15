@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ProductImage } from '@nexus/plugin-products/contracts'
+import type { ProductImage } from '@nexus/plugin-contracts/products'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ProductImagePreview } from '@/features/products/product-image'
 

@@ -21,6 +21,7 @@ function page(items: unknown[]) {
         accountId: 'ad203e79-9430-4867-b858-b15f7bba4ea5',
         windowId: 'cbeb842a-88cb-4274-a7cb-503ae8a2d586',
         boundAt: observationTime,
+        revision: '33333333-3333-4333-8333-333333333333',
       },
     ],
     page: 1,
@@ -41,9 +42,12 @@ describe('account observation list validation', () => {
 
     expect(result.items[0]).toEqual(item)
     expect(result.items[0]?.password).toBe(' synthetic password ')
-    expect(result.items[0]?.observation?.balance?.available).toBe('123456789012.3400')
-    expect(result.items[0]?.observation?.balance?.availableEvidence).toEqual({
+    expect(result.items[0]?.observation?.wallet?.available?.amount).toBe(
+      '123456789012.3400',
+    )
+    expect(result.items[0]?.observation?.wallet?.available).toMatchObject({
       source: 'official',
+      currency: 'EUR',
       observedAt: '2026-11-12T05:00:00.000Z',
     })
     expect(result.bindings).toHaveLength(1)
@@ -62,13 +66,13 @@ describe('account observation list validation', () => {
 
   it.each([
     { name: 'null state', observation: null },
-    { name: 'missing last observation', observation: { tags: ['已验证'] } },
+    { name: 'missing domain state', observation: { tags: ['已验证'] } },
     { name: 'unknown state field', observation: { ...accountObservation(), note: 'x' } },
     {
       name: 'unknown balance field',
       observation: {
         ...accountObservation(),
-        balance: { ...accountObservation().balance, total: '1.00' },
+        balance: { ...accountObservation().wallet, total: '1.00' },
       },
     },
     {
@@ -76,7 +80,7 @@ describe('account observation list validation', () => {
       observation: {
         ...accountObservation(),
         balance: {
-          ...accountObservation().balance,
+          ...accountObservation().wallet,
           availableEvidence: {
             source: 'official',
             observedAt: observationTime,
@@ -89,7 +93,7 @@ describe('account observation list validation', () => {
       name: 'unknown last observation field',
       observation: {
         ...accountObservation(),
-        lastObservation: { ...accountObservation().lastObservation, tags: ['x'] },
+        lastObservation: { ...accountObservation().checks.analysis, tags: ['x'] },
       },
     },
     {
@@ -107,14 +111,30 @@ describe('account observation list validation', () => {
       name: 'numeric money',
       observation: {
         ...accountObservation(),
-        balance: { ...accountObservation().balance, available: 0 },
+        wallet: {
+          ...accountObservation().wallet,
+          available: {
+            amount: 0,
+            currency: 'USD',
+            source: 'official',
+            observedAt: observationTime,
+          },
+        },
       },
     },
     {
       name: 'exponent money',
       observation: {
         ...accountObservation(),
-        balance: { ...accountObservation().balance, pending: '1e3' },
+        wallet: {
+          ...accountObservation().wallet,
+          pending: {
+            amount: '1e3',
+            currency: 'USD',
+            source: 'official',
+            observedAt: observationTime,
+          },
+        },
       },
     },
     { name: 'rating outside range', observation: { ...accountObservation(), rating: 6 } },
@@ -122,7 +142,7 @@ describe('account observation list validation', () => {
       name: 'invalid timestamp',
       observation: {
         ...accountObservation(),
-        lastObservation: { ...accountObservation().lastObservation, observedAt: 'now' },
+        lastObservation: { ...accountObservation().checks.analysis, observedAt: 'now' },
       },
     },
     {

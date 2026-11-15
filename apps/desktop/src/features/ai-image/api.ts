@@ -24,6 +24,8 @@ import {
   PROVIDER_IMAGE_TEST_METHOD,
   PROVIDER_TRANSPORT_UPDATE_HINT,
   SIZES,
+  validateAgingLevel,
+  type AgingLevel,
   type GenerationRecord,
   type ImageSize,
   type GenerationSource,
@@ -105,6 +107,7 @@ export interface ProviderImageTestInput {
   id: string
   model: string
   mode: GenerationRecord['mode']
+  agingLevel?: AgingLevel
   prompt: string
   size: ImageSize
   inputFileIds: string[]
@@ -113,6 +116,7 @@ export interface ProviderImageTestInput {
 export async function testProviderImage(
   input: ProviderImageTestInput,
 ): Promise<{ record: GenerationRecord }> {
+  validateAgingLevel(input.agingLevel)
   if (!input.id.trim() || !input.model.trim()) {
     throw new Error('请先保存服务商和生图模型。')
   }
@@ -129,7 +133,12 @@ export async function testProviderImage(
       '请选择有效的测试方式与尺寸；文生图不带参考图，图生图需要一张参考图。',
     )
   }
-  return call(PROVIDER_IMAGE_TEST_METHOD, input)
+  const result = await call<{ record: GenerationRecord }>(
+    PROVIDER_IMAGE_TEST_METHOD,
+    input,
+  )
+  assertAcceptedAgingLevel(input.agingLevel, result?.record?.agingLevel)
+  return result
 }
 
 export function listPresets(): Promise<{ presets: ScenePreset[] }> {
@@ -140,7 +149,9 @@ export async function createScenePlan(input: ScenePlanInput): Promise<ScenePlan>
   validateScenePlanInput(input)
   try {
     const result = await call<{ plan: unknown }>('image.plans.create', input)
-    return parseScenePlan(result?.plan)
+    const plan = parseScenePlan(result?.plan)
+    assertAcceptedAgingLevel(input.agingLevel, plan.agingLevel)
+    return plan
   } catch (cause) {
     throw scenePlanError(cause)
   }
@@ -245,6 +256,7 @@ export interface GenerateInput {
   providerId: string
   imageModel: string
   mode: GenerationRecord['mode']
+  agingLevel?: AgingLevel
   presetId: string | null
   prompt: string
   size: string
@@ -260,6 +272,7 @@ export interface GenerateInput {
 export async function generate(
   input: GenerateInput,
 ): Promise<{ record: GenerationRecord }> {
+  validateAgingLevel(input.agingLevel)
   if (!input.providerId.trim() || !input.imageModel.trim())
     throw new Error('请选择生图服务商和模型。')
   if (
@@ -296,6 +309,7 @@ export async function generate(
     if (source !== undefined) throw sourceRequestError(error)
     throw error
   }
+  assertAcceptedAgingLevel(input.agingLevel, result?.record?.agingLevel)
   const submittedScene = result?.record?.scenePlan
   if (
     input.scenePlan !== undefined &&
@@ -320,6 +334,17 @@ export async function generate(
     )
   }
   return result
+}
+
+function assertAcceptedAgingLevel(
+  expected: AgingLevel | undefined,
+  actual: AgingLevel | undefined,
+): void {
+  if (expected !== undefined && actual !== expected) {
+    throw new Error(
+      '任务已提交，但插件未保留所选做旧程度。请先查看记录，勿重复提交；更新 AI 生图插件后再使用。',
+    )
+  }
 }
 
 function base64ToBytes(base64: string): Uint8Array {

@@ -18,6 +18,7 @@ import {
 import { consumeDetailNavigation, navigateDetail } from '@/lib/detail-navigation'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountEditor } from './account-editor'
+import { AccountBankDetails, AccountBankSummary } from './account-observation'
 import { listAccounts, saveAccount } from './api'
 import { AccountsPage } from './accounts-page'
 import { accountObservation, observedAccount } from './account-observation-test-support'
@@ -154,6 +155,39 @@ describe('account pool observation display', () => {
     expect(html).not.toContain('synthetic password')
   })
 
+  it('mounts full bank details only after the account-specific details action', async () => {
+    const item = observedAccount()
+    item.observation!.bankAccounts = {
+      records: [
+        {
+          id: '789',
+          user_id: '123456',
+          name: 'Synthetic Bank Holder',
+          account_number: '******4321',
+          routing_number: '012345678',
+          spending_type: 'original-type',
+          hide_name: false,
+          is_default: true,
+        },
+      ],
+      source: 'official',
+      observedAt: '2026-11-14T08:00:00.000Z',
+      windowId: '22222222-2222-4222-8222-222222222222',
+      bindingRevision: '33333333-3333-4333-8333-333333333333',
+    }
+    await mount(item)
+    expect(components(tree(), AccountBankDetails)).toHaveLength(0)
+    const html = renderToStaticMarkup(tree())
+    expect(html).toContain('******4321')
+    expect(html).not.toContain('Synthetic Bank Holder')
+    expect(html).not.toContain('012345678')
+    components(tree(), AccountBankSummary)[0]!.props.onDetails()
+    expect(components(tree(), AccountBankDetails)[0]?.props.bankAccounts).toEqual(
+      item.observation!.bankAccounts,
+    )
+    expect(saveAccount).not.toHaveBeenCalled()
+  })
+
   it('renders unknown amounts as a dash and keeps a zero rating visible', async () => {
     const observation = accountObservation()
     await mount(
@@ -163,13 +197,7 @@ describe('account pool observation display', () => {
           tags: [],
           summary: '',
           rating: 0,
-          balance: {
-            currency: 'GBP',
-            available: null,
-            pending: null,
-            availableEvidence: null,
-            pendingEvidence: null,
-          },
+          wallet: { available: null, pending: null },
         },
       }),
     )
@@ -177,7 +205,7 @@ describe('account pool observation display', () => {
     const html = renderToStaticMarkup(tree())
 
     expect(html).toContain('评分 0/5')
-    expect(html).toContain('GBP')
+    expect(html).not.toContain('GBP')
     expect(html).toContain('可用')
     expect(html).toContain('待结算')
     expect(html).not.toContain('0.00')
@@ -213,7 +241,7 @@ describe('account pool observation display', () => {
         components(formTree, Input).some(
           (node) =>
             node.props.value === item.observation?.summary ||
-            node.props.value === item.observation?.balance?.available,
+            node.props.value === item.observation?.wallet?.available?.amount,
         ),
       ).toBe(false)
       vi.mocked(saveAccount).mockResolvedValueOnce({ item, created: false })
@@ -224,6 +252,7 @@ describe('account pool observation display', () => {
 
       expect(saveAccount).toHaveBeenCalledWith({
         id: item.id,
+        expectedUpdatedAt: item.updatedAt,
         loginMethod: 'email',
         account: 'seller@example.test',
         password: ' synthetic password ',

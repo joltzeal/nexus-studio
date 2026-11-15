@@ -1,5 +1,5 @@
 import type { DependencyList, EffectCallback, MouseEvent, ReactNode } from 'react'
-import type { ProductPublicationPage } from '@nexus/plugin-products/contracts'
+import type { ProductPublicationPage } from '@nexus/plugin-contracts/products'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

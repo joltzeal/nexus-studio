@@ -96,7 +96,14 @@ describe('account table filtering and pagination', () => {
       account('no-phone', { phone: '   ' }),
       account('other'),
     ]
-    const bindings = [{ accountId: 'target', windowId: 'one', boundAt: '' }]
+    const bindings = [
+      {
+        accountId: 'target',
+        windowId: 'one',
+        revision: '33333333-3333-4333-8333-333333333333',
+        boundAt: '',
+      },
+    ]
     const filters: AccountFilters = {
       query: 'shop',
       status: 'blocked',

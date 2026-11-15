@@ -10,7 +10,36 @@ export interface DetailNavigation {
 const uuid = AgentScopeSchema.shape.batchId
 type Listener = (request: DetailNavigation) => void
 const listeners = new Set<Listener>()
-let pending: DetailNavigation | null = null
+export interface DetailNavigationIntent {
+  intentId: number
+  request: DetailNavigation
+}
+let pending: DetailNavigationIntent | null = null
+let nextIntentId = 0
+
+export function detailNavigationPage(kind: DetailNavigation['kind']): string {
+  return {
+    product: 'plugin:studio.products',
+    account: 'plugin:studio.vinted-accounts',
+    window: 'spaces',
+    agent: 'plugin:studio.sales-agent',
+  }[kind]
+}
+
+export function pendingDetailNavigation(): DetailNavigationIntent | null {
+  return pending ? { ...pending, request: { ...pending.request } } : null
+}
+
+export function cancelDetailNavigation(intentId?: number): void {
+  if (intentId === undefined || pending?.intentId === intentId) pending = null
+}
+
+export function cancelUnavailableDetailNavigation(pages: ReadonlySet<string>): void {
+  const intent = pending
+  if (intent && !pages.has(detailNavigationPage(intent.request.kind))) {
+    cancelDetailNavigation(intent.intentId)
+  }
+}
 
 export function navigateDetail(request: DetailNavigation): void {
   if (
@@ -23,13 +52,13 @@ export function navigateDetail(request: DetailNavigation): void {
   )
     throw new Error('无法打开无效的业务记录。')
   const parsed = { ...request }
-  pending = parsed
+  pending = { intentId: ++nextIntentId, request: parsed }
   for (const listener of [...listeners]) listener(parsed)
 }
 
 export function watchDetailNavigation(listener: Listener): () => void {
   listeners.add(listener)
-  if (pending) listener(pending)
+  if (pending) listener(pending.request)
   return () => {
     listeners.delete(listener)
   }
@@ -38,8 +67,8 @@ export function watchDetailNavigation(listener: Listener): () => void {
 export function consumeDetailNavigation(
   kind: DetailNavigation['kind'],
 ): DetailNavigation | null {
-  if (pending?.kind !== kind) return null
-  const value = pending
+  if (pending?.request.kind !== kind) return null
+  const value = pending.request
   pending = null
   return value
 }

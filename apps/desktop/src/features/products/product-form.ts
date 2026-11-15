@@ -1,14 +1,26 @@
-import type {
-  Product,
-  ProductDraft,
-  ProductSave,
-  ProductSource,
-  ProductStatus,
-} from '@nexus/plugin-products/contracts'
+import {
+  ProductPlatformFactsSchema,
+  type Product,
+  type ProductDraft,
+  type ProductSave,
+  type ProductSource,
+  type ProductStatus,
+} from '@nexus/plugin-contracts/products'
 
-export type ProductForm = Omit<ProductDraft, 'price' | 'tags' | 'imageIds'> & {
+export interface ProductVintedFactsForm {
+  platformOrigin: string
+  catalogId: string
+  catalogRevision: string
+  attributes: { name: string; value: string }[]
+}
+
+export type ProductForm = Omit<
+  ProductDraft,
+  'price' | 'tags' | 'imageIds' | 'platformFacts'
+> & {
   price: string
   tags: string
+  vintedFacts: ProductVintedFactsForm[]
 }
 
 export const PRODUCT_STATUS_OPTIONS: { value: ProductStatus; label: string }[] = [
@@ -38,6 +50,7 @@ export function emptyProductForm(): ProductForm {
     tags: '',
     note: '',
     status: 'draft',
+    vintedFacts: [],
   }
 }
 
@@ -56,6 +69,15 @@ export function productForm(product: Product): ProductForm {
     tags: product.tags.join(', '),
     note: product.note,
     status: product.status,
+    vintedFacts: product.platformFacts.vinted.map((entry) => ({
+      platformOrigin: entry.platformOrigin,
+      catalogId: entry.catalogId === null ? '' : String(entry.catalogId),
+      catalogRevision: entry.catalogRevision ?? '',
+      attributes: Object.entries(entry.attributes).map(([name, value]) => ({
+        name,
+        value,
+      })),
+    })),
   }
 }
 
@@ -67,10 +89,36 @@ export function productSaveInput(
 ): ProductSave {
   const price = form.price.trim() === '' ? null : Number(form.price)
   if (price !== null && !Number.isFinite(price)) throw new Error('请输入有效价格。')
+  const { vintedFacts, ...fields } = form
+  const platformFacts = ProductPlatformFactsSchema.parse({
+    vinted: vintedFacts.map((entry) => {
+      const id = entry.catalogId.trim()
+      if (id && (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))))
+        throw new Error('分类 ID 必须为正整数，或留空。')
+      const attributes: [string, string][] = []
+      const names = new Set<string>()
+      for (const row of entry.attributes) {
+        const name = row.name.trim()
+        const value = row.value.trim()
+        if (!name && !value) continue
+        if (!name || !value) throw new Error('请完整填写属性名称和已确认值，或移除此行。')
+        if (names.has(name)) throw new Error('同一站点的属性名称不能重复。')
+        names.add(name)
+        attributes.push([name, value])
+      }
+      return {
+        platformOrigin: entry.platformOrigin,
+        catalogId: id ? Number(id) : null,
+        catalogRevision: entry.catalogRevision.trim() || null,
+        attributes: Object.fromEntries(attributes),
+      }
+    }),
+  })
   return {
     ...identity,
     data: {
-      ...form,
+      ...fields,
+      platformFacts,
       price,
       tags:
         form.tags === originalTags.join(', ')
@@ -108,6 +156,12 @@ export function productError(cause: unknown): string {
       imageIds: '商品图片',
       expectedRevision: '商品修订号',
       createKey: '创建请求标识',
+      platformFacts: '平台资料',
+      vinted: 'Vinted 站点资料',
+      platformOrigin: 'Vinted 站点',
+      catalogId: '分类 ID',
+      catalogRevision: '分类版本',
+      attributes: '已确认属性',
     }
     const hints: string[] = []
     for (const issue of cause.issues) {

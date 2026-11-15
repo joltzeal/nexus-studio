@@ -26,6 +26,7 @@ pub struct Job {
     pub settings: Value,
     pub snapshot: JobSnapshot,
     pub state: String,
+    pub mode: AgentMode,
     pub scope: Option<AgentScope>,
     pub generation: Option<String>,
     pub reconcile_only: bool,
@@ -205,6 +206,27 @@ impl AgentStore {
         let mut identities = std::collections::HashSet::new();
         for ((job_id, snapshot), assignment) in snapshots.iter().zip(&input.assignments) {
             uuid(job_id)?;
+            let mut snapshot = snapshot.clone();
+            let mut account = snapshot.account.clone();
+            if account["homepageUrl"] == "" && account.get("platformOrigin").is_none() {
+                account["platformOrigin"] = json!(snapshot.platform_origin);
+            }
+            let (account, origin) = super::service::validate_account(&account)?;
+            if origin != snapshot.platform_origin {
+                return Err(denied("Account market differs from the frozen job origin"));
+            }
+            snapshot.account = account;
+            snapshot.products = snapshot
+                .products
+                .iter()
+                .map(|product| {
+                    let mut product = product.clone();
+                    if product.get("platformFacts").is_none() {
+                        product["platformFacts"] = json!({"vinted":[]});
+                    }
+                    super::content::project_product(&product)
+                })
+                .collect::<AgentResult<Vec<_>>>()?;
             let resources = snapshot.resources()?;
             if snapshot.window_id != assignment.window_id
                 || snapshot.products.len() != assignment.product_ids.len()
@@ -222,10 +244,22 @@ impl AgentStore {
             }
             tx.execute(
                 "INSERT INTO agent_jobs(id,batch_id,snapshot_json,state,phase) VALUES(?1,?2,?3,'queued','queued')",
-                params![job_id,batch_id,canonical(&serde_json::to_value(snapshot).map_err(storage_error)?)],
+                params![job_id,batch_id,canonical(&serde_json::to_value(&snapshot).map_err(storage_error)?)],
             ).map_err(storage_error)?;
             tx.execute("INSERT INTO agent_dispatch(job_id) VALUES(?1)", [job_id])
                 .map_err(storage_error)?;
+            tx.execute(
+                "INSERT INTO agent_execution(job_id,mode) VALUES(?1,?2)",
+                params![
+                    job_id,
+                    if input.preset == Preset::PostListing {
+                        "content_preparation"
+                    } else {
+                        "browser"
+                    }
+                ],
+            )
+            .map_err(storage_error)?;
             for product in &snapshot.products {
                 let id = product["id"]
                     .as_str()
@@ -398,7 +432,8 @@ impl AgentStore {
             .map_err(storage_error)?;
         let ids = strings(
             &tx,
-            "SELECT id FROM agent_jobs WHERE state='running' OR actor_owned=1",
+            "SELECT id FROM agent_jobs WHERE state='running' OR actor_owned=1
+             OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=agent_jobs.id AND e.worker_owned=1)",
             [],
         )?;
         for id in ids {
@@ -409,6 +444,52 @@ impl AgentStore {
             .map_err(storage_error)?;
             let job = read_job(&tx, &id)?;
             let uncertain = uncertain_actions(&tx, &id)?;
+            let worker: bool = tx
+                .query_row(
+                    "SELECT worker_owned FROM agent_execution WHERE job_id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)?;
+            if job.mode == AgentMode::ContentPreparation
+                && super::execution::owns_browser(&tx, &id)?
+                && !uncertain
+            {
+                // Upgraded unsubmitted tasks remain paused until retained browser
+                // ownership is isolated; preparation must never inherit that lock.
+                tx.execute("UPDATE agent_jobs SET state='paused',phase='needs_reprepare',
+                    scope_json=NULL,plugin_generation=NULL,lease_until=0,revision=revision+1 WHERE id=?1",
+                    [&id]).map_err(storage_error)?;
+                tx.execute(
+                    "UPDATE agent_execution SET worker_owned=0 WHERE job_id=?1",
+                    [&id],
+                )
+                .map_err(storage_error)?;
+                continue;
+            }
+            if (worker || job.mode == AgentMode::ContentPreparation)
+                && !super::execution::owns_browser(&tx, &id)?
+            {
+                tx.execute("UPDATE agent_jobs SET state=CASE WHEN ?2='run' THEN 'queued' ELSE 'paused' END,
+                    phase='preparation_recovered',scope_json=NULL,plugin_generation=NULL,lease_until=0,
+                    revision=revision+1 WHERE id=?1",
+                    params![id,super::controls::effective_action(&tx,&id)?]).map_err(storage_error)?;
+                tx.execute(
+                    "UPDATE agent_execution SET worker_owned=0 WHERE job_id=?1",
+                    [&id],
+                )
+                .map_err(storage_error)?;
+                tx.execute("UPDATE agent_model_requests SET state='unknown' WHERE job_id=?1 AND state='active'",
+                    [&id]).map_err(storage_error)?;
+                event(
+                    &tx,
+                    &job.batch_id,
+                    Some(&id),
+                    "job.interrupted",
+                    "Content preparation recovered without browser ownership",
+                )?;
+                continue;
+            }
             tx.execute(
                 "UPDATE agent_jobs SET state=?2,phase='restart_reconcile',plugin_generation=NULL,
                  lease_until=0,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -471,9 +552,10 @@ impl AgentStore {
              JOIN agent_dispatch d ON d.job_id=j.id
              WHERE j.state='queued' AND j.actor_owned=0 AND b.control='run' AND d.action='run'
                AND d.next_attempt<=?1
-               AND NOT EXISTS(SELECT 1 FROM agent_cooldowns c WHERE c.until_ms>?1 AND c.resource_key IN(
+               AND (NOT EXISTS(SELECT 1 FROM agent_cooldowns c WHERE c.until_ms>?1 AND c.resource_key IN(
                  'account:'||json_extract(j.snapshot_json,'$.account.accountId'),
                  'vinted-identity:'||ltrim(json_extract(j.snapshot_json,'$.account.platformUserId'),'0')))
+                OR EXISTS(SELECT 1 FROM agent_execution e WHERE e.job_id=j.id AND e.mode='content_preparation'))
                AND (?2 IS NULL OR (j.updated_at,j.id)>(?2,?3))
              ORDER BY j.updated_at,j.id LIMIT 100",
         ).map_err(storage_error)?;
@@ -529,14 +611,16 @@ impl AgentStore {
             .map_err(storage_error)?;
         let running: u32 = tx
             .query_row(
-                "SELECT COUNT(*) FROM agent_jobs WHERE batch_id=?1 AND state='running'",
+                "SELECT COUNT(*) FROM agent_jobs j JOIN agent_execution e ON e.job_id=j.id
+                 WHERE j.batch_id=?1 AND e.mode='browser' AND (j.state='running' OR j.actor_owned=1)",
                 [&job.batch_id],
                 |row| row.get(0),
             )
             .map_err(storage_error)?;
         let owned: bool = tx
             .query_row(
-                "SELECT actor_owned FROM agent_jobs WHERE id=?1",
+                "SELECT actor_owned OR EXISTS(SELECT 1 FROM agent_execution e
+                   WHERE e.job_id=agent_jobs.id AND e.worker_owned=1) FROM agent_jobs WHERE id=?1",
                 [id],
                 |row| row.get(0),
             )
@@ -544,7 +628,7 @@ impl AgentStore {
         let global_limit: u32 = tx
             .query_row(
                 "SELECT COALESCE(MIN(concurrency),3) FROM agent_batches b WHERE
-             EXISTS(SELECT 1 FROM agent_jobs j WHERE j.batch_id=b.id AND
+             EXISTS(SELECT 1 FROM agent_jobs j JOIN agent_execution e ON e.job_id=j.id WHERE j.batch_id=b.id AND e.mode='browser' AND
                  (j.state='running' OR j.actor_owned=1 OR (b.control='run' AND j.state='queued')))",
                 [],
                 |row| row.get(0),
@@ -552,7 +636,8 @@ impl AgentStore {
             .map_err(storage_error)?;
         let global_active: u32 = tx
             .query_row(
-                "SELECT COUNT(*) FROM agent_jobs WHERE state='running' OR actor_owned=1",
+                "SELECT COUNT(*) FROM agent_jobs j JOIN agent_execution e ON e.job_id=j.id
+                 WHERE e.mode='browser' AND (j.state='running' OR j.actor_owned=1)",
                 [],
                 |row| row.get(0),
             )
@@ -560,13 +645,27 @@ impl AgentStore {
         if job.state != "queued"
             || owned
             || control != "run"
-            || running >= concurrency
-            || global_active >= global_limit.min(10)
-            || !super::scheduling::admit(&tx, &job, capacity)?
+            || (job.mode == AgentMode::Browser
+                && (running >= concurrency
+                    || global_active >= global_limit.min(10)
+                    || !super::scheduling::admit(&tx, &job, capacity)?))
+            || (job.mode == AgentMode::ContentPreparation
+                && !super::execution::admit_preparation(&tx, &job)?)
         {
             return Ok(None);
         }
-        let resources = job.snapshot.resources()?;
+        if job.mode == AgentMode::Browser
+            && job.preset == Preset::PostListing
+            && !job.reconcile_only
+            && super::content::ready(&tx, &job)? == 0
+        {
+            return Err(denied("Browser admission requires an approved product"));
+        }
+        let resources = if job.mode == AgentMode::Browser {
+            job.snapshot.resources()?
+        } else {
+            vec![]
+        };
         for resource in &resources {
             let holder: Option<String> = tx
                 .query_row(
@@ -588,6 +687,7 @@ impl AgentStore {
             )
             .map_err(storage_error)?;
         let scope = AgentScope {
+            mode: job.mode,
             batch_id: job.batch_id.clone(),
             job_id: id.to_owned(),
             window_id: job.snapshot.window_id.clone(),
@@ -611,11 +711,16 @@ impl AgentStore {
         }
         tx.execute(
             "UPDATE agent_jobs SET state='running',phase='starting',scope_json=?2,plugin_generation=?3,
-             fence=?4,lease_until=?5,actor_owned=1,revision=revision+1,
+             fence=?4,lease_until=?5,actor_owned=?6,revision=revision+1,
              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
             params![id,canonical(&serde_json::to_value(&scope).map_err(storage_error)?),
-                generation,to_sql_i64(fence)?,now_ms()+LEASE_MS],
+                generation,to_sql_i64(fence)?,now_ms()+LEASE_MS,job.mode==AgentMode::Browser],
         ).map_err(storage_error)?;
+        tx.execute(
+            "UPDATE agent_execution SET worker_owned=?2 WHERE job_id=?1",
+            params![id, job.mode == AgentMode::ContentPreparation],
+        )
+        .map_err(storage_error)?;
         tx.execute(
             "UPDATE agent_items SET observed_revision=0 WHERE job_id=?1",
             [id],
@@ -626,7 +731,11 @@ impl AgentStore {
             &job.batch_id,
             Some(id),
             "job.claimed",
-            "Exclusive browser resources claimed",
+            if job.mode == AgentMode::Browser {
+                "Exclusive browser resources claimed"
+            } else {
+                "Content preparation worker claimed"
+            },
         )?;
         let claimed = read_job(&tx, id)?;
         tx.commit().map_err(storage_error)?;
@@ -704,6 +813,44 @@ impl AgentStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
+        let job = read_job(&tx, &scope.job_id)?;
+        if scope.mode == AgentMode::ContentPreparation
+            && !matches!(
+                output.state,
+                StepState::Continue
+                    | StepState::Prepared
+                    | StepState::ReviewRequired
+                    | StepState::Skipped
+            )
+        {
+            return Err(denied("Preparation can only advance content outcomes"));
+        }
+        if output.state == StepState::Prepared {
+            let pending_models: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_model_requests
+                WHERE job_id=?1 AND receipt_json IS NULL AND deadline>?2)",
+                    params![job.id, now_ms()],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)?;
+            if scope.mode != AgentMode::ContentPreparation
+                || job.preset != Preset::PostListing
+                || pending_models
+                || super::content::ready(&tx, &job)? == 0
+            {
+                return Err(denied(
+                    "Prepared transition requires durable approved content",
+                ));
+            }
+            super::controls::require_writes(&tx, &job.id)?;
+            tx.execute(
+                "UPDATE agent_execution SET mode='browser',needs_reprepare=0 WHERE job_id=?1",
+                [&job.id],
+            )
+            .map_err(storage_error)?;
+            super::execution::clear_checkpoints(&tx, &job.id)?;
+        }
         let mut state = output.state.as_str();
         if uncertain_actions(&tx, &scope.job_id)?
             && !matches!(output.state, StepState::Continue | StepState::ResultUnknown)
@@ -721,8 +868,46 @@ impl AgentStore {
         if fatal_sync && !uncertain_actions(&tx, &scope.job_id)? {
             state = "review_required";
         }
-        let job = read_job(&tx, &scope.job_id)?;
         super::items::record_updates(&tx, &job, output)?;
+        if scope.mode == AgentMode::Browser
+            && job.preset == Preset::PostListing
+            && !job.reconcile_only
+            && output.state == StepState::ReviewRequired
+            && !uncertain_actions(&tx, &job.id)?
+            && !pending_outbox(&tx, &job.id)?
+        {
+            let missing_content = match super::content::ready(&tx, &job) {
+                Ok(_) => false,
+                Err(error) if error.code == "UNAVAILABLE" => return Err(error),
+                Err(_) => true,
+            };
+            if missing_content || output.phase == "needs_reprepare" {
+                tx.execute(
+                    "UPDATE agent_execution SET needs_reprepare=1 WHERE job_id=?1",
+                    [&job.id],
+                )
+                .map_err(storage_error)?;
+            }
+        }
+        if output.state == StepState::LoginRequired && !super::execution::login_required(&tx, &job)?
+        {
+            return Err(denied(
+                "Login-required state requires an exact durable current observation",
+            ));
+        }
+        if state == "completed" && job.preset == Preset::PostListing {
+            let unresolved: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_items WHERE job_id=?1
+                AND state IN ('review_required','failed','login_required'))",
+                    [&job.id],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)?;
+            if unresolved {
+                state = "review_required";
+            }
+        }
         let retry = super::scheduling::record_step(&tx, &job, output)?;
         if retry {
             state = if uncertain_actions(&tx, &job.id)? {
@@ -731,18 +916,32 @@ impl AgentStore {
                 "queued"
             };
         }
-        if job.reconcile_only && state == "running" && !uncertain_actions(&tx, &scope.job_id)? {
+        let permanently_pinned: bool = tx
+            .query_row(
+                "SELECT reconcile_only FROM agent_execution WHERE job_id=?1",
+                [&scope.job_id],
+                |r| r.get(0),
+            )
+            .map_err(storage_error)?;
+        if job.reconcile_only
+            && !permanently_pinned
+            && state == "running"
+            && !uncertain_actions(&tx, &scope.job_id)?
+            && !pending_outbox(&tx, &scope.job_id)?
+        {
             state = "paused";
         }
         tx.execute(
-            "UPDATE agent_jobs SET state=?2,phase=?3,message=?4,steps=steps+1,revision=revision+1,
-             reconcile_only=CASE WHEN ?2='paused' THEN 0 ELSE reconcile_only END,
+            "UPDATE agent_jobs SET state=?2,phase=?3,message=?4,steps=steps+CASE WHEN ?5 THEN 0 ELSE 1 END,revision=revision+1,
+             reconcile_only=CASE WHEN ?2='paused' THEN
+               (SELECT reconcile_only FROM agent_execution WHERE job_id=?1) ELSE reconcile_only END,
              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
             params![
                 scope.job_id,
                 state,
                 output.phase,
-                output.message.clone().unwrap_or_default()
+                output.message.clone().unwrap_or_default(),
+                output.retry.as_ref().is_some_and(|r|r.code=="WAITING_FOR_FORM")
             ],
         )
         .map_err(storage_error)?;
@@ -837,12 +1036,22 @@ impl AgentStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         let job = read_job(&tx, id)?;
+        let (worker, reprepare): (bool, bool) = tx
+            .query_row(
+                "SELECT worker_owned,needs_reprepare FROM agent_execution WHERE job_id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(storage_error)?;
         if release_resources
             && (uncertain_actions(&tx, id)?
-                || matches!(
-                    job.state.as_str(),
-                    "running" | "review_required" | "result_unknown" | "blocked"
-                ))
+                || (job.mode == AgentMode::Browser
+                    && !worker
+                    && !reprepare
+                    && matches!(
+                        job.state.as_str(),
+                        "running" | "review_required" | "result_unknown" | "blocked"
+                    )))
         {
             return Err(conflict("Uncertain jobs must retain their resource locks"));
         }
@@ -851,11 +1060,29 @@ impl AgentStore {
             [id],
         )
         .map_err(storage_error)?;
+        tx.execute(
+            "UPDATE agent_execution SET worker_owned=0 WHERE job_id=?1",
+            [id],
+        )
+        .map_err(storage_error)?;
         if release_resources {
             tx.execute("DELETE FROM agent_resources WHERE job_id=?1", [id])
                 .map_err(storage_error)?;
         }
-        super::items::continue_after_item_control(&tx, id)?;
+        super::execution::resume_preparation(&tx, id)?;
+        if matches!(
+            job.state.as_str(),
+            "blocked" | "completed" | "cancelled" | "skipped"
+        ) {
+            tx.execute(
+                "UPDATE agent_execution SET needs_reprepare=0 WHERE job_id=?1",
+                [id],
+            )
+            .map_err(storage_error)?;
+        }
+        if !reprepare || release_resources {
+            super::items::continue_after_item_control(&tx, id)?;
+        }
         tx.commit().map_err(storage_error)
     }
 
@@ -894,6 +1121,7 @@ impl AgentStore {
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
         let job = read_job(&tx, &scope.job_id)?;
+        super::execution::require_browser(&job)?;
         if (kind == "listing" && job.preset != Preset::PostListing)
             || (kind == "message" && job.preset != Preset::Message)
         {
@@ -961,6 +1189,7 @@ impl AgentStore {
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
         let job = read_job(&tx, &scope.job_id)?;
+        super::execution::require_browser(&job)?;
         super::controls::require_writes(&tx, &scope.job_id)?;
         super::items::submit_item(&tx, &job, operation_id)?;
         if job.reconcile_only {
@@ -990,9 +1219,12 @@ impl AgentStore {
     }
 
     pub fn action_get(&self, scope: &AgentScope, operation_id: &str) -> AgentResult<Value> {
+        if scope.mode != AgentMode::Browser {
+            return Err(denied("Preparation cannot access external actions"));
+        }
         uuid(operation_id)?;
-        let row: Option<(String, String, Option<String>)> = self
-            .open()?
+        let db = self.open()?;
+        let row: Option<(String, String, Option<String>)> = db
             .query_row(
                 "SELECT job_id,state,result_json FROM agent_actions WHERE operation_id=?1",
                 [operation_id],
@@ -1010,6 +1242,12 @@ impl AgentStore {
         if let Some(result) = result {
             value["result"] = serde_json::from_str(&result).map_err(storage_error)?;
         }
+        if let Some(recovery) = super::recovery::get(&db, &job, operation_id)? {
+            value["recovery"] = recovery;
+        }
+        if let Some(recovery) = super::recovery::get_message(&db, &job, operation_id)? {
+            value["messageRecovery"] = recovery;
+        }
         Ok(value)
     }
 
@@ -1025,6 +1263,9 @@ impl AgentStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
+        if scope.mode != AgentMode::Browser {
+            return Err(denied("Preparation cannot access external actions"));
+        }
         if tx.execute(
             "UPDATE agent_actions SET state=CASE WHEN state='confirmed' THEN state ELSE 'unknown' END
              WHERE operation_id=?1 AND job_id=?2",params![operation_id,scope.job_id],
@@ -1063,6 +1304,9 @@ impl AgentStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         validate_lease(&tx, scope, generation)?;
+        if scope.mode != AgentMode::Browser {
+            return Err(denied("Preparation cannot confirm external actions"));
+        }
         let row: Option<(String, String, String, Option<String>)> = tx
             .query_row(
                 "SELECT job_id,kind,state,result_json FROM agent_actions WHERE operation_id=?1",
@@ -1242,6 +1486,9 @@ impl AgentStore {
                 "publication.synced",
                 "Confirmed publication recorded by the product plugin",
             )?;
+            // Sync may finish after the browser actor has already drained.
+            // Handoff remains forbidden until its ownership and recovery settle.
+            super::execution::resume_preparation(&tx, &job_id)?;
         }
         tx.commit().map_err(storage_error)
     }
@@ -1643,7 +1890,7 @@ pub(super) fn batch_view(db: &Connection, id: &str) -> AgentResult<Value> {
     ).optional().map_err(storage_error)?.ok_or_else(||invalid("Agent batch was not found"))?;
     let(total,completed,attention,running,queued,cancelled):(u64,u64,u64,u64,u64,u64)=db.query_row(
         "SELECT COUNT(*),COALESCE(SUM(state IN ('completed','skipped')),0),
-         COALESCE(SUM(state IN ('blocked','review_required','result_unknown','sync_pending','failed')),0),
+         COALESCE(SUM(state IN ('blocked','login_required','review_required','result_unknown','sync_pending','failed')),0),
          COALESCE(SUM(state='running'),0),COALESCE(SUM(state='queued'),0),
          COALESCE(SUM(state='cancelled'),0) FROM agent_jobs WHERE batch_id=?1",
         [id],|r|Ok((read_u64(r, 0)?,read_u64(r, 1)?,read_u64(r, 2)?,
@@ -1686,6 +1933,16 @@ pub(super) fn read_job(db: &Connection, id: &str) -> AgentResult<Job> {
         settings: serde_json::from_str(&row.3).map_err(storage_error)?,
         snapshot: serde_json::from_str(&row.4).map_err(storage_error)?,
         state: row.5,
+        mode: {
+            let mode: String = db
+                .query_row(
+                    "SELECT mode FROM agent_execution WHERE job_id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .map_err(storage_error)?;
+            serde_json::from_value(json!(mode)).map_err(storage_error)?
+        },
         scope: row
             .6
             .map(|text| serde_json::from_str(&text))
@@ -1706,7 +1963,8 @@ pub(super) fn validate_lease(
     let job = read_job(db, &scope.job_id)?;
     let (until, owned): (i64, bool) = db
         .query_row(
-            "SELECT lease_until,actor_owned FROM agent_jobs WHERE id=?1",
+            "SELECT j.lease_until,CASE WHEN e.mode='content_preparation' THEN e.worker_owned ELSE j.actor_owned END
+             FROM agent_jobs j JOIN agent_execution e ON e.job_id=j.id WHERE j.id=?1",
             [&scope.job_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -1715,6 +1973,7 @@ pub(super) fn validate_lease(
         || job.snapshot.window_id != scope.window_id
         || job.snapshot.account_id()? != scope.account_id
         || job.scope.as_ref() != Some(scope)
+        || job.mode != scope.mode
         || job.generation.as_deref() != Some(generation)
         || !owned
         || until < now_ms()
@@ -1724,7 +1983,11 @@ pub(super) fn validate_lease(
             "Agent lease is expired, stale, stopped, or outside the requested scope",
         ));
     }
-    for key in job.snapshot.resources()? {
+    for key in if scope.mode == AgentMode::Browser {
+        job.snapshot.resources()?
+    } else {
+        vec![]
+    } {
         let valid:bool=db.query_row(
             "SELECT EXISTS(SELECT 1 FROM agent_resources WHERE resource_key=?1 AND job_id=?2 AND lease_id=?3 AND fence=?4)",
             params![key,scope.job_id,scope.lease_id,to_sql_i64(scope.fence)?],|r|r.get(0),
@@ -1809,7 +2072,7 @@ fn checkpoint_config_id(value: &Value, thread: &str) -> AgentResult<Option<Strin
     optional_checkpoint_id(config.get("checkpoint_id"))
 }
 
-fn private_checkpoint_data(value: &Value, settings: &Value) -> bool {
+pub(super) fn private_checkpoint_data(value: &Value, settings: &Value) -> bool {
     match value {
         Value::Object(object) => object.iter().any(|(key, value)| {
             matches!(
@@ -1821,6 +2084,13 @@ fn private_checkpoint_data(value: &Value, settings: &Value) -> bool {
                     | "cookies"
                     | "imagebytes"
                     | "base64"
+                    | "bankaccounts"
+                    | "bank_accounts"
+                    | "account_number"
+                    | "routing_number"
+                    | "wallet"
+                    | "email"
+                    | "real_name"
             ) || private_checkpoint_data(value, settings)
         }),
         Value::Array(values) => values

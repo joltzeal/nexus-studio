@@ -1,10 +1,9 @@
 import { useEffect, useState, type MouseEvent } from 'react'
-import {
-  compareProductPublicationRecency,
-  type Product,
-  type ProductPublication,
-  type ProductPublicationPage,
-} from '@nexus/plugin-products/contracts'
+import type {
+  Product,
+  ProductPublication,
+  ProductPublicationPage,
+} from '@nexus/plugin-contracts/products'
 import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +24,7 @@ import { toast } from '@/components/ui/toast'
 import { openExternalUrl, safeExternalHttpUrl } from '@/lib/platform/external-url'
 import { listProductPublications } from './api'
 import { productError, productTime } from './product-form'
+import { compareProductPublicationRecency } from './publication-order'
 
 export function ProductPublicationOverview({
   product,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ProductImage } from '@nexus/plugin-products/contracts'
+import type { ProductImage } from '@nexus/plugin-contracts/products'
 import { ImageOff, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'

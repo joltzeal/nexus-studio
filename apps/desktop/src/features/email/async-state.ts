@@ -1,6 +1,7 @@
 import { EmailRequestError, emailFailureMessage, readStateFailureMessage } from './errors'
 import type {
   MailboxView,
+  MailboxErrorCode,
   MailFolder,
   MailMessage,
   MailMessageDetail,
@@ -151,6 +152,8 @@ export interface EmailReaderSnapshot {
   detailError: string | null
   writing: boolean
   writeError: string | null
+  writeErrorCode: MailboxErrorCode | null
+  readOnlyMode: boolean
 }
 
 export class EmailReaderStore {
@@ -169,6 +172,8 @@ export class EmailReaderStore {
     detailError: null,
     writing: false,
     writeError: null,
+    writeErrorCode: null,
+    readOnlyMode: false,
   }
   private readonly listeners = new Set<() => void>()
   private readonly resource: EmailResource<MessageQuery, MailMessagePage>
@@ -338,6 +343,11 @@ export class EmailReaderStore {
   ): Promise<void> =>
     scope === this.scope ? this.write(messageIds, isRead, false) : Promise.resolve()
 
+  continueReadOnly = (): void => {
+    if (!this.active || this.snapshot.writing) return
+    this.publish({ readOnlyMode: true, writeError: null, writeErrorCode: null })
+  }
+
   private query(): MessageQuery {
     const cursor = this.cursors[this.snapshot.page - 1]
     return {
@@ -366,6 +376,7 @@ export class EmailReaderStore {
       detailError: null,
       writing: false,
       writeError: null,
+      writeErrorCode: null,
     })
     this.resource.select(this.query())
   }
@@ -410,6 +421,7 @@ export class EmailReaderStore {
     const detail = this.snapshot.detail
     if (
       !this.active ||
+      this.snapshot.readOnlyMode ||
       !detail ||
       detail.isRead ||
       this.snapshot.detailLoading ||
@@ -442,7 +454,7 @@ export class EmailReaderStore {
       messageIds: [...messageIds],
       isRead,
     }
-    this.publish({ writing: true, writeError: null })
+    this.publish({ writing: true, writeError: null, writeErrorCode: null })
     try {
       const result = await this.api.setRead(input)
       if (!this.active || scope !== this.scope || revision !== this.writeRevision) return
@@ -462,6 +474,11 @@ export class EmailReaderStore {
           (this.snapshot.selected?.id === id ? this.snapshot.selected : null)
         if (previous && previous.isRead !== isRead) unreadDelta += isRead ? -1 : 1
       }
+      const failureCode = result.failures.some(
+        (item) => item.code === 'PERMISSION_DENIED',
+      )
+        ? 'PERMISSION_DENIED'
+        : (result.failures[0]?.code ?? null)
       this.publish({
         selected:
           this.snapshot.selected && updated.has(this.snapshot.selected.id)
@@ -474,11 +491,10 @@ export class EmailReaderStore {
         selectedIds: this.snapshot.selectedIds.filter((id) => !updated.has(id)),
         writeError: result.failures.length
           ? `已更新 ${updated.size} 封，${result.failures.length} 封未更新。${readStateFailureMessage(
-              result.failures.some((item) => item.code === 'PERMISSION_DENIED')
-                ? 'PERMISSION_DENIED'
-                : result.failures[0]!.code,
+              failureCode,
             )}`
           : null,
+        writeErrorCode: failureCode,
       })
       if (updated.size) {
         this.resource.commit((list) => ({
@@ -500,6 +516,7 @@ export class EmailReaderStore {
         writeError: readStateFailureMessage(
           error instanceof EmailRequestError ? error.code : null,
         ),
+        writeErrorCode: error instanceof EmailRequestError ? error.code : null,
       })
     } finally {
       if (this.active && scope === this.scope && revision === this.writeRevision) {

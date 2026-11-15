@@ -24,6 +24,7 @@
 - 使用 pnpm 和根锁文件，Tauri 与 shadcn 优先使用官方 CLI。
 - 遵循仓库固定工具链，不为无关任务升级依赖或引入其他 JS 锁文件。
 - 本地不执行构建、打包或 Rust 编译/测试/Clippy；可直接运行 Vitest、lint、无产物 TS 检查和 rustfmt。
+- 插件按用户 2026-11-14 新要求仅在本地开发、编译和打包并直接发布对象存储；此例外不包括应用或 Rust 构建。`plugins/` 与 `market/` 不提交 Git，公开数据契约放在 `packages/plugin-contracts/`，主应用 CI 不依赖插件源码。
 - 根 test/typecheck/check 会触发构建，本地不要调用；直接运行对应工具并如实记录结果。
 - 未经要求不创建提交或发布，不将开发构件描述为正式发行证据。
 

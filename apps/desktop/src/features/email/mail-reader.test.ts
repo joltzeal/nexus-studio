@@ -22,7 +22,9 @@ import {
 import { copyText } from '@/lib/clipboard'
 import { getMessage, listMessages, setMessagesRead } from './api'
 import { EmailRequestError } from './errors'
+import { EmailAuthorizationDialog } from './authorization-dialog'
 import { MailReader } from './mail-reader'
+import { MailboxEditor } from './mailbox-editor'
 import { mailbox, message } from './test-fixtures'
 import { mailHtmlDocument, type MailMessageDetail, type MailMessagePage } from './types'
 
@@ -132,6 +134,110 @@ async function openReader() {
 }
 
 describe('mailbox reader interactions', () => {
+  it('opens explicit write consent and rebuilds its reader from the authorized account without retrying the failed write', async () => {
+    const view = await openReader()
+    vi.mocked(setMessagesRead).mockResolvedValueOnce({
+      updatedIds: [],
+      failures: [{ messageId: 'message-1', code: 'PERMISSION_DENIED' }],
+      isRead: true,
+    })
+    click(view.tree(), '打开邮件 Synthetic subject')
+    await flushPromises()
+    click(view.tree(), '授予 Graph 读写权限')
+    const consent = components(view.tree(), EmailAuthorizationDialog)[0]!
+    expect(consent.props.account.id).toBe('mailbox-1')
+    vi.mocked(listMessages).mockResolvedValueOnce(
+      page({ items: [message({ id: 'new-graph-id' })], nextCursor: null }),
+    )
+    consent.props.onAuthorized(mailbox({ transport: 'graph' }))
+    view.tree()
+    view.hooks.flushEffects()
+    await flushPromises()
+    expect(components(view.tree(), EmailAuthorizationDialog)).toHaveLength(0)
+    expect(text(view.tree())).not.toContain('1 封未更新')
+    expect(view.changed).toHaveBeenCalledOnce()
+    expect(setMessagesRead).toHaveBeenCalledTimes(1)
+    check(view.tree(), '全选当前页邮件', true)
+    click(view.tree(), '所选标为已读')
+    await flushPromises()
+    expect(setMessagesRead).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageIds: ['new-graph-id'] }),
+    )
+  })
+
+  it('offers explicit channel/credential recovery after a denied write without changing the message', async () => {
+    const view = await openReader()
+    vi.mocked(setMessagesRead).mockResolvedValueOnce({
+      updatedIds: [],
+      failures: [{ messageId: 'message-1', code: 'PERMISSION_DENIED' }],
+      isRead: true,
+    })
+    click(view.tree(), '打开邮件 Synthetic subject')
+    await flushPromises()
+    expect(text(view.tree())).toContain('Mail.ReadWrite')
+    expect(text(view.tree())).toContain('IMAP.AccessAsUser.All')
+    expect(text(view.tree())).toContain('第三方')
+    expect(text(view.tree())).toContain('不能')
+    click(view.tree(), '编辑授权或切换通道')
+    const editor = components(view.tree(), MailboxEditor)[0]!
+    expect(editor.props.account).toMatchObject({ transport: 'graph' })
+    expect(vi.mocked(setMessagesRead)).toHaveBeenCalledTimes(1)
+    editor.props.onClose()
+    expect(text(mount(detailElement(view.tree())).tree())).toContain('未读')
+    expect(text(view.tree())).toContain('0 封')
+  })
+
+  it('starts a fresh reader after an explicit channel save and never reuses Graph message IDs', async () => {
+    const view = await openReader()
+    vi.mocked(setMessagesRead).mockResolvedValueOnce({
+      updatedIds: [],
+      failures: [{ messageId: 'message-1', code: 'PERMISSION_DENIED' }],
+      isRead: true,
+    })
+    click(view.tree(), '打开邮件 Synthetic subject')
+    await flushPromises()
+    click(view.tree(), '编辑授权或切换通道')
+    const editor = components(view.tree(), MailboxEditor)[0]!
+    vi.mocked(listMessages).mockResolvedValueOnce(
+      page({ items: [message({ id: 'imap-fresh-id' })], nextCursor: null }),
+    )
+    editor.props.onSaved(mailbox({ transport: 'imap' }))
+    view.tree()
+    view.hooks.flushEffects()
+    await flushPromises()
+    expect(text(view.tree())).toContain('IMAP')
+    expect(text(view.tree())).not.toContain('1 封未更新')
+    expect(elements(view.tree()).some((node) => node.props.store)).toBe(false)
+    expect(view.changed).toHaveBeenCalledOnce()
+    vi.mocked(getMessage).mockResolvedValueOnce(body({ id: 'imap-fresh-id' }))
+    click(view.tree(), '打开邮件 Synthetic subject')
+    await flushPromises()
+    expect(setMessagesRead).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageIds: ['imap-fresh-id'] }),
+    )
+  })
+
+  it('lets a user keep reading without repeated automatic writes when consent cannot be obtained', async () => {
+    const view = await openReader()
+    vi.mocked(setMessagesRead).mockRejectedValueOnce(
+      new EmailRequestError('PERMISSION_DENIED'),
+    )
+    click(view.tree(), '打开邮件 Synthetic subject')
+    await flushPromises()
+    click(view.tree(), '继续只读')
+    click(view.tree(), '打开邮件 Second subject')
+    await flushPromises()
+    expect(text(view.tree())).toContain('只读模式')
+    expect(setMessagesRead).toHaveBeenCalledTimes(1)
+    const detail = mount(detailElement(view.tree()))
+    expect(text(detail.tree())).toContain('未读')
+    expect(view.changed).not.toHaveBeenCalled()
+    click(detail.tree(), '标为已读')
+    await flushPromises()
+    expect(setMessagesRead).toHaveBeenCalledTimes(2)
+    expect(view.changed).toHaveBeenCalledOnce()
+  })
+
   it('shows explicit unread indicators, folder counts, filters and independent checkbox selection', async () => {
     const view = await openReader()
     expect(text(view.tree())).toContain('共 25 封')

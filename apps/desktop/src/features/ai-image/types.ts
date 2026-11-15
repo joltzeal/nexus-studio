@@ -31,6 +31,25 @@ export const RECORD_KINDS: { value: RecordKind | 'all'; label: string }[] = [
 export type RecordStage = 'queued' | 'vision' | 'copy' | 'image' | 'done'
 export type GenerationMode = 'generate' | 'edit'
 export type ImageSize = '1024x1024' | '1024x1536' | '1536x1024' | 'auto'
+export type AgingLevel = 'none' | 'light' | 'moderate' | 'heavy'
+export const DEFAULT_AGING_LEVEL: AgingLevel = 'moderate'
+export const AGING_LEVEL_OPTIONS: { value: AgingLevel; label: string }[] = [
+  { value: 'none', label: '无' },
+  { value: 'light', label: '轻微' },
+  { value: 'moderate', label: '适中' },
+  { value: 'heavy', label: '明显' },
+]
+export const AGING_LEVEL_HINT =
+  '只调节环境杂乱、背景使用痕迹和手机拍摄的不完美感；不新增商品磨损，也不抹去已有瑕疵。'
+
+export function isAgingLevel(value: unknown): value is AgingLevel {
+  return AGING_LEVEL_OPTIONS.some((option) => option.value === value)
+}
+
+export function validateAgingLevel(value: unknown): void {
+  if (value !== undefined && !isAgingLevel(value))
+    throw new Error('请选择有效的做旧程度。')
+}
 
 export interface Provider {
   id: string
@@ -104,6 +123,7 @@ export interface ScenePlan {
   model: string
   inputFileId: string
   requirements: string
+  agingLevel?: AgingLevel
   count: number
   result: ScenePlanResult | null
   error: string | null
@@ -131,6 +151,7 @@ export interface GenerationRecord {
   status: RecordStatus
   stage: RecordStage
   mode: GenerationMode
+  agingLevel?: AgingLevel
   prompt: string
   basePrompt?: string
   presetId: string | null
@@ -191,6 +212,7 @@ export interface GenerationSummary extends Pick<
   | 'status'
   | 'stage'
   | 'mode'
+  | 'agingLevel'
   | 'prompt'
   | 'presetId'
   | 'presetLabel'

@@ -1,5 +1,15 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   DialogContent,
@@ -49,6 +59,7 @@ export function AccountEditor({
       ? { ...EMPTY_ACCOUNT }
       : {
           id: account.id,
+          expectedUpdatedAt: account.updatedAt,
           loginMethod: account.loginMethod,
           account: account.account,
           password: account.password,
@@ -63,17 +74,22 @@ export function AccountEditor({
   const [revealed, setRevealed] = useState(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirmation, setConfirmation] = useState<{
+    input: AccountInput
+    changes: string[]
+  } | null>(null)
   const saving = useRef(false)
-  const disabled = pending || !ready
+  const disabled = pending || confirmation !== null || !ready
 
   function patch(changes: Partial<AccountInput>) {
+    if (saving.current || confirmation !== null) return
     setInput((current) => ({ ...current, ...changes }))
     setError(null)
   }
 
-  async function submit(event: FormEvent) {
+  function submit(event: FormEvent) {
     event.preventDefault()
-    if (saving.current || !ready) return
+    if (saving.current || confirmation !== null || !ready) return
     if (input.account.trim() === '') {
       setError('请填写账号。')
       return
@@ -82,13 +98,45 @@ export function AccountEditor({
       setError('请填写密码。')
       return
     }
+    const next = { ...input, account: input.account.trim() }
+    const changes: string[] = []
+    if (account) {
+      if (account.phone.trim() && account.phone.trim() !== next.phone.trim()) {
+        changes.push(
+          next.phone.trim()
+            ? `更换手机号「${account.phone}」为「${next.phone.trim()}」`
+            : `清空手机号「${account.phone}」`,
+        )
+      }
+      for (const [field, label] of [
+        ['smsOtpUrl', '短信接码链接'],
+        ['emailOtpUrl', '邮箱接码链接'],
+      ] as const) {
+        if (account[field].trim() && account[field].trim() !== next[field].trim()) {
+          changes.push(`${next[field].trim() ? '替换' : '清空'}${label}`)
+        }
+      }
+    }
+    setError(null)
+    if (changes.length) {
+      setConfirmation({ input: next, changes })
+      return
+    }
+    void save(next)
+  }
+
+  async function save(next: AccountInput, confirmed = false) {
+    if (saving.current || !ready) return
     saving.current = true
     setPending(true)
     setError(null)
     try {
-      await onSave({ ...input, account: input.account.trim() })
+      await onSave(next)
+      setConfirmation(null)
     } catch (cause) {
-      setError(message(cause))
+      setError(
+        confirmed ? '保存失败，请检查插件状态或刷新账号资料后重试。' : message(cause),
+      )
     } finally {
       saving.current = false
       setPending(false)
@@ -100,10 +148,10 @@ export function AccountEditor({
       className="window-editor"
       showCloseButton={!pending}
       onEscapeKeyDown={(event) => {
-        if (saving.current) event.preventDefault()
+        if (saving.current || confirmation !== null) event.preventDefault()
       }}
       onInteractOutside={(event) => {
-        if (saving.current) event.preventDefault()
+        if (saving.current || confirmation !== null) event.preventDefault()
       }}
     >
       <DialogHeader>
@@ -274,17 +322,66 @@ export function AccountEditor({
           {!ready ? (
             <FieldError role="alert">Vinted 账号插件尚未就绪，暂时无法保存。</FieldError>
           ) : null}
-          {error ? <FieldError role="alert">{error}</FieldError> : null}
+          {error && confirmation === null ? (
+            <FieldError role="alert">{error}</FieldError>
+          ) : null}
         </div>
       </form>
       <DialogFooter>
-        <Button variant="ghost" disabled={pending} onClick={onCancel}>
+        <Button
+          variant="ghost"
+          disabled={pending || confirmation !== null}
+          onClick={() => {
+            if (!saving.current && confirmation === null) onCancel()
+          }}
+        >
           取消
         </Button>
         <Button type="submit" form="account-form" disabled={disabled}>
           {pending ? '正在保存…' : '保存账号'}
         </Button>
       </DialogFooter>
+      <AlertDialog
+        open={confirmation !== null}
+        onOpenChange={(open) => {
+          if (!open && !saving.current) {
+            setConfirmation(null)
+            setError(null)
+          }
+        }}
+      >
+        {confirmation ? (
+          <AlertDialogContent
+            onEscapeKeyDown={(event) => {
+              if (saving.current) event.preventDefault()
+            }}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认修改账号联系方式？</AlertDialogTitle>
+              <AlertDialogDescription>
+                高风险操作：将为账号「{account?.account}」
+                {confirmation.changes.join('、')}。修改将影响使用此账号的所有关联窗口，
+                并可能影响登录验证和账号找回。确认前请核对新资料；
+                此操作只修改本地账号资料，不会在 Vinted 平台更改绑定。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {error ? <FieldError role="alert">{error}</FieldError> : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={pending}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={pending || !ready}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void save(confirmation.input, true)
+                }}
+              >
+                {pending ? '正在保存…' : '确认修改'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        ) : null}
+      </AlertDialog>
     </DialogContent>
   )
 }

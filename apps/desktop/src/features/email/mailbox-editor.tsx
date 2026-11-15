@@ -21,6 +21,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toast'
 import { saveMailbox } from './api'
+import { mailTransportPermissionMessage } from './errors'
 import { useEmailAction } from './hooks'
 import type { MailboxView, MailTransport } from './types'
 
@@ -138,7 +139,9 @@ export function MailboxEditor({
                 <ToggleGroupItem value="imap">IMAP</ToggleGroupItem>
               </ToggleGroup>
               <FieldDescription>
-                须已获得所选通道授权，权限失败不会自动切换通道。
+                {mailTransportPermissionMessage(transport)}
+                切换通道仅在保存后生效，不会自动补授权限；留空 token
+                会使用当前已保存的最新凭据重新获取所选通道的令牌。
               </FieldDescription>
             </Field>
             <Field>

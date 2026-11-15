@@ -1,6 +1,6 @@
 import type { DependencyList, EffectCallback } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ProductSchema } from '@nexus/plugin-products/contracts'
+import { ProductSchema } from '@nexus/plugin-contracts/products'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -43,6 +43,7 @@ const record = {
   outputs: [{ id: 'output', name: 'output.png', mime: 'image/png', bytes: 1 }],
 }
 const product = ProductSchema.parse({
+  platformFacts: { vinted: [] },
   id: '741204de-e426-4a97-9d1a-a8b420e6eac4',
   name: 'Imported group',
   revision: 1,

@@ -210,6 +210,29 @@ afterEach(() => {
 })
 
 describe('explicit provider image test', () => {
+  it.each(['generate', 'edit'] as const)(
+    'submits the independent level for a %s test without a vision request',
+    async (mode) => {
+      await open()
+      const aging = components(render(), LabeledSelect).find(
+        (node) => node.props.ariaLabel === '做旧程度',
+      )!.props
+      expect(aging.value).toBe('moderate')
+      expect(text(render())).toContain('不新增商品磨损')
+      aging.onValueChange('none')
+      if (mode === 'edit') {
+        select('测试方式', mode)
+        choose([new File(['reference'], 'reference.png', { type: 'image/png' })])
+        await flushPromises()
+      }
+      await submit()
+      expect(vi.mocked(testProviderImage).mock.lastCall![0]).toMatchObject({
+        agingLevel: 'none',
+        mode,
+      })
+    },
+  )
+
   it('opens without a request, shows saved configuration and billing, and submits the editable prompt once', async () => {
     await open()
     expect(text(render())).toContain(provider.name)
@@ -231,6 +254,7 @@ describe('explicit provider image test', () => {
       mode: 'generate',
       prompt: ' Custom prompt.\n',
       size: '1536x1024',
+      agingLevel: 'moderate',
       inputFileIds: [],
     })
     expect(text(render())).toContain('已提交')
@@ -449,7 +473,7 @@ describe('single image test input', () => {
       inputFileIds: ['uploaded-reference'],
     })
     expect(Object.keys(vi.mocked(testProviderImage).mock.calls[0]![0]).sort()).toEqual(
-      ['id', 'model', 'mode', 'prompt', 'size', 'inputFileIds'].sort(),
+      ['id', 'model', 'mode', 'prompt', 'size', 'inputFileIds', 'agingLevel'].sort(),
     )
   })
 

@@ -92,7 +92,11 @@ import {
 } from '@/components/ui/table'
 import { listPlugins, type PluginView } from '@/lib/platform/native-plugins'
 import { AccountEditor } from '@/features/accounts/account-editor'
-import { updateContact } from '@/features/sim8/accounts-bridge'
+import {
+  ContactChangedError,
+  sameContact,
+  updateConfirmedContact,
+} from '@/features/accounts/confirmed-contact'
 import {
   bindAccount,
   listAccounts,
@@ -140,6 +144,53 @@ import { smsWaits } from '@/features/accounts/sms-wait-runtime'
 import { Sim8ExpiryNotice } from '@/features/sim8/expiry-notice'
 
 const WINDOW_PAGE_SIZES = [20, 50, 100] as const
+
+interface WindowRelationSnapshot {
+  window: BrowserWindow
+  previous: BindingView | null
+  epoch: number
+  generation: number
+}
+
+interface BindingSelection extends WindowRelationSnapshot {
+  session: number
+}
+
+interface BindingChange extends BindingSelection {
+  accountId: string | null
+  accountName: string | null
+}
+
+interface PhoneUnlinkTarget extends WindowRelationSnapshot {
+  account: Account
+  affected: BindingView[]
+}
+
+class WindowRelationChangedError extends Error {
+  constructor() {
+    super('窗口账号关联已变化，请取消并刷新资料后重新确认。')
+  }
+}
+
+function sameBinding(current: BindingView | null, expected: BindingView | null) {
+  return (
+    current?.accountId === expected?.accountId &&
+    current?.boundAt === expected?.boundAt &&
+    current?.revision === expected?.revision
+  )
+}
+
+function sameBindings(current: BindingView[], expected: BindingView[]) {
+  return (
+    current.length === expected.length &&
+    expected.every((entry) =>
+      sameBinding(
+        current.find((item) => item.windowId === entry.windowId) ?? null,
+        entry,
+      ),
+    )
+  )
+}
 
 function message(error: unknown): string {
   return typeof error === 'string'
@@ -287,24 +338,52 @@ export function SpacesPage() {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [unlinkingPhones, setUnlinkingPhones] = useState<Set<string>>(() => new Set())
   const phoneUnlinkRequests = useRef(new Set<string>())
-  const [binding, setBinding] = useState<BrowserWindow | null>(null)
+  const [phoneConfirmation, setPhoneConfirmation] = useState<PhoneUnlinkTarget | null>(
+    null,
+  )
+  const phoneTarget = useRef<PhoneUnlinkTarget | null>(null)
+  const [phoneUnlinkError, setPhoneUnlinkError] = useState<string | null>(null)
+  const resetPhoneConfirmation = useCallback(() => {
+    phoneTarget.current = null
+    setPhoneConfirmation(null)
+    setPhoneUnlinkError(null)
+  }, [])
+  const accountView = useRef({ accounts, bindings, windows })
+  useEffect(() => {
+    accountView.current = { accounts, bindings, windows }
+  }, [accounts, bindings, windows])
+  const [binding, setBinding] = useState<BindingSelection | null>(null)
+  const [bindingConfirmation, setBindingConfirmation] = useState<BindingChange | null>(
+    null,
+  )
+  const bindingTarget = useRef<BindingChange | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  const [conflict, setConflict] = useState<{
-    window: BrowserWindow
-    accountId: string
-    duplicates: string[]
-  } | null>(null)
+  const [conflict, setConflict] = useState<
+    | (Omit<BindingChange, 'accountId'> & {
+        accountId: string
+        duplicates: string[]
+      })
+    | null
+  >(null)
   const [bindingError, setBindingError] = useState<string | null>(null)
   const [bindingPending, setBindingPending] = useState(false)
   const bindingSession = useRef(0)
   const bindingRequest = useRef<number | null>(null)
   const dismissBinding = useCallback(() => {
     bindingSession.current += 1
+    bindingTarget.current = null
     setBinding(null)
+    setBindingConfirmation(null)
     setConflict(null)
     setBindingError(null)
     setBindingPending(false)
-  }, [])
+  }, [
+    setBinding,
+    setBindingConfirmation,
+    setConflict,
+    setBindingError,
+    setBindingPending,
+  ])
   const recovery = useTransferRecovery(native)
 
   const load = useCallback((): Promise<BrowserWindow[]> => {
@@ -355,11 +434,12 @@ export function SpacesPage() {
         setDeleting(null)
         setAttaching(false)
         dismissBinding()
+        resetPhoneConfirmation()
         setEditingAccount(null)
       }
       setConnections(items)
     }
-  }, [dismissBinding])
+  }, [dismissBinding, resetPhoneConfirmation])
   const {
     gate,
     operatingWindows,
@@ -390,6 +470,7 @@ export function SpacesPage() {
     setDeleting(null)
     setAttaching(false)
     dismissBinding()
+    resetPhoneConfirmation()
     setEditingAccount(null)
     setError(null)
     closeGate()
@@ -591,22 +672,101 @@ export function SpacesPage() {
     await refreshBindings()
   }
 
-  async function unlinkPhone(accountId: string) {
+  function relationSnapshot(window: BrowserWindow): WindowRelationSnapshot {
+    return {
+      window,
+      previous:
+        accountView.current.bindings.find((item) => item.windowId === window.id) ?? null,
+      epoch: viewEpoch.current,
+      generation: accountSync.current.generation,
+    }
+  }
+
+  function assertWindowRelation(
+    target: WindowRelationSnapshot,
+    latest = accountView.current.bindings,
+  ) {
+    const sync = accountSync.current
+    if (!sync.available || !sync.ready || target.generation !== sync.generation)
+      throw new Error('账号资料暂不可用')
+    if (
+      !windowReads.current.active ||
+      target.epoch !== viewEpoch.current ||
+      !accountView.current.windows.some((window) => window.id === target.window.id) ||
+      !sameBinding(
+        latest.find((item) => item.windowId === target.window.id) ?? null,
+        target.previous,
+      )
+    )
+      throw new WindowRelationChangedError()
+  }
+
+  function requestPhoneUnlink(window: BrowserWindow, account: Account) {
     if (
       !accountsReady ||
+      !accountSync.current.ready ||
+      (phoneTarget.current !== null &&
+        !phoneUnlinkRequests.current.has(phoneTarget.current.account.id)) ||
+      phoneUnlinkRequests.current.has(account.id)
+    )
+      return
+    const target = {
+      ...relationSnapshot(window),
+      account,
+      affected: accountView.current.bindings.filter(
+        (item) => item.accountId === account.id,
+      ),
+    }
+    phoneTarget.current = target
+    setPhoneConfirmation(target)
+    setPhoneUnlinkError(null)
+  }
+
+  async function unlinkPhone(target: PhoneUnlinkTarget) {
+    const accountId = target.account.id
+    if (
+      phoneTarget.current !== target ||
       !accountSync.current.ready ||
       phoneUnlinkRequests.current.has(accountId)
     )
       return
+    function assertCurrent(latest = accountView.current.bindings) {
+      assertWindowRelation(target)
+      assertWindowRelation(target, latest)
+      const current = accountView.current.accounts.find((item) => item.id === accountId)
+      if (!current || !sameContact(current, target.account))
+        throw new ContactChangedError()
+      if (
+        !sameBindings(
+          latest.filter((item) => item.accountId === accountId),
+          target.affected,
+        )
+      )
+        throw new WindowRelationChangedError()
+    }
     phoneUnlinkRequests.current.add(accountId)
-    smsWaits.stop(accountId)
     setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
+    setPhoneUnlinkError(null)
     try {
-      const saved = await updateContact(accountId, { phone: '', smsOtpUrl: '' })
+      assertCurrent()
+      const latest = await listBindings()
+      assertCurrent(latest.items)
+      const saved = await updateConfirmedContact(
+        target.account,
+        { phone: '', smsOtpUrl: '' },
+        assertCurrent,
+      )
       applySavedAccount(saved)
+      if (phoneTarget.current === target) resetPhoneConfirmation()
       toast.success('手机号与短信接码链接已解绑')
     } catch (cause) {
-      toast.error(`解绑手机号失败：${message(cause)}`)
+      if (phoneTarget.current === target)
+        setPhoneUnlinkError(
+          cause instanceof ContactChangedError ||
+            cause instanceof WindowRelationChangedError
+            ? cause.message
+            : '解绑手机号失败，请检查插件状态或刷新账号资料后重试。',
+        )
     } finally {
       phoneUnlinkRequests.current.delete(accountId)
       setUnlinkingPhones(new Set(phoneUnlinkRequests.current))
@@ -674,9 +834,24 @@ export function SpacesPage() {
     void refreshBindings().catch(() => undefined)
   }, [accountGeneration, accountsRunning, refreshBindings])
 
-  async function bind(window: BrowserWindow, accountId: string | null) {
+  function requestBinding(selection: BindingSelection, accountId: string | null) {
+    if (!accountsReady || !accountSync.current.ready || bindingTarget.current) return
+    const target: BindingChange = {
+      ...selection,
+      accountId,
+      accountName: accountId === null ? null : accountLabel(accountId),
+    }
+    bindingTarget.current = target
+    setBindingConfirmation(target)
+    setBinding(null)
+    setBindingError(null)
+  }
+
+  async function bind(target: BindingChange) {
+    const { window, accountId } = target
     const session = bindingSession.current
     if (
+      bindingTarget.current !== target ||
       !accountsReady ||
       !accountSync.current.ready ||
       bindingRequest.current === session
@@ -688,27 +863,40 @@ export function SpacesPage() {
       epoch === viewEpoch.current &&
       windowReads.current.active
     bindingRequest.current = session
-    const previous = bindings.find((entry) => entry.windowId === window.id)?.accountId
-    if (previous && previous !== accountId) smsWaits.stopWindow(window.id)
     setBindingPending(true)
     setBindingError(null)
     try {
+      assertWindowRelation(target)
+      const latest = await listBindings()
+      assertWindowRelation(target, latest.items)
       if (accountId === null) {
         await unbindWindow(window.id)
+        if (target.previous) smsWaits.stopWindow(window.id)
         toast.success('已解除关联')
       } else {
         const result = await bindAccount(accountId, window.id)
         if (!result.bound) {
           // Nothing was written: the warning comes first.
-          if (current()) setConflict({ window, accountId, duplicates: result.duplicates })
+          if (current()) {
+            setBindingConfirmation(null)
+            setConflict({ ...target, accountId, duplicates: result.duplicates })
+          }
           return
         }
+        if (target.previous?.accountId !== accountId) smsWaits.stopWindow(window.id)
         toast.success('已关联账号')
       }
-      await refreshAfterBinding()
       if (current()) dismissBinding()
+      await refreshAfterBinding().catch(() => {
+        toast.error('关联已更新，刷新账号资料失败，请手动刷新。')
+      })
     } catch (cause) {
-      if (current()) setBindingError(message(cause))
+      if (current())
+        setBindingError(
+          cause instanceof WindowRelationChangedError
+            ? cause.message
+            : '关联失败，请刷新账号资料后重试。',
+        )
     } finally {
       if (bindingRequest.current === session) bindingRequest.current = null
       if (current()) setBindingPending(false)
@@ -733,14 +921,37 @@ export function SpacesPage() {
     setBindingPending(true)
     setBindingError(null)
     try {
-      await bindAccount(conflict.accountId, conflict.window.id, true)
-      await refreshAfterBinding()
+      assertWindowRelation(conflict)
+      const latest = await listBindings()
+      assertWindowRelation(conflict, latest.items)
+      const affected = latest.items.filter(
+        (entry) => entry.accountId === conflict.accountId,
+      )
+      if (
+        !sameBindings(
+          affected,
+          conflict.duplicates
+            .map((id) => latest.items.find((entry) => entry.windowId === id))
+            .filter((entry): entry is BindingView => entry !== undefined),
+        ) ||
+        affected.some((entry) => !conflict.duplicates.includes(entry.windowId))
+      )
+        throw new WindowRelationChangedError()
+      await bindAccount(conflict.accountId!, conflict.window.id, true)
+      if (conflict.previous?.accountId !== conflict.accountId)
+        smsWaits.stopWindow(conflict.window.id)
       toast.success('已关联账号')
       if (current()) dismissBinding()
+      await refreshAfterBinding().catch(() => {
+        toast.error('关联已更新，刷新账号资料失败，请手动刷新。')
+      })
     } catch (cause) {
       if (current()) {
-        setBindingError(message(cause))
-        setConflict(null)
+        setBindingError(
+          cause instanceof WindowRelationChangedError
+            ? cause.message
+            : '关联失败，请刷新账号资料后重试。',
+        )
       }
     } finally {
       if (bindingRequest.current === session) bindingRequest.current = null
@@ -1191,6 +1402,12 @@ export function SpacesPage() {
                           ready={accountsReady}
                           accounts={accounts}
                           onSaved={refreshAfterBinding}
+                          assertUnbound={async () => {
+                            const snapshot = relationSnapshot(window)
+                            if (snapshot.previous) throw new WindowRelationChangedError()
+                            const latest = await listBindings()
+                            assertWindowRelation(snapshot, latest.items)
+                          }}
                         />
                       ) : (
                         <span className="account-cell-row">
@@ -1243,7 +1460,7 @@ export function SpacesPage() {
                                   aria-busy={phoneUnlinkPending}
                                   title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
                                   disabled={!accountsReady || phoneUnlinkPending}
-                                  onClick={() => void unlinkPhone(linked.id)}
+                                  onClick={() => requestPhoneUnlink(window, linked)}
                                 >
                                   {phoneUnlinkPending ? (
                                     <Loader2
@@ -1477,7 +1694,10 @@ export function SpacesPage() {
                               onSelect={() => {
                                 if (!accountsReady || !accountSync.current.ready) return
                                 dismissBinding()
-                                setBinding(window)
+                                setBinding({
+                                  ...relationSnapshot(window),
+                                  session: bindingSession.current,
+                                })
                               }}
                             >
                               <UserRound />
@@ -1489,7 +1709,16 @@ export function SpacesPage() {
                                 <DropdownMenuItem
                                   variant="destructive"
                                   disabled={!accountsReady || bindingPending}
-                                  onSelect={() => void bind(window, null)}
+                                  onSelect={() => {
+                                    dismissBinding()
+                                    requestBinding(
+                                      {
+                                        ...relationSnapshot(window),
+                                        session: bindingSession.current,
+                                      },
+                                      null,
+                                    )
+                                  }}
                                 >
                                   <Unlink />
                                   解除关联
@@ -2023,24 +2252,100 @@ export function SpacesPage() {
       >
         {binding === null ? null : (
           <AccountBindDialog
-            key={binding.id}
-            window={binding}
+            key={binding.window.id}
+            window={binding.window}
             ready={accountsReady}
             accounts={accountsReady ? accounts : []}
-            current={bindingOf(binding.id)?.accountId ?? null}
+            current={bindingOf(binding.window.id)?.accountId ?? null}
             pending={bindingPending}
             error={bindingError}
-            onConfirm={(accountId) => void bind(binding, accountId)}
+            onConfirm={(accountId) => requestBinding(binding, accountId)}
             onCancel={dismissBinding}
           />
         )}
       </Dialog>
 
       <AlertDialog
+        open={phoneConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open && !phoneUnlinkRequests.current.size) resetPhoneConfirmation()
+        }}
+      >
+        {phoneConfirmation === null ? null : (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认解绑手机号</AlertDialogTitle>
+              <AlertDialogDescription>
+                高风险操作：将清空「{phoneConfirmation.account.account}」的手机号
+                {phoneConfirmation.account.phone} 和短信接码链接，影响
+                {phoneConfirmation.affected.length} 个关联窗口，包括「
+                {phoneConfirmation.window.name}」。SIM8 号码池中的号码不会删除。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {phoneUnlinkError ? <FieldError>{phoneUnlinkError}</FieldError> : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel
+                disabled={unlinkingPhones.has(phoneConfirmation.account.id)}
+              >
+                取消
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={unlinkingPhones.has(phoneConfirmation.account.id)}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void unlinkPhone(phoneConfirmation)
+                }}
+              >
+                确认解绑手机号
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
+
+      <AlertDialog
+        open={bindingConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open && !bindingPending) dismissBinding()
+        }}
+      >
+        {bindingConfirmation === null ? null : (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {bindingConfirmation.accountId === null ? '解除关联' : '更换账号'}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                窗口「{bindingConfirmation.window.name}」当前关联「
+                {bindingConfirmation.previous?.account?.account ?? '未关联'}」。
+                {bindingConfirmation.accountId === null
+                  ? '确认解除该窗口的账号关联；账号资料不会删除。'
+                  : `确认关联到「${bindingConfirmation.accountName}」；原账号资料不会删除。`}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {bindingError ? <FieldError>{bindingError}</FieldError> : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={bindingPending}>取消</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={bindingPending}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void bind(bindingConfirmation)
+                }}
+              >
+                {bindingConfirmation.accountId === null ? '确认解除关联' : '确认更换账号'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
+
+      <AlertDialog
         open={conflict !== null}
         onOpenChange={(open) => {
-          if (!open) {
+          if (!open && !bindingPending) {
             bindingSession.current += 1
+            bindingTarget.current = null
             setConflict(null)
             setBindingError(null)
             setBindingPending(false)
@@ -2057,8 +2362,9 @@ export function SpacesPage() {
                 继续关联后会有 {conflict.duplicates.length + 1} 个窗口共用这个账号。
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {bindingError ? <FieldError>{bindingError}</FieldError> : null}
             <AlertDialogFooter>
-              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogCancel disabled={bindingPending}>取消</AlertDialogCancel>
               <AlertDialogAction
                 disabled={!accountsReady || bindingPending}
                 onClick={(event) => {
@@ -2129,11 +2435,13 @@ function AccountQuickAdd({
   ready,
   accounts,
   onSaved,
+  assertUnbound,
 }: {
   window: BrowserWindow
   ready: boolean
   accounts: Account[]
   onSaved: () => Promise<void>
+  assertUnbound: () => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState('existing')
@@ -2163,6 +2471,7 @@ function AccountQuickAdd({
     setPending(true)
     setError(null)
     try {
+      await assertUnbound()
       const result = await bindAccount(target.id, window.id)
       await onSaved()
       if (result.bound) toast.success(`已关联 ${target.account}`)
@@ -2187,12 +2496,14 @@ function AccountQuickAdd({
     setPending(true)
     setError(null)
     try {
+      await assertUnbound()
       const saved = await saveAccount({
         ...EMPTY_ACCOUNT,
         account: login,
         password,
         note: note.trim(),
       })
+      await assertUnbound()
       const result = await bindAccount(saved.item.id, window.id)
       await onSaved()
       if (result.bound) {

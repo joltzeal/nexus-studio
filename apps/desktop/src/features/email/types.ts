@@ -17,6 +17,19 @@ export const MAILBOX_ERROR_CODES = [
 ] as const
 export type MailboxErrorCode = (typeof MAILBOX_ERROR_CODES)[number]
 
+export interface EmailAuthorizationChallenge {
+  authorizationId: string
+  userCode: string
+  verificationUri: string
+  expiresAt: string
+  intervalSeconds: number
+}
+
+export type EmailAuthorizationResult =
+  | { status: 'pending'; retryAfterSeconds: number }
+  | { status: 'denied' | 'expired' | 'account-mismatch' }
+  | { status: 'authorized'; account: MailboxView }
+
 export interface MailboxView {
   id: string
   provider: string

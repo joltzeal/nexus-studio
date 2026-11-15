@@ -19,6 +19,7 @@ export const JOB_LABELS: Record<AgentJobView['state'], string> = {
   paused: '已暂停',
   completed: '已完成',
   blocked: '账号封禁 · 已阻断',
+  login_required: '窗口已掉登 · 等待登录',
   review_required: '等待人工检查',
   result_unknown: '结果不明 · 待核对',
   sync_pending: '结果已确认 · 记录待同步',
@@ -39,6 +40,7 @@ const BATCH_LABELS: Record<AgentBatchView['state'], string> = {
 export function needsAttention(job: AgentJobView): boolean {
   return [
     'blocked',
+    'login_required',
     'review_required',
     'result_unknown',
     'sync_pending',
@@ -127,6 +129,7 @@ export function itemControlReason(
   jobState?: AgentJobView['state'],
 ): string | null {
   if (jobState === 'blocked') return '此窗口任务已阻断，请先核对原因和账号状态。'
+  if (jobState === 'login_required') return '请先在此窗口登录，再核对账号和未决提交。'
   if (jobState && ['completed', 'cancelled', 'skipped'].includes(jobState))
     return '此窗口任务已结束，商品资料仅供查看。'
   if (

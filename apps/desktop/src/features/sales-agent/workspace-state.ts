@@ -4,7 +4,7 @@ import {
   type AgentWorkspaceEntry,
   type AgentWorkspaceSave,
 } from '@nexus/plugin-sdk/agent'
-import type { Product } from '@nexus/plugin-products/contracts'
+import type { Product } from '@nexus/plugin-contracts/products'
 import type { AgentDraft } from './assignment'
 
 export function planFromDraft(draft: AgentDraft): AgentSavedPlan {

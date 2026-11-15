@@ -4,6 +4,8 @@ import {
   MAILBOX_ERROR_CODES,
   MAILBOX_STATUSES,
   type EmailSettings,
+  type EmailAuthorizationChallenge,
+  type EmailAuthorizationResult,
   type ImportReport,
   type MailboxInput,
   type MailboxPage,
@@ -280,6 +282,81 @@ export async function getMailbox(id: string): Promise<MailboxView> {
   if (!mailbox(result) || result.id !== id)
     throw new Error('邮箱资料返回的数据格式无效，请更新插件后重试。')
   return safeMailbox(result)
+}
+
+export async function startEmailAuthorization(
+  accountId: string,
+  expectedEmail: string,
+): Promise<EmailAuthorizationChallenge> {
+  const result = await call(
+    'email.authorization.start',
+    { accountId, expectedEmail, transport: 'graph' },
+    '无法启动微软授权。请确认邮箱插件至少为 1.2.0，且此 Client ID 允许公共客户端设备代码流程。',
+    60_000,
+  )
+  if (
+    !shape(result, [
+      'authorizationId',
+      'userCode',
+      'verificationUri',
+      'expiresAt',
+      'intervalSeconds',
+    ]) ||
+    !text(result.authorizationId, 64, 1) ||
+    !text(result.userCode, 32, 1) ||
+    !/^[A-Z0-9-]+$/i.test(result.userCode) ||
+    ![
+      'https://microsoft.com/devicelogin',
+      'https://www.microsoft.com/devicelogin',
+      'https://login.microsoftonline.com/common/oauth2/deviceauth',
+    ].includes(String(result.verificationUri)) ||
+    !timestamp(result.expiresAt) ||
+    !integer(result.intervalSeconds, 1, 60)
+  )
+    throw new Error('微软授权响应无效，请更新邮箱插件后重试。')
+  return result as unknown as EmailAuthorizationChallenge
+}
+
+export async function pollEmailAuthorization(
+  authorizationId: string,
+  accountId: string,
+): Promise<EmailAuthorizationResult> {
+  const result = await call(
+    'email.authorization.poll',
+    { authorizationId },
+    '授权检查或凭据保存失败，请重试检查；未保存前继续保留原凭据。',
+    60_000,
+  )
+  if (
+    shape(result, ['status', 'account']) &&
+    result.status === 'authorized' &&
+    mailbox(result.account) &&
+    result.account.id === accountId &&
+    result.account.transport === 'graph'
+  )
+    return { status: 'authorized', account: safeMailbox(result.account) }
+  if (
+    shape(result, ['status', 'retryAfterSeconds']) &&
+    result.status === 'pending' &&
+    integer(result.retryAfterSeconds, 1, 300)
+  )
+    return result as unknown as EmailAuthorizationResult
+  if (
+    shape(result, ['status']) &&
+    ['denied', 'expired', 'account-mismatch'].includes(String(result.status))
+  )
+    return result as unknown as EmailAuthorizationResult
+  throw new Error('微软授权结果无效，请刷新邮箱核对。')
+}
+
+export async function cancelEmailAuthorization(authorizationId: string): Promise<void> {
+  const result = await call(
+    'email.authorization.cancel',
+    { authorizationId },
+    '未能取消授权，请关闭微软授权页面。',
+  )
+  if (!shape(result, ['cancelled']) || result.cancelled !== true)
+    throw new Error('取消授权响应无效。')
 }
 
 export async function listMailboxTargets(

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { ProductSaveSchema } from '@nexus/plugin-products/contracts'
-import { emptyProductForm, productError, productSaveInput } from './product-form'
+import { ProductSaveSchema, ProductSchema } from '@nexus/plugin-contracts/products'
+import {
+  emptyProductForm,
+  productError,
+  productForm,
+  productSaveInput,
+} from './product-form'
 
 const createKey = '741204de-e426-4a97-9d1a-a8b420e6eac4'
 
@@ -17,6 +22,7 @@ describe('product editor submission', () => {
       description: '',
       price: null,
       status: 'draft',
+      platformFacts: { vinted: [] },
     })
   })
 
@@ -69,5 +75,135 @@ describe('product editor submission', () => {
     expect(message).toContain('英文标题')
     expect(message).not.toContain('"code"')
     expect(message).not.toContain('Too small')
+  })
+
+  it('preserves each market and confirmed attributes through unrelated text edits', () => {
+    const platformFacts = {
+      vinted: [
+        {
+          platformOrigin: 'https://www.vinted.com',
+          catalogId: 1904,
+          catalogRevision: 'a'.repeat(64),
+          attributes: { 'Material / fabric': 'Cotton, silk', Color: 'Blue' },
+        },
+        {
+          platformOrigin: 'https://www.vinted.co.uk',
+          catalogId: null,
+          catalogRevision: null,
+          attributes: { Size: 'M' },
+        },
+      ],
+    }
+    const product = ProductSchema.parse({
+      id: createKey,
+      revision: 4,
+      sequence: 1,
+      name: 'Before',
+      category: 'Clothing',
+      platformFacts,
+      images: [],
+      source: { kind: 'manual' },
+      publicationCount: 0,
+      latestPublication: null,
+      createdAt: '2026-11-14T00:00:00.000Z',
+      updatedAt: '2026-11-14T00:00:00.000Z',
+    })
+    const input = productSaveInput({ ...productForm(product), name: 'After' }, [], {
+      id: product.id,
+      expectedRevision: 4,
+    })
+    expect(input.data.platformFacts).toEqual(platformFacts)
+    expect(input.data.category).toBe('Clothing')
+    expect(input.data).not.toHaveProperty('vintedFacts')
+    expect(input.data).not.toHaveProperty('publicationCount')
+  })
+
+  it('converts explicit optional fallback and observed facts without inferring other fields', () => {
+    const input = productSaveInput(
+      {
+        ...emptyProductForm(),
+        name: 'Shirt',
+        vintedFacts: [
+          {
+            platformOrigin: 'https://www.vinted.com',
+            catalogId: '1904',
+            catalogRevision: '',
+            attributes: [{ name: ' Material ', value: ' Cotton ' }],
+          },
+        ],
+      },
+      [],
+      { createKey },
+    )
+    expect(input.data).toMatchObject({
+      category: '',
+      brand: '',
+      size: '',
+      platformFacts: {
+        vinted: [
+          {
+            platformOrigin: 'https://www.vinted.com',
+            catalogId: 1904,
+            catalogRevision: null,
+            attributes: { Material: 'Cotton' },
+          },
+        ],
+      },
+    })
+    expect(ProductSaveSchema.safeParse(input).success).toBe(true)
+  })
+
+  it.each(['0', '-2', '1.5', '1e3', 'unknown', '9007199254740992'])(
+    'rejects an invalid manual catalog ID before saving: %s',
+    (catalogId) => {
+      expect(() =>
+        productSaveInput(
+          {
+            ...emptyProductForm(),
+            name: 'Shirt',
+            vintedFacts: [
+              {
+                platformOrigin: 'https://www.vinted.com',
+                catalogId,
+                catalogRevision: '',
+                attributes: [],
+              },
+            ],
+          },
+          [],
+          { createKey },
+        ),
+      ).toThrow('分类 ID')
+    },
+  )
+
+  it('rejects half-filled and duplicate attribute rows instead of silently losing manual input', () => {
+    for (const attributes of [
+      [{ name: 'Material', value: '' }],
+      [{ name: '', value: 'Cotton' }],
+      [
+        { name: 'Material', value: 'Cotton' },
+        { name: ' Material ', value: 'Silk' },
+      ],
+    ]) {
+      expect(() =>
+        productSaveInput(
+          {
+            ...emptyProductForm(),
+            name: 'Shirt',
+            vintedFacts: [
+              {
+                platformOrigin: 'https://www.vinted.com',
+                catalogId: '',
+                catalogRevision: '',
+                attributes,
+              },
+            ],
+          },
+          [],
+          { createKey },
+        ),
+      ).toThrow('属性')
+    }
   })
 })

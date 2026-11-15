@@ -13,10 +13,7 @@
 
 ## 使用入口
 
-邮箱插件 `1.1.0` 与账号池 `1.3.0` 已发布至商店，最低主程序为 `0.1.28`。
-主程序 `v0.1.28` 标签已推送，安装包及应用内更新清单由 CI 验证后公开。
-格式化阅读、已读未读、定时收信与账号联动需要同时更新三者；
-旧主程序 `0.1.27` 的页面只包含原有纯文本阅读和 token 刷新。
+邮箱插件 `1.2.0` 的 Graph 授权入口要求主程序 `0.1.31`；
 实际构件与商店回读结果见[插件商店](25-plugin-market.md)。
 
 安装并启用邮箱插件后，在“插件中心 → 邮箱管理”操作。
@@ -52,6 +49,12 @@ HTTP 请求使用宿主注入的 `fetch`；IMAP 显式继承 `NEXUS_NETWORK_PROX
 使用开源 ImapFlow 的代理连接。已配置代理连接失败时不回退直连。
 Graph 标记已读/未读需要已有令牌具备 `Mail.ReadWrite` 权限；
 只具备读信权限时仍可查看和定时检查邮件，标记失败不会禁用这些读操作。
+阅读器在权限不足时可使用已保存的 Client ID 启动微软设备代码授权：
+请求 `Mail.ReadWrite`、`User.Read` 和 `offline_access`，按微软间隔轮询，
+核对返回邮箱与当前邮箱相同后，才原子保存新的 refresh/access token 并切换 Graph。
+取消、拒绝、过期、错号及落盘失败均保留原凭据；落盘失败重试保存已获得的令牌，
+不会再次兑换已消费的设备代码。原应用未允许公共客户端流或租户禁止同意时，
+需应用所有者或管理员配置后重新开始授权；刷新已有只读 token 不会增加权限。
 IMAP 使用服务器确认的 `\Seen` 增删，读取内容不隐式设置已读。
 HTML 在插件端通过允许列表移除脚本、样式、图片、表单、链接与属性，
 桌面再次重建无属性标签，放入无脚本/同源权限的 sandbox iframe，
@@ -147,24 +150,25 @@ IMAP 邮件标识包含邮箱、目录、UIDVALIDITY 和 UID，防止目录重�
 重启插件或切换目录后，迟到结果不能覆盖新页面。
 新增能力、manifest 和专用页面需随主程序发布，单独更新插件不能为旧主程序增加页面。
 
-| RPC                                    | 输入与结果                                                           |
-| -------------------------------------- | -------------------------------------------------------------------- |
-| `email.accounts.list`                  | 搜索、状态、页码、页大小；返回无密码和 token 的分页摘要              |
-| `email.accounts.get`                   | `{ id }`；返回一个无凭据邮箱视图                                     |
-| `email.accounts.targets`               | 搜索、分页；只返回 ID、邮箱、启用状态与状态分类                      |
-| `email.accounts.save`                  | 新增或按 ID 编辑；编辑时省略密码/token 则保留原值                    |
-| `email.accounts.import`                | 四段式文本与收信通道；返回新增/跳过数量和行错误                      |
-| `email.accounts.remove`                | 邮箱 ID；删除本地资料，停止其后续任务                                |
-| `email.refresh.queue`                  | 1–100 个邮箱 ID；返回排队与跳过数量                                  |
-| `email.receive.queue`                  | 1–100 个邮箱 ID；手动排队收信，返回排队与跳过数量                    |
-| `email.settings.get/save`              | token 刷新 5–1440 分钟、收信 1–60 分钟及独立开关                     |
-| `email.messages.list`                  | 邮箱 ID、目录、已读筛选和可选游标；返回摘要、目录总数/未读数及下一页 |
-| `email.messages.get`                   | 邮箱 ID、目录和邮件 ID；返回有界纯文本及安全 HTML                    |
-| `email.messages.read`                  | 邮箱 ID、目录、1–20 个邮件 ID、isRead；返回成功 ID 和分类失败        |
-| `configuration.export/validate/import` | 仅迁移 token 刷新和自动收信设置                                      |
+| RPC                                     | 输入与结果                                                           |
+| --------------------------------------- | -------------------------------------------------------------------- |
+| `email.accounts.list`                   | 搜索、状态、页码、页大小；返回无密码和 token 的分页摘要              |
+| `email.accounts.get`                    | `{ id }`；返回一个无凭据邮箱视图                                     |
+| `email.accounts.targets`                | 搜索、分页；只返回 ID、邮箱、启用状态与状态分类                      |
+| `email.accounts.save`                   | 新增或按 ID 编辑；编辑时省略密码/token 则保留原值                    |
+| `email.accounts.import`                 | 四段式文本与收信通道；返回新增/跳过数量和行错误                      |
+| `email.accounts.remove`                 | 邮箱 ID；删除本地资料，停止其后续任务                                |
+| `email.refresh.queue`                   | 1–100 个邮箱 ID；返回排队与跳过数量                                  |
+| `email.receive.queue`                   | 1–100 个邮箱 ID；手动排队收信，返回排队与跳过数量                    |
+| `email.settings.get/save`               | token 刷新 5–1440 分钟、收信 1–60 分钟及独立开关                     |
+| `email.messages.list`                   | 邮箱 ID、目录、已读筛选和可选游标；返回摘要、目录总数/未读数及下一页 |
+| `email.messages.get`                    | 邮箱 ID、目录和邮件 ID；返回有界纯文本及安全 HTML                    |
+| `email.messages.read`                   | 邮箱 ID、目录、1–20 个邮件 ID、isRead；返回成功 ID 和分类失败        |
+| `email.authorization.start/poll/cancel` | 已保存的邮箱与 Client ID；设备代码同意、同邮箱核对及可取消的结果     |
+| `configuration.export/validate/import`  | 仅迁移 token 刷新和自动收信设置                                      |
 
 消息 list/get/read 可以传 `expectedEmail`，桌面阅读器固定传入打开时的邮箱地址。
-`1.1.0` 协议共 16 个方法（含 3 个配置迁移方法），原 `1.0.0` 为 12 个。
+`1.2.0` 协议共 19 个方法（含 3 个配置迁移方法）；`1.1.0` 为 16 个。
 
 ## 扩展与源码
 
@@ -186,7 +190,8 @@ HTTP/IMAP 适配器应验证取消、代理失败、权限拒绝、分页上限�
 使用受控 HTTP/IMAP 响应验证导入、token 轮换、定时刷新/收信、并发、重启、
 写入失败、已读未读部分失败、权限分离、取消、代理传递、分页、
 格式化邮件边界及账号关系一致性。
-`1.1.0` 已从 CI 构件发布至 R2，包内文件、16 个 RPC 启动及公开入口回读验证通过。
+`1.1.0` 历史包已从 CI 构件发布至 R2。`1.2.0` 发布和启动回读见
+[插件商店](25-plugin-market.md)，受控测试覆盖授权拒绝、错号、取消和持久化失败。
 真实微软账号、原生 WebView、Windows 安装和真实代理仍需对应环境验证。
 本地不构建、不打包、不执行 Rust 编译/测试，实际检查和发布结果统一记录在质量文档。
 

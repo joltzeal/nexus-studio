@@ -58,4 +58,79 @@ describe('email write lifecycle', () => {
       expect(action.getSnapshot()).toBe(snapshot)
     },
   )
+
+  it.each(['success', 'failure'])(
+    'reconciles a %s settled while hidden before allowing another physical write',
+    async (outcome) => {
+      const pending = deferred<string>()
+      const action = new EmailAction('排队失败，请核对后重试。')
+      action.start()
+      let writes = 0
+      const receipts: string[] = []
+      const write = () => {
+        writes += 1
+        return pending.promise
+      }
+      void action.run(write, (receipt) => receipts.push(receipt))
+      action.dispose()
+      const hiddenSnapshot = action.getSnapshot()
+      if (outcome === 'success') pending.resolve('persisted queue receipt')
+      else pending.reject(new Error('refresh_token=synthetic-secret'))
+      await flushPromises()
+      expect(action.getSnapshot()).toBe(hiddenSnapshot)
+      expect(receipts).toEqual([])
+      await action.run(write, (receipt) => receipts.push(receipt))
+      expect(writes).toBe(1)
+
+      action.start()
+      expect(action.getSnapshot()).toEqual({
+        busy: false,
+        error: outcome === 'failure' ? '排队失败，请核对后重试。' : null,
+      })
+      expect(receipts).toEqual(outcome === 'success' ? ['persisted queue receipt'] : [])
+      action.start()
+      expect(receipts).toHaveLength(outcome === 'success' ? 1 : 0)
+      await action.run(
+        async () => {
+          expect(action.getSnapshot().busy).toBe(true)
+          writes += 1
+          return 'next explicit receipt'
+        },
+        (receipt) => receipts.push(receipt),
+      )
+      expect(writes).toBe(2)
+      expect(receipts[receipts.length - 1]).toBe('next explicit receipt')
+      action.dispose()
+    },
+  )
+
+  it.each(['success', 'failure'])(
+    'retains single flight when shown before a hidden %s settles',
+    async (outcome) => {
+      const pending = deferred<string>()
+      const action = new EmailAction('排队失败，请核对后重试。')
+      action.start()
+      let writes = 0
+      const receipts: string[] = []
+      const write = () => {
+        writes += 1
+        return pending.promise
+      }
+      void action.run(write, (receipt) => receipts.push(receipt))
+      action.dispose()
+      action.start()
+      await action.run(write, (receipt) => receipts.push(receipt))
+      expect(action.getSnapshot().busy).toBe(true)
+      expect(writes).toBe(1)
+      if (outcome === 'success') pending.resolve('persisted queue receipt')
+      else pending.reject(new Error('private upstream response'))
+      await flushPromises()
+      expect(action.getSnapshot()).toEqual({
+        busy: false,
+        error: outcome === 'failure' ? '排队失败，请核对后重试。' : null,
+      })
+      expect(receipts).toEqual(outcome === 'success' ? ['persisted queue receipt'] : [])
+      action.dispose()
+    },
+  )
 })

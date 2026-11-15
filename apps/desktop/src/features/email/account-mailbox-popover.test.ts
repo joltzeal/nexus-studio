@@ -1,6 +1,7 @@
-import { type DependencyList, type EffectCallback } from 'react'
+import { type DependencyList, type EffectCallback, type MouseEvent } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Button } from '@/components/ui/button'
+import { AlertDialogAction } from '@/components/ui/alert-dialog'
 import { listPlugins, type PluginView } from '@/lib/platform/native-plugins'
 import {
   components,
@@ -136,6 +137,13 @@ describe('account mailbox entry', () => {
     vi.mocked(unlinkMailboxFromAccount).mockReturnValueOnce(pending.promise)
     click('解除关联')
     click('解除关联')
+    expect(unlinkMailboxFromAccount).not.toHaveBeenCalled()
+    const confirm = () =>
+      components(tree(), AlertDialogAction)[0]!.props.onClick?.({
+        preventDefault() {},
+      } as MouseEvent<HTMLButtonElement>)
+    confirm()
+    confirm()
     expect(unlinkMailboxFromAccount).toHaveBeenCalledExactlyOnceWith(
       props.account.id,
       props.account.mailbox!.mailboxId,
@@ -151,5 +159,22 @@ describe('account mailbox entry', () => {
     await flushPromises()
     expect(props.onChanged).toHaveBeenCalledExactlyOnceWith(receipt)
     expect(props.onPendingChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('keeps the existing relationship and confirmation visible when unlinking fails', async () => {
+    vi.mocked(unlinkMailboxFromAccount).mockRejectedValueOnce(
+      new Error('synthetic-secret'),
+    )
+    click('解除关联')
+    expect(unlinkMailboxFromAccount).not.toHaveBeenCalled()
+    components(tree(), AlertDialogAction)[0]!.props.onClick?.({
+      preventDefault() {},
+    } as MouseEvent<HTMLButtonElement>)
+    await flushPromises()
+    expect(props.onChanged).not.toHaveBeenCalled()
+    expect(text(tree())).toContain(mailbox().email)
+    expect(text(tree())).toContain('无法打开关联邮箱或修改关联')
+    expect(components(tree(), AlertDialogAction)).toHaveLength(1)
+    expect(text(tree())).not.toContain('synthetic-secret')
   })
 })

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { callPlugin } from '@/lib/platform/native-plugins'
+import { callPlugin, PluginCallError } from '@/lib/platform/native-plugins'
 import { listAccounts } from './api'
 import type { Account, AccountList, Binding } from './types'
 
@@ -11,6 +11,7 @@ vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
 const PAGE_SIZE = 16
 const revision = 'a'.repeat(64)
 const timestamp = '2026-11-12T00:00:00.000Z'
+const pageTooLarge = '账号列表单页数据过大，超过消息大小上限，请减少每页账号数后重试。'
 
 interface Page extends AccountList {
   page: number
@@ -56,8 +57,18 @@ function account(index: number): Account {
 
 const accounts = Array.from({ length: 35 }, (_, index) => account(index))
 const bindings: Binding[] = accounts.flatMap((entry, index) => [
-  { accountId: entry.id, windowId: `window-${index}`, boundAt: timestamp },
-  { accountId: entry.id, windowId: `extra-window-${index}`, boundAt: timestamp },
+  {
+    accountId: entry.id,
+    windowId: `window-${index}`,
+    revision: '33333333-3333-4333-8333-333333333333',
+    boundAt: timestamp,
+  },
+  {
+    accountId: entry.id,
+    windowId: `extra-window-${index}`,
+    revision: '33333333-3333-4333-8333-333333333333',
+    boundAt: timestamp,
+  },
 ])
 
 function page(number: number, total = accounts.length): Page {
@@ -81,6 +92,157 @@ function page(number: number, total = accounts.length): Page {
 beforeEach(() => vi.resetAllMocks())
 
 describe('complete account list adapter', () => {
+  it.each([
+    { firstHeavy: 0, sessionCount: 0 },
+    { firstHeavy: 16, sessionCount: 0 },
+    { firstHeavy: 0, sessionCount: 200 },
+  ])(
+    'restarts an oversized complete bank list without skipping accounts (%j)',
+    async ({ firstHeavy, sessionCount }) => {
+      const complete = accounts.map((item, index): Account => {
+        const accountId = `${index.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`
+        if (index < firstHeavy) return { ...item, id: accountId }
+        const sessions: NonNullable<Account['observation']>['sessions'] = {}
+        const checks: NonNullable<Account['observation']>['checks'] = {}
+        for (let window = 0; window < sessionCount; window += 1) {
+          const windowId = `${(index * sessionCount + window).toString(16).padStart(8, '0')}-2222-4222-8222-222222222222`
+          sessions[windowId] = {
+            windowId,
+            accountId,
+            bindingRevision: '33333333-3333-4333-8333-333333333333',
+            status: 'authenticated',
+            reason: 'current_user',
+            platformUserId: '123',
+            observedAt: timestamp,
+            source: 'official',
+          }
+          checks[`session:${windowId}`] = {
+            sequence: window + 1,
+            operationId: '44444444-4444-4444-8444-444444444444',
+            observedAt: timestamp,
+            source: 'official',
+            outcome: 'succeeded',
+          }
+        }
+        return {
+          ...item,
+          id: accountId,
+          password: '\u0000'.repeat(190),
+          emailOtpUrl: '\u0000'.repeat(2048),
+          smsOtpUrl: '\u0000'.repeat(2048),
+          homepageUrl: '\u0000'.repeat(2048),
+          address: { ...item.address!, sourceUrl: '\u0000'.repeat(2048) },
+          observation: {
+            sessions,
+            checks,
+            bankAccounts: {
+              records: Array.from({ length: 20 }, (_, bank) => ({
+                id: `9${bank.toString().padStart(31, '0')}`,
+                user_id: '123',
+                name: '\u6c49'.repeat(160),
+                account_number: `${'\u2022'.repeat(60)}4321`,
+                routing_number: '012345678',
+                spending_type: '\u6c49'.repeat(64),
+                hide_name: false,
+                is_default: bank === 0,
+              })),
+              observedAt: timestamp,
+              source: 'official',
+              windowId: '22222222-2222-4222-8222-222222222222',
+              bindingRevision: '33333333-3333-4333-8333-333333333333',
+            },
+          },
+        }
+      })
+      const completeBindings: Binding[] = complete.flatMap((item, index) => [
+        ...bindings
+          .filter((binding) => binding.accountId === accounts[index]!.id)
+          .map((binding) => ({ ...binding, accountId: item.id })),
+        ...Object.values(item.observation?.sessions ?? {}).map((session) => ({
+          windowId: session.windowId,
+          accountId: item.id,
+          revision: session.bindingRevision,
+          boundAt: timestamp,
+        })),
+      ])
+      const successfulBytes: number[] = []
+      const requests: { page: number; pageSize: number; revision?: string }[] = []
+      vi.mocked(callPlugin).mockImplementation(
+        async (_id, _capability, _method, input) => {
+          const request = input as (typeof requests)[number]
+          requests.push(request)
+          const items = complete.slice(
+            (request.page - 1) * request.pageSize,
+            request.page * request.pageSize,
+          )
+          const result = {
+            page: request.page,
+            pageSize: request.pageSize,
+            revision,
+            total: complete.length,
+            items,
+            bindings: completeBindings.filter((binding) =>
+              items.some((entry) => entry.id === binding.accountId),
+            ),
+            storageDurable: true,
+          }
+          const bytes = new TextEncoder().encode(
+            `${JSON.stringify({
+              protocolVersion: 1,
+              requestId: '\u0000'.repeat(128),
+              ok: true,
+              result,
+            })}\n`,
+          ).byteLength
+          if (bytes >= 1024 * 1024) {
+            throw new PluginCallError('UNAVAILABLE', pageTooLarge, true)
+          }
+          successfulBytes.push(bytes)
+          return result
+        },
+      )
+
+      const result = await listAccounts()
+      expect(result).toEqual({
+        items: complete,
+        bindings: completeBindings,
+        total: 35,
+        storageDurable: true,
+      })
+      expect(
+        result.items[result.items.length - 1]?.observation?.bankAccounts?.records,
+      ).toHaveLength(20)
+      expect(successfulBytes.every((bytes) => bytes < 1024 * 1024)).toBe(true)
+      expect(
+        requests.filter((request) => request.page === 1).map((r) => r.pageSize),
+      ).toEqual(sessionCount === 0 ? [16, 8] : [16, 8, 4])
+      const finalSize = sessionCount === 0 ? 8 : 4
+      const finalRequests = requests.slice(-Math.ceil(35 / finalSize))
+      expect(finalRequests.map((request) => request.page)).toEqual(
+        finalSize === 8 ? [1, 2, 3, 4, 5] : [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      )
+      expect(finalRequests.slice(1).every((r) => r.revision === revision)).toBe(true)
+    },
+  )
+
+  it('reports a single-account overflow after bounded size recovery attempts', async () => {
+    vi.mocked(callPlugin).mockRejectedValue(
+      new PluginCallError('UNAVAILABLE', pageTooLarge, true),
+    )
+    await expect(listAccounts()).rejects.toThrow(pageTooLarge)
+    expect(vi.mocked(callPlugin).mock.calls.map((call) => call[3])).toEqual(
+      [16, 8, 4, 2, 1].map((pageSize) => ({ page: 1, pageSize })),
+    )
+  })
+
+  it('does not retry an unrelated unavailable error as a page overflow', async () => {
+    vi.mocked(callPlugin).mockRejectedValue(
+      new PluginCallError('UNAVAILABLE', '账号存储读取失败', true),
+    )
+    await expect(listAccounts()).rejects.toThrow('账号存储读取失败')
+    expect(callPlugin).toHaveBeenCalledOnce()
+  })
+
   it.each([
     {
       pluginId: 'other.plugin',
@@ -212,7 +374,16 @@ describe('complete account list adapter', () => {
     { items: accounts.slice(0, 17) },
     { items: [account(0), account(0), ...accounts.slice(2, 16)] },
     { bindings: [bindings[0], bindings[0]] },
-    { bindings: [{ accountId: 'foreign', windowId: 'window', boundAt: timestamp }] },
+    {
+      bindings: [
+        {
+          accountId: 'foreign',
+          windowId: 'window',
+          revision: '33333333-3333-4333-8333-333333333333',
+          boundAt: timestamp,
+        },
+      ],
+    },
     { items: [{ ...account(0), password: 123 }, ...accounts.slice(1, 16)] },
     {
       items: [
@@ -238,10 +409,24 @@ describe('complete account list adapter', () => {
     { items: [account(0), ...accounts.slice(17, 32)] },
     { items: accounts.slice(16, 31) },
     {
-      bindings: [{ accountId: 'account-16', windowId: 'window-0', boundAt: timestamp }],
+      bindings: [
+        {
+          accountId: 'account-16',
+          windowId: 'window-0',
+          revision: '33333333-3333-4333-8333-333333333333',
+          boundAt: timestamp,
+        },
+      ],
     },
     {
-      bindings: [{ accountId: 'account-0', windowId: 'unexpected', boundAt: timestamp }],
+      bindings: [
+        {
+          accountId: 'account-0',
+          windowId: 'unexpected',
+          revision: '33333333-3333-4333-8333-333333333333',
+          boundAt: timestamp,
+        },
+      ],
     },
   ])(
     'discards every collected page when later page data is inconsistent (case %#)',

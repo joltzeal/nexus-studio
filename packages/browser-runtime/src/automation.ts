@@ -34,7 +34,7 @@ const domains = new Set(
   ].map((suffix) => `vinted.${suffix}`),
 )
 const controls =
-  'a[href],button,input:not([type=hidden]),textarea,select,[role=button],[role=link],[role=checkbox],[role=combobox]'
+  'a[href],button,input:not([type=hidden]),textarea,select,[role=button],[role=link],[role=checkbox],[role=combobox],[role=listbox]'
 
 type ObjectValue = Record<string, unknown>
 type Operation =
@@ -52,6 +52,56 @@ export interface AutomationRequest {
   origin: string
   input: ObjectValue
   timeoutMs: number
+}
+
+interface ObservedOption {
+  label: string
+  value: string | null
+  selected: boolean
+  enabled: boolean
+}
+
+interface ObservedControl {
+  tag: string
+  role: string
+  name: string
+  fieldName: string
+  id: string
+  testId: string
+  type: string
+  value: string
+  enabled: boolean
+  loading: boolean
+  invalid: boolean
+  required: boolean
+  expanded: boolean | null
+  options: ObservedOption[]
+  selectedOptions: ObservedOption[]
+  optionsTruncated: boolean
+  errors: string[]
+  upload: {
+    fileCount: number
+    files: { name: string; size: number; type: string }[]
+    filesTruncated: boolean
+    previews: { name: string; loaded: boolean }[]
+    previewsTruncated: boolean
+    progress: { value: number | null; max: number | null; text: string }[]
+    progressTruncated: boolean
+    statuses: string[]
+  } | null
+}
+
+interface SnapshotInput {
+  origin: string
+  maxChars: number
+  selector: string
+}
+
+interface ObservedSnapshot {
+  url: string
+  title: string
+  text: string
+  controls: (ObservedControl & { index: number })[]
 }
 
 function fail(code = 'INVALID'): never {
@@ -185,7 +235,9 @@ export function parseAutomationRequest(value: unknown): AutomationRequest {
       break
     }
     case 'readFields': {
-      keys(input, ['fields'])
+      keys(input, ['fields', 'includeState'])
+      if (input.includeState !== undefined && typeof input.includeState !== 'boolean')
+        fail()
       const fields = object(input.fields)
       if (!Object.keys(fields).length || Object.keys(fields).length > 32) fail()
       for (const [key, value] of Object.entries(fields)) {
@@ -195,10 +247,20 @@ export function parseAutomationRequest(value: unknown): AutomationRequest {
       break
     }
     case 'request': {
-      keys(input, ['path', 'method'])
+      keys(input, ['path', 'method', 'readPolicy'])
       const path = string(input.path, 2048)
+      if (input.method !== 'GET') fail()
+      if (input.readPolicy !== undefined) {
+        if (input.readPolicy !== 'vinted_account_financials') fail()
+        const apiOrigin = `https://api.www.${url.hostname.replace(/^www\./u, '')}`
+        if (
+          path !== `${apiOrigin}/ledger/wallet/balance` &&
+          path !== `${apiOrigin}/payments/public/api/bank_accounts`
+        )
+          fail()
+        break
+      }
       if (
-        input.method !== 'GET' ||
         !path.startsWith('/') ||
         path.startsWith('//') ||
         /[\s\\]|%2f|%5c|%00|%0a|%0d/iu.test(path) ||
@@ -217,15 +279,14 @@ export function parseAutomationRequest(value: unknown): AutomationRequest {
 
 // Keep these functions self-contained: Playwright serializes them without closures.
 // Callers can supply data only.
-function snapshotScript({
-  origin,
-  maxChars,
-  selector,
-}: {
-  origin: string
-  maxChars: number
-  selector: string
-}) {
+function snapshotScript(
+  input: SnapshotInput | Element,
+  fieldOrigin?: string,
+): ObservedSnapshot | ObservedControl {
+  const { origin, maxChars, selector } =
+    fieldOrigin === undefined
+      ? (input as SnapshotInput)
+      : { origin: fieldOrigin, maxChars: 16_384, selector: '' }
   if (location.origin !== origin) throw new Error('scope')
   const visible = (el: Element) => {
     const style = getComputedStyle(el)
@@ -233,25 +294,71 @@ function snapshotScript({
     return (
       style.visibility !== 'hidden' &&
       style.visibility !== 'collapse' &&
+      !el.closest('[hidden],[aria-hidden="true"]') &&
       rect.width > 0 &&
       rect.height > 0
     )
   }
-  const items = [...document.querySelectorAll<HTMLElement>(selector)]
-    .filter(visible)
-    .slice(0, 100)
-  const controls = items.map((element, index) => {
+  const enabled = (el: Element) =>
+    !el.matches(':disabled') && !el.closest('[aria-disabled="true"],[inert]')
+  const text = (el: Element) =>
+    ((el as HTMLElement).innerText || el.textContent || '').trim()
+  const references = (el: Element, attribute: string) =>
+    (el.getAttribute(attribute) || '')
+      .split(/\s+/u)
+      .filter(Boolean)
+      .slice(0, 10)
+      .flatMap((id) => {
+        const target = document.getElementById(id)
+        return target ? [target] : []
+      })
+  const name = (el: Element, includeText = true) => {
+    const labelled = references(el, 'aria-labelledby').map(text).join(' ')
+    const labels = (el as HTMLInputElement).labels
+    return (
+      el.getAttribute('aria-label') ||
+      labelled ||
+      (labels && [...labels].map(text).join(' ')) ||
+      el.getAttribute('placeholder') ||
+      (includeText ? text(el) : '')
+    ).slice(0, 512)
+  }
+  const listbox = (el: Element): Element | undefined => {
+    if (el.getAttribute('role') === 'listbox') return el
+    if (
+      el.getAttribute('role') !== 'combobox' &&
+      el.getAttribute('aria-haspopup') !== 'listbox'
+    )
+      return
+    const roots = new Set([
+      ...references(el, 'aria-controls'),
+      ...references(el, 'aria-owns'),
+      ...el.querySelectorAll('[role="listbox"]'),
+    ])
+    if (roots.size === 1) {
+      const root = [...roots][0]
+      if (root?.getAttribute('role') === 'listbox') return root
+    }
+  }
+  const observe = (element: Element, valueLimit: number): ObservedControl => {
     const el = element as HTMLElement & Partial<HTMLInputElement>
     const tag = el.tagName.toLowerCase()
-    const type = el.getAttribute('type') || ''
+    const type = (el.getAttribute('type') || '').toLowerCase()
     const secret =
       type === 'password' ||
-      /password|passwd/i.test(
+      type === 'hidden' ||
+      /password|passwd|secret|token|cookie|authorization/i.test(
         [el.getAttribute('autocomplete'), el.getAttribute('name'), el.id]
           .filter(Boolean)
           .join(' '),
       )
-    const label = el.labels && [...el.labels].map((label) => label.innerText).join(' ')
+    let evidence: Element = el
+    if (tag === 'input' && type === 'file') {
+      const group = el.closest(
+        'fieldset,[role="group"],[role="region"],section[aria-label],section[aria-labelledby]',
+      )
+      if (group?.querySelectorAll('input[type="file"]').length === 1) evidence = group
+    }
     const roles: Record<string, string> = {
       a: 'link',
       button: 'button',
@@ -259,25 +366,178 @@ function snapshotScript({
       textarea: 'textbox',
       input: type === 'checkbox' ? 'checkbox' : 'textbox',
     }
-    return {
-      index,
-      role: el.getAttribute('role') || roles[tag] || tag,
-      name: (
-        el.getAttribute('aria-label') ||
-        label ||
-        el.getAttribute('placeholder') ||
-        el.innerText ||
-        ''
-      ).slice(0, 512),
-      type,
-      value: secret ? '[REDACTED]' : String(el.value || '').slice(0, 2048),
+    const root = listbox(el)
+    const optionNodes =
+      tag === 'select'
+        ? [...(el as HTMLSelectElement).options].filter((option) => {
+            const group = option.closest('optgroup')
+            return [option, ...(group ? [group] : [])].every((item) => {
+              const style = getComputedStyle(item)
+              return (
+                !item.hidden &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                style.visibility !== 'collapse'
+              )
+            })
+          })
+        : root && visible(root)
+          ? [...root.querySelectorAll<HTMLElement>('[role="option"]')].filter(
+              (option) => visible(option) && option.closest('[role="listbox"]') === root,
+            )
+          : []
+    const option = (item: Element): ObservedOption => ({
+      label:
+        item.tagName === 'OPTION'
+          ? (item as HTMLOptionElement).label.slice(0, 512)
+          : name(item),
+      value:
+        item.tagName === 'OPTION'
+          ? (item as HTMLOptionElement).value.slice(0, 2048)
+          : ((item.getAttribute('data-value') ?? item.getAttribute('value'))?.slice(
+              0,
+              2048,
+            ) ?? null),
+      selected:
+        item.tagName === 'OPTION'
+          ? (item as HTMLOptionElement).selected
+          : item.getAttribute('aria-selected') === 'true',
+      enabled: enabled(el) && (!root || enabled(root)) && enabled(item),
+    })
+    const selected = secret
+      ? []
+      : optionNodes
+          .filter((item) =>
+            item.tagName === 'OPTION'
+              ? (item as HTMLOptionElement).selected
+              : item.getAttribute('aria-selected') === 'true',
+          )
+          .slice(0, 100)
+          .map(option)
+    const invalid =
+      (el.hasAttribute('aria-invalid') && el.getAttribute('aria-invalid') !== 'false') ||
+      el.validity?.valid === false
+    const errors = secret
+      ? []
+      : [
+          ...new Set(
+            [
+              ...references(el, 'aria-errormessage'),
+              ...(invalid ? references(el, 'aria-describedby') : []),
+              ...evidence.querySelectorAll('[role="alert"]'),
+            ]
+              .filter(visible)
+              .map((item) => text(item).slice(0, 512))
+              .filter(Boolean),
+          ),
+        ].slice(0, 10)
+    const inside = (selector: string) => [
+      ...(evidence.matches(selector) ? [evidence] : []),
+      ...evidence.querySelectorAll<HTMLElement>(selector),
+    ]
+    const inputs = inside('input[type="file"]') as HTMLInputElement[]
+    const images = inside('img').filter(visible) as HTMLImageElement[]
+    const bars = inside('progress,[role="progressbar"]').filter(visible)
+    const files: { name: string; size: number; type: string }[] = []
+    let fileCount = 0
+    for (const input of inputs) {
+      fileCount += input.files?.length ?? 0
+      for (const file of input.files ?? []) {
+        if (files.length >= 20) break
+        files.push({
+          name: file.name.slice(0, 512),
+          size: file.size,
+          type: file.type.slice(0, 512),
+        })
+      }
     }
-  })
+    const numeric = (value: string | null): number | null =>
+      value?.trim() && Number.isFinite(Number(value)) ? Number(value) : null
+    const progress = bars.slice(0, 20).map((bar) => ({
+      value:
+        bar.tagName === 'PROGRESS'
+          ? bar.hasAttribute('value')
+            ? (bar as HTMLProgressElement).value
+            : null
+          : numeric(bar.getAttribute('aria-valuenow')),
+      max:
+        bar.tagName === 'PROGRESS'
+          ? (bar as HTMLProgressElement).max
+          : numeric(bar.getAttribute('aria-valuemax')),
+      text: text(bar).slice(0, 512),
+    }))
+    const upload =
+      !secret && (inputs.length || images.length || bars.length)
+        ? {
+            fileCount,
+            files,
+            filesTruncated: fileCount > files.length,
+            previews: images.slice(0, 20).map((image) => ({
+              name: name(image) || (image.getAttribute('alt') || '').slice(0, 512),
+              loaded: image.complete && image.naturalWidth > 0,
+            })),
+            previewsTruncated: images.length > 20,
+            progress,
+            progressTruncated: bars.length > 20,
+            statuses: inside('[role="status"]')
+              .filter(visible)
+              .map((item) => text(item).slice(0, 512))
+              .filter(Boolean)
+              .slice(0, 10),
+          }
+        : null
+    const value = secret
+      ? '[REDACTED]'
+      : type === 'file'
+        ? ''
+        : ['input', 'select', 'textarea'].includes(tag)
+          ? (el.value ?? '')
+          : (el.getAttribute('data-value') ??
+            el.getAttribute('value') ??
+            selected[0]?.value ??
+            selected[0]?.label ??
+            el.getAttribute('aria-valuetext') ??
+            text(el))
+    return {
+      tag,
+      role: (el.getAttribute('role') || roles[tag] || tag).slice(0, 64),
+      name: name(el, !secret),
+      fieldName: (el.getAttribute('name') || '').slice(0, 512),
+      id: el.id.slice(0, 512),
+      testId: (el.getAttribute('data-testid') || '').slice(0, 512),
+      type: type.slice(0, 64),
+      value: String(value).slice(0, valueLimit),
+      enabled: enabled(el),
+      loading:
+        !!el.closest('[aria-busy="true"]') ||
+        !!root?.closest('[aria-busy="true"]') ||
+        !!evidence.querySelector('[aria-busy="true"]') ||
+        bars.some((bar) =>
+          bar.tagName === 'PROGRESS'
+            ? !bar.hasAttribute('value')
+            : !bar.hasAttribute('aria-valuenow'),
+        ),
+      invalid,
+      required: el.required === true || el.getAttribute('aria-required') === 'true',
+      expanded: el.hasAttribute('aria-expanded')
+        ? el.getAttribute('aria-expanded') === 'true'
+        : null,
+      options: secret ? [] : optionNodes.slice(0, 100).map(option),
+      selectedOptions: selected,
+      optionsTruncated: !secret && optionNodes.length > 100,
+      errors,
+      upload,
+    }
+  }
+  if (fieldOrigin !== undefined) return observe(input as Element, 16_384)
   return {
     url: location.href.slice(0, 4096),
     title: document.title.slice(0, 1000),
     text: (document.body?.innerText || '').slice(0, maxChars),
-    controls,
+    controls: [...document.querySelectorAll<HTMLElement>(selector)]
+      .filter(visible)
+      .slice(0, 100)
+      .map((element, index) => ({ index, ...observe(element, 2048) })),
   }
 }
 function fieldScript(element: Element, origin: string): string {
@@ -415,11 +675,31 @@ function uploadTargetScript(el: Element, origin: string): 'input' | 'opener' | '
     ? 'opener'
     : 'invalid'
 }
+function selectKindScript(
+  el: Element,
+  origin: string,
+): 'native' | 'custom' | 'TARGET_SCOPE' | 'CONTROL_NOT_READY' {
+  // AUTOMATION_SELECT_KIND: never dispatch to a disabled or busy control.
+  if (location.origin !== origin) return 'TARGET_SCOPE'
+  if (
+    el.matches(':disabled') ||
+    el.closest('[aria-disabled="true"],[inert],[aria-busy="true"]')
+  )
+    return 'CONTROL_NOT_READY'
+  return el.tagName === 'SELECT' ? 'native' : 'custom'
+}
+
 function selectOptionScript(
   element: Element,
   { origin, value }: { origin: string; value: string },
-): HTMLOptionElement | 'TARGET_SCOPE' | 'OPTION_NOT_FOUND' | 'OPTION_AMBIGUOUS' {
-  if (location.origin !== origin || element.tagName !== 'SELECT') return 'TARGET_SCOPE'
+):
+  | Element
+  | 'TARGET_SCOPE'
+  | 'FORM_CHANGED'
+  | 'CONTROL_NOT_READY'
+  | 'OPTION_NOT_FOUND'
+  | 'OPTION_AMBIGUOUS' {
+  if (location.origin !== origin) return 'TARGET_SCOPE'
   const visible = (el: HTMLElement) => {
     const style = getComputedStyle(el)
     return (
@@ -429,41 +709,264 @@ function selectOptionScript(
       style.visibility !== 'collapse'
     )
   }
-  let match: HTMLOptionElement | undefined
-  for (const option of (element as HTMLSelectElement).options) {
-    const group = option.closest('optgroup')
+  if (element.tagName === 'SELECT') {
+    let match: HTMLOptionElement | undefined
+    for (const option of (element as HTMLSelectElement).options) {
+      const group = option.closest('optgroup')
+      if (
+        option.disabled ||
+        !visible(option) ||
+        (group && (group.disabled || !visible(group))) ||
+        (option.value !== value && option.label !== value)
+      )
+        continue
+      if (match) return 'OPTION_AMBIGUOUS'
+      match = option
+    }
+    return match ?? 'OPTION_NOT_FOUND'
+  }
+  const role = element.getAttribute('role')
+  if (
+    role !== 'listbox' &&
+    role !== 'combobox' &&
+    element.getAttribute('aria-haspopup') !== 'listbox'
+  )
+    return 'FORM_CHANGED'
+  const roots = new Set<Element>()
+  if (role === 'listbox') roots.add(element)
+  else {
+    for (const attribute of ['aria-controls', 'aria-owns']) {
+      const ids = (element.getAttribute(attribute) || '').split(/\s+/u).filter(Boolean)
+      if (ids.length > 10) return 'FORM_CHANGED'
+      for (const id of ids) {
+        const matches = [...document.querySelectorAll('[id]')].filter(
+          (item) => item.id === id,
+        )
+        if (matches.length !== 1 || matches[0]?.getAttribute('role') !== 'listbox')
+          return 'FORM_CHANGED'
+        roots.add(matches[0])
+      }
+    }
+    for (const root of element.querySelectorAll('[role="listbox"]')) roots.add(root)
+  }
+  const root = [...roots][0]
+  if (
+    roots.size !== 1 ||
+    !root ||
+    root.querySelector('[role="listbox"]') ||
+    root.getAttribute('aria-multiselectable') === 'true'
+  )
+    return 'FORM_CHANGED'
+  const available = (el: Element) => {
+    const rect = el.getBoundingClientRect()
+    return (
+      visible(el as HTMLElement) &&
+      !el.closest('[hidden],[aria-hidden="true"],[inert]') &&
+      rect.width > 0 &&
+      rect.height > 0
+    )
+  }
+  if (
+    !available(element) ||
+    !available(root) ||
+    root.closest('[aria-disabled="true"],[aria-busy="true"]')
+  )
+    return 'CONTROL_NOT_READY'
+  const interactive = [
+    'button,input,select,textarea,label,a[href],form,iframe,frame,object,embed,summary,audio[controls],video[controls]',
+    '[tabindex],[contenteditable]:not([contenteditable="false"])',
+    ...[
+      'button',
+      'checkbox',
+      'combobox',
+      'grid',
+      'gridcell',
+      'link',
+      'listbox',
+      'menu',
+      'menubar',
+      'menuitem',
+      'menuitemcheckbox',
+      'menuitemradio',
+      'option',
+      'radio',
+      'radiogroup',
+      'searchbox',
+      'slider',
+      'spinbutton',
+      'switch',
+      'tab',
+      'tablist',
+      'textbox',
+      'tree',
+      'treegrid',
+      'treeitem',
+    ].map((role) => `[role~="${role}"]`),
+  ].join(',')
+  let match: Element | undefined
+  for (const option of root.querySelectorAll<HTMLElement>('[role="option"]')) {
     if (
-      option.disabled ||
-      !visible(option) ||
-      (group && (group.disabled || !visible(group))) ||
-      (option.value !== value && option.label !== value)
+      !available(option) ||
+      option.matches(':disabled') ||
+      option.closest('[aria-disabled="true"]') ||
+      option.closest('[role="listbox"]') !== root
     )
       continue
+    const labelled = (option.getAttribute('aria-labelledby') || '')
+      .split(/\s+/u)
+      .filter(Boolean)
+      .slice(0, 10)
+      .map((id) => document.getElementById(id)?.textContent?.trim() || '')
+      .join(' ')
+    const label = option.getAttribute('aria-label') || labelled || option.innerText.trim()
+    const actualValue = option.getAttribute('data-value') ?? option.getAttribute('value')
+    if (value !== label && value !== actualValue) continue
+    if (
+      option.matches(
+        'a[href],input,select,textarea,label,form,iframe,frame,object,embed,[role="link"]',
+      ) ||
+      option.querySelector(interactive)
+    )
+      return 'FORM_CHANGED'
     if (match) return 'OPTION_AMBIGUOUS'
     match = option
   }
   return match ?? 'OPTION_NOT_FOUND'
 }
+
+function selectionConfirmedScript(
+  element: Element,
+  {
+    origin,
+    choice,
+    timeoutMs,
+  }: {
+    origin: string
+    choice: { label: string; value: string | null }
+    timeoutMs: number
+  },
+): Promise<boolean> {
+  const visible = (el: Element) => {
+    const style = getComputedStyle(el)
+    const rect = el.getBoundingClientRect()
+    return (
+      style.visibility !== 'hidden' &&
+      style.visibility !== 'collapse' &&
+      !el.closest('[hidden],[aria-hidden="true"],[inert]') &&
+      rect.width > 0 &&
+      rect.height > 0
+    )
+  }
+  const confirmed = () => {
+    if (location.origin !== origin || !element.isConnected) return false
+    const roots = new Set<Element>()
+    if (element.getAttribute('role') === 'listbox') roots.add(element)
+    else {
+      for (const attribute of ['aria-controls', 'aria-owns']) {
+        for (const id of (element.getAttribute(attribute) || '').split(/\s+/u)) {
+          const root = document.getElementById(id)
+          if (root?.getAttribute('role') === 'listbox') roots.add(root)
+        }
+      }
+      for (const root of element.querySelectorAll('[role="listbox"]')) roots.add(root)
+    }
+    if (roots.size > 1) return false
+    const openRoots = [...roots].filter(visible)
+    if (openRoots.length) {
+      const root = openRoots[0]!
+      if (
+        root.querySelector('[role="listbox"]') ||
+        root.getAttribute('aria-multiselectable') === 'true'
+      )
+        return false
+      const selected = [
+        ...root.querySelectorAll<HTMLElement>('[role="option"][aria-selected="true"]'),
+      ].filter((option) => visible(option) && option.closest('[role="listbox"]') === root)
+      if (selected.length !== 1) return false
+      const option = selected[0]!
+      const labelled = (option.getAttribute('aria-labelledby') || '')
+        .split(/\s+/u)
+        .filter(Boolean)
+        .slice(0, 10)
+        .map((id) => document.getElementById(id)?.textContent?.trim() || '')
+        .join(' ')
+      const actualValue =
+        option.getAttribute('data-value') ?? option.getAttribute('value')
+      return (
+        actualValue === choice.value &&
+        (option.getAttribute('aria-label') || labelled || option.innerText.trim()) ===
+          choice.label
+      )
+    }
+    // A popup may disappear after selection; only an explicit control value
+    // proves the effect in that case, never arbitrary surrounding page text.
+    return (
+      choice.value !== null &&
+      (element.getAttribute('data-value') === choice.value ||
+        element.getAttribute('value') === choice.value ||
+        (element.tagName === 'INPUT' &&
+          (element as HTMLInputElement).value === choice.value))
+    )
+  }
+  if (confirmed()) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const finish = (value: boolean) => {
+      clearTimeout(timer)
+      observer.disconnect()
+      resolve(value)
+    }
+    const observer = new MutationObserver(() => {
+      if (confirmed()) finish(true)
+    })
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    observer.observe(document.documentElement, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true,
+    })
+    if (confirmed()) finish(true)
+  })
+}
 async function requestScript({
   origin,
   path,
   timeoutMs,
+  readPolicy,
 }: {
   origin: string
   path: string
   timeoutMs: number
+  readPolicy?: string
 }) {
   if (location.origin !== origin) throw new Error('scope')
   const url = new URL(path, origin)
-  if (url.origin !== origin) throw new Error('scope')
+  const financial = readPolicy === 'vinted_account_financials'
+  if (readPolicy !== undefined && !financial) throw new Error('scope')
+  if (financial) {
+    const apiOrigin = `https://api.www.${new URL(origin).hostname.replace(/^www\./u, '')}`
+    if (
+      path !== `${apiOrigin}/ledger/wallet/balance` &&
+      path !== `${apiOrigin}/payments/public/api/bank_accounts`
+    )
+      throw new Error('scope')
+  } else if (url.origin !== origin) throw new Error('scope')
   const response = await fetch(url.href, {
     method: 'GET',
-    credentials: 'same-origin',
+    credentials: financial ? 'include' : 'same-origin',
+    mode: 'cors',
     redirect: 'error',
     cache: 'no-store',
     signal: AbortSignal.timeout(timeoutMs),
   })
-  if (new URL(response.url).origin !== origin) throw new Error('scope')
+  if (
+    location.origin !== origin ||
+    response.url !== url.href ||
+    response.redirected ||
+    response.type === 'opaque' ||
+    response.type === 'opaqueredirect'
+  )
+    throw new Error('scope')
   const reader = response.body?.getReader()
   const decoder = new TextDecoder()
   let text = ''
@@ -481,6 +984,7 @@ async function requestScript({
   } finally {
     await reader?.cancel()
   }
+  if (location.origin !== origin) throw new Error('scope')
   try {
     text = JSON.stringify(JSON.parse(text), (key, value: unknown) =>
       /password|passwd|secret|token|cookie|authorization/i.test(key)
@@ -750,7 +1254,10 @@ export class AutomationActor {
         result = { completed: true }
         break
       case 'select': {
+        const startedAt = Date.now()
         const locator = await this.checkedLocator(page, input.target, origin, timeoutMs)
+        const kind = await locator.evaluate(selectKindScript, origin, options)
+        if (kind === 'TARGET_SCOPE' || kind === 'CONTROL_NOT_READY') fail(kind)
         const handle = await locator.evaluateHandle(
           selectOptionScript,
           { origin, value: input.value as string },
@@ -760,12 +1267,48 @@ export class AutomationActor {
           const option = handle.asElement()
           if (!option) {
             const error = await handle.jsonValue()
-            if (error === 'TARGET_SCOPE') fail('TARGET_SCOPE')
-            if (error === 'OPTION_AMBIGUOUS') fail('OPTION_AMBIGUOUS')
+            if (
+              error === 'TARGET_SCOPE' ||
+              error === 'FORM_CHANGED' ||
+              error === 'CONTROL_NOT_READY' ||
+              error === 'OPTION_AMBIGUOUS'
+            )
+              fail(error)
             fail('OPTION_NOT_FOUND')
           }
           // Select the observed node, even if the page reorders its options.
-          await locator.selectOption(option, options)
+          if (kind === 'native') await locator.selectOption(option, options)
+          else {
+            const choice = await option.evaluate((element) => {
+              const labelled = (element.getAttribute('aria-labelledby') || '')
+                .split(/\s+/u)
+                .filter(Boolean)
+                .slice(0, 10)
+                .map((id) => document.getElementById(id)?.textContent?.trim() || '')
+                .join(' ')
+              return {
+                label:
+                  element.getAttribute('aria-label') ||
+                  labelled ||
+                  (element as HTMLElement).innerText.trim(),
+                value:
+                  element.getAttribute('data-value') ?? element.getAttribute('value'),
+              }
+            })
+            if (choice.label !== input.value && choice.value !== input.value)
+              fail('FORM_CHANGED')
+            const readiness = await option.evaluate(selectKindScript, origin)
+            if (readiness === 'TARGET_SCOPE' || readiness === 'CONTROL_NOT_READY')
+              fail(readiness)
+            if (await option.evaluate(clickGuardScript, origin)) fail('SUBMIT_REQUIRED')
+            await option.click(options)
+            const confirmed = await locator.evaluate(selectionConfirmedScript, {
+              origin,
+              choice,
+              timeoutMs: Math.max(1, timeoutMs - (Date.now() - startedAt) - 100),
+            })
+            if (!confirmed) fail('SELECTION_UNCONFIRMED')
+          }
         } finally {
           await handle.dispose()
         }
@@ -785,11 +1328,12 @@ export class AutomationActor {
       case 'readFields': {
         const fields: Record<string, unknown> = {}
         for (const [name, value] of Object.entries(object(input.fields))) {
-          fields[name] = await this.locator(page, value).evaluate(
-            fieldScript,
-            origin,
-            options,
-          )
+          fields[name] =
+            input.includeState === true
+              ? await (
+                  await this.checkedLocator(page, value, origin, timeoutMs)
+                ).evaluate(snapshotScript, origin, options)
+              : await this.locator(page, value).evaluate(fieldScript, origin, options)
         }
         result = fields
         break
@@ -799,6 +1343,9 @@ export class AutomationActor {
           origin,
           path: input.path as string,
           timeoutMs,
+          ...(input.readPolicy === undefined
+            ? {}
+            : { readPolicy: input.readPolicy as string }),
         })
         break
     }

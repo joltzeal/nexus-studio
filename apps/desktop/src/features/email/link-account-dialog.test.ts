@@ -2,11 +2,13 @@ import {
   type DependencyList,
   type EffectCallback,
   type FormEvent,
+  type MouseEvent,
   type ReactElement,
   type ReactNode,
 } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Button } from '@/components/ui/button'
+import { AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import {
   components,
@@ -20,6 +22,7 @@ import {
   linkMailboxToAccount,
   loadAccountLinkTargets,
   loadMailboxLinkTargets,
+  unlinkMailboxFromAccount,
 } from './accounts-link'
 import { LinkAccountMailboxDialog, LinkMailboxAccountDialog } from './link-account-dialog'
 import { mailbox } from './test-fixtures'
@@ -109,6 +112,124 @@ afterEach(() => {
 })
 
 describe('account and mailbox pickers', () => {
+  it('confirms account-side replacement using the binding shown before confirmation', async () => {
+    vi.mocked(loadMailboxLinkTargets).mockResolvedValueOnce({
+      ...page,
+      items: [
+        {
+          id: mailbox().id,
+          email: mailbox().email,
+          enabled: true,
+          status: 'active',
+        },
+      ],
+    })
+    const account = {
+      id: 'account-1',
+      account: 'seller@example.test',
+      mailbox: {
+        pluginId: 'studio.email' as const,
+        mailboxId: 'old-mailbox',
+        email: 'old@example.test',
+        linkedAt: '2026-11-12T10:00:00.000Z',
+      },
+    }
+    await mount(LinkAccountMailboxDialog({ account, onClose, onSaved }))
+    components(tree(), LabeledSelect)[0]!.props.onValueChange(mailbox().id)
+    submit()
+    expect(linkMailboxToAccount).not.toHaveBeenCalled()
+    expect(text(tree())).toContain('old@example.test')
+    components(tree(), AlertDialogAction)[0]!.props.onClick?.({
+      preventDefault() {},
+    } as MouseEvent<HTMLButtonElement>)
+    await flushPromises()
+    expect(linkMailboxToAccount).toHaveBeenCalledExactlyOnceWith(
+      'account-1',
+      { id: mailbox().id, email: mailbox().email },
+      'old-mailbox',
+    )
+    expect(onSaved).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('confirms replacing an existing mailbox and retains its selection and confirmation after failure', async () => {
+    vi.mocked(loadAccountLinkTargets).mockResolvedValueOnce({
+      ...page,
+      items: [
+        {
+          ...page.items[0]!,
+          mailbox: {
+            pluginId: 'studio.email',
+            mailboxId: 'old-mailbox',
+            email: 'old@example.test',
+            linkedAt: '2026-11-12T10:00:00.000Z',
+          },
+        },
+      ],
+    })
+    await mount(LinkMailboxAccountDialog({ mailbox: mailbox(), onClose }))
+    components(tree(), LabeledSelect)[0]!.props.onValueChange('account-1')
+    submit()
+    expect(linkMailboxToAccount).not.toHaveBeenCalled()
+    components(tree(), AlertDialogCancel)[0]!.props.onClick?.(
+      {} as MouseEvent<HTMLButtonElement>,
+    )
+    expect(linkMailboxToAccount).not.toHaveBeenCalled()
+    submit()
+    vi.mocked(linkMailboxToAccount).mockRejectedValueOnce(new Error('synthetic-secret'))
+    components(tree(), AlertDialogAction)[0]!.props.onClick?.({
+      preventDefault() {},
+    } as MouseEvent<HTMLButtonElement>)
+    await flushPromises()
+    expect(linkMailboxToAccount).toHaveBeenCalledExactlyOnceWith(
+      'account-1',
+      mailbox(),
+      'old-mailbox',
+    )
+    expect(onClose).not.toHaveBeenCalled()
+    expect(components(tree(), LabeledSelect)[0]!.props.value).toBe('account-1')
+    expect(text(tree())).toContain('关联失败')
+    expect(text(tree())).not.toContain('synthetic-secret')
+    expect(components(tree(), AlertDialogAction)).toHaveLength(1)
+  })
+
+  it('confirms unlinking from the mailbox-side account picker before writing', async () => {
+    vi.mocked(loadAccountLinkTargets).mockResolvedValueOnce({
+      ...page,
+      items: [
+        {
+          ...page.items[0]!,
+          mailbox: {
+            pluginId: 'studio.email',
+            mailboxId: mailbox().id,
+            email: mailbox().email,
+            linkedAt: '2026-11-12T10:00:00.000Z',
+          },
+        },
+      ],
+    })
+    await mount(LinkMailboxAccountDialog({ mailbox: mailbox(), onClose }))
+    components(tree(), LabeledSelect)[0]!.props.onValueChange('account-1')
+    components(tree(), Button)
+      .find((node) => text(node.props.children).includes('解除此账号'))!
+      .props.onClick?.({} as MouseEvent<HTMLButtonElement>)
+    expect(unlinkMailboxFromAccount).not.toHaveBeenCalled()
+    vi.mocked(unlinkMailboxFromAccount).mockResolvedValueOnce({
+      mailbox: null,
+      updatedAt: '2026-11-12T10:00:00.000Z',
+      storageDurable: true,
+    })
+    components(tree(), AlertDialogAction)[0]!.props.onClick?.({
+      preventDefault() {},
+    } as MouseEvent<HTMLButtonElement>)
+    await flushPromises()
+    expect(unlinkMailboxFromAccount).toHaveBeenCalledExactlyOnceWith(
+      'account-1',
+      mailbox().id,
+    )
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('starts with a matching email query without writing a relationship', async () => {
     await mount(LinkMailboxAccountDialog({ mailbox: mailbox(), onClose }))
     expect(loadAccountLinkTargets).toHaveBeenCalledExactlyOnceWith({

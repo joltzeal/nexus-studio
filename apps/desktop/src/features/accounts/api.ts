@@ -1,5 +1,5 @@
-import { AccountObservationStateSchema } from '@nexus/plugin-vinted-accounts/agent-contracts'
-import { callPlugin } from '@/lib/platform/native-plugins'
+import { AccountObservationStateSchema } from '@nexus/plugin-contracts/vinted-accounts'
+import { callPlugin, PluginCallError } from '@/lib/platform/native-plugins'
 import { profileData, type Profile } from '@/features/addresses/types'
 import { assignedAccountMailbox } from './account-mailbox-api'
 import type {
@@ -34,22 +34,42 @@ function call<T>(method: string, payload: unknown = {}): Promise<T> {
 
 const ACCOUNT_PAGE_SIZE = 16
 const ACCOUNT_LIST_UPDATE_HINT = '请更新 Vinted 账号池插件后读取分页账号列表。'
+const ACCOUNT_PAGE_TOO_LARGE =
+  '账号列表单页数据过大，超过消息大小上限，请减少每页账号数后重试。'
 
 export async function listAccounts(): Promise<AccountList> {
+  for (let pageSize = ACCOUNT_PAGE_SIZE; ; pageSize /= 2) {
+    try {
+      return await readAccountPages(pageSize)
+    } catch (error) {
+      if (
+        pageSize === 1 ||
+        !(error instanceof PluginCallError) ||
+        error.code !== 'UNAVAILABLE' ||
+        error.message !== ACCOUNT_PAGE_TOO_LARGE
+      ) {
+        throw error
+      }
+      // Discard partial pages: a smaller fixed size changes every page boundary.
+    }
+  }
+}
+
+async function readAccountPages(pageSize: number): Promise<AccountList> {
   const readPage = async (page: number, revision?: string): Promise<AccountPage> => {
     const result = await call<unknown>('vinted.accounts.list', {
       page,
-      pageSize: ACCOUNT_PAGE_SIZE,
+      pageSize,
       ...(revision === undefined ? {} : { revision }),
     })
-    return accountPage(result, page)
+    return accountPage(result, page, pageSize)
   }
   const first = await readPage(1)
   const items: Account[] = []
   const bindings: Binding[] = []
   const ids = new Set<string>()
   const windows = new Set<string>()
-  const pages = Math.max(1, Math.ceil(first.total / ACCOUNT_PAGE_SIZE))
+  const pages = Math.max(1, Math.ceil(first.total / pageSize))
   for (let page = 1; page <= pages; page += 1) {
     const current = page === 1 ? first : await readPage(page, first.revision)
     if (
@@ -224,11 +244,15 @@ function accountBinding(value: unknown): value is Binding {
     record(value) &&
     boundedText(value.accountId, 64) &&
     boundedText(value.windowId, 64) &&
-    typeof value.boundAt === 'string'
+    typeof value.boundAt === 'string' &&
+    typeof value.revision === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.revision,
+    )
   )
 }
 
-function accountPage(value: unknown, page: number): AccountPage {
+function accountPage(value: unknown, page: number, pageSize: number): AccountPage {
   if (
     record(value) &&
     (value.page === undefined ||
@@ -249,17 +273,14 @@ function accountPage(value: unknown, page: number): AccountPage {
       'revision',
     ]) ||
     value.page !== page ||
-    value.pageSize !== ACCOUNT_PAGE_SIZE ||
+    value.pageSize !== pageSize ||
     !boundedText(value.revision, 128) ||
     !count(value.total) ||
     value.total > 2000 ||
     typeof value.storageDurable !== 'boolean' ||
     !Array.isArray(value.items) ||
     value.items.length !==
-      Math.min(
-        ACCOUNT_PAGE_SIZE,
-        Math.max(0, value.total - (page - 1) * ACCOUNT_PAGE_SIZE),
-      ) ||
+      Math.min(pageSize, Math.max(0, value.total - (page - 1) * pageSize)) ||
     !value.items.every(accountRecord) ||
     !Array.isArray(value.bindings) ||
     !value.bindings.every(accountBinding)

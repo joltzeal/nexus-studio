@@ -1,0 +1,27 @@
+{
+  "name": "@nexus/plugin-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./products": {
+      "types": "./dist/products.d.ts",
+      "import": "./dist/products.js"
+    },
+    "./vinted-accounts": {
+      "types": "./dist/vinted-accounts.d.ts",
+      "import": "./dist/vinted-accounts.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}

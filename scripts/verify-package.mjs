@@ -31,7 +31,12 @@ for (const entry of files) {
 
 const key = deriveKey(header.manifest.id, header.manifest.version).toString('hex')
 const child = spawn(process.execPath, [join(directory, header.entry)], {
-  env: { ...process.env, NEXUS_PLUGIN_KEY: key, NEXUS_PLUGIN_STORAGE_DIR: storage },
+  env: {
+    ...process.env,
+    NEXUS_PLUGIN_KEY: key,
+    NEXUS_PLUGIN_STORAGE_DIR: storage,
+    NEXUS_PLUGIN_PACKAGE_DIR: directory,
+  },
   stdio: ['pipe', 'pipe', 'pipe'],
 })
 
@@ -50,6 +55,11 @@ const finish = (code, message) => {
 const timer = setTimeout(() => finish(1, '插件在 10 秒内没有完成握手'), 10_000)
 
 let buffered = ''
+let readyMessage
+const report = (message, catalog) =>
+  `ok ${header.manifest.id} ${header.manifest.version}\n` +
+  `   方法 ${message.methods.length} 个：${message.methods.join(', ')}\n` +
+  `   状态 ${JSON.stringify({ ...message.status, ...(catalog ? { bundledCatalog: catalog } : {}) })}`
 child.stdout.on('data', (chunk) => {
   buffered += chunk.toString()
   for (const line of buffered.split('\n').slice(0, -1)) {
@@ -64,12 +74,37 @@ child.stdout.on('data', (chunk) => {
       child.stdin.write(`${JSON.stringify({ type: 'handshake', protocolVersion: 1 })}\n`)
     }
     if (message.type === 'ready') {
-      finish(
-        0,
-        `ok ${header.manifest.id} ${header.manifest.version}\n` +
-          `   方法 ${message.methods.length} 个：${message.methods.join(', ')}\n` +
-          `   状态 ${JSON.stringify(message.status ?? {})}`,
-      )
+      if (header.manifest.id === 'studio.sales-agent') {
+        readyMessage = message
+        child.stdin.write(
+          `${JSON.stringify({
+            protocolVersion: 1,
+            requestId: 'verify-bundled-catalog',
+            capability: 'sales.agent',
+            method: 'salesAgent.catalog.search',
+            deadlineMs: 5000,
+            payload: { market: 'US', limit: 1 },
+          })}\n`,
+        )
+      } else finish(0, report(message))
+    }
+    if (message.requestId === 'verify-bundled-catalog' && readyMessage) {
+      const result = message.result
+      if (
+        !message.ok ||
+        result?.market !== 'US' ||
+        !/^[a-f0-9]{64}$/.test(result.catalogRevision ?? '') ||
+        !Number.isInteger(result.total) ||
+        result.total < 1 ||
+        !Array.isArray(result.items) ||
+        result.items.length !== 1
+      ) {
+        finish(1, '最终插件包无法离线读取分类资源')
+      } else
+        finish(
+          0,
+          report(readyMessage, { revision: result.catalogRevision, total: result.total }),
+        )
     }
   }
   buffered = buffered.slice(buffered.lastIndexOf('\n') + 1)
