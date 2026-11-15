@@ -42,12 +42,14 @@ export function NumberPoolOptions({
   records,
   accounts,
   currentAccountId,
+  onlyAvailable = false,
   onPick,
   disabled = false,
 }: {
   records: SmsRecord[]
   accounts: AccountLookup
   currentAccountId?: string | undefined
+  onlyAvailable?: boolean
   onPick: (number: PickedNumber) => void
   disabled?: boolean
 }) {
@@ -55,6 +57,11 @@ export function NumberPoolOptions({
     () => indexAccountPhones(accounts.state === 'ready' ? accounts.items : []),
     [accounts],
   )
+  const visible = records.filter((record) => {
+    if (!onlyAvailable || accounts.state !== 'ready') return true
+    const owners = usage.get(canonicalPhone(record.tel)) ?? []
+    return owners.every((owner) => owner.id === currentAccountId)
+  })
 
   return (
     <>
@@ -65,9 +72,12 @@ export function NumberPoolOptions({
             : '无法读取 Vinted 账号，号码占用情况未知；仍可选择号码。'}
         </p>
       )}
-      {records.length === 0 ? null : (
+      {records.length > 0 && visible.length === 0 ? (
+        <p className="sim8-hint">没有未被其他账号使用的号码。</p>
+      ) : null}
+      {visible.length === 0 ? null : (
         <div className="sim8-pick-list" role="listbox" aria-label="已购号码">
-          {records.map((record) => {
+          {visible.map((record) => {
             const owners = usage.get(canonicalPhone(record.tel)) ?? []
             const current = owners.some((owner) => owner.id === currentAccountId)
             const others = owners.filter((owner) => owner.id !== currentAccountId)
@@ -127,6 +137,7 @@ export function NumberPoolList({
   currentAccountId?: string | undefined
 }) {
   const [query, setQuery] = useState('')
+  const [onlyAvailable, setOnlyAvailable] = useState(false)
   const [records, setRecords] = useState<SmsRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -199,6 +210,15 @@ export function NumberPoolList({
           onChange={(event) => setQuery(event.target.value)}
         />
       </div>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={onlyAvailable}
+          disabled={disabled || accounts.state !== 'ready'}
+          onChange={(event) => setOnlyAvailable(event.target.checked)}
+        />
+        仅看未被其他账号使用
+      </label>
       {loading ? (
         <p className="sim8-hint">
           <Loader2 className="animate-spin" aria-hidden="true" /> 正在读取号码池…
@@ -217,6 +237,7 @@ export function NumberPoolList({
           records={visible}
           accounts={accounts}
           currentAccountId={currentAccountId}
+          onlyAvailable={onlyAvailable}
           disabled={disabled}
           onPick={onPick}
         />

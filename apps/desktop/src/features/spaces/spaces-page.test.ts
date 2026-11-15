@@ -61,7 +61,8 @@ import {
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { ProxyGateDialog } from './proxy-gate'
-import { SpacesPage } from './spaces-page'
+import { ProxyCell, SpacesPage } from './spaces-page'
+import type { ProxyRow } from '@/features/proxy/types'
 import { WindowEditor } from './window-editor'
 import { BatchWindowDialog } from './batch-window-dialog'
 import { TransferToolbar } from './transfer-toolbar'
@@ -76,6 +77,7 @@ const state = vi.hoisted(() => ({
   accounts: [] as Account[],
   bindings: [] as BindingView[],
   windows: [] as BrowserWindow[],
+  proxyRows: [] as ProxyRow[],
   connections: [] as BrowserConnection[],
   groups: [] as WindowGroup[],
   calls: [] as { method: string; input: unknown }[],
@@ -138,6 +140,20 @@ vi.mock('@/lib/platform/native-plugins', async (importOriginal) => ({
     input: unknown,
   ) => {
     state.calls.push({ method, input })
+    if (method === 'proxy.list') {
+      const { offset, limit } = input as { offset: number; limit: number }
+      return {
+        items: state.proxyRows.slice(offset, offset + limit),
+        offset,
+        limit,
+        total: state.proxyRows.length,
+      }
+    }
+    if (method === 'proxy.config.get')
+      return {
+        defaultEndpointId: '7',
+        risk: { enabled: false, cacheSeconds: 0, hasApiKey: false },
+      }
     if (method === 'vinted.accounts.list') {
       if (state.listError) throw state.listError
       const snapshot = await (state.listResponse ?? {
@@ -221,7 +237,10 @@ vi.mock('./use-window-launch', async (importOriginal) => {
         ? realController(...args)
         : {
             gate: null,
+            directConfirmation: null,
             closeGate: () => undefined,
+            closeDirectConfirmation: () => undefined,
+            confirmDirect: () => undefined,
             operatingWindows: new Set(),
             startingWindows: new Set(state.startingIds),
             unconfirmedWindows: new Set(),
@@ -399,6 +418,7 @@ beforeEach(() => {
   } as PluginView
   state.accounts = [account(), account({ id: 'other', account: 'other@example.com' })]
   state.windows = [profile('first'), profile('second', 'running'), profile('third')]
+  state.proxyRows = []
   state.bindings = [
     bind('first', state.accounts[0]!),
     bind('second', state.accounts[0]!),
@@ -1935,6 +1955,42 @@ describe('browser connections and global associations', () => {
 })
 
 describe('starting window row highlighting', () => {
+  it('requires a fresh confirmation before opening a direct window', async () => {
+    state.realLaunch = true
+    const page = await mountedPage()
+    windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
+    expect(startBrowserWindow).not.toHaveBeenCalled()
+    const dialog = relationConfirmation(page.render(), '继续直连打开')
+    expect(text(dialog)).toContain('未配置代理')
+    dialog.props.onOpenChange?.(false)
+    expect(relationConfirmation(page.render(), '继续直连打开')).toBeUndefined()
+    expect(startBrowserWindow).not.toHaveBeenCalled()
+
+    windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
+    confirmRelation(page.render(), '继续直连打开')
+    await vi.waitFor(() =>
+      expect(startBrowserWindow).toHaveBeenCalledExactlyOnceWith('first'),
+    )
+  })
+
+  it('rejects direct confirmation if the saved window has changed', async () => {
+    state.realLaunch = true
+    const page = await mountedPage()
+    windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
+    state.windows[0] = {
+      ...state.windows[0]!,
+      proxyMode: 'manual',
+      proxy: 'http://proxy.example.test:8080',
+    }
+    confirmRelation(page.render(), '继续直连打开')
+    await vi.waitFor(() =>
+      expect(components(page.render(), FieldError)[0]?.props.children).toBe(
+        '窗口配置或运行状态已变化，请刷新后重新打开。',
+      ),
+    )
+    expect(startBrowserWindow).not.toHaveBeenCalled()
+  })
+
   it('never confirms startup using a superseded running-state response', async () => {
     state.realLaunch = true
     state.windows[0] = {
@@ -1990,6 +2046,7 @@ describe('starting window row highlighting', () => {
 
   it('highlights a pending launch, never a simultaneous stop, and clears after confirmed startup', async () => {
     state.realLaunch = true
+    state.windows[0] = { ...state.windows[0]!, proxyMode: 'provider' }
     const page = await mountedPage()
     const start = deferred<void>()
     const stop = deferred<void>()
@@ -2025,6 +2082,7 @@ describe('starting window row highlighting', () => {
 
   it('clears the highlight after a definite launch rejection', async () => {
     state.realLaunch = true
+    state.windows[0] = { ...state.windows[0]!, proxyMode: 'provider' }
     const page = await mountedPage()
     const start = deferred<void>()
     vi.mocked(startBrowserWindow).mockReturnValue(start.promise)
@@ -2131,6 +2189,7 @@ describe('starting window row highlighting', () => {
 
   it('keeps failed startup confirmation highlighted until a subsequent read confirms the settled window is stopped', async () => {
     state.realLaunch = true
+    state.windows[0] = { ...state.windows[0]!, proxyMode: 'provider' }
     const page = await mountedPage()
     const confirmation = deferred<BrowserWindow[]>()
     state.profileReadResponse = confirmation.promise
@@ -2150,6 +2209,62 @@ describe('starting window row highlighting', () => {
       'failed',
     )
     expect(startBrowserWindow).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('window proxy summary', () => {
+  it('loads one pool snapshot for saved proxy windows and shows its exit in the table', async () => {
+    state.windows[0] = {
+      ...state.windows[0]!,
+      proxyMode: 'plugin',
+      proxyPlugin: 'studio.proxy-pool',
+      proxyEndpoint: 7,
+    }
+    state.proxyRows = [
+      {
+        id: '7',
+        name: 'US session',
+        exitIp: '203.0.113.25',
+        checkStatus: 'ok',
+        latencyMs: 240,
+      } as ProxyRow,
+    ]
+    const page = await mountedPage()
+    await vi.waitFor(() => {
+      const cell = components(windowRow(page.render(), 'first'), ProxyCell)[0]!
+      expect(cell.props.catalog?.rows.get('7')?.exitIp).toBe('203.0.113.25')
+    })
+    expect(state.calls.filter((call) => call.method === 'proxy.list')).toHaveLength(1)
+  })
+
+  it('shows the saved endpoint exit and last health check without exposing only its ID', () => {
+    const row = {
+      id: '7',
+      name: 'US session',
+      exitIp: '203.0.113.25',
+      checkStatus: 'ok',
+      latencyMs: 240,
+    } as ProxyRow
+    const window = {
+      ...profile('first'),
+      proxyMode: 'plugin' as const,
+      proxyPlugin: 'studio.proxy-pool',
+      proxyEndpoint: 7,
+    }
+    const html = renderToStaticMarkup(
+      createElement(ProxyCell, {
+        window,
+        catalog: { rows: new Map([['7', row]]), defaultId: null },
+      }),
+    )
+    expect(html).toContain('203.0.113.25')
+    expect(html).toContain('上次检测通过')
+    expect(html).toContain('240 ms')
+    expect(html).not.toContain('#7')
+    const unavailable = renderToStaticMarkup(
+      createElement(ProxyCell, { window, catalog: null }),
+    )
+    expect(unavailable).toContain('#7 · 详情暂不可用')
   })
 })
 

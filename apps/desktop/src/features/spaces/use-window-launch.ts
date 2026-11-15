@@ -29,6 +29,11 @@ export function useWindowLaunch(
   const [uncertainStarts, setUncertainStarts] = useState<Set<string>>(() => new Set())
   const [unconfirmedWindows, setUnconfirmed] = useState<Set<string>>(() => new Set())
   const [gate, setGate] = useState<GateState | null>(null)
+  const [directConfirmation, setDirectConfirmation] = useState<{
+    window: BrowserWindow
+    view: GateState['view']
+  } | null>(null)
+  const confirmingDirect = useRef(false)
   const pendingLaunches = useRef(new Set<string>())
   const pendingStops = useRef(new Set<string>())
   const gateBusy = useRef(false)
@@ -172,12 +177,13 @@ export function useWindowLaunch(
     }
   }
 
-  async function open(window: BrowserWindow) {
+  async function open(window: BrowserWindow, confirmedDirect = false) {
     if (
       !visible() ||
       window.state !== 'stopped' ||
       window.connectionId !== connectionId ||
       gateBusy.current ||
+      (directConfirmation !== null && !confirmedDirect) ||
       pendingStops.current.has(window.id) ||
       pendingLaunches.current.has(window.id) ||
       actionRequests.current.has(window.id) ||
@@ -185,6 +191,10 @@ export function useWindowLaunch(
       unconfirmedWindows.has(window.id)
     )
       return
+    if (window.proxyMode === 'direct' && !hasProxy(window) && !confirmedDirect) {
+      setDirectConfirmation({ window, view: currentView })
+      return
+    }
     actionRequests.current.add(window.id)
     gateBusy.current = true
     onError(null)
@@ -209,6 +219,33 @@ export function useWindowLaunch(
     } finally {
       actionRequests.current.delete(window.id)
       gateBusy.current = false
+    }
+  }
+
+  async function confirmDirect() {
+    const target = directConfirmation
+    if (target === null || target.view !== view.current || confirmingDirect.current)
+      return
+    confirmingDirect.current = true
+    try {
+      const records = await readRecords()
+      if (!visible()) return
+      const latest = records.find((record) => record.id === target.window.id)
+      setDirectConfirmation(null)
+      if (
+        latest?.connectionId !== target.window.connectionId ||
+        latest.state !== 'stopped' ||
+        latest.proxyMode !== 'direct' ||
+        hasProxy(latest)
+      ) {
+        onError('窗口配置或运行状态已变化，请刷新后重新打开。')
+        return
+      }
+      await open(latest, true)
+    } catch (cause) {
+      if (visible()) onError(transferError(cause))
+    } finally {
+      confirmingDirect.current = false
     }
   }
 
@@ -335,6 +372,11 @@ export function useWindowLaunch(
       gate?.window.connectionId === connectionId && gate.view === currentView
         ? gate
         : null,
+    directConfirmation:
+      directConfirmation?.window.connectionId === connectionId &&
+      directConfirmation.view === currentView
+        ? directConfirmation.window
+        : null,
     operatingWindows: new Set([...operating, ...unconfirmedWindows]),
     startingWindows: new Set([
       ...launching,
@@ -343,6 +385,10 @@ export function useWindowLaunch(
     ]),
     unconfirmedWindows,
     open,
+    confirmDirect,
+    closeDirectConfirmation: () => {
+      if (!confirmingDirect.current) setDirectConfirmation(null)
+    },
     stop,
     refreshGate,
     closeGate,

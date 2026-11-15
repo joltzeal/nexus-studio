@@ -142,6 +142,8 @@ import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { AccountSmsWaitButton } from './account-sms-wait-button'
 import { smsWaits } from '@/features/accounts/sms-wait-runtime'
 import { Sim8ExpiryNotice } from '@/features/sim8/expiry-notice'
+import { getConfig, listPickerProxies } from '@/features/proxy/api'
+import { PROXY_PLUGIN_ID, type ProxyRow } from '@/features/proxy/types'
 
 const WINDOW_PAGE_SIZES = [20, 50, 100] as const
 
@@ -204,6 +206,37 @@ export function SpacesPage() {
   const [expiryRefreshKey, setExpiryRefreshKey] = useState(0)
   const native = browserWindowsAvailable()
   const [windows, setWindows] = useState<BrowserWindow[]>([])
+  const [proxyCatalog, setProxyCatalog] = useState<{
+    scope: string
+    rows: ReadonlyMap<string, ProxyRow>
+    defaultId: string | null
+  } | null>(null)
+  const [proxyRevision, setProxyRevision] = useState(0)
+  const proxyRefs = windows
+    .filter((item) => item.proxyPlugin === PROXY_PLUGIN_ID)
+    .map((item) => `${item.id}:${item.proxyEndpoint ?? 'default'}`)
+    .join('|')
+  const proxyScope = `${proxyRefs}:${proxyRevision}`
+  useEffect(() => {
+    if (!native || proxyRefs === '') return
+    let active = true
+    void Promise.all([listPickerProxies(), getConfig()]).then(
+      ([rows, config]) => {
+        if (active)
+          setProxyCatalog({
+            scope: proxyScope,
+            rows: new Map(rows.map((row) => [row.id, row])),
+            defaultId: config.defaultEndpointId,
+          })
+      },
+      () => {
+        if (active) setProxyCatalog(null)
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [native, proxyRefs, proxyScope])
   const [connections, setConnections] = useState<BrowserConnection[]>([])
   const [providerId, setProviderId] = useState<BrowserProviderId>('cloakbrowser')
   const [attaching, setAttaching] = useState(false)
@@ -442,10 +475,13 @@ export function SpacesPage() {
   }, [dismissBinding, resetPhoneConfirmation])
   const {
     gate,
+    directConfirmation,
     operatingWindows,
     startingWindows,
     unconfirmedWindows,
     open,
+    confirmDirect,
+    closeDirectConfirmation,
     stop,
     refreshGate,
     closeGate,
@@ -482,6 +518,7 @@ export function SpacesPage() {
 
   async function refresh() {
     if (refreshing) return
+    setProxyRevision((current) => current + 1)
     setExpiryRefreshKey((value) => value + 1)
     recovery.retry()
     setRefreshing(true)
@@ -1498,7 +1535,10 @@ export function SpacesPage() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <ProxyCell window={window} />
+                    <ProxyCell
+                      window={window}
+                      catalog={proxyCatalog?.scope === proxyScope ? proxyCatalog : null}
+                    />
                   </TableCell>
                   <TableCell>
                     <TimeCell at={window.createdAt} now={now} fallback="—" />
@@ -2217,6 +2257,32 @@ export function SpacesPage() {
           />
         )}
       </Dialog>
+      {directConfirmation !== null ? (
+        <AlertDialog
+          open={directConfirmation !== null}
+          onOpenChange={(next) => {
+            if (!next) closeDirectConfirmation()
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>确认直连打开窗口</AlertDialogTitle>
+              <AlertDialogDescription>
+                「{directConfirmation.name}
+                」未配置代理，将使用本机网络直连。是否继续打开？
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={closeDirectConfirmation}>
+                取消
+              </AlertDialogCancel>
+              <AlertDialogAction onClick={() => void confirmDirect()}>
+                继续直连打开
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
 
       <Dialog
         open={editingAccount !== null}
@@ -2382,16 +2448,47 @@ export function SpacesPage() {
   )
 }
 
-function ProxyCell({ window }: { window: BrowserWindow }) {
+export function ProxyCell({
+  window,
+  catalog,
+}: {
+  window: BrowserWindow
+  catalog: { rows: ReadonlyMap<string, ProxyRow>; defaultId: string | null } | null
+}) {
   if (window.proxyMode === 'provider')
     return <span className="table-muted">沿用浏览器设置</span>
   if (window.proxyPlugin !== null) {
+    const id =
+      window.proxyEndpoint === null
+        ? (catalog?.defaultId ?? null)
+        : String(window.proxyEndpoint)
+    const row = id === null ? null : (catalog?.rows.get(id) ?? null)
     return (
       <span className="proxy-cell">
         <Badge variant="secondary">代理池</Badge>
-        <small>
-          {window.proxyEndpoint === null ? '默认代理' : `#${window.proxyEndpoint}`}
-        </small>
+        {row ? (
+          <>
+            <span
+              className="proxy-address"
+              title={`${row.name} · ${row.exitIp ?? '出口待检测'}`}
+            >
+              {row.exitIp ?? row.name}
+            </span>
+            <small title={row.checkError ?? undefined}>
+              {window.proxyEndpoint === null ? '默认 · ' : ''}
+              {row.checkStatus === 'ok'
+                ? `上次检测通过${row.latencyMs === null ? '' : ` · ${row.latencyMs} ms`}`
+                : row.checkStatus === 'failed'
+                  ? '上次检测失败'
+                  : '健康度待检测'}
+            </small>
+          </>
+        ) : (
+          <small>
+            {window.proxyEndpoint === null ? '默认代理' : `#${window.proxyEndpoint}`} ·
+            详情暂不可用
+          </small>
+        )}
       </span>
     )
   }

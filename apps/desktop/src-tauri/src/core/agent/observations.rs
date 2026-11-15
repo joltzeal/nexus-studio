@@ -17,6 +17,15 @@ const DOMAINS: &[&str] = &[
     "analysis",
 ];
 
+struct ReservedObservation {
+    job_id: String,
+    scope_json: String,
+    binding_revision: String,
+    domains_json: String,
+    sequence: Option<i64>,
+    record_digest: Option<String>,
+}
+
 #[derive(Debug)]
 pub(super) struct ObservationIntentError {
     pub(super) error: PluginErrorPayload,
@@ -510,27 +519,35 @@ impl AgentStore {
         if super::schema::millis(&tx, string(input, "observedAt")?)? > now_ms() + 5000 {
             return Err(invalid("Observation time is in the future").into());
         }
-        let row: Option<(String, String, String, String, Option<i64>, Option<String>)> = tx
+        let row: Option<ReservedObservation> = tx
             .query_row(
                 "SELECT job_id,scope_json,binding_revision,domains_json,sequence,record_digest
              FROM agent_account_reservations WHERE operation_id=?1",
                 [string(input, "operationId")?],
                 |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                    ))
+                    Ok(ReservedObservation {
+                        job_id: r.get(0)?,
+                        scope_json: r.get(1)?,
+                        binding_revision: r.get(2)?,
+                        domains_json: r.get(3)?,
+                        sequence: r.get(4)?,
+                        record_digest: r.get(5)?,
+                    })
                 },
             )
             .optional()
             .map_err(storage_error)?;
-        let Some((reserved_job, saved, revision, allowed, sequence, old_digest)) = row else {
+        let Some(reservation) = row else {
             return Err(denied("Observation must reserve before collection").into());
         };
+        let ReservedObservation {
+            job_id: reserved_job,
+            scope_json: saved,
+            binding_revision: revision,
+            domains_json: allowed,
+            sequence,
+            record_digest: old_digest,
+        } = reservation;
         let allowed: Vec<String> = serde_json::from_str(&allowed).map_err(storage_error)?;
         let digest = format!("{:x}", Sha256::digest(canonical(input).as_bytes()));
         if reserved_job != job.id

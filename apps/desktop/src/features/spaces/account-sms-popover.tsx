@@ -353,11 +353,7 @@ export function AccountSmsPopover({
               </Field>
               <p className="otp-hint">保存到此账号，保留原有手机号。</p>
               <div className="account-quick-actions">
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={!ready || locked || !dirty}
-                >
+                <Button type="submit" size="sm" disabled={!ready || locked || !dirty}>
                   {pending === 'save' ? '保存中…' : '保存链接'}
                 </Button>
               </div>
@@ -387,8 +383,8 @@ export function AccountSmsPopover({
               <AlertDialogDescription>
                 高风险操作：账号「{confirmation.account.account}」将
                 {confirmation.changes.join('、')}，影响此账号的所有关联窗口，
-                可能导致无法接收登录或找回验证码。只修改 Raccoon
-                保存的资料，SIM8 号码池和 Vinted 平台资料会保留。
+                可能导致无法接收登录或找回验证码。只修改 Raccoon 保存的资料，SIM8 号码池和
+                Vinted 平台资料会保留。
               </AlertDialogDescription>
             </AlertDialogHeader>
             {error === null ? null : <FieldError role="alert">{error}</FieldError>}

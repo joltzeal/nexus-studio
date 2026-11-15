@@ -60,3 +60,10 @@ export function proxyUsageLabel(state: ProxyUsageState, endpointId: string): str
     .join('、')
   return `${current}已被 ${usage.others.length} 个其他窗口使用：${names}`
 }
+
+export function availableToWindow(state: ProxyUsageState, endpointId: string): boolean {
+  return (
+    state.status !== 'loaded' ||
+    (state.byEndpoint.get(endpointId)?.others.length ?? 0) === 0
+  )
+}

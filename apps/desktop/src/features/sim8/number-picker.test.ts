@@ -66,6 +66,24 @@ describe('number pool picker', () => {
 })
 
 describe('number occupancy reminders', () => {
+  it('hides other accounts numbers while retaining the current account number', () => {
+    const html = renderToStaticMarkup(
+      createElement(NumberPoolOptions, {
+        records: [record('+14155550100'), record('+14155550101'), record('+14155550102')],
+        currentAccountId: 'current',
+        onlyAvailable: true,
+        accounts: {
+          state: 'ready',
+          items: [target('current', '+14155550100'), target('other', '+14155550101')],
+        },
+        onPick: noop,
+      }),
+    )
+    expect(html).toContain('+14155550100')
+    expect(html).toContain('+14155550102')
+    expect(html).not.toContain('+14155550101')
+  })
+
   it('marks the current account and names all other users without blocking selection', () => {
     const html = renderToStaticMarkup(
       createElement(NumberPoolOptions, {

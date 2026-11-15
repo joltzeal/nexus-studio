@@ -48,8 +48,7 @@ vi.mock('react', async (importOriginal) => {
       state.hooks
         ? state.hooks.state(() => ({ current: initial }))[0]
         : react.useRef(initial),
-    useId: () =>
-      state.hooks ? state.hooks.state('test-sms-url')[0] : react.useId(),
+    useId: () => (state.hooks ? state.hooks.state('test-sms-url')[0] : react.useId()),
     useEffect: (effect: EffectCallback, deps?: DependencyList) =>
       state.hooks ? state.hooks.effect(effect, deps) : react.useEffect(effect, deps),
   }
@@ -167,32 +166,54 @@ describe('window SMS contact confirmations', () => {
     confirmation()!.props.onOpenChange?.(false)
     expect(confirmation()).toBeUndefined()
     expect(state.calls).toEqual([])
-    expect(components(tree(), Input)[0]!.props.value).toBe('https://new.example.test/secret')
+    expect(components(tree(), Input)[0]!.props.value).toBe(
+      'https://new.example.test/secret',
+    )
     expect(props.onSaved).not.toHaveBeenCalled()
   })
 
   it.each([
-    { phone: '+442079460000', link: 'https://new.example.test/secret', fields: ['手机号', '短信接码链接'] },
-    { phone: '+14155550100', link: 'https://new.example.test/secret', fields: ['短信接码链接'] },
+    {
+      phone: '+442079460000',
+      link: 'https://new.example.test/secret',
+      fields: ['手机号', '短信接码链接'],
+    },
+    {
+      phone: '+14155550100',
+      link: 'https://new.example.test/secret',
+      fields: ['短信接码链接'],
+    },
     { phone: '+442079460000', link: account().smsOtpUrl, fields: ['手机号'] },
-  ])('confirms the changed existing relations when picking $phone', ({ phone, link, fields }) => {
-    pickNumber(phone, link)
-    expect(state.calls).toEqual([])
-    const description = text(components(confirmation()!, AlertDialogDescription)[0]!)
-    for (const field of fields) expect(description).toContain(field)
-    if (fields.includes('手机号')) {
-      expect(description).toContain('+14155550100')
-      expect(description).toContain(phone)
-    }
-    expect(description).not.toContain(link)
-    confirmation()!.props.onOpenChange?.(false)
-    expect(state.calls).toEqual([])
-  })
+  ])(
+    'confirms the changed existing relations when picking $phone',
+    ({ phone, link, fields }) => {
+      pickNumber(phone, link)
+      expect(state.calls).toEqual([])
+      const description = text(components(confirmation()!, AlertDialogDescription)[0]!)
+      for (const field of fields) expect(description).toContain(field)
+      if (fields.includes('手机号')) {
+        expect(description).toContain('+14155550100')
+        expect(description).toContain(phone)
+      }
+      expect(description).not.toContain(link)
+      confirmation()!.props.onOpenChange?.(false)
+      expect(state.calls).toEqual([])
+    },
+  )
 
   it('saves initial contact additions directly and preserves unrelated latest fields', async () => {
     props.account = account({ phone: '', smsOtpUrl: '' })
-    state.latest = account({ phone: '', smsOtpUrl: '', note: 'latest note', updatedAt: '2026-11-03T00:00:00.000Z' })
-    state.saved = account({ phone: '+442079460000', smsOtpUrl: 'https://new.example.test/secret', note: 'latest note' })
+    state.latest = account({
+      phone: '',
+      smsOtpUrl: '',
+      note: 'latest note',
+      updatedAt: '2026-11-03T00:00:00.000Z',
+    })
+    state.saved = account({
+      phone: '+442079460000',
+      smsOtpUrl: 'https://new.example.test/secret',
+      note: 'latest note',
+    })
     pickNumber()
     await flushPromises()
     expect(confirmation()).toBeUndefined()
@@ -229,7 +250,9 @@ describe('window SMS contact confirmations', () => {
     expect(text(confirmation())).toContain('保存失败')
     expect(text(confirmation())).not.toContain(props.account.password)
     expect(text(confirmation())).not.toContain(props.account.smsOtpUrl)
-    expect(components(tree(), Input)[0]!.props.value).toBe('https://new.example.test/secret')
+    expect(components(tree(), Input)[0]!.props.value).toBe(
+      'https://new.example.test/secret',
+    )
     expect(props.onSaved).not.toHaveBeenCalled()
     expect(toast.success).not.toHaveBeenCalled()
     state.saveResponse = null
@@ -246,7 +269,10 @@ describe('window SMS contact confirmations', () => {
     async (source) => {
       editLink('https://new.example.test/secret')
       submitLink()
-      const replacement = account({ phone: '+33123456789', smsOtpUrl: 'https://replacement.example.test/private' })
+      const replacement = account({
+        phone: '+33123456789',
+        smsOtpUrl: 'https://replacement.example.test/private',
+      })
       if (source === 'rendered') props.account = replacement
       else state.latest = replacement
       confirm()

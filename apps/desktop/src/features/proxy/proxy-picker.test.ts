@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProxyIdentityDetails, ProxyUsernameCell } from './proxy-detail'
 import { ProxyPicker, ProxyPickerOption } from './proxy-picker'
+import { visibleProxyRows } from './proxy-picker-filter'
 import { indexProxyUsage, type ProxyUsageState } from './proxy-usage'
 import { matchesProxyQuery, PROXY_PLUGIN_ID, type ProxyRow } from './types'
 
@@ -112,6 +113,38 @@ describe('proxy picker', () => {
     expect(matchesProxyQuery(another, 'session-unique-endpoint-001')).toBe(false)
     expect(matchesProxyQuery(row, '')).toBe(true)
     expect(matchesProxyQuery(row, 'missing')).toBe(false)
+  })
+
+  it('keeps the edited endpoint first and filters only proxies used by other windows', () => {
+    const usage: ProxyUsageState = {
+      status: 'loaded',
+      byEndpoint: indexProxyUsage(
+        [
+          {
+            id: 'current',
+            name: 'Current',
+            proxyPlugin: PROXY_PLUGIN_ID,
+            proxyEndpoint: 7,
+          },
+          { id: 'other', name: 'Other', proxyPlugin: PROXY_PLUGIN_ID, proxyEndpoint: 8 },
+        ],
+        null,
+        'current',
+      ),
+    }
+    const rows = [{ ...row, id: '8' }, { ...row, id: '9' }, row]
+    expect(visibleProxyRows(rows, '', true, 7, usage).map((item) => item.id)).toEqual([
+      '7',
+      '9',
+    ])
+    expect(
+      visibleProxyRows(rows, 'unmatched', true, 7, usage).map((item) => item.id),
+    ).toEqual(['7'])
+    expect(
+      visibleProxyRows(rows, '', true, null, { status: 'loading' }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['8', '9', '7'])
   })
 })
 

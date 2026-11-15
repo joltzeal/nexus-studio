@@ -4,8 +4,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { listBrowserWindows } from '@/lib/platform/windows'
 import { getConfig, listPickerProxies } from './api'
-import { indexProxyUsage, proxyUsageLabel, type ProxyUsageState } from './proxy-usage'
-import { addressOf, flagOf, matchesProxyQuery, message, type ProxyRow } from './types'
+import { visibleProxyRows } from './proxy-picker-filter'
+import {
+  availableToWindow,
+  indexProxyUsage,
+  proxyUsageLabel,
+  type ProxyUsageState,
+} from './proxy-usage'
+import { addressOf, flagOf, message, type ProxyRow } from './types'
 
 function UsageLabel({
   state,
@@ -83,6 +89,7 @@ export function ProxyPicker({
   const [error, setError] = useState<string | null>(null)
   const [usage, setUsage] = useState<ProxyUsageState>({ status: 'loading' })
   const [query, setQuery] = useState('')
+  const [onlyAvailable, setOnlyAvailable] = useState(false)
   const [revision, setRevision] = useState(0)
 
   useEffect(() => {
@@ -121,8 +128,8 @@ export function ProxyPicker({
   }, [currentWindowId, revision])
 
   const visibleProxies = useMemo(
-    () => proxies?.filter((row) => matchesProxyQuery(row, query)) ?? [],
-    [proxies, query],
+    () => visibleProxyRows(proxies ?? [], query, onlyAvailable, endpointId, usage),
+    [proxies, query, onlyAvailable, endpointId, usage],
   )
   const defaultProxy = proxies?.find((row) => row.id === defaultId)
   const loading = proxies === null && error === null
@@ -166,6 +173,15 @@ export function ProxyPicker({
           onChange={(event) => setQuery(event.target.value)}
         />
       </div>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={onlyAvailable}
+          disabled={disabled || usage.status !== 'loaded'}
+          onChange={(event) => setOnlyAvailable(event.target.checked)}
+        />
+        仅看未被其他窗口使用
+      </label>
       {error ? (
         <p className="text-xs text-destructive wrap-anywhere" role="alert">
           代理池读取失败：{error}
@@ -176,49 +192,60 @@ export function ProxyPicker({
           窗口占用未知：{usage.message}。可刷新重试，仍可选择代理。
         </p>
       ) : null}
+      {proxies !== null &&
+      endpointId !== null &&
+      !proxies.some((row) => row.id === String(endpointId)) ? (
+        <p className="text-xs text-destructive" role="alert">
+          当前配置的代理 #{endpointId} 已不在代理池中，请重新选择。
+        </p>
+      ) : null}
       <div className="account-picker min-w-0" role="listbox" aria-label="代理池代理">
-        <button
-          type="button"
-          role="option"
-          aria-selected={defaultSelected}
-          className="account-option min-w-0"
-          data-selected={defaultSelected ? 'true' : undefined}
-          disabled={disabled || loading || error !== null || defaultId === null}
-          onClick={() => onChange(null)}
-        >
-          <span className="min-w-0 flex-1">
-            <strong>{batch ? '使用当前默认代理' : '使用插件默认代理'}</strong>
-            <small className="block truncate">
-              {error
-                ? '默认项读取失败'
-                : loading
-                  ? '正在读取默认项…'
-                  : defaultId === null
-                    ? '尚未设置，请选择下方的具体代理'
-                    : batch
-                      ? `本批次固定使用默认代理 #${defaultId}`
-                      : `跟随默认代理 #${defaultId}`}
-            </small>
-            {defaultProxy ? (
-              <>
-                <small
-                  className="block truncate"
-                  title={`${defaultProxy.name} · ${addressOf(defaultProxy)}`}
-                >
-                  {defaultProxy.name} · {addressOf(defaultProxy)}
-                  {!defaultProxy.enabled ? ' · 已停用' : ''}
-                </small>
-                <small className="block truncate" title={defaultProxy.username}>
-                  用户名：{defaultProxy.username || '未设置'}
-                </small>
-              </>
-            ) : null}
-            {defaultId === null ? null : (
-              <UsageLabel state={usage} endpointId={defaultId} />
-            )}
-          </span>
-          {defaultSelected ? <Check aria-hidden="true" /> : null}
-        </button>
+        {!onlyAvailable ||
+        defaultSelected ||
+        (defaultId !== null && availableToWindow(usage, defaultId)) ? (
+          <button
+            type="button"
+            role="option"
+            aria-selected={defaultSelected}
+            className="account-option min-w-0"
+            data-selected={defaultSelected ? 'true' : undefined}
+            disabled={disabled || loading || error !== null || defaultId === null}
+            onClick={() => onChange(null)}
+          >
+            <span className="min-w-0 flex-1">
+              <strong>{batch ? '使用当前默认代理' : '使用插件默认代理'}</strong>
+              <small className="block truncate">
+                {error
+                  ? '默认项读取失败'
+                  : loading
+                    ? '正在读取默认项…'
+                    : defaultId === null
+                      ? '尚未设置，请选择下方的具体代理'
+                      : batch
+                        ? `本批次固定使用默认代理 #${defaultId}`
+                        : `跟随默认代理 #${defaultId}`}
+              </small>
+              {defaultProxy ? (
+                <>
+                  <small
+                    className="block truncate"
+                    title={`${defaultProxy.name} · ${addressOf(defaultProxy)}`}
+                  >
+                    {defaultProxy.name} · {addressOf(defaultProxy)}
+                    {!defaultProxy.enabled ? ' · 已停用' : ''}
+                  </small>
+                  <small className="block truncate" title={defaultProxy.username}>
+                    用户名：{defaultProxy.username || '未设置'}
+                  </small>
+                </>
+              ) : null}
+              {defaultId === null ? null : (
+                <UsageLabel state={usage} endpointId={defaultId} />
+              )}
+            </span>
+            {defaultSelected ? <Check aria-hidden="true" /> : null}
+          </button>
+        ) : null}
         {visibleProxies.map((row) => (
           <ProxyPickerOption
             key={row.id}
@@ -231,7 +258,7 @@ export function ProxyPicker({
         ))}
         {proxies !== null && visibleProxies.length === 0 ? (
           <p className="px-3 py-2 text-xs text-muted-foreground">
-            {query.trim() ? '没有匹配的代理。' : '代理池还没有代理。'}
+            {query.trim() || onlyAvailable ? '没有匹配的代理。' : '代理池还没有代理。'}
           </p>
         ) : null}
       </div>
