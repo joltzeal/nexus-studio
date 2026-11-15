@@ -96,6 +96,8 @@ struct Device {
 pub struct PluginLicenseStore {
     path: PathBuf,
     lock: Mutex<()>,
+    #[cfg(test)]
+    test_signing_key: Mutex<Option<Vec<u8>>>,
 }
 
 impl PluginLicenseStore {
@@ -115,6 +117,8 @@ impl PluginLicenseStore {
         Ok(Self {
             path,
             lock: Mutex::new(()),
+            #[cfg(test)]
+            test_signing_key: Mutex::new(None),
         })
     }
 
@@ -307,12 +311,65 @@ impl PluginLicenseStore {
     }
 
     fn verify(&self, lease: &SignedLease, device: &Device, now: i64) -> Result<(), LicenseError> {
+        #[cfg(test)]
+        let test_key = self
+            .test_signing_key
+            .lock()
+            .map_err(|_| LicenseError::Storage)?;
+        #[cfg(test)]
+        if let Some(pkcs8) = test_key.as_ref() {
+            let pair = Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|_| LicenseError::Storage)?;
+            let public = STANDARD.encode(pair.public_key().as_ref());
+            return verify_lease(lease, device, now, "test-only", &public);
+        }
         let pinned: serde_json::Value =
             serde_json::from_str(include_str!("license-public-key.json"))
                 .map_err(|_| LicenseError::Storage)?;
         let key_id = pinned["keyId"].as_str().ok_or(LicenseError::Storage)?;
         let public = pinned["publicKey"].as_str().ok_or(LicenseError::Storage)?;
         verify_lease(lease, device, now, key_id, public)
+    }
+
+    #[cfg(test)]
+    pub fn seed_test_license(&self, plugin_id: &str) -> Result<(), LicenseError> {
+        let _guard = self.lock.lock().map_err(|_| LicenseError::Storage)?;
+        let connection = self.connection()?;
+        let device = self.device(&connection, plugin_id)?;
+        let mut test_key = self
+            .test_signing_key
+            .lock()
+            .map_err(|_| LicenseError::Storage)?;
+        let pkcs8 = match test_key.as_ref() {
+            Some(key) => key.clone(),
+            None => {
+                let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+                    .map_err(|_| LicenseError::Storage)?
+                    .as_ref()
+                    .to_vec();
+                *test_key = Some(key.clone());
+                key
+            }
+        };
+        let pair = Ed25519KeyPair::from_pkcs8(&pkcs8).map_err(|_| LicenseError::Storage)?;
+        let issued_at = now();
+        let payload = LeasePayload {
+            v: 1,
+            license_id: uuid::Uuid::new_v4().to_string(),
+            plugin_id: plugin_id.into(),
+            device_public_key: device.public_key,
+            issued_at,
+            expires_at: issued_at + 86_400,
+            offline_until: issued_at + 86_400,
+            refresh_after: issued_at + 43_200,
+            revision: 1,
+            key_id: "test-only".into(),
+        };
+        let signature = STANDARD.encode(
+            pair.sign(&serde_json::to_vec(&payload).map_err(|_| LicenseError::Storage)?)
+                .as_ref(),
+        );
+        drop(test_key);
+        self.save(&connection, plugin_id, &SignedLease { payload, signature })
     }
 
     fn request(
@@ -487,6 +544,23 @@ mod tests {
         assert_eq!(
             verify_lease(&lease, &another_device, issued_at, "test-key", "invalid"),
             Err(LicenseError::Storage)
+        );
+    }
+
+    #[test]
+    fn test_lease_is_valid_only_for_its_plugin() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = PluginLicenseStore::new(directory.path().join("license.sqlite")).unwrap();
+        store.seed_test_license("studio.sales-agent").unwrap();
+        assert_eq!(store.status("studio.sales-agent").unwrap().state, "active");
+        assert_eq!(
+            store.status("studio.window-sync").unwrap().state,
+            "inactive"
+        );
+        assert!(store.require_for("studio.sales-agent", None).is_ok());
+        assert_eq!(
+            store.require_for("studio.window-sync", None),
+            Err(LicenseError::NotActivated)
         );
     }
 }

@@ -2171,6 +2171,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
   send({{protocolVersion:1, requestId:request.requestId, ok:true, result}});
 }});
 "#, serde_json::to_string(&status).unwrap())).unwrap();
+        service.host.seed_test_license(SYNC_PLUGIN);
         service.host.install(&package).unwrap();
         status
     }

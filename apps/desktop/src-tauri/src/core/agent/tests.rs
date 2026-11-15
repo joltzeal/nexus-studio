@@ -2122,6 +2122,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     )
     .unwrap();
     let host = Arc::new(PluginHost::open(temp.path().join("host"), vec![]).unwrap());
+    host.seed_test_license("studio.sales-agent");
     host.install(&source).unwrap();
     let caller = host.agent_caller().unwrap();
     let job = if mode == AgentMode::ContentPreparation {

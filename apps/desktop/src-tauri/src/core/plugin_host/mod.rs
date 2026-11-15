@@ -317,6 +317,11 @@ impl PluginHost {
         &self.root
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_test_license(&self, plugin_id: &str) {
+        self.license.seed_test_license(plugin_id).unwrap();
+    }
+
     pub fn license_statuses(
         &self,
     ) -> Result<std::collections::BTreeMap<String, LicenseStatus>, HostError> {
