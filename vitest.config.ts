@@ -40,6 +40,7 @@ export default defineConfig({
       'plugins/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.mjs',
       'apps/desktop/src/**/*.test.ts',
+      'apps/license-worker/test/**/*.test.ts',
       'scripts/**/*.test.mjs',
     ],
     environment: 'node',

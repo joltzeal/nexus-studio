@@ -40,7 +40,12 @@ export function pluginNavigationReducer(
   switch (action.type) {
     case 'catalog': {
       const plugins = action.plugins
-        .filter((plugin) => plugin.enabled && plugin.state !== 'available')
+        .filter(
+          (plugin) =>
+            plugin.enabled &&
+            plugin.state !== 'available' &&
+            plugin.state !== 'unlicensed',
+        )
         .sort((left, right) => left.id.localeCompare(right.id))
       const page = accessiblePage(state.page, plugins)
       const history = state.history.filter(

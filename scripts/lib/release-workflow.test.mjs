@@ -29,7 +29,7 @@ describe('desktop release workflow', () => {
     expect(publish).toContain('needs: [package]')
     expect(publish).toContain('gh release edit "$RELEASE_TAG" --draft=false --latest')
     expect(workflow).toContain('releaseDraft: true')
-    expect(workflow).toContain('uploadUpdaterJson: true')
+    expect(workflow).toContain('includeUpdaterJson: true')
     expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY')
   })
 
@@ -37,6 +37,6 @@ describe('desktop release workflow', () => {
     expect(workflow).not.toContain('@nexus/plugin-ai-image')
     expect(workflow).not.toContain('scripts/pack-plugin.mjs')
     expect(workflow).not.toMatch(/^\s+plugins:/m)
-    expect(workflow).toContain('插件在本地开发并独立发布至插件商店')
+    expect(workflow).toContain('插件包独立发布至 R2')
   })
 })

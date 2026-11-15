@@ -1,0 +1,15 @@
+{
+  "name": "raccoon-license",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-15",
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "raccoon-license",
+      "database_id": "7415a89e-6f43-4f53-b410-f80874450d6f",
+      "migrations_dir": "migrations",
+    },
+  ],
+}

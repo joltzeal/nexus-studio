@@ -1,0 +1,19 @@
+{
+  "name": "@raccoon/license-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261113.1",
+    "miniflare": "5.20261113.0-beta",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5",
+    "wrangler": "4.162.0"
+  }
+}

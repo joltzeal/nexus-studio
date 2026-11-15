@@ -66,6 +66,8 @@ pub fn run() {
             core::group_store::group_update,
             core::group_store::group_delete,
             core::plugin_service::plugin_catalog,
+            core::plugin_service::plugin_license_status,
+            core::plugin_service::plugin_license_activate,
             core::plugin_service::plugin_proxy_providers,
             core::plugin_service::plugin_install,
             core::plugin_service::plugin_uninstall,

@@ -123,7 +123,12 @@ export function AppShell() {
           new Set([
             'spaces',
             ...catalog
-              .filter((entry) => entry.enabled && entry.state !== 'available')
+              .filter(
+                (entry) =>
+                  entry.enabled &&
+                  entry.state !== 'available' &&
+                  entry.state !== 'unlicensed',
+              )
               .map((entry) => pluginPageValue(entry.id)),
           ]),
         )

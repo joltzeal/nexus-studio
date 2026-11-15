@@ -13,7 +13,29 @@ export interface PluginPermissions {
  * else is owned by the host: it starts installed plugins on boot and restarts
  * them when they die, so there is no stopped or failed state to act on.
  */
-export type PluginState = 'available' | 'starting' | 'running' | 'retrying'
+export type PluginState = 'available' | 'starting' | 'running' | 'retrying' | 'unlicensed'
+
+export interface PluginLicenseStatus {
+  state: 'inactive' | 'active' | 'expired' | 'invalid' | 'needsConnection'
+  expiresAt: number | null
+  deviceCode: string
+}
+
+export function pluginLicenseStatus(): Promise<Record<string, PluginLicenseStatus>> {
+  return invoke<Record<string, PluginLicenseStatus>>('plugin_license_status')
+}
+
+export async function activatePluginLicense(
+  pluginId: string,
+  card: string,
+): Promise<PluginLicenseStatus> {
+  const status = await invoke<PluginLicenseStatus>('plugin_license_activate', {
+    pluginId,
+    card,
+  })
+  notifyPluginCatalogChanged()
+  return status
+}
 
 export interface PluginView {
   id: string

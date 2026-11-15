@@ -41,6 +41,7 @@ const states = {
   starting: '启动中',
   running: '运行中',
   retrying: '重试中',
+  unlicensed: '未激活',
 }
 
 export function PluginPage({
@@ -51,7 +52,7 @@ export function PluginPage({
   const Page = Object.prototype.hasOwnProperty.call(pages, props.plugin.id)
     ? pages[props.plugin.id]
     : undefined
-  if (Page) return <Page {...props} />
+  if (Page && props.plugin.state !== 'unlicensed') return <Page {...props} />
   const { plugin } = props
   return (
     <section className="collection-page page-reveal" aria-labelledby="plugin-heading">

@@ -18,7 +18,10 @@ export function useNumberExpiry(refreshKey: number) {
       (plugins) => {
         const plugin = plugins.find(
           (item) =>
-            item.id === SIM8_PLUGIN_ID && item.enabled && item.state !== 'available',
+            item.id === SIM8_PLUGIN_ID &&
+            item.enabled &&
+            item.state !== 'available' &&
+            item.state !== 'unlicensed',
         )
         const availability: ExpiryAvailability = !plugin
           ? 'hidden'

@@ -1,5 +1,84 @@
 # 质量门禁与验证记录
 
+## 2026-11-16 Raccoon 0.1.35 发行准备
+
+主程序五处版本统一到 `0.1.35`；发行说明改为全量第一方插件激活与
+插件中心页签。11 个私有插件的本地版本各递增补丁号，最低主程序为 `0.1.35`。
+插件源码仍在 `plugins/` 忽略目录；本地构建 11 个插件，并在临时目录打包，
+从最终加密包启动验证各自握手和方法列表。Ecom Agent 还通过最终包
+离线读取 Vinted 分类资源。R2 原目录有 11 项；逐个检查新版本对象均不存在，
+未覆盖旧对象。
+
+本轮直接执行全量 Vitest：321 个文件、4,928 项通过；6 个文件、85 项按既有
+环境门禁跳过，零失败。首次有 3 项失败，分别为插件最低核心版本断言和
+发行工作流测试的旧 action 输入/说明断言；修订后全量重跑通过。
+公开边界检查、桌面/Worker/测试 TypeScript noEmit 和全仓 ESLint 通过；
+涉及发行的公开源码 Prettier 通过。Rust 编译、测试与 Clippy 交由桌面 CI，
+本轮未在本机执行应用构建或打包。R2 上传和 GitHub Release 的实际结果在
+完成远端回读/CI 后补记，不用预期结果替代证据。
+
+## 2026-11-16 第一方插件全量授权与插件中心
+
+把独立卡密租约从 SIM8 试点扩展到 11 个第一方插件：Rust 固定清单覆盖安装、包安装、
+商店安装、启动、监督重试、插件 RPC 与 Agent gateway；第三方插件不因 `studio.` 前缀
+被误判为付费。插件中心切换为“已安装 / 插件商店”视图，逐插件展示状态与激活入口；
+未激活时阻断安装、更新和重装，卸载仍可用；批量更新跳过并报告未激活的已安装插件。
+Worker D1 迁移为其余九个插件补齐月/季/年 SKU，保留原 SIM8 与 Ecom Agent SKU。
+
+验证结果：Worker Vitest 12 项通过；插件中心专项 Vitest 9 项通过；Worker 与桌面
+TypeScript noEmit 检查通过；涉及文件 ESLint 和 Prettier、`git diff --check` 通过，
+`cargo fmt --check` 通过。远程应用 D1 迁移并部署 Worker；`/health` 返回正常，D1 查询
+确认 11 个插件共 33 个套餐、每个插件 3 个套餐。未签发真实卡密。操作员发卡说明在
+仓库外 `~/.config/raccoon/license-worker/ISSUE-CARDS.md`，权限 `0600`。
+
+本轮按工程约定未执行 Rust 编译/测试/Clippy、应用构建或 DMG；未进行桌面 UI 浏览器 QA、
+Windows、真实激活、卡网回调/续费、换机或包密钥保护验证。Worker 通过不代表桌面已发行版本
+已启用此授权门禁，必须由后续应用发行承载 Rust 改动。
+
+## 2026-11-15 SIM8 插件授权试点与远端 Worker
+
+Cloudflare `raccoon-license` Worker 与独立 D1 已部署，迁移写入 SIM8 和 Ecom Agent
+月/季/年 SKU。四项密钥只上传 Worker Secret，桌面内置公钥；
+远端通过代理验证健康检查、SIM8 测试卡发放、签名兑换、租约验签、
+刷新、撤销及撤销后的拒绝。测试卡对应的许可证已撤销。
+本地 Worker 11 项测试与 SIM8、插件中心相关测试共 137 项通过。
+SIM8 源码本地构建、`1.0.4.nexuspkg` 打包和最终包 27 方法握手校验通过；
+未上传插件包，也未发行新的桌面应用。
+桌面 Rust 宿主增加试点门禁与激活入口。`pnpm run desktop:build` 本机完成
+macOS arm64 Release 编译，产出 `Raccoon_0.1.34_aarch64.dmg`（16.33 MiB）
+和 `Raccoon.app`（21.19 MiB）。另运行 Worker 11 项测试、插件相关 71 项
+Vitest、桌面与 Worker TypeScript noEmit、涉及文件 ESLint/Prettier、
+`git diff --check`、`cargo fmt --check`，均通过；两项 Rust 授权专项测试通过。
+`cargo clippy --lib -- -D warnings` 亦通过；远端 `/health` 经本机 SOCKS5
+代理回读为 `{"ok":true}`。
+本地构建未安装验证，未在真实桌面 UI 中兑换，也未验证 Windows、签名或公证；
+Worker API 测试不能代替这些端到端验证。
+
+## 2026-11-15 插件核验 Worker 本地联调
+
+官方 C3 TypeScript Worker 模板生成于 `apps/license-worker`，接入根 pnpm 锁文件。
+本地 D1 迁移成功，三个 Ecom Agent 套餐已写入；Wrangler 本地启动后，
+使用临时生成的测试密钥完成发卡、设备签名兑换、刷新与同设备恢复，
+三次有效请求返回 200，无效请求返回 403。
+独立密码学测试 4 项、Miniflare D1 协议测试 6 项通过；
+覆盖单次兑换、并发竞争、nonce 重放、异设备拒绝、撤销后刷新、
+签名密钥损坏不消耗卡密和数据库故障返回 503。
+Worker `tsc --noEmit`、ESLint、Prettier 通过；根 Vitest 配置已收录 Worker 测试。
+冻结锁文件的离线解析通过；完整离线安装因本机缺少已有依赖
+`@dotenvx/dotenvx` 的 tarball 未完成，不能据此声称全新机器安装已验证。
+此节是部署前的本地联调记录；远端部署和 Desktop 试点门禁见本文首节。
+卡网回调、续费和设备换绑仍未接入。
+本地测试密钥和卡密只在忽略目录及 `/tmp` 中使用，未加入源码。
+
+## 2026-11-15 插件中心批量更新
+
+商店卡片增加“全部更新”，选择逻辑仅包含已安装且可更新的插件，
+刷新商店目录后按顺序安装并分别报告失败。该阶段卡网售卡和未激活阻断仅完成
+方案文档；后续增加了远端 Worker 和 SIM8 宿主试点门禁，见本文首节。
+本轮不执行本地应用构建或 Rust 编译、测试、Clippy。
+本地直接 Vitest 两个文件 7 项通过，桌面 `tsc --noEmit`、涉及文件 ESLint、
+涉及文件 Prettier 与 `git diff --check` 均通过；未在真实商店下载/更新插件。
+
 ## 2026-11-15 0.1.33 发行失败复核
 
 Desktop release `43678329736` 三平台原生测试和 Clippy 通过（macOS 两架构

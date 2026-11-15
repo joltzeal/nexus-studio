@@ -66,6 +66,7 @@ Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代�
 | [50 · 插件本地开发](50-local-plugin-development.md)                 | 源码与发布目录、公开契约、开发监听、对象存储和独立应用 CI      |
 | [51 · 场景重建与做旧](51-ai-reconstruction-and-photo-aging.md)      | 独立做旧档位、商品风格重建、自然卖家英文与任务持久化           |
 | [52 · 插件返回与关联确认](52-plugin-navigation-and-safe-actions.md) | 页面状态保留、返回历史、隐藏轮询与账号关系操作确认             |
+| [53 · 第一方插件卡密授权](53-plugin-card-licensing.md)              | 11 个第一方插件的 Worker SKU、设备租约与宿主门禁               |
 
 ## 多浏览器重构
 

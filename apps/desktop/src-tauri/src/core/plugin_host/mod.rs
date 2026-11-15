@@ -1,5 +1,6 @@
 pub mod discovery;
 pub mod install;
+pub mod license;
 pub mod manifest;
 pub mod market;
 pub mod package;
@@ -12,6 +13,7 @@ mod tests;
 
 use self::discovery::{CandidateSource, DiscoveryReport};
 use self::install::InstallError;
+use self::license::{FIRST_PARTY_PLUGIN_IDS, LicenseError, LicenseStatus, PluginLicenseStore};
 use self::manifest::{Capability, ManifestError, PluginManifest, PluginPermissions, StorageScope};
 use self::market::{Catalog, MarketError, MarketStore, StoreSettings};
 use self::permissions::PermissionError;
@@ -56,6 +58,7 @@ pub enum HostError {
     Permission(PermissionError),
     Process(ProcessError),
     Market(MarketError),
+    License(LicenseError),
     NotFound,
 }
 
@@ -69,6 +72,8 @@ impl HostError {
             HostError::Permission(error) => error.code(),
             HostError::Process(error) => error.code(),
             HostError::Market(error) => error.code(),
+            HostError::License(LicenseError::Unavailable | LicenseError::Storage) => "UNAVAILABLE",
+            HostError::License(_) => "PERMISSION_DENIED",
         }
     }
 
@@ -82,13 +87,16 @@ impl HostError {
             HostError::Permission(error) => error.message().into(),
             HostError::Process(error) => error.message(),
             HostError::Market(error) => error.message(),
+            HostError::License(error) => error.message().into(),
         }
     }
 
     pub fn retryable(&self) -> bool {
         match self {
             HostError::Process(error) => error.retryable(),
-            HostError::Registry | HostError::Market(MarketError::Offline) => true,
+            HostError::Registry
+            | HostError::Market(MarketError::Offline)
+            | HostError::License(LicenseError::Unavailable) => true,
             _ => false,
         }
     }
@@ -216,6 +224,7 @@ pub struct PluginHost {
     market: Mutex<Catalog>,
     market_watch: Mutex<Option<Supervisor>>,
     network: Option<(crate::core::network_proxy::NetworkProxyStore, PathBuf)>,
+    license: PluginLicenseStore,
 }
 
 /// Start/retry bookkeeping for one plugin.
@@ -253,6 +262,8 @@ impl PluginHost {
         dev_roots: Vec<(PathBuf, CandidateSource)>,
         node: PathBuf,
     ) -> Result<Self, HostError> {
+        let license_path = root.parent().unwrap_or(&root).join("nexus.sqlite");
+        let license = PluginLicenseStore::new(license_path).map_err(HostError::License)?;
         let store = RegistryStore::new(root.join("registry.json"));
         let document = store.load().map_err(|error| match error {
             RegistryError::Corrupt | RegistryError::Io => HostError::Registry,
@@ -263,6 +274,7 @@ impl PluginHost {
             market: Mutex::new(Catalog::default()),
             market_watch: Mutex::new(None),
             network: None,
+            license,
             lists_candidates: cfg!(debug_assertions),
             root,
             node,
@@ -305,6 +317,43 @@ impl PluginHost {
         &self.root
     }
 
+    pub fn license_statuses(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, LicenseStatus>, HostError> {
+        self.license
+            .status_all(FIRST_PARTY_PLUGIN_IDS)
+            .map_err(HostError::License)
+    }
+
+    pub fn activate_license(
+        &self,
+        plugin_id: &str,
+        card: &str,
+    ) -> Result<LicenseStatus, HostError> {
+        if !FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id) {
+            return Err(HostError::NotFound);
+        }
+        let status = self
+            .license
+            .activate(
+                plugin_id,
+                card,
+                self.network.as_ref().map(|(store, _)| store),
+            )
+            .map_err(HostError::License)?;
+        let _ = self.ensure_started(plugin_id);
+        Ok(status)
+    }
+
+    fn require_license(&self, id: &str) -> Result<(), HostError> {
+        if FIRST_PARTY_PLUGIN_IDS.contains(&id) {
+            self.license
+                .require_for(id, self.network.as_ref().map(|(store, _)| store))
+                .map_err(HostError::License)?;
+        }
+        Ok(())
+    }
+
     pub fn register_host_handler(&self, handler: Arc<HostRequestHandler>) -> Result<(), HostError> {
         *self.host_handler.lock().map_err(|_| HostError::Registry)? = Some(handler);
         Ok(())
@@ -314,6 +363,7 @@ impl PluginHost {
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
         }
+        self.require_license(&caller.plugin_id)?;
         let plugin = self.find(&caller.plugin_id)?;
         permissions::check_agent_gateway(&plugin)?;
         let current = self
@@ -459,6 +509,16 @@ impl PluginHost {
     }
 
     fn view(&self, plugin: &InstalledPlugin) -> PluginView {
+        let license_error = if FIRST_PARTY_PLUGIN_IDS.contains(&plugin.id.as_str()) {
+            self.license
+                .status(&plugin.id)
+                .ok()
+                .filter(|status| status.state == "active")
+                .is_none()
+                .then_some("插件尚未激活或需要联网核验".to_string())
+        } else {
+            None
+        };
         let process = self
             .processes
             .lock()
@@ -473,7 +533,9 @@ impl PluginHost {
         // A plugin the host owns is never reported as failed: the supervisor
         // keeps restarting it, so the honest states are running, starting and
         // retrying. The reason stays available for the manifest dialog.
-        let state = if running {
+        let state = if license_error.is_some() {
+            "unlicensed"
+        } else if running {
             "running"
         } else if process.is_some() || failures > 0 {
             // A process entry that is not usable means it died or misbehaved.
@@ -481,7 +543,9 @@ impl PluginHost {
         } else {
             "starting"
         };
-        let last_error = if running {
+        let last_error = if let Some(reason) = license_error {
+            Some(reason)
+        } else if running {
             None
         } else if let Some(reason) = process.as_ref().and_then(|process| process.failure()) {
             Some(reason)
@@ -524,6 +588,7 @@ impl PluginHost {
             .ok()
             .flatten()
             .ok_or(HostError::NotFound)?;
+        self.require_license(&candidate.manifest.id)?;
         let existing = self
             .snapshot()?
             .plugins
@@ -604,6 +669,7 @@ impl PluginHost {
         let contents = package::parse(bytes)
             .map_err(|error| HostError::Install(InstallError::Package(error)))?;
         let manifest = contents.manifest.clone();
+        self.require_license(&manifest.id)?;
         let existing = self
             .snapshot()?
             .plugins
@@ -771,6 +837,7 @@ impl PluginHost {
     }
 
     pub fn install_from_market(&self, id: &str) -> Result<PluginView, HostError> {
+        self.require_license(id)?;
         let mut entry = self
             .market
             .lock()
@@ -874,6 +941,10 @@ impl PluginHost {
             return;
         };
         for plugin in document.plugins.iter().filter(|plugin| plugin.enabled) {
+            if self.require_license(&plugin.id).is_err() {
+                self.stop(&plugin.id);
+                continue;
+            }
             let healthy = self
                 .processes
                 .lock()
@@ -951,6 +1022,10 @@ impl PluginHost {
         let _start = self.process_start.lock().map_err(|_| HostError::Registry)?;
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
+        }
+        if let Err(error) = self.require_license(id) {
+            self.stop(id);
+            return Err(error);
         }
         if let Some(existing) = self
             .processes

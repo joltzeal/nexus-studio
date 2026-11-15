@@ -11,6 +11,7 @@ ignoredOptionalDependencies:
 
 allowBuilds:
   esbuild: true
+  workerd: true
 
 minimumReleaseAgeExclude:
   - '@langchain/langgraph-sdk@1.16.0'

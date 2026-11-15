@@ -1,10 +1,10 @@
-use super::PluginHost;
 use super::discovery::{CandidateSource, DiscoveryProblem, inspect};
 use super::install::{self, InstallError};
 use super::manifest::{Capability, ManifestError, PluginManifest};
 use super::permissions::{PermissionError, check_call};
 use super::process::{PluginProcess, ProcessError, scrub_url_credentials};
 use super::registry::RegistryStore;
+use super::{HostError, PluginHost};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -808,6 +808,42 @@ fn host_with_fixture(temporary: &tempfile::TempDir, configured: bool) -> PluginH
         vec![(source, CandidateSource::Development)],
     )
     .unwrap()
+}
+
+#[test]
+fn first_party_plugins_cannot_be_installed_or_called_without_a_signed_entitlement() {
+    let temporary = tempfile::tempdir().unwrap();
+    for id in super::license::FIRST_PARTY_PLUGIN_IDS {
+        let manifest = MANIFEST.replace("test.fixture-plugin", id);
+        let source = write_package(
+            &temporary.path().join(format!("{id}-source")),
+            &manifest,
+            false,
+        );
+        let host = PluginHost::open(
+            temporary.path().join(format!("{id}-host")),
+            vec![(source.clone(), CandidateSource::Development)],
+        )
+        .unwrap();
+
+        assert_eq!(host.license_statuses().unwrap()[*id].state, "inactive");
+        let error = host.install(&source).unwrap_err();
+        assert_eq!(error.code(), "PERMISSION_DENIED");
+        assert_eq!(host.catalog().unwrap()[0].state, "available");
+        assert!(matches!(
+            host.call(
+                id,
+                Capability::ProxyProvider,
+                "test.echo",
+                serde_json::json!({}),
+                Duration::from_secs(5),
+            ),
+            Err(HostError::License(
+                super::license::LicenseError::NotActivated
+            ))
+        ));
+        host.shutdown();
+    }
 }
 
 /// Node starts in milliseconds on an idle machine and in seconds while the rest

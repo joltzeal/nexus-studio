@@ -3,6 +3,7 @@ use super::license_service::LicenseService;
 use super::license_store::LicenseStore;
 use super::network_proxy::NetworkProxyStore;
 use super::plugin_host::discovery::development_roots;
+use super::plugin_host::license::LicenseStatus;
 use super::plugin_host::manifest::Capability;
 use super::plugin_host::process::PluginErrorPayload;
 use super::plugin_host::{HostError, MarketStatusView, PluginHost, PluginView};
@@ -29,6 +30,27 @@ fn capability(value: &str) -> Result<Capability, String> {
 #[tauri::command]
 pub fn plugin_catalog(state: State<'_, Arc<PluginHost>>) -> Result<Vec<PluginView>, String> {
     state.catalog().map_err(message)
+}
+
+#[tauri::command]
+pub fn plugin_license_status(
+    state: State<'_, Arc<PluginHost>>,
+) -> Result<std::collections::BTreeMap<String, LicenseStatus>, String> {
+    state.license_statuses().map_err(message)
+}
+
+#[tauri::command]
+pub async fn plugin_license_activate(
+    state: State<'_, Arc<PluginHost>>,
+    plugin_id: String,
+    card: String,
+) -> Result<LicenseStatus, String> {
+    let host = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        host.activate_license(&plugin_id, &card).map_err(message)
+    })
+    .await
+    .map_err(|_| "插件激活任务中断".to_string())?
 }
 
 #[tauri::command]
