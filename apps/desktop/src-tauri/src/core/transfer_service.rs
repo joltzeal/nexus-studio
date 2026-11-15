@@ -2908,7 +2908,9 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             let (result, journal) = std::thread::scope(|scope| {
                 let importing =
                     scope.spawn(|| service.import(&path, "transfer-password", ImportMode::Replace));
-                let deadline = Instant::now() + Duration::from_secs(10);
+                // The encrypted archive must be unpacked before the plugin is called;
+                // this can take longer on a busy CI runner with concurrent native tests.
+                let deadline = Instant::now() + Duration::from_secs(120);
                 while !entered.exists() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(10));
                 }

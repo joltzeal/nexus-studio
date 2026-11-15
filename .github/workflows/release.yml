@@ -58,6 +58,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
         with:
           projectPath: apps/desktop
+          tauriScript: pnpm exec tauri
           tagName: v__VERSION__
           releaseName: 'Raccoon v__VERSION__'
           releaseBody: |
@@ -74,7 +75,7 @@ jobs:
             请在插件中心检查并更新配套插件。
             macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
           releaseDraft: true
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           args: ${{ matrix.tauriArgs }}
       - name: Verify signed macOS runtime
         if: runner.os == 'macOS'

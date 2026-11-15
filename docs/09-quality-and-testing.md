@@ -1,5 +1,17 @@
 # 质量门禁与验证记录
 
+## 2026-11-15 0.1.32 发行失败复核
+
+Foundation quality `43675816793` 的 JS、macOS 与 Windows 三项通过。
+Desktop release `43675816786` 的 arm64/Windows 原生测试和 Clippy 通过，
+随后 `tauri-action@v0` 误调用 npm，报 `tauri: command not found`；
+工作流中的 `uploadUpdaterJson` 不是该 action 支持的输入。
+x64 测试 469 项通过、1 项失败：加密归档在插件屏障前解密，
+`replace_keeps_a_group_deleted_after_journaling_absent_on_commit_and_rollback`
+等待 10 秒后断言失败。修复使用 pnpm CLI、正确的 action 输入，并只延长
+该测试的屏障前等待；未在本地运行 Rust 编译、测试或应用构建。
+新标签的安装包与正式 Release 仍需远端验证。
+
 ## 2026-11-15 窗口代理交互与 CI 失败定位
 
 窗口编辑保留已选代理并提供未占用筛选，SIM8 号码池增加未占用筛选；

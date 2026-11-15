@@ -1,5 +1,15 @@
 # 桌面发行与应用内更新
 
+## 0.1.33 发行命令与测试等待修复（2026-11-15）
+
+`v0.1.32` 的 Foundation quality 三项均通过，但 Desktop release `43675816786`
+未发布：arm64 与 Windows 在打包 action 中误用 `npm run tauri`，无法定位
+pnpm 工作区的 Tauri CLI；x64 原生测试在忙碌的 runner 上等待加密导入到达
+插件屏障超过 10 秒。发行 action 现显式使用 `pnpm exec tauri`，更新清单输入
+改为支持的 `includeUpdaterJson`；回归测试的前置屏障等待延长至 120 秒，
+不更改生产插件调用超时或加密参数。旧失败标签保持不动，以新标签重新发行。
+打包与更新产物须以新一轮 GitHub Actions 结果为准。
+
 ## 0.1.32 窗口代理交互与发行修复（2026-11-15）
 
 `v0.1.31` 固定在 `01b6f29`，其三平台发行任务均在 Clippy
