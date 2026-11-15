@@ -1,11 +1,20 @@
 # 桌面发行与应用内更新
 
+## 0.1.34 恢复打包依赖（2026-11-15）
+
+`v0.1.33` 的三个平台均通过原生回归测试和 Clippy，但 Tauri 打包未能开始：
+`runtime:stage` 使用 `pnpm deploy --legacy --prod` 准备独立 Node 运行时，
+该步骤同时移除了当前工作区的开发依赖，导致后续 `pnpm exec tauri` 找不到 CLI。
+发行流程现于暂存运行时后使用锁文件恢复开发依赖，并在原生测试之前确认
+桌面工作区能执行固定版本的 Tauri CLI。`v0.1.33` 标签保持不变；
+本轮新标签的构建与发布结果以 CI 为准。
+
 ## 0.1.33 发行命令与测试等待修复（2026-11-15）
 
 `v0.1.32` 的 Foundation quality 三项均通过，但 Desktop release `43675816786`
 未发布：arm64 与 Windows 在打包 action 中误用 `npm run tauri`，无法定位
 pnpm 工作区的 Tauri CLI；x64 原生测试在忙碌的 runner 上等待加密导入到达
-插件屏障超过 10 秒。发行 action 现显式使用 `pnpm exec tauri`，更新清单输入
+插件屏障超过 10 秒。发行 action 改为 `pnpm exec tauri`，更新清单输入
 改为支持的 `includeUpdaterJson`；回归测试的前置屏障等待延长至 120 秒，
 不更改生产插件调用超时或加密参数。旧失败标签保持不动，以新标签重新发行。
 打包与更新产物须以新一轮 GitHub Actions 结果为准。

@@ -1,5 +1,15 @@
 # 质量门禁与验证记录
 
+## 2026-11-15 0.1.33 发行失败复核
+
+Desktop release `43678329736` 三平台原生测试和 Clippy 通过（macOS 两架构
+均为 470 项通过、零失败），打包 action 均报 `pnpm exec tauri: Command "tauri" not found`。
+追踪到 `pnpm runtime:stage` 中的 `pnpm deploy --legacy --prod`：CI 日志显示
+暂存后运行 `pnpm rust:test` 会重装工作区并移除根开发依赖，桌面 Tauri CLI
+亦不可用。发行流程在原生检查后、打包前显式用锁文件恢复全部依赖，
+紧接着验证 CLI 可执行。本地未运行应用打包或 Rust 编译；三平台打包结果
+仍需下一轮 CI 确认。
+
 ## 2026-11-15 0.1.32 发行失败复核
 
 Foundation quality `43675816793` 的 JS、macOS 与 Windows 三项通过。
