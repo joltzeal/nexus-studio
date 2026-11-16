@@ -22,8 +22,15 @@ export class VerificationSound {
       }
       const context = this.context
       if (!this.buffers) {
-        this.abort = new AbortController()
-        this.buffers = this.load(context, this.abort.signal).catch(() => new Map())
+        const controller = new AbortController()
+        this.abort = controller
+        this.buffers = this.load(context, controller.signal).catch(() => {
+          if (this.abort === controller) {
+            this.abort = null
+            this.buffers = null
+          }
+          return new Map()
+        })
       }
       if (context.state !== 'running') {
         const ready = await new Promise<boolean>((resolve) => {

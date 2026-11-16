@@ -77,6 +77,12 @@
 待腾出空间后再接受下一份完整基线，避免任务永久卡在容量错误。
 列表默认只返回各账号摘要；按账号读取才附带最多 100 条最近候选，
 避免把所有账号的商品历史塞进宿主 1 MiB 的单行协议。
+最近一次完整衣柜扫描还会保存最多 1920 件商品的 ID、标题、链接和图片地址。
+`vinted.accounts.orders.items` 按账号分页读取这份缓存，每页最多 20 件；
+窗口页的账号列在打开商品弹层后才按需读取，每页展示 10 件，关闭弹层不继续请求。
+这里的“商品”仅指上次完整扫描时的衣柜记录，不能据此断言现在仍在售或已成交；
+图片地址只存储，不直接作为桌面页面的远程缩略图加载。
+未设置主页、未完成完整扫描、扫描失败时分别显示相应状态；失败保留上次完整快照。
 摘要将长错误合并为“查询失败，请查看详情”，选中账号后返回完整错误；
 无效主页也只在详情回传原地址，避免 2000 条长地址或错误撑破协议上限。
 
@@ -84,17 +90,18 @@
 
 所有方法沿用已授予的 `account.pool` 能力。
 
-| 方法                                   | 入参                                                         | 返回                                              |
-| -------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------- |
-| `vinted.accounts.orders.settings.get`  | `{}`                                                         | 查询间隔与 Bark 设置                              |
-| `vinted.accounts.orders.settings.save` | `{ intervalMinutes, bark: { baseUrl, deviceKey, enabled } }` | 已保存设置                                        |
-| `vinted.accounts.orders.bark.test`     | `{}`                                                         | `{ sent: true }`，失败抛结构化错误                |
-| `vinted.accounts.orders.list`          | `{ accountId? }`                                             | `{ items }`，无 ID 时返回摘要，有 ID 时附最近候选 |
-| `vinted.accounts.orders.run`           | `{ accountId }`                                              | `{ queued }`                                      |
-| `vinted.accounts.orders.enabled`       | `{ accountId, enabled }`                                     | `{ enabled }`                                     |
-| `configuration.export`                 | `{}`                                                         | `{ schemaVersion: 1, data: settings }`            |
-| `configuration.validate`               | 版本化配置                                                   | `{ valid: true }`，不写入、不联网                 |
-| `configuration.import`                 | 版本化配置                                                   | `{ imported: true }`                              |
+| 方法                                   | 入参                                                         | 返回                                                                            |
+| -------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `vinted.accounts.orders.settings.get`  | `{}`                                                         | 查询间隔与 Bark 设置                                                            |
+| `vinted.accounts.orders.settings.save` | `{ intervalMinutes, bark: { baseUrl, deviceKey, enabled } }` | 已保存设置                                                                      |
+| `vinted.accounts.orders.bark.test`     | `{}`                                                         | `{ sent: true }`，失败抛结构化错误                                              |
+| `vinted.accounts.orders.list`          | `{ accountId? }`                                             | `{ items }`，无 ID 时返回摘要，有 ID 时附最近候选                               |
+| `vinted.accounts.orders.items`         | `{ accountId, page, pageSize }`，`pageSize` 为 1–20          | `{ items, total, page, pageSize, lastCompleteAt, lastError }`，完整衣柜快照分页 |
+| `vinted.accounts.orders.run`           | `{ accountId }`                                              | `{ queued }`                                                                    |
+| `vinted.accounts.orders.enabled`       | `{ accountId, enabled }`                                     | `{ enabled }`                                                                   |
+| `configuration.export`                 | `{}`                                                         | `{ schemaVersion: 1, data: settings }`                                          |
+| `configuration.validate`               | 版本化配置                                                   | `{ valid: true }`，不写入、不联网                                               |
+| `configuration.import`                 | 版本化配置                                                   | `{ imported: true }`                                                            |
 
 设置通过「应用设置 → 配置迁移」导入导出。
 只迁移查询间隔和 Bark 配置，不携带账号、衣柜快照、候选商品、暂停记录或推送历史。

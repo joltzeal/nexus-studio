@@ -1,6 +1,6 @@
 {
   "name": "raccoon",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "Raccoon consumer desktop workspace foundation",
   "scripts": {
     "dev": "pnpm build:packages && pnpm --filter @nexus/desktop dev",

@@ -4,6 +4,7 @@ import { profileData, type Profile } from '@/features/addresses/types'
 import { assignedAccountMailbox } from './account-mailbox-api'
 import type {
   OrderCandidate,
+  OrderWardrobePage,
   OrderWatchSettings,
   OrderWatchView,
 } from './order-watch-types'
@@ -472,6 +473,80 @@ export function listOrderWatches(
     (value): value is { items: OrderWatchView[] } =>
       record(value) && Array.isArray(value.items) && value.items.every(orderWatchView),
   )
+}
+
+function wardrobeItem(value: unknown): boolean {
+  return (
+    record(value) &&
+    onlyKeys(value, ['id', 'url', 'title', 'imageUrl']) &&
+    typeof value.id === 'string' &&
+    /^\d{1,32}$/.test(value.id) &&
+    typeof value.title === 'string' &&
+    value.title.trim().length > 0 &&
+    value.title.length <= 500 &&
+    typeof value.url === 'string' &&
+    safeWardrobeUrl(value.url, value.id) &&
+    (value.imageUrl === null ||
+      (typeof value.imageUrl === 'string' &&
+        value.imageUrl.length <= 2048 &&
+        /^https?:\/\//.test(value.imageUrl)))
+  )
+}
+
+function safeWardrobeUrl(value: string, id: string): boolean {
+  if (value.length > 2048) return false
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'https:' &&
+      /^www\.vinted\.(?:com|co\.uk|[a-z]{2})$/.test(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      !url.port &&
+      !url.search &&
+      !url.hash &&
+      new RegExp(`^/items/${id}(?:-[^/]+)?$`).test(url.pathname)
+    )
+  } catch {
+    return false
+  }
+}
+
+export async function listOrderWatchItems(
+  accountId: string,
+  page: number,
+): Promise<OrderWardrobePage> {
+  const pageSize = 10
+  const value = await call<unknown>('vinted.accounts.orders.items', {
+    accountId,
+    page,
+    pageSize,
+  })
+  if (
+    !record(value) ||
+    !onlyKeys(value, [
+      'items',
+      'total',
+      'page',
+      'pageSize',
+      'lastCompleteAt',
+      'lastError',
+    ]) ||
+    value.page !== page ||
+    value.pageSize !== pageSize ||
+    !count(value.total) ||
+    value.total > 1920 ||
+    !Array.isArray(value.items) ||
+    value.items.length > pageSize ||
+    value.items.length > Math.max(0, value.total - (page - 1) * pageSize) ||
+    !value.items.every(wardrobeItem) ||
+    (value.lastCompleteAt !== null && !isoTimestamp(value.lastCompleteAt)) ||
+    (value.lastError !== null &&
+      (typeof value.lastError !== 'string' || value.lastError.length > 500))
+  ) {
+    throw new Error('商品快照返回的数据格式无效，请重试。')
+  }
+  return value as unknown as OrderWardrobePage
 }
 
 export function runOrderWatch(accountId: string): Promise<{ queued: boolean }> {

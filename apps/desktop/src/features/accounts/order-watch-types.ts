@@ -35,3 +35,19 @@ export interface OrderWatchView {
   soldCount?: number
   candidates: OrderCandidate[]
 }
+
+export interface OrderWardrobeItem {
+  id: string
+  url: string
+  title: string
+  imageUrl: string | null
+}
+
+export interface OrderWardrobePage {
+  items: OrderWardrobeItem[]
+  total: number
+  page: number
+  pageSize: number
+  lastCompleteAt: string | null
+  lastError: string | null
+}

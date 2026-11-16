@@ -17,6 +17,19 @@ describe('desktop release configuration', () => {
     )
   })
 
+  it('allows packaged OTP audio to be fetched from the application origin', () => {
+    const config = JSON.parse(
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    )
+    for (const policy of [config.app.security.csp, config.app.security.devCsp]) {
+      const connect = policy
+        .split(';')
+        .map((directive) => directive.trim())
+        .find((directive) => directive.startsWith('connect-src '))
+      expect(connect?.split(/\s+/)).toContain("'self'")
+    }
+  })
+
   it('uses the public repository that actually publishes the updater manifest', () => {
     const releaseConfig = JSON.parse(
       readFileSync(

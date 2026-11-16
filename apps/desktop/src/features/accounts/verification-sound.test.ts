@@ -83,4 +83,21 @@ describe('OTP voice playback', () => {
     expect(await sound.play('email', '000001')).toBe(false)
     expect(context.sources).toHaveLength(0)
   })
+
+  it('reloads audio after an earlier fetch failure without restarting the app', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false })
+        .mockImplementation(async () => ({
+          ok: true,
+          arrayBuffer: async () => new ArrayBuffer(1),
+        })),
+    )
+    await sound.arm()
+    expect(await sound.play('sms', '1234')).toBe(false)
+    expect(await sound.play('sms', '1234')).toBe(true)
+    expect(context.sources).toHaveLength(5)
+  })
 })

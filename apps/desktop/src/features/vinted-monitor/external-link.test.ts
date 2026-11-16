@@ -324,20 +324,22 @@ describe('Vinted external links', () => {
     tree()
     hooks.flushEffects()
     await flushPromises()
-    components(tree(), Checkbox).find(
-      (node) => node.props['aria-label'] === '全选本页商品',
-    )!.props.onCheckedChange?.(true)
+    components(tree(), Checkbox)
+      .find((node) => node.props['aria-label'] === '全选本页商品')!
+      .props.onCheckedChange?.(true)
     const listener = vi.fn()
     const unsubscribe = onAiImageHandoff(listener)
     try {
-      components(tree(), Button).find(
-        (node) => node.props.title === '选择本页商品，逐件确认并提交',
-      )!.props.onClick?.({} as MouseEvent<HTMLButtonElement>)
+      components(tree(), Button)
+        .find((node) => node.props.title === '选择本页商品，逐件确认并提交')!
+        .props.onClick?.({} as MouseEvent<HTMLButtonElement>)
       await flushPromises()
       expect(listener).not.toHaveBeenCalled()
-      expect(components(tree(), Checkbox).find(
-        (node) => node.props['aria-label'] === '全选本页商品',
-      )!.props.checked).toBe(true)
+      expect(
+        components(tree(), Checkbox).find(
+          (node) => node.props['aria-label'] === '全选本页商品',
+        )!.props.checked,
+      ).toBe(true)
     } finally {
       unsubscribe()
     }

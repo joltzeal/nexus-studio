@@ -64,6 +64,7 @@ import {
 } from '@/lib/platform/windows'
 import type { PluginView } from '@/lib/platform/native-plugins'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
+import { AccountWardrobePopover } from '@/features/accounts/account-wardrobe-popover'
 import { ProxyGateDialog } from './proxy-gate'
 import { ProxyCell, SpacesPage } from './spaces-page'
 import type { ProxyRow } from '@/features/proxy/types'
@@ -2597,6 +2598,27 @@ describe('window account status filtering', () => {
         (node) => node.type === 'strong' && node.props.className === 'text-destructive',
       ),
     ).toBe(false)
+  })
+})
+
+describe('window account wardrobe shortcut', () => {
+  it('shows the shortcut beside the phone only when the running plugin supports snapshots', async () => {
+    state.plugin = {
+      ...state.plugin!,
+      methods: ['vinted.accounts.list', 'vinted.accounts.orders.items'],
+    }
+    const page = await mountedPage()
+    expect(
+      components(page.render(), AccountWardrobePopover).map(
+        (node) => node.props.account.id,
+      ),
+    ).toEqual(['shared', 'shared', 'other'])
+    expect(
+      state.calls.some((call) => call.method === 'vinted.accounts.orders.items'),
+    ).toBe(false)
+    state.plugin = { ...state.plugin!, methods: [] }
+    const olderPluginPage = await mountedPage()
+    expect(components(olderPluginPage.render(), AccountWardrobePopover)).toHaveLength(0)
   })
 })
 

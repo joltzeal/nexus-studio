@@ -141,6 +141,7 @@ import { toggleSelection, withDeadline } from './transfer-state'
 import { useWindowLaunch } from './use-window-launch'
 import { WindowNote } from './window-note'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
+import { AccountWardrobePopover } from '@/features/accounts/account-wardrobe-popover'
 import { AccountSmsWaitButton } from './account-sms-wait-button'
 import {
   emailWaits,
@@ -1584,12 +1585,24 @@ export function SpacesPage() {
                             </span>
                           </span>
                           {linked === null ? null : (
-                            <AccountSmsPopover
-                              key={linked.id}
-                              account={linked}
-                              ready={accountsReady && !phoneUnlinkPending}
-                              onSaved={applySavedAccount}
-                            />
+                            <>
+                              <AccountSmsPopover
+                                key={`sms-${linked.id}`}
+                                account={linked}
+                                ready={accountsReady && !phoneUnlinkPending}
+                                onSaved={applySavedAccount}
+                              />
+                              {accountPlugin?.state === 'running' &&
+                              accountPlugin.methods?.includes(
+                                'vinted.accounts.orders.items',
+                              ) ? (
+                                <AccountWardrobePopover
+                                  key={`wardrobe-${linked.id}`}
+                                  account={linked}
+                                  ready={accountsReady}
+                                />
+                              ) : null}
+                            </>
                           )}
                         </span>
                       )}
