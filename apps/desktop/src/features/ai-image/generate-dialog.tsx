@@ -28,6 +28,7 @@ import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toast'
 import { generate, uploadImage } from './api'
+import { trackGeneratedProduct } from './auto-product-import-runtime'
 import { checkReference, prepareReference } from './prepare-reference'
 import { PresetPicker } from './preset-picker'
 import { RecordImage } from './record-image'
@@ -136,7 +137,7 @@ export function GenerateDialog({
   const removed = useRef(new Set<string>())
   const mounted = useRef(false)
   const [presetChoice, setPresetChoice] = useState<ScenePresetChoice>({
-    id: presets[0]?.id ?? null,
+    id: null,
     revision: 0,
   })
   const [prompt, setPrompt] = useState(initialPrompt ?? '')
@@ -378,7 +379,7 @@ export function GenerateDialog({
     setError(null)
     try {
       const recognize = mode === 'edit' && !planner.smart && visionSelection
-      await generate({
+      const accepted = await generate({
         providerId: imageSelection.providerId,
         imageModel: imageSelection.model,
         mode,
@@ -404,8 +405,17 @@ export function GenerateDialog({
             }
           : {}),
       })
+      if (mode === 'edit') {
+        try {
+          trackGeneratedProduct(accepted.record.id)
+        } catch (cause) {
+          toast.error(
+            `生成任务 ${accepted.record.id} 已提交，但自动入库登记失败：${message(cause)}。请在生成记录中手动导入，勿重复生成。`,
+          )
+        }
+      }
       if (!mounted.current) return
-      await onSubmitted()
+      await onSubmitted().catch(() => undefined)
       if (!mounted.current) return
       toast.success(submittedMessage)
       onOpenChange(false)
@@ -558,7 +568,7 @@ export function GenerateDialog({
                   }}
                 />
                 <FieldDescription>
-                  有参考图时必选，一次识图生成商品标题、描述和生图提示词。可先预览推荐场景与视角。{' '}
+                  有参考图时必选；识别商品事实、生成英文标题与描述，普通模式自动选择生活化场景。{' '}
                   <button
                     type="button"
                     className="ai-link"
@@ -767,7 +777,7 @@ export function GenerateDialog({
               />
               <FieldDescription id="ai-prompt-description">
                 {preset === null
-                  ? '自由提示词不加预设；有参考图时会合并识图生成的提示词。'
+                  ? '有参考图时自动选择合理摆放位置；此处可补充特殊要求。'
                   : `预设「${preset.label}」保留实际标识、瑕疵与成色，并完整追加你写的要求。`}{' '}
                 {prompt.length} / {MAX_PROMPT_CHARACTERS} 字符，不自动截断。
               </FieldDescription>

@@ -154,6 +154,7 @@ export interface GenerationRecord {
   agingLevel?: AgingLevel
   prompt: string
   basePrompt?: string
+  userRequirements?: string
   presetId: string | null
   presetLabel: string | null
   size: string
@@ -179,6 +180,11 @@ export interface GenerationRecord {
     title?: string | null
     description: string | null
     prompt?: string | null
+    product?: string
+    visibleDesign?: string
+    confirmedWear?: string
+    uncertainties?: string
+    translatedRequirements?: string
   } | null
   outputVision?: {
     providerId: string
@@ -190,6 +196,11 @@ export interface GenerationRecord {
     title?: string | null
     description: string | null
     prompt?: string | null
+    product?: string
+    visibleDesign?: string
+    confirmedWear?: string
+    uncertainties?: string
+    translatedRequirements?: string
     error: string | null
   } | null
   inputs: StoredFile[]

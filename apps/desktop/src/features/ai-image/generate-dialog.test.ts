@@ -12,6 +12,7 @@ import {
 } from '@/features/settings/kernel-test-support'
 import { generate, uploadImage, uploadRemoteImage } from './api'
 import { GenerateDialog } from './generate-dialog'
+import { trackGeneratedProduct } from './auto-product-import-runtime'
 import {
   EMPTY_SELECTIONS,
   MODEL_CONFIG_UPDATE_HINT,
@@ -60,7 +61,8 @@ vi.mock('./reference-transfer', async (importOriginal) => ({
   transferInitialImage: vi.fn(),
 }))
 vi.mock('./use-scene-planner', () => ({ useScenePlanner: vi.fn() }))
-vi.mock('@/components/ui/toast', () => ({ toast: { success: vi.fn() } }))
+vi.mock('./auto-product-import-runtime', () => ({ trackGeneratedProduct: vi.fn() }))
+vi.mock('@/components/ui/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 class GenerateHookHarness extends KernelHookHarness {
   // Stable callbacks keep ordinary rerenders from restarting reference transfers.
@@ -523,6 +525,18 @@ describe('generation model compatibility', () => {
 })
 
 describe('source-page generation feedback', () => {
+  it('does not invite a second paid submission when import tracking fails after acceptance', async () => {
+    vi.mocked(trackGeneratedProduct).mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    props.selections = remembered
+    props.initialImages = [reference]
+    await settle()
+    await submit()
+    expect(generate).toHaveBeenCalledTimes(1)
+    expect(props.onOpenChange).toHaveBeenCalledExactlyOnceWith(false)
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringContaining('入库'))
+  })
   it('closes an accepted task with the source-page progress hint', async () => {
     props.selections = remembered
     props.submittedMessage = 'Track this task in the product image history'

@@ -32,6 +32,7 @@ import { usePreferences } from '@/hooks/use-preferences'
 import { SpacesPage } from '@/features/spaces/spaces-page'
 import { GroupsPage } from '@/features/groups/groups-page'
 import { AiImagePage } from '@/features/ai-image/ai-image-page'
+import { startAutoProductImport } from '@/features/ai-image/auto-product-import-runtime'
 import { PluginsPage } from '@/features/plugins/plugins-page'
 import { PluginPage } from '@/features/plugins/plugin-page'
 import {
@@ -114,6 +115,10 @@ export function AppShell() {
       ? PAGE_LABELS[previousPage]
       : undefined
   const retained = { activePage: page, visitedPages }
+
+  useEffect(() => {
+    return startAutoProductImport()
+  }, [])
 
   useEffect(() => {
     const stop = watchPluginCatalog(
