@@ -140,7 +140,11 @@ import { useWindowLaunch } from './use-window-launch'
 import { WindowNote } from './window-note'
 import { AccountPhoneCopy, AccountSmsPopover } from './account-sms-popover'
 import { AccountSmsWaitButton } from './account-sms-wait-button'
-import { smsWaits } from '@/features/accounts/sms-wait-runtime'
+import {
+  emailWaits,
+  smsWaits,
+  stopOtpWaitsForWindow,
+} from '@/features/accounts/sms-wait-runtime'
 import { Sim8ExpiryNotice } from '@/features/sim8/expiry-notice'
 import { getConfig, listPickerProxies } from '@/features/proxy/api'
 import { PROXY_PLUGIN_ID, type ProxyRow } from '@/features/proxy/types'
@@ -357,6 +361,7 @@ export function SpacesPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accountPlugin, setAccountPlugin] = useState<PluginView | null>(null)
+  const [emailPlugin, setEmailPlugin] = useState<PluginView | null>(null)
   const [bindings, setBindings] = useState<BindingView[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [accountDataReady, setAccountDataReady] = useState(false)
@@ -627,9 +632,13 @@ export function SpacesPage() {
         if (active) {
           const plugin = catalog.find((entry) => entry.id === ACCOUNTS_PLUGIN_ID) ?? null
           updatePlugin(plugin)
+          setEmailPlugin(catalog.find((entry) => entry.id === 'studio.email') ?? null)
         }
       } catch {
-        if (active) updatePlugin(null)
+        if (active) {
+          updatePlugin(null)
+          setEmailPlugin(null)
+        }
       } finally {
         pending = false
       }
@@ -679,6 +688,12 @@ export function SpacesPage() {
     const previous = accounts.find((account) => account.id === saved.id)
     if (previous?.phone !== saved.phone || previous.smsOtpUrl !== saved.smsOtpUrl) {
       smsWaits.stop(saved.id)
+    }
+    if (
+      previous?.mailbox?.mailboxId !== saved.mailbox?.mailboxId ||
+      previous?.mailbox?.email !== saved.mailbox?.email
+    ) {
+      emailWaits.stop(saved.id)
     }
     accountSync.current.revision += 1
     setAccounts((current) =>
@@ -908,7 +923,7 @@ export function SpacesPage() {
       assertWindowRelation(target, latest.items)
       if (accountId === null) {
         await unbindWindow(window.id)
-        if (target.previous) smsWaits.stopWindow(window.id)
+        if (target.previous) stopOtpWaitsForWindow(window.id)
         toast.success('已解除关联')
       } else {
         const result = await bindAccount(accountId, window.id)
@@ -920,7 +935,7 @@ export function SpacesPage() {
           }
           return
         }
-        if (target.previous?.accountId !== accountId) smsWaits.stopWindow(window.id)
+        if (target.previous?.accountId !== accountId) stopOtpWaitsForWindow(window.id)
         toast.success('已关联账号')
       }
       if (current()) dismissBinding()
@@ -976,7 +991,7 @@ export function SpacesPage() {
         throw new WindowRelationChangedError()
       await bindAccount(conflict.accountId!, conflict.window.id, true)
       if (conflict.previous?.accountId !== conflict.accountId)
-        smsWaits.stopWindow(conflict.window.id)
+        stopOtpWaitsForWindow(conflict.window.id)
       toast.success('已关联账号')
       if (current()) dismissBinding()
       await refreshAfterBinding().catch(() => {
@@ -1485,6 +1500,10 @@ export function SpacesPage() {
                                   windowId={window.id}
                                   windowName={window.name}
                                   ready={accountsReady && !phoneUnlinkPending}
+                                  emailReady={
+                                    emailPlugin?.state === 'running' &&
+                                    emailPlugin.methods.includes('email.messages.get')
+                                  }
                                 />
                               )}
                               {linked === null || linked.phone.trim() === '' ? null : (
@@ -2180,7 +2199,7 @@ export function SpacesPage() {
                   const epoch = viewEpoch.current
                   void deleteBrowserWindow(target.id, deleteEnvironment)
                     .then(async () => {
-                      smsWaits.stopWindow(target.id)
+                      stopOtpWaitsForWindow(target.id)
                       applyWindows((current) =>
                         current.filter((window) => window.id !== target.id),
                       )

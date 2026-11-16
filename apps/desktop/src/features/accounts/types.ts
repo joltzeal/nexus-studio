@@ -141,6 +141,18 @@ export interface AccountInput {
   homepageUrl: string
 }
 
+export interface MailboxImportInput {
+  mailboxes: { mailboxId: string; email: string }[]
+  loginMethod: LoginMethod
+  phone: string
+  emailOtpUrl: string
+  smsOtpUrl: string
+  status: AccountStatus
+  homepageUrl: string
+  note: string
+  expectedDuplicateIds: string[]
+}
+
 export interface ImportRowError {
   row: number
   message: string

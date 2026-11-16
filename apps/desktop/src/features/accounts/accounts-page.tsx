@@ -67,6 +67,7 @@ import { MAX_BATCH_WINDOWS, type BatchAccount } from '@/features/spaces/window-b
 import { toggleSelection } from '@/features/spaces/transfer-state'
 import { browserWindowsAvailable } from '@/lib/platform/windows'
 import { AccountEditor } from './account-editor'
+import { MailboxImportDialog } from './mailbox-import-dialog'
 import { AccountInspectionAction } from './account-inspection-action'
 import {
   AccountObservationBalance,
@@ -123,6 +124,8 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     running && plugin.methods.includes('vinted.accounts.address.set')
   const supportsMailboxWrite =
     running && plugin.methods.includes('vinted.accounts.mailbox.set')
+  const supportsMailboxImport =
+    running && plugin.methods.includes('vinted.accounts.mailbox.import')
   const mailboxIdentity = JSON.stringify([
     plugin?.version ?? null,
     plugin?.state ?? null,
@@ -182,6 +185,7 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
     }
   }, [detailRequest])
   const [importing, setImporting] = useState(false)
+  const [importingMailboxes, setImportingMailboxes] = useState(false)
   const [removing, setRemoving] = useState<Account | null>(null)
   const [deleting, setDeleting] = useState(false)
   const deleteRequest = useRef<string | null>(null)
@@ -503,6 +507,14 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
           >
             <Upload data-icon="inline-start" />
             导入
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!supportsMailboxImport}
+            onClick={() => setImportingMailboxes(true)}
+          >
+            <Mail data-icon="inline-start" />
+            从邮箱导入
           </Button>
           <Button
             disabled={!running}
@@ -1137,6 +1149,14 @@ export function AccountsPage({ plugin, hostAvailable }: AccountsPageProps) {
             onClose={() => setImporting(false)}
           />
         ) : null}
+      </Dialog>
+      <Dialog open={importingMailboxes} onOpenChange={setImportingMailboxes}>
+        {importingMailboxes && (
+          <MailboxImportDialog
+            onImported={load}
+            onClose={() => setImportingMailboxes(false)}
+          />
+        )}
       </Dialog>
 
       <AlertDialog

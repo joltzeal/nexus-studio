@@ -1,8 +1,13 @@
 import { useSyncExternalStore } from 'react'
-import { Bell, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toast'
-import { smsWaits, startSmsWait } from '@/features/accounts/sms-wait-runtime'
+import {
+  emailWaits,
+  smsWaits,
+  startEmailWait,
+  startSmsWait,
+} from '@/features/accounts/sms-wait-runtime'
 import { message, type Account } from '@/features/accounts/types'
 
 export interface AccountSmsWaitButtonProps {
@@ -10,6 +15,7 @@ export interface AccountSmsWaitButtonProps {
   windowId: string
   windowName: string
   ready: boolean
+  emailReady?: boolean
 }
 
 export function AccountSmsWaitButton({
@@ -17,62 +23,89 @@ export function AccountSmsWaitButton({
   windowId,
   windowName,
   ready,
+  emailReady = false,
 }: AccountSmsWaitButtonProps) {
-  const tasks = useSyncExternalStore(
-    smsWaits.subscribe,
-    smsWaits.getSnapshot,
-    smsWaits.getSnapshot,
-  )
-  const task = tasks.find((entry) => entry.accountId === account.id)
-  if (!account.phone.trim()) return null
-  const available = ready && !!account.smsOtpUrl.trim()
-  const hint = task
-    ? `每 5 秒查询，最多等待 5 分钟。点击停止等待。${task.lastError ? `上次查询失败，将继续重试：${task.lastError}` : ''}`
-    : !account.smsOtpUrl.trim()
-      ? '请先保存此账号的短信接码链接。'
-      : !ready
-        ? '账号插件尚未就绪或手机号正在更新。'
-        : '每 5 秒查询验证码，收到后通知，最多等待 5 分钟。'
+  const sms = useSyncExternalStore(smsWaits.subscribe, smsWaits.getSnapshot)
+  const email = useSyncExternalStore(emailWaits.subscribe, emailWaits.getSnapshot)
+  const smsTask = sms.find((task) => task.accountId === account.id)
+  const emailTask = email.find((task) => task.accountId === account.id)
+  const mailbox = account.mailbox
+  const actions = [
+    {
+      channel: 'SMS',
+      task: smsTask,
+      available: ready && !!account.phone.trim() && !!account.smsOtpUrl.trim(),
+      hint: !account.phone.trim()
+        ? '请先填写手机号。'
+        : !account.smsOtpUrl.trim()
+          ? '请先保存短信接码链接。'
+          : '每 5 秒查询短信，最多等待 5 分钟。',
+      run: () =>
+        startSmsWait({
+          accountId: account.id,
+          accountName: account.account,
+          windowId,
+          windowName,
+          phone: account.phone,
+          smsOtpUrl: account.smsOtpUrl,
+        }),
+      stop: () => smsWaits.stop(account.id),
+    },
+    {
+      channel: 'Email',
+      task: emailTask,
+      available: ready && emailReady && !!mailbox,
+      hint: !mailbox
+        ? '请先关联邮箱管理中的邮箱。'
+        : !emailReady
+          ? '邮箱插件尚未就绪。'
+          : '每 5 秒查询关联邮箱，最多等待 5 分钟。',
+      run: () =>
+        mailbox &&
+        startEmailWait({
+          accountId: account.id,
+          accountName: account.account,
+          windowId,
+          windowName,
+          mailboxId: mailbox.mailboxId,
+          mailboxEmail: mailbox.email,
+          startedAt: Date.now(),
+        }),
+      stop: () => emailWaits.stop(account.id),
+    },
+  ] as const
+
   return (
-    <Button
-      type="button"
-      variant={task ? 'secondary' : 'ghost'}
-      size="xs"
-      className="h-[22px] px-1.5"
-      aria-label={`${task ? '停止等待' : '等待'} ${account.account} 的验证码`}
-      aria-pressed={!!task}
-      disabled={!task && !available}
-      title={hint}
-      onClick={() => {
-        if (task) {
-          smsWaits.stop(account.id)
-          return
-        }
-        if (
-          !available ||
-          smsWaits.getSnapshot().some((entry) => entry.accountId === account.id)
-        )
-          return
-        try {
-          startSmsWait({
-            accountId: account.id,
-            accountName: account.account,
-            windowId,
-            windowName,
-            phone: account.phone,
-            smsOtpUrl: account.smsOtpUrl,
-          })
-        } catch (cause) {
-          toast.error(message(cause))
-        }
-      }}
-    >
-      {task ? (
-        <Loader2 className="animate-spin" aria-hidden="true" />
-      ) : (
-        <Bell aria-hidden="true" />
-      )}
-      {task ? '等待中' : '等待验证码'}
-    </Button>
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span className="text-xs text-muted-foreground">OTP:</span>
+      {actions.map(({ channel, task, available, hint, run, stop }) => (
+        <Button
+          key={channel}
+          type="button"
+          variant={task ? 'secondary' : 'ghost'}
+          size="xs"
+          className="h-[22px] px-1.5"
+          aria-label={`${task ? '停止等待' : '等待'} ${account.account} 的${channel}验证码`}
+          aria-pressed={!!task}
+          disabled={!task && !available}
+          title={task ? `等待中，点击停止。${task.lastError ?? ''}` : hint}
+          onClick={() => {
+            if (task) {
+              stop()
+              return
+            }
+            if (!available) return
+            try {
+              run()
+            } catch (cause) {
+              toast.error(message(cause))
+            }
+          }}
+        >
+          {task && <Loader2 className="animate-spin" aria-hidden="true" />}
+          {channel}
+        </Button>
+      ))}
+    </span>
   )
 }

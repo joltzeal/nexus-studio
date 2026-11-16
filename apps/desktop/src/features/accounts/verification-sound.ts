@@ -1,130 +1,131 @@
-function safelyRelease(release: () => void): void {
-  try {
-    release()
-  } catch {
-    // Cleanup must continue if an audio device or node has already been released.
-  }
-}
+type OtpChannel = 'sms' | 'email'
+
+const clips = [
+  'tts_sms_otp',
+  'tts_email_otp',
+  ...Array.from({ length: 10 }, (_, digit) => `tts_${digit}`),
+]
 
 export class VerificationSound {
   private context: AudioContext | null = null
-  private readonly activeNodes = new Set<() => void>()
-  private readonly pendingResumes = new Set<() => void>()
-  private readonly onStateChange = () => {
-    if (this.context?.state === 'closed') {
-      this.close()
-    } else if (this.context?.state !== 'running') {
-      for (const release of this.activeNodes) release()
-    }
-  }
+  private buffers: Promise<Map<string, AudioBuffer>> | null = null
+  private abort: AbortController | null = null
+  private sources = new Set<AudioBufferSourceNode>()
 
-  /** Call directly in the user gesture, before awaiting network work. Never plays audio. */
+  /** Run in the click handler to unlock audio before the network polling begins. */
   async arm(): Promise<boolean> {
     try {
       if (!this.context || this.context.state === 'closed') {
         this.close()
         if (typeof AudioContext !== 'function') return false
         this.context = new AudioContext()
-        this.context.addEventListener('statechange', this.onStateChange)
       }
       const context = this.context
-      const resumed = await this.resume(context)
-      return resumed && this.context === context && context.state === 'running'
+      if (!this.buffers) {
+        this.abort = new AbortController()
+        this.buffers = this.load(context, this.abort.signal).catch(() => new Map())
+      }
+      if (context.state !== 'running') {
+        const ready = await new Promise<boolean>((resolve) => {
+          let settled = false
+          const finish = (value: boolean) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            resolve(value)
+          }
+          const timeout = setTimeout(() => finish(false), 1000)
+          void context.resume().then(
+            () => finish(context.state === 'running'),
+            () => finish(false),
+          )
+        })
+        if (!ready) return false
+      }
+      return this.context === context && context.state === 'running'
     } catch {
       return false
     }
   }
 
-  /** True means one notification was scheduled, not that the output device was audible. */
-  async play(): Promise<boolean> {
-    const scheduled: Array<() => void> = []
+  /** Schedule the intro followed by each digit; silence between digits is 0.5 s. */
+  async play(channel: OtpChannel, code: string): Promise<boolean> {
+    if (!/^(?:\d{4}|\d{6})$/.test(code)) return false
+    const context = this.context
+    if (!context || !(await this.arm()) || this.context !== context) return false
+    const scheduled: AudioBufferSourceNode[] = []
     try {
-      const context = this.context
-      if (!context || context.state === 'closed') return false
-      if (
-        !(await this.resume(context)) ||
-        this.context !== context ||
-        context.state !== 'running'
-      ) {
+      const buffers = await this.buffers
+      if (!buffers || this.context !== context || context.state !== 'running')
         return false
-      }
-
-      const now = context.currentTime + 0.01
-      for (const [offset, frequency] of [
-        [0, 660],
-        [0.18, 880],
-      ] as const) {
-        const oscillator = context.createOscillator()
-        let gain: GainNode | null = null
-        let released = false
-        const release = (stop = true) => {
-          if (released) return
-          released = true
-          this.activeNodes.delete(release)
-          oscillator.onended = null
-          if (stop) safelyRelease(() => oscillator.stop())
-          safelyRelease(() => oscillator.disconnect())
-          safelyRelease(() => gain?.disconnect())
+      const names = [
+        `tts_${channel}_otp`,
+        ...code.split('').map((digit) => `tts_${digit}`),
+      ]
+      let start = context.currentTime + 0.05
+      for (const [index, name] of names.entries()) {
+        const buffer = buffers.get(name)
+        if (!buffer) throw new Error('语音资源未能加载')
+        const source = context.createBufferSource()
+        source.buffer = buffer
+        source.connect(context.destination)
+        source.onended = () => {
+          this.sources.delete(source)
+          source.disconnect()
         }
-        scheduled.push(release)
-        this.activeNodes.add(release)
-        gain = context.createGain()
-
-        const start = now + offset
-        const end = start + 0.16
-        oscillator.type = 'sine'
-        oscillator.frequency.setValueAtTime(frequency, start)
-        gain.gain.setValueAtTime(0, start)
-        gain.gain.linearRampToValueAtTime(0.08, start + 0.012)
-        gain.gain.linearRampToValueAtTime(0, end)
-        oscillator.connect(gain)
-        gain.connect(context.destination)
-        oscillator.onended = () => release(false)
-        oscillator.start(start)
-        oscillator.stop(end)
+        scheduled.push(source)
+        this.sources.add(source)
+        source.start(start)
+        start += buffer.duration + (index < names.length - 1 ? 0.5 : 0)
       }
       return true
     } catch {
-      scheduled.forEach((release) => release())
+      for (const source of scheduled) {
+        try {
+          source.stop()
+        } catch {
+          // The source may not have started yet.
+        }
+        source.disconnect()
+        this.sources.delete(source)
+      }
       return false
     }
   }
 
   close(): void {
+    this.abort?.abort()
+    this.abort = null
+    this.buffers = null
+    for (const source of this.sources) {
+      source.onended = null
+      try {
+        source.stop()
+      } catch {
+        // The device may already be closed.
+      }
+      source.disconnect()
+    }
+    this.sources.clear()
     const context = this.context
     this.context = null
-    context?.removeEventListener('statechange', this.onStateChange)
-    for (const cancel of this.pendingResumes) cancel()
-    for (const release of this.activeNodes) release()
-    if (context && context.state !== 'closed') {
-      safelyRelease(() => {
-        void context.close().catch(() => undefined)
-      })
-    }
+    if (context && context.state !== 'closed') void context.close().catch(() => undefined)
   }
 
-  private resume(context: AudioContext): Promise<boolean> {
-    if (context.state === 'running') return Promise.resolve(true)
-    if (context.state === 'closed') return Promise.resolve(false)
-
-    return new Promise((resolve) => {
-      let settled = false
-      const finish = (resumed: boolean) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeout)
-        this.pendingResumes.delete(cancel)
-        resolve(resumed)
-      }
-      const cancel = () => finish(false)
-      // Autoplay policy can leave resume() pending until another user gesture.
-      const timeout = setTimeout(cancel, 1000)
-      this.pendingResumes.add(cancel)
-      try {
-        void context.resume().then(() => finish(context.state === 'running'), cancel)
-      } catch {
-        cancel()
-      }
-    })
+  private async load(
+    context: AudioContext,
+    signal: AbortSignal,
+  ): Promise<Map<string, AudioBuffer>> {
+    const entries = await Promise.all(
+      clips.map(async (name) => {
+        const response = await fetch(`${import.meta.env.BASE_URL}audio/otp/${name}.mp3`, {
+          signal,
+        })
+        if (!response.ok) throw new Error(`音频加载失败：${name}`)
+        const buffer = await context.decodeAudioData(await response.arrayBuffer())
+        return [name, buffer] as const
+      }),
+    )
+    return new Map(entries)
   }
 }

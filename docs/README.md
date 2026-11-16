@@ -49,7 +49,7 @@ Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代�
 | [31 · 智能场景规划](31-ai-scene-planning.md)                        | AI 识图、场景推荐、可编辑多视角方案与部分失败重试              |
 | [32 · 批量创建窗口](32-batch-window-creation.md)                    | 窗口与账号池批量入口、统一代理、独立种子及部分失败重试         |
 | [33 · 生图测试与旧流程核对](33-ai-provider-testing.md)              | 实际文生图/图生图测试、通道诊断与参考项目对照                  |
-| [34 · 短信验证码等待](34-sms-waiting.md)                            | 窗口行五秒轮询、五分钟截止、可复制通知与提示音                 |
+| [34 · 验证码等待](34-sms-waiting.md)                                | 窗口行 SMS/Email 五秒轮询、五分钟截止、可复制通知与数字语音    |
 | [35 · 生图流式与等待时间](35-ai-streaming-and-timeouts.md)          | 服务商请求配置、SSE 解析、统一截止时间与兼容边界               |
 | [36 · 英文文案与手机实拍](36-ai-english-phone-photos.md)            | 英文提示词与商品文案、原文转化和生活化摄影约束                 |
 | [37 · 配置导入导出](37-configuration-transfer.md)                   | 设置与插件配置的明文迁移、预校验、逐项结果和业务数据边界       |

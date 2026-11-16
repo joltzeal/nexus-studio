@@ -10,7 +10,7 @@
 
 ## 当前事实
 
-当前插件版本为 `1.4.0`，最低主程序 `0.1.29`，已发布至 R2。
+本次账号池 `1.5.2` 配套主程序 `0.1.37`；发布状态见商店记录。
 新增供 Ecom Agent 使用的账号身份快照和局部观察写入，保留用户资料及邮箱、地址、号码关系。
 新增完整地址快照、分页账号选择、地址复制与解除关联。已有主页账号的自动已售查询、Bark 推送与配置迁移见
 [订单查询与 Bark 提醒](38-vinted-account-order-watch.md)。
@@ -31,8 +31,8 @@
   接码地址一起填好；SIM8 没装或没运行时按钮照常显示，点开只给一行说明。
   编辑时会传入当前账号标识，号码池标记当前账号使用的号码，并列出其他使用者；
   无法读取账号池时显示占用情况未知，不会误报号码未使用，也不禁止继续选择。
-- 登录方式与账密是必填项，缺任何一项都不能写入；其余字段留空是合法状态，
-  不做“猜一个默认值”的补齐。
+- 手动新建要求登录方式、账号和密码；从邮箱管理导入时密码留空，
+  已导入账号可在后续编辑中继续保持空密码。
 - 登录方式只有四种：`email` / `google` / `apple` / `facebook`。
 - 状态只有四种：`active`（正常）/ `pending`（待验证）/ `limited`（受限）/
   `blocked`（封禁）。状态来自操作者记录或Ecom Agent 的受限观察写入；
@@ -44,9 +44,8 @@
   明确确认已售后才请求用户配置的 Bark 服务。清单声明已知 Vinted 和默认 Bark 域名，
   `secrets` 为空，
   `wantsBrowserAccess: false`，这些声明不代表网络沙箱。
-- Raccoon 主应用 `0.1.17` 在窗口行的手机号旁提供「等待验证码」；
-  复用现有 `vinted.accounts.list` / `vinted.accounts.otp`，不新增 RPC 或
-  存储字段，也不提升账号插件版本。完整行为见[短信验证码等待](34-sms-waiting.md)。
+- 窗口行显示 `OTP: SMS Email`；SMS 读取保存的短信链接，
+  Email 读取所关联邮箱的邮件。见[验证码等待](34-sms-waiting.md)。
 
 ## 包结构
 
@@ -73,6 +72,7 @@ plugins/vinted-accounts/
 | `vinted.accounts.save`                | `AccountInput`（带 `id` 即编辑）              | 新建或更新，重复登录直接拒绝       |
 | `vinted.accounts.remove`              | `{ accountId }`                               | 删除账号并清掉它的绑定             |
 | `vinted.accounts.import`              | `{ filename, text \| base64 }`                | 解析表格并 upsert，返回逐行报告    |
+| `vinted.accounts.mailbox.import`      | 邮箱 ID/地址、统一字段、预览重复账号 ID       | 跳过重复并原子关联邮箱             |
 | `vinted.accounts.template`            | `{ format: 'csv' \| 'xlsx' }`                 | 返回文件名、MIME 与 base64 内容    |
 | `vinted.accounts.bind`                | `{ accountId, windowId, confirmDuplicates? }` | 关联窗口，重复账号先返回冲突       |
 | `vinted.accounts.unbind`              | `{ windowId }`                                | 解除该窗口的关联                   |
@@ -234,6 +234,14 @@ type AccountObservationResult = {
 阅读时按 ID 和关联邮箱地址共同核对，已删除、改名或暂停的邮箱不会被自动替换。
 窗口导出/导入将设备本地邮箱关联清空，副本应在目标设备重新选择邮箱。
 详见[邮箱插件](41-email-plugin.md)。
+
+账号池提供“从邮箱导入”入口，分页读取邮箱管理中的全部邮箱，允许选取子集，
+统一填写登录方式、状态、手机号、接码链接、主页及备注。预览逐项列出与现有
+账号**邮箱地址相同**的记录（不区分登录方式与大小写），确认后跳过重复，
+不覆盖旧账号资料；新增账号密码为空，同时在同次持久化中关联源邮箱 ID。
+导入前重新读取邮箱列表，账号池写入时再次核对预览中的重复账号 ID，
+资料变化则拒绝并要求重新预览。邮箱地址超过账号池 190 字符上限时
+提示取消选择。此导入方式区别于下文会更新旧记录的 CSV/XLSX 导入。
 
 ## 关联与解除账号地址
 

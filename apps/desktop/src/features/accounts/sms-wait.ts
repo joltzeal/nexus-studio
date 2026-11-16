@@ -7,6 +7,16 @@ export interface SmsWaitTarget {
   smsOtpUrl: string
 }
 
+export interface EmailWaitTarget {
+  accountId: string
+  accountName: string
+  windowId: string
+  windowName: string
+  mailboxId: string
+  mailboxEmail: string
+  startedAt: number
+}
+
 export interface SmsWaitState {
   accountId: string
   expiresAt: number
@@ -15,28 +25,28 @@ export interface SmsWaitState {
 
 export type SmsWaitRead = { code: string | null } | { stopped: string }
 
-interface SmsWaitOptions {
-  read: (target: SmsWaitTarget, signal: AbortSignal) => Promise<SmsWaitRead>
-  received: (target: SmsWaitTarget, code: string) => void
-  expired: (target: SmsWaitTarget, lastError: string | null) => void
-  invalidated: (target: SmsWaitTarget, reason: string) => void
+interface SmsWaitOptions<T extends SmsWaitTarget | EmailWaitTarget> {
+  read: (target: T, signal: AbortSignal) => Promise<SmsWaitRead>
+  received: (target: T, code: string) => void
+  expired: (target: T, lastError: string | null) => void
+  invalidated: (target: T, reason: string) => void
 }
 
-interface Task {
-  target: SmsWaitTarget
+interface Task<T extends SmsWaitTarget | EmailWaitTarget> {
+  target: T
   state: SmsWaitState
   abort: AbortController
   pollTimer: ReturnType<typeof setInterval>
   deadlineTimer: ReturnType<typeof setTimeout>
 }
 
-export class SmsWaitManager {
-  private readonly tasks = new Map<string, Task>()
+export class SmsWaitManager<T extends SmsWaitTarget | EmailWaitTarget = SmsWaitTarget> {
+  private readonly tasks = new Map<string, Task<T>>()
   private readonly reading = new Set<string>()
   private readonly listeners = new Set<() => void>()
   private snapshot: readonly SmsWaitState[] = []
 
-  constructor(private readonly options: SmsWaitOptions) {}
+  constructor(private readonly options: SmsWaitOptions<T>) {}
 
   getSnapshot = (): readonly SmsWaitState[] => this.snapshot
 
@@ -47,17 +57,21 @@ export class SmsWaitManager {
     }
   }
 
-  start(target: SmsWaitTarget): boolean {
-    if (
-      ![target.accountId, target.windowId, target.phone, target.smsOtpUrl].every(
-        (value) => value.trim(),
+  start(target: T): boolean {
+    const contact =
+      'mailboxId' in target
+        ? [target.mailboxId, target.mailboxEmail]
+        : [target.phone, target.smsOtpUrl]
+    if (![target.accountId, target.windowId, ...contact].every((value) => value.trim())) {
+      throw new Error(
+        'mailboxId' in target
+          ? '请先为账号关联邮箱。'
+          : '请先关联账号，并保存手机号和短信接码链接。',
       )
-    ) {
-      throw new Error('请先关联账号，并保存手机号和短信接码链接。')
     }
     const existing = this.tasks.get(target.accountId)
     if (existing && this.current(existing)) return false
-    const task: Task = {
+    const task: Task<T> = {
       target: { ...target },
       state: {
         accountId: target.accountId,
@@ -99,13 +113,13 @@ export class SmsWaitManager {
     for (const listener of this.listeners) listener()
   }
 
-  private expire(task: Task) {
+  private expire(task: Task<T>) {
     if (this.tasks.get(task.target.accountId) !== task) return
     this.stop(task.target.accountId)
     this.options.expired(task.target, task.state.lastError)
   }
 
-  private current(task: Task): boolean {
+  private current(task: Task<T>): boolean {
     if (this.tasks.get(task.target.accountId) !== task) return false
     if (Date.now() >= task.state.expiresAt) {
       this.expire(task)
@@ -114,7 +128,7 @@ export class SmsWaitManager {
     return true
   }
 
-  private async poll(task: Task) {
+  private async poll(task: Task<T>) {
     const id = task.target.accountId
     if (!this.current(task) || this.reading.has(id)) return
     // A cancelled RPC may still be settling; restarting must not overlap it.
@@ -128,8 +142,12 @@ export class SmsWaitManager {
         return
       }
       if (result.code !== null) {
-        if (!/^(?:\d{4}|\d{6})$/.test(result.code)) {
-          throw new Error('接码服务没有返回有效的短信验证码。')
+        if (
+          !('mailboxId' in task.target ? /^\d{6}$/ : /^(?:\d{4}|\d{6})$/).test(
+            result.code,
+          )
+        ) {
+          throw new Error('没有返回有效的验证码。')
         }
         this.stop(id)
         this.options.received(task.target, result.code)

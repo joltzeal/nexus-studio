@@ -94,7 +94,7 @@ export function AccountEditor({
       setError('请填写账号。')
       return
     }
-    if (input.password === '') {
+    if (input.password === '' && (account === null || account.password !== '')) {
       setError('请填写密码。')
       return
     }
@@ -159,7 +159,7 @@ export function AccountEditor({
         <DialogDescription>
           {description ??
             (account
-              ? '登录方式与账密是必填项。'
+              ? '登录方式与账号必填；从邮箱导入的账号可以稍后补充密码。'
               : '登录方式与账密是必填项，其余可以留空。')}
         </DialogDescription>
       </DialogHeader>

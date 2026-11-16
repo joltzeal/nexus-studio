@@ -24,6 +24,7 @@ import {
   type Binding,
   type BindingView,
   type ImportReport,
+  type MailboxImportInput,
   type OtpResult,
   type TemplateFile,
 } from './types'
@@ -164,6 +165,22 @@ export function importAccounts(
   content: { text: string } | { base64: string },
 ): Promise<ImportReport> {
   return call<ImportReport>('vinted.accounts.import', { filename, ...content })
+}
+
+export async function importMailboxes(
+  input: MailboxImportInput,
+): Promise<{ total: number; inserted: number; skipped: number }> {
+  const result = await call<unknown>('vinted.accounts.mailbox.import', input)
+  if (
+    !record(result) ||
+    !onlyKeys(result, ['total', 'inserted', 'skipped']) ||
+    result.total !== input.mailboxes.length ||
+    !count(result.inserted) ||
+    !count(result.skipped) ||
+    result.inserted + result.skipped !== result.total
+  )
+    throw new Error('邮箱导入结果无效，请刷新账号池核对。')
+  return result as { total: number; inserted: number; skipped: number }
 }
 
 export function downloadTemplate(format: 'csv' | 'xlsx'): Promise<TemplateFile> {

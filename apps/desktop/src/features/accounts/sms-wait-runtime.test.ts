@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearToasts, toastSnapshot } from '@/components/ui/toast'
 import {
   disposeSmsWaits,
+  emailWaits,
   reconcileSmsWaitPlugin,
   smsWaits,
+  startEmailWait,
   startSmsWait,
 } from './sms-wait-runtime'
 import {
@@ -20,9 +22,44 @@ const state = vi.hoisted(() => ({
   read: null as (() => Promise<OtpResult>) | null,
   list: null as (() => Promise<AccountList>) | null,
   calls: [] as string[],
+  emailCode: '000001',
+  sender: 'no-reply@vinted.com',
   arm: vi.fn(async () => true),
   play: vi.fn(async () => true),
   close: vi.fn(),
+}))
+vi.mock('@/features/email/api', () => ({
+  getMailbox: async (id: string) => ({
+    id,
+    email: 'seller@example.invalid',
+    enabled: true,
+  }),
+  listMessages: async (input: { folder: string }) => {
+    state.calls.push(`email.messages.list:${input.folder}`)
+    return {
+      items:
+        input.folder === 'inbox'
+          ? [
+              {
+                id: 'mail-1',
+                subject: 'Verify your email address.',
+                from: { name: 'Vinted', address: state.sender },
+                receivedAt: new Date(Date.now() + 1000).toISOString(),
+                isRead: false,
+                hasAttachments: false,
+                preview: '',
+              },
+            ]
+          : [],
+      nextCursor: null,
+      total: 1,
+      unread: 1,
+    }
+  },
+  getMessage: async () => {
+    state.calls.push('email.messages.get')
+    return { body: `Verification code: ${state.emailCode}` }
+  },
 }))
 vi.mock('./verification-sound', () => ({
   VerificationSound: class {
@@ -121,6 +158,12 @@ beforeEach(() => {
     account: target.accountName,
     phone: target.phone,
     smsOtpUrl: target.smsOtpUrl,
+    mailbox: {
+      pluginId: 'studio.email',
+      mailboxId: 'mail-one',
+      email: 'seller@example.invalid',
+      linkedAt: '2026-10-27T00:00:00Z',
+    },
     emailOtpUrl: '',
     password: 'synthetic',
     loginMethod: 'email',
@@ -134,6 +177,8 @@ beforeEach(() => {
   state.calls = []
   state.list = null
   state.read = async () => result(null)
+  state.emailCode = '000001'
+  state.sender = 'no-reply@vinted.com'
   vi.clearAllMocks()
   state.play.mockResolvedValue(true)
   reconcileSmsWaitPlugin([plugin])
@@ -265,6 +310,47 @@ describe('SMS wait integration', () => {
     expect(state.close).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(300000)
     expect(state.calls.filter((method) => method.endsWith('.otp'))).toHaveLength(60)
+    expect(state.play).not.toHaveBeenCalled()
+  })
+})
+
+describe('Email wait integration', () => {
+  const emailTarget = () => ({
+    accountId: target.accountId,
+    accountName: target.accountName,
+    windowId: target.windowId,
+    windowName: target.windowName,
+    mailboxId: 'mail-one',
+    mailboxEmail: 'seller@example.invalid',
+    startedAt: Date.now(),
+  })
+
+  it('reads the linked mailbox and announces all six digits once', async () => {
+    startEmailWait(emailTarget())
+    await flush()
+    expect(state.calls).toContain('email.messages.list:inbox')
+    expect(state.calls).toContain('email.messages.get')
+    expect(notices()).toContain('000001')
+    expect(state.play).toHaveBeenCalledWith('email', '000001')
+    expect(emailWaits.getSnapshot()).toEqual([])
+  })
+
+  it('stops when the account mailbox changed before a message is read', async () => {
+    state.account!.mailbox = null
+    startEmailWait(emailTarget())
+    await flush()
+    expect(state.calls).not.toContain('email.messages.list:inbox')
+    expect(emailWaits.getSnapshot()).toEqual([])
+  })
+
+  it('ignores unrelated senders and expires without announcing an old code', async () => {
+    state.sender = 'someone@example.invalid'
+    startEmailWait(emailTarget())
+    await flush()
+    expect(state.calls).not.toContain('email.messages.get')
+    expect(emailWaits.getSnapshot()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(300000)
+    expect(emailWaits.getSnapshot()).toEqual([])
     expect(state.play).not.toHaveBeenCalled()
   })
 })
