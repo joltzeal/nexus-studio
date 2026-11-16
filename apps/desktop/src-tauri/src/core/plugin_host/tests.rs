@@ -1565,6 +1565,7 @@ fn workspace_plugin_installs_from_its_built_dist_and_runs() {
     )
     .unwrap();
 
+    host.seed_test_license("studio.proxy-pool");
     let installed = host.install(&plugins.join("proxy-pool")).unwrap();
     assert_eq!(installed.id, "studio.proxy-pool");
     let running = wait_for_running(&host, "studio.proxy-pool");
@@ -2114,6 +2115,7 @@ fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
     )
     .unwrap();
 
+    host.seed_test_license("studio.address-generator");
     let installed = host.install(&plugins.join("address-generator")).unwrap();
     assert_eq!(installed.id, "studio.address-generator");
     assert_eq!(
@@ -2165,6 +2167,7 @@ fn workspace_account_plugin_installs_and_binds_a_window() {
     )
     .unwrap();
 
+    host.seed_test_license("studio.vinted-accounts");
     let installed = host.install(&plugins.join("vinted-accounts")).unwrap();
     assert_eq!(installed.id, "studio.vinted-accounts");
     assert_eq!(
@@ -2261,6 +2264,7 @@ fn workspace_supply_plugin_installs_enables_and_lists_favourites() {
     )
     .unwrap();
 
+    host.seed_test_license("studio.shared-supply");
     let installed = host.install(&plugins.join("shared-supply")).unwrap();
     assert_eq!(installed.id, "studio.shared-supply");
     assert_eq!(

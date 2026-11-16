@@ -631,12 +631,13 @@ impl AgentService {
             || product["revision"]
                 .as_u64()
                 .is_none_or(|revision| revision == 0)
-            || product["status"] != "ready"
-            || product["publicationCount"].as_u64() != Some(0)
-            || !product.get("latestPublication").is_some_and(Value::is_null)
+            || product["status"] == "archived"
+            || !matches!(product["status"].as_str(), Some("draft" | "ready"))
+            || product["publicationCount"].as_u64().is_none()
+            || product.get("latestPublication").is_none()
         {
             return Err(invalid(
-                "Product is not ready, is already published, or has an invalid revision",
+                "Product is archived or has invalid source metadata",
             ));
         }
         Ok(product)
@@ -1277,12 +1278,7 @@ pub(super) fn validate_platform_origin(origin: &str) -> AgentResult<()> {
 
 pub(super) fn validate_listing_product(product: &Value) -> AgentResult<()> {
     super::content::validate_platform_facts(&product["platformFacts"])?;
-    for (key, max) in [
-        ("name", 200),
-        ("title", 500),
-        ("description", 6000),
-        ("condition", 120),
-    ] {
+    for (key, max) in [("name", 200), ("title", 500), ("description", 6000)] {
         let value = product[key]
             .as_str()
             .ok_or_else(|| invalid("Required product text is missing"))?;
@@ -1291,18 +1287,28 @@ pub(super) fn validate_listing_product(product: &Value) -> AgentResult<()> {
             return Err(invalid("Required listing fields cannot be blank"));
         }
     }
-    for (key, max) in [("brand", 120), ("size", 120), ("category", 200)] {
+    for (key, max) in [
+        ("condition", 120),
+        ("brand", 120),
+        ("size", 120),
+        ("category", 200),
+    ] {
         text(product[key].as_str().unwrap_or(""), 0, max)?;
     }
     if product["price"]
         .as_f64()
         .is_none_or(|value| !value.is_finite() || value <= 0.0 || value > 100_000_000.0)
-        || !matches!(product["currency"].as_str(), Some("USD" | "GBP" | "EUR"))
-        || product["images"]
-            .as_array()
-            .is_none_or(|images| images.is_empty() || images.len() > 12)
     {
-        return Err(invalid("Product price, currency or image count is invalid"));
+        return Err(invalid("Product price must be positive and within range"));
+    }
+    if !matches!(product["currency"].as_str(), Some("USD" | "GBP" | "EUR")) {
+        return Err(invalid("Product currency is not supported"));
+    }
+    if product["images"]
+        .as_array()
+        .is_none_or(|images| images.is_empty() || images.len() > 12)
+    {
+        return Err(invalid("Product needs between 1 and 12 images"));
     }
     Ok(())
 }

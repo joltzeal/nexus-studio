@@ -29,6 +29,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Tabs } from '@/components/ui/tabs'
+import { TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import {
   DropdownMenuCheckboxItem,
@@ -84,6 +85,7 @@ const state = vi.hoisted(() => ({
   windows: [] as BrowserWindow[],
   proxyRows: [] as ProxyRow[],
   connections: [] as BrowserConnection[],
+  aliasModeEnabled: false,
   groups: [] as WindowGroup[],
   calls: [] as { method: string; input: unknown }[],
   saved: null as Account | null,
@@ -220,6 +222,9 @@ vi.mock('@/lib/platform/windows', async (importOriginal) => ({
 vi.mock('@/lib/platform/browser-connections', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/platform/browser-connections')>()),
   listBrowserConnections: vi.fn(async () => state.connections),
+}))
+vi.mock('@/features/settings/lab-preferences', () => ({
+  useAliasModeEnabled: () => state.aliasModeEnabled,
 }))
 vi.mock('@/lib/platform/native-groups', () => ({ listGroups: async () => state.groups }))
 vi.mock('@/lib/platform/native-license', () => ({
@@ -416,6 +421,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   nextSortOrder = 10_000
   state.native = false
+  state.aliasModeEnabled = false
   state.plugin = {
     id: 'studio.vinted-accounts',
     state: 'running',
@@ -513,6 +519,34 @@ function visibleWindowNames(tree: ReactNode) {
     return match ? [match[1]!] : []
   })
 }
+
+it('shows AliasMode as a window provider only when the lab switch is enabled', async () => {
+  state.connections = [browserConnection()]
+  const page = await mountedPage(false)
+  expect(
+    components(page.render(), TabsTrigger).map((node) => node.props.value),
+  ).not.toContain('aliasmode')
+  state.aliasModeEnabled = true
+  expect(
+    components(page.render(), TabsTrigger).map((node) => node.props.value),
+  ).toContain('aliasmode')
+})
+
+it('keeps existing AliasMode windows reachable after hiding new lab entries', async () => {
+  state.connections = [
+    browserConnection(),
+    browserConnection({
+      id: 'alias',
+      providerId: 'aliasmode',
+      enabled: true,
+      scopeConfirmed: true,
+    }),
+  ]
+  const page = await mountedPage(false)
+  expect(
+    components(page.render(), TabsTrigger).map((node) => node.props.value),
+  ).toContain('aliasmode')
+})
 
 function windowRow(tree: ReactNode, name: string) {
   const row = components(tree, TableRow).find((node) =>

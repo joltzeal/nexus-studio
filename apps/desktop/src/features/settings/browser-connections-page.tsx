@@ -47,12 +47,14 @@ import {
   browserConnectionDefaults,
   connectBrowser,
 } from '@/lib/platform/browser-connection-setup'
+import { useAliasModeEnabled } from './lab-preferences'
 
 export function BrowserConnectionsPage() {
+  const aliasModeEnabled = useAliasModeEnabled()
   const native = browserWindowsAvailable()
   const [connections, setConnections] = useState<BrowserConnection[]>([])
   const [editing, setEditing] = useState<
-    BrowserConnection | 'adspower' | 'bitbrowser' | null
+    BrowserConnection | 'adspower' | 'bitbrowser' | 'aliasmode' | null
   >(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
@@ -108,18 +110,22 @@ export function BrowserConnectionsPage() {
           >
             刷新
           </Button>
-          {BROWSER_PROVIDERS.filter((provider) => provider.id !== 'cloakbrowser').map(
-            (provider) => (
-              <Button
-                key={provider.id}
-                variant="outline"
-                disabled={!native}
-                onClick={() => setEditing(provider.id as 'adspower' | 'bitbrowser')}
-              >
-                连接 {provider.name}
-              </Button>
-            ),
-          )}
+          {BROWSER_PROVIDERS.filter(
+            (provider) =>
+              provider.id !== 'cloakbrowser' &&
+              (provider.id !== 'aliasmode' || aliasModeEnabled),
+          ).map((provider) => (
+            <Button
+              key={provider.id}
+              variant="outline"
+              disabled={!native}
+              onClick={() =>
+                setEditing(provider.id as 'adspower' | 'bitbrowser' | 'aliasmode')
+              }
+            >
+              连接 {provider.name}
+            </Button>
+          ))}
         </div>
       </div>
       {!native ? <p role="status">请在 Raccoon 桌面应用中管理浏览器接入。</p> : null}
@@ -206,6 +212,7 @@ export function BrowserConnectionEditor({
   onUpdated: (connection: BrowserConnection) => void
   onClose: () => void
 }) {
+  const aliasModeEnabled = useAliasModeEnabled()
   const [input, setInput] = useState<SaveBrowserConnectionInput>(() =>
     connection
       ? {
@@ -319,7 +326,11 @@ export function BrowserConnectionEditor({
               value={input.providerId}
               disabled={pending || !!input.id}
               onValueChange={(value) => {
-                if (value === 'adspower' || value === 'bitbrowser') {
+                if (
+                  value === 'adspower' ||
+                  value === 'bitbrowser' ||
+                  value === 'aliasmode'
+                ) {
                   setInput(browserConnectionDefaults(value))
                   setGroups([])
                   setGroupError(null)
@@ -331,13 +342,17 @@ export function BrowserConnectionEditor({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {BROWSER_PROVIDERS.filter((row) => row.id !== 'cloakbrowser').map(
-                  (row) => (
-                    <SelectItem key={row.id} value={row.id}>
-                      {row.name}
-                    </SelectItem>
-                  ),
-                )}
+                {BROWSER_PROVIDERS.filter(
+                  (row) =>
+                    row.id !== 'cloakbrowser' &&
+                    (row.id !== 'aliasmode' ||
+                      aliasModeEnabled ||
+                      input.providerId === 'aliasmode'),
+                ).map((row) => (
+                  <SelectItem key={row.id} value={row.id}>
+                    {row.name}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </Field>

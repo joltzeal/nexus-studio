@@ -237,7 +237,7 @@ export function ProductsWorkspace() {
             <div className="flex flex-wrap items-center gap-2">
               <Input
                 aria-label="搜索商品"
-                placeholder="搜索名称、英文标题、SKU 或标签"
+                placeholder="搜索名称、英文标题或标签"
                 maxLength={200}
                 value={query.query}
                 className="min-w-0 flex-1 basis-60"
@@ -384,7 +384,6 @@ export function ProductsWorkspace() {
                       </TableHead>
                       <TableHead>图片</TableHead>
                       <TableHead>商品资料</TableHead>
-                      <TableHead>SKU</TableHead>
                       <TableHead>价格</TableHead>
                       <TableHead>分类</TableHead>
                       <TableHead>准备状态</TableHead>
@@ -443,11 +442,6 @@ export function ProductsWorkspace() {
                               {product.imageCount} 张图片 · #{product.sequence}
                             </span>
                           </div>
-                        </TableCell>
-                        <TableCell>
-                          <span className="block max-w-36 truncate" title={product.sku}>
-                            {product.sku || '—'}
-                          </span>
                         </TableCell>
                         <TableCell>{productPrice(product)}</TableCell>
                         <TableCell>

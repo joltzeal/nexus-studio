@@ -4,7 +4,7 @@
 
 桌面窗口统一通过 `WindowService` 管理，按
 `BrowserBinding { provider_id, connection_id, profile_id }` 分派到内置 CloakBrowser、
-AdsPower 或比特浏览器。Raccoon UUID 是业务窗口和插件关联的 `windowId`，
+AdsPower、比特浏览器或实验性 AliasMode。Raccoon UUID 是业务窗口和插件关联的 `windowId`，
 厂商环境 ID 仅保存在绑定中。`origin: created | attached` 区分创建与接管，
 接管不会复制厂商目录，也不会自动启动环境。
 
@@ -16,6 +16,8 @@ AdsPower 或比特浏览器。Raccoon UUID 是业务窗口和插件关联的 `wi
 ## 外部连接与能力
 
 浏览器接入设置提供内置浏览器、AdsPower 和比特浏览器的直接入口。
+在实验室启用 AliasMode 后，增加其连接入口和窗口 Tab；关闭开关只隐藏新接入入口，
+已保存的连接和窗口继续显示，避免失去数据访问。
 内置接入自动建立；外部接入一次「连接并启用」完成保存、实时探测、范围确认和启用。
 AdsPower 默认地址为 `http://127.0.0.1:50325`，比特浏览器为 `http://127.0.0.1:54345`；
 地址、连接名称和默认厂商分组折叠在「更多设置」，只有 AdsPower 展示可选 API Key。
@@ -44,6 +46,18 @@ AdsPower 支持可选 Bearer API Key；当前比特浏览器适配器不接受 A
 | 指纹种子                   | Raccoon 数字种子，创建后固定 | 厂商管理，不接受 Raccoon 种子   | 厂商管理，不接受 Raccoon 种子          |
 | 内核选择                   | 完整包版本，创建后固定       | 厂商管理                        | 厂商管理                               |
 | 加密导出与同步             | manifest3 内置快照           | 不支持                          | 不支持                                 |
+
+AliasMode 实验性 Provider 使用其 [Local API OpenAPI](https://github.com/aliasmode/aliasmode/blob/main/docs/public/local-api.openapi.json)，
+默认地址为 `http://127.0.0.1:50400`。本机需先运行官方应用及 API；不接受 API Key。
+支持默认指纹的 Chromium 直连环境创建、启动、停止、删除，以及运行中 CDP 的 Ecom Agent
+自动化。创建通过持久操作标记和 `user_id` 回读确认，缺少稳定 `created_time` 时保留不确定
+操作，避免将未知环境绑定为已确认。删除前后核对身份、停止状态、`deleted/locked`
+回执及环境列表；失败或超时保留恢复入口，不盲目重试。
+不支持接管已有环境、厂商配置修改、手动或插件代理、自定义时区/语言/尺寸/起始地址、
+指纹种子、内核版本选择和加密转移。官方列表 API 不提供代理详情，因此无法验证用户
+在 AliasMode 应用内事后修改的代理；本接入不能承诺实际流量始终直连，也不能用它
+执行要求必需代理的窗口。此路径仅有受控 mock API 测试，未在真实 AliasMode、代理或
+Windows 上完成验收，不把实验性接入描述为已完成真实环境验证。
 
 AdsPower 的 `update` 和 `proxyPlugin` 能力均已在适配器关闭，
 不能因通用接口存在这些字段就将其显示或承诺为可用。

@@ -108,7 +108,8 @@ impl AgentStore {
             .map_err(storage_error)?;
             tx.execute(
                 "INSERT OR IGNORE INTO agent_archived_publications(operation_id,product_id,result_json)
-                 SELECT a.operation_id,json_extract(a.result_json,'$.productId'),a.result_json
+                 SELECT a.operation_id,json_extract(a.result_json,'$.productId'),
+                   json_set(a.result_json,'$.accountId',json_extract(j.snapshot_json,'$.account.accountId'))
                  FROM agent_actions a JOIN agent_jobs j ON j.id=a.job_id
                  WHERE j.batch_id=?1 AND a.kind='listing' AND a.state='confirmed'",
                 [id],

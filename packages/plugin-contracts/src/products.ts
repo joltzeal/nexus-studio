@@ -111,7 +111,7 @@ export const ProductDraftSchema = fields
   })
   .superRefine((product, context) => {
     if (product.status !== 'ready') return
-    for (const key of ['title', 'description', 'condition'] as const) {
+    for (const key of ['title', 'description'] as const) {
       if (!product[key])
         context.addIssue({
           code: 'custom',

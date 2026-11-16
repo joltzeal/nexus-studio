@@ -114,15 +114,24 @@ describe('real product and window assignments', () => {
     expect(draft().windowIds).toEqual([ids.window])
   })
 
-  it('rejects a previously published product and incomplete listing material', () => {
+  it('allows previously published material but rejects missing images and price', () => {
     const current = {
       ...draft(),
-      products: [{ ...product, publicationCount: 1, images: [], condition: '' }],
+      products: [
+        { ...product, publicationCount: 1, images: [], condition: '', price: null },
+      ],
     }
     const problems = draftProblems(current, [target]).join(' ')
-    expect(problems).toContain('禁止重复上架')
+    expect(problems).not.toContain('禁止重复上架')
+    expect(problems).not.toContain('缺少成色')
     expect(problems).toContain('缺少图片')
-    expect(problems).toContain('缺少成色')
+    expect(problems).toContain('价格无效')
+    expect(
+      draftProblems(
+        { ...current, products: [{ ...product, publicationCount: 1, condition: '' }] },
+        [target],
+      ),
+    ).toEqual([])
   })
 
   it('requires each window to specify a conversation and English message', () => {

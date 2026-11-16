@@ -10,12 +10,21 @@ import {
 export function browserConnectionDefaults(
   providerId: Exclude<BrowserProviderId, 'cloakbrowser'>,
 ): SaveBrowserConnectionInput {
-  const name = providerId === 'adspower' ? 'AdsPower' : '比特浏览器'
+  const name =
+    providerId === 'adspower'
+      ? 'AdsPower'
+      : providerId === 'aliasmode'
+        ? 'AliasMode'
+        : '比特浏览器'
   return {
     providerId,
     name,
     endpoint:
-      providerId === 'adspower' ? 'http://127.0.0.1:50325' : 'http://127.0.0.1:54345',
+      providerId === 'adspower'
+        ? 'http://127.0.0.1:50325'
+        : providerId === 'aliasmode'
+          ? 'http://127.0.0.1:50400'
+          : 'http://127.0.0.1:54345',
     apiKey: null,
     defaultGroupId: null,
     scopeLabel: name,

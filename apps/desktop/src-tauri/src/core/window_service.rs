@@ -229,6 +229,9 @@ impl WindowService {
         let mut registry = ProviderRegistry::default();
         registry.register(builtin.clone());
         registry.register(Arc::new(AdsPowerProvider::new()));
+        registry.register(Arc::new(
+            crate::core::browser::providers::aliasmode::AliasModeProvider,
+        ));
         registry.register(Arc::new(BitBrowserProvider::new()));
         Ok(Self {
             store,

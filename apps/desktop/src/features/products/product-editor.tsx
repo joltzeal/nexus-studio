@@ -34,6 +34,7 @@ import { discardProductImages, getProduct, saveProduct, uploadProductImage } fro
 import {
   emptyProductForm,
   PRODUCT_STATUS_OPTIONS,
+  VINTED_CONDITION_OPTIONS,
   productError,
   productForm,
   productSaveInput,
@@ -260,7 +261,7 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
         <DialogHeader>
           <DialogTitle>{productId ? '编辑商品' : '新建商品'}</DialogTitle>
           <DialogDescription>
-            草稿只需商品名称，分类选填。待上架需补齐英文标题、描述、成色、价格与图片。
+            草稿只需商品名称。待上架需补齐英文标题、描述、价格与图片；动态属性在发布页面核对。
             保存资料不会在外部平台上架。
           </DialogDescription>
         </DialogHeader>
@@ -306,7 +307,6 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
             <FieldSet disabled={busy}>
               <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {textField('name', '商品名称（必填）', 200, { required: true })}
-                {textField('sku', 'SKU', 80)}
                 <Field data-disabled={busy || undefined} className="sm:col-span-2">
                   <FieldLabel htmlFor="product-title">英文上架标题</FieldLabel>
                   <Input
@@ -362,9 +362,56 @@ export function ProductEditor({ productId, onClose, onSaved }: ProductEditorProp
                   />
                 </Field>
                 {textField('category', '分类（选填）', 200)}
-                {textField('condition', '成色', 120)}
-                {textField('brand', '品牌', 120)}
-                {textField('size', '尺码 / 尺寸', 120)}
+                <Field data-disabled={busy || undefined}>
+                  <FieldLabel htmlFor="product-condition">成色（选填）</FieldLabel>
+                  <LabeledSelect
+                    id="product-condition"
+                    ariaLabel="商品成色"
+                    value={form.condition || '__unset_condition__'}
+                    options={[
+                      { value: '__unset_condition__', label: '发布时选择' },
+                      ...(!form.condition ||
+                      VINTED_CONDITION_OPTIONS.some((item) => item === form.condition)
+                        ? []
+                        : [
+                            {
+                              value: form.condition,
+                              label: `${form.condition}（原有值）`,
+                            },
+                          ]),
+                      ...VINTED_CONDITION_OPTIONS.map((value) => ({
+                        value,
+                        label: value,
+                      })),
+                    ]}
+                    disabled={busy}
+                    className="w-full"
+                    onValueChange={(value) =>
+                      update('condition', value === '__unset_condition__' ? '' : value)
+                    }
+                  />
+                </Field>
+                <Field data-disabled={busy || undefined}>
+                  <FieldLabel htmlFor="product-brand">品牌（选填）</FieldLabel>
+                  <div className="flex gap-2">
+                    <Input
+                      id="product-brand"
+                      value={form.brand}
+                      maxLength={120}
+                      disabled={busy}
+                      onChange={(event) => update('brand', event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => update('brand', 'List without brand')}
+                    >
+                      List without brand
+                    </Button>
+                  </div>
+                </Field>
+                {textField('size', '尺码 / 尺寸（选填）', 120)}
                 {textField('tags', '标签（逗号分隔，最多 20 个）', 1318)}
                 <Field data-disabled={busy || undefined}>
                   <FieldLabel htmlFor="product-status">准备状态</FieldLabel>

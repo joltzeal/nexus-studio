@@ -6,6 +6,7 @@ pub mod registry;
 pub mod session_store;
 pub mod providers {
     pub mod adspower;
+    pub mod aliasmode;
     pub mod bitbrowser;
     pub mod cloakbrowser;
 }

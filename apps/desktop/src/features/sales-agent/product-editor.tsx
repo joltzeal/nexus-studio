@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { LabeledSelect } from '@/components/ui/labeled-select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { VINTED_CONDITION_OPTIONS } from '@/features/products/product-form'
 import { AgentProductCover } from './product-cover'
 import {
   effectiveProduct,
@@ -84,6 +85,26 @@ function EditFields({
               maxLength={field.max}
               disabled={enabled !== undefined && !enabled.has(field.key)}
               onChange={(event) => onChange(field.key, event.target.value)}
+            />
+          ) : field.key === 'condition' ? (
+            <LabeledSelect
+              id={`${prefix}-${field.key}`}
+              ariaLabel="成色"
+              value={values.condition || '__unset_condition__'}
+              disabled={enabled !== undefined && !enabled.has(field.key)}
+              options={[
+                { value: '__unset_condition__', label: '发布时选择' },
+                ...(!values.condition ||
+                VINTED_CONDITION_OPTIONS.some((item) => item === values.condition)
+                  ? []
+                  : [
+                      { value: values.condition, label: `${values.condition}（原有值）` },
+                    ]),
+                ...VINTED_CONDITION_OPTIONS.map((value) => ({ value, label: value })),
+              ]}
+              onValueChange={(value) =>
+                onChange(field.key, value === '__unset_condition__' ? '' : value)
+              }
             />
           ) : field.key === 'currency' ? (
             <LabeledSelect

@@ -17,6 +17,7 @@ pub enum BrowserProviderId {
     CloakBrowser,
     AdsPower,
     BitBrowser,
+    AliasMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,14 +73,15 @@ pub struct BrowserCapabilities {
 impl BrowserCapabilities {
     pub fn for_provider(provider: BrowserProviderId) -> Self {
         let builtin = provider == BrowserProviderId::CloakBrowser;
+        let aliasmode = provider == BrowserProviderId::AliasMode;
         Self {
             create: true,
-            update: true,
+            update: !aliasmode,
             delete_environment: true,
             attach: !builtin,
-            manual_proxy: true,
-            proxy_plugin: true,
-            geoip: true,
+            manual_proxy: !aliasmode,
+            proxy_plugin: !aliasmode,
+            geoip: !aliasmode,
             fingerprint_seed: builtin,
             kernel_selection: builtin,
             transfer: builtin,

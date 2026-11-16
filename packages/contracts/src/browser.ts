@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const BrowserProviderIdSchema = z.enum(['cloakbrowser', 'adspower', 'bitbrowser'])
+export const BrowserProviderIdSchema = z.enum(['cloakbrowser', 'adspower', 'bitbrowser', 'aliasmode'])
 export const WindowStateSchema = z.enum([
   'stopped',
   'starting',

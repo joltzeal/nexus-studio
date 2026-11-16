@@ -464,7 +464,7 @@ impl LocalApi {
         let envelope: Value = serde_json::from_slice(&bytes)
             .map_err(|_| response_error(kind, "本地 API 返回的 JSON 无效"))?;
         let success = match self.provider {
-            BrowserProviderId::AdsPower => envelope
+            BrowserProviderId::AdsPower | BrowserProviderId::AliasMode => envelope
                 .get("code")
                 .and_then(Value::as_i64)
                 .map(|code| code == 0),
@@ -523,6 +523,7 @@ fn classify_business_error(code: Option<&Value>, message: &str) -> &'static str 
         "not found",
         "not exist",
         "doesn't exist",
+        "no such profile",
         "\u{4e0d}\u{5b58}\u{5728}",
     ]) {
         "profile_missing"
@@ -542,6 +543,20 @@ fn classify_business_error(code: Option<&Value>, message: &str) -> &'static str 
         "unsupported"
     } else {
         "invalid_config"
+    }
+}
+
+#[cfg(test)]
+mod aliasmode_error_tests {
+    use super::classify_business_error;
+    use serde_json::json;
+
+    #[test]
+    fn aliasmode_missing_profile_is_not_a_configuration_error() {
+        assert_eq!(
+            classify_business_error(Some(&json!(-1)), "no such profile: missing"),
+            "profile_missing"
+        );
     }
 }
 

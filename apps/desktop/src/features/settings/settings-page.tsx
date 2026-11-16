@@ -7,6 +7,7 @@ import { KernelSettingsPage } from '@/features/settings/kernel-settings-page'
 import { NetworkProxyPage } from '@/features/settings/network-proxy-page'
 import { BrowserConnectionsPage } from './browser-connections-page'
 import { ConfigurationPage } from './configuration-page'
+import { LabPage } from './lab-page'
 
 export function SettingsPage() {
   return (
@@ -23,6 +24,7 @@ export function SettingsPage() {
         <TabsTrigger value="kernels">浏览器内核</TabsTrigger>
         <TabsTrigger value="proxy">应用代理</TabsTrigger>
         <TabsTrigger value="configuration">配置迁移</TabsTrigger>
+        <TabsTrigger value="lab">实验室</TabsTrigger>
         <TabsTrigger value="about">关于 Raccoon</TabsTrigger>
       </TabsList>
       <TabsContent value="appearance">
@@ -45,6 +47,9 @@ export function SettingsPage() {
       </TabsContent>
       <TabsContent value="configuration">
         <ConfigurationPage />
+      </TabsContent>
+      <TabsContent value="lab">
+        <LabPage />
       </TabsContent>
       <TabsContent value="about">
         <AboutPage />

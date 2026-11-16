@@ -6,6 +6,7 @@ import {
   type BrowserProviderId,
 } from '@/lib/platform/browser-connections'
 import { BrowserConnectionsPage } from '@/features/settings/browser-connections-page'
+import { useAliasModeEnabled } from '@/features/settings/lab-preferences'
 import { BrowserOperationRecovery } from './browser-operation-recovery'
 import type { CreateBrowserWindowInput } from '@nexus/contracts/browser'
 import { AttachWindowDialog } from './attach-window-dialog'
@@ -220,6 +221,7 @@ function message(error: unknown): string {
 }
 
 export function SpacesPage() {
+  const aliasModeEnabled = useAliasModeEnabled()
   const [expiryRefreshKey, setExpiryRefreshKey] = useState(0)
   const native = browserWindowsAvailable()
   const [windows, setWindows] = useState<BrowserWindow[]>([])
@@ -1155,7 +1157,12 @@ export function SpacesPage() {
       </div>
       <Tabs value={providerId} onValueChange={changeProvider}>
         <TabsList aria-label="浏览器提供方">
-          {BROWSER_PROVIDERS.map((provider) => (
+          {BROWSER_PROVIDERS.filter(
+            (provider) =>
+              provider.id !== 'aliasmode' ||
+              aliasModeEnabled ||
+              connections.some((entry) => entry.providerId === 'aliasmode'),
+          ).map((provider) => (
             <TabsTrigger key={provider.id} value={provider.id}>
               {provider.name}
             </TabsTrigger>

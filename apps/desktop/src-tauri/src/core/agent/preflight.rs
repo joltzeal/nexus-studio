@@ -1,3 +1,4 @@
+use rusqlite::params;
 use serde_json::{Value, json};
 
 use super::dto::*;
@@ -156,10 +157,9 @@ impl AgentService {
                     "PRODUCT",
                     result.is_ok(),
                     "product",
-                    if result.is_ok() {
-                        "商品资料与图片信息有效；创建任务时会再次校验图片内容"
-                    } else {
-                        "请补全商品资料、图片与价格；已有发布记录的商品不能再次分配"
+                    match &result {
+                        Ok(_) => "商品资料与图片信息有效；创建任务时会再次校验图片内容",
+                        Err(error) => &error.message,
                     },
                 ));
                 if let Ok(product) = result {
@@ -195,7 +195,7 @@ impl AgentService {
                     if free {
                         "没有冲突的任务占用或已确认发布记录"
                     } else {
-                        "现有任务占用窗口、账号或商品，请先查看并处理执行结果"
+                        "商品正被任务占用、提交结果未核对，或该账号已有确认发布；请查看执行记录"
                     },
                 ));
             }
@@ -289,11 +289,18 @@ impl super::store::AgentStore {
         for product in &snapshot.products {
             let found:bool=db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agent_product_assignments p JOIN agent_jobs j ON j.id=p.job_id
-                  WHERE p.product_id=?1 AND (j.state NOT IN ('completed','cancelled','skipped','failed') OR j.actor_owned=1))
-                 OR EXISTS(SELECT 1 FROM agent_actions WHERE kind='listing' AND state='confirmed'
-                  AND json_extract(result_json,'$.productId')=?1)
-                 OR EXISTS(SELECT 1 FROM agent_archived_publications WHERE product_id=?1)",
-                [product["id"].as_str()],|r|r.get(0),
+                  WHERE p.product_id=?1 AND (j.state NOT IN ('completed','blocked','cancelled','skipped','failed')
+                    OR j.actor_owned=1 OR EXISTS(SELECT 1 FROM agent_resources retained WHERE retained.job_id=j.id)
+                    OR EXISTS(SELECT 1 FROM agent_actions uncertain WHERE uncertain.job_id=j.id
+                      AND uncertain.state IN ('prepared','unknown'))))
+                 OR EXISTS(SELECT 1 FROM agent_actions a JOIN agent_jobs j ON j.id=a.job_id
+                   WHERE a.kind='listing' AND a.state='confirmed'
+                     AND json_extract(a.result_json,'$.productId')=?1
+                     AND json_extract(j.snapshot_json,'$.account.accountId')=?2)
+                 OR EXISTS(SELECT 1 FROM agent_archived_publications
+                   WHERE product_id=?1 AND (json_extract(result_json,'$.accountId')=?2
+                     OR json_extract(result_json,'$.accountId') IS NULL))",
+                params![product["id"].as_str(), snapshot.account_id()?],|r|r.get(0),
             ).map_err(storage_error)?;
             if found {
                 return Ok(false);

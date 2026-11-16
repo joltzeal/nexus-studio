@@ -25,6 +25,7 @@ export const BROWSER_PROVIDERS: { id: BrowserProviderId; name: string }[] = [
   { id: 'cloakbrowser', name: '内置浏览器' },
   { id: 'adspower', name: 'AdsPower' },
   { id: 'bitbrowser', name: '比特浏览器' },
+  { id: 'aliasmode', name: 'AliasMode' },
 ]
 
 export function listBrowserConnections() {

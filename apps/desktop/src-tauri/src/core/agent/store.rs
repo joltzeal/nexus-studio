@@ -172,11 +172,19 @@ impl AgentStore {
             return Ok(id);
         }
         require_new_operation(&tx, &input.operation_id, &body)?;
-        for product_id in input
-            .assignments
-            .iter()
-            .flat_map(|assignment| &assignment.product_ids)
+        for (product_id, account_id) in
+            input
+                .assignments
+                .iter()
+                .zip(snapshots)
+                .flat_map(|(assignment, (_, snapshot))| {
+                    assignment
+                        .product_ids
+                        .iter()
+                        .map(move |id| (id, snapshot.account_id()))
+                })
         {
+            let account_id = account_id?;
             let assigned: bool = tx.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM agent_product_assignments a JOIN agent_jobs j ON j.id=a.job_id
@@ -185,14 +193,18 @@ impl AgentStore {
                        OR EXISTS(SELECT 1 FROM agent_resources retained WHERE retained.job_id=j.id)
                        OR EXISTS(SELECT 1 FROM agent_actions uncertain WHERE uncertain.job_id=j.id
                                  AND uncertain.state IN ('prepared','unknown'))))
-                 OR EXISTS(SELECT 1 FROM agent_actions confirmed WHERE confirmed.kind='listing'
-                    AND confirmed.state='confirmed' AND json_extract(confirmed.result_json,'$.productId')=?1)
-                 OR EXISTS(SELECT 1 FROM agent_archived_publications WHERE product_id=?1)",
-                [product_id], |row| row.get(0),
+                 OR EXISTS(SELECT 1 FROM agent_actions confirmed JOIN agent_jobs j ON j.id=confirmed.job_id
+                    WHERE confirmed.kind='listing' AND confirmed.state='confirmed'
+                      AND json_extract(confirmed.result_json,'$.productId')=?1
+                      AND json_extract(j.snapshot_json,'$.account.accountId')=?2)
+                 OR EXISTS(SELECT 1 FROM agent_archived_publications WHERE product_id=?1
+                    AND (json_extract(result_json,'$.accountId')=?2
+                      OR json_extract(result_json,'$.accountId') IS NULL))",
+                params![product_id, account_id], |row| row.get(0),
             ).map_err(storage_error)?;
             if assigned {
                 return Err(conflict(
-                    "Product already has an in-flight assignment or a confirmed local publication",
+                    "Product has an in-flight assignment or was already published by this account",
                 ));
             }
         }

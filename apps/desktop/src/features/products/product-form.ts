@@ -35,6 +35,14 @@ export const PRODUCT_SOURCE_OPTIONS: { value: ProductSource['kind']; label: stri
   { value: 'ai-image', label: 'AI 生图' },
 ]
 
+export const VINTED_CONDITION_OPTIONS = [
+  'New with tags',
+  'New without tags',
+  'Very good',
+  'Good',
+  'Satisfactory',
+] as const
+
 export function emptyProductForm(): ProductForm {
   return {
     name: '',

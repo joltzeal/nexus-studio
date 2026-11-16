@@ -46,7 +46,6 @@ export function ProductPicker({
       query,
       page,
       pageSize: 20,
-      publicationStatus: 'unpublished',
     }),
   )
   const data = list.data
@@ -62,12 +61,8 @@ export function ProductPicker({
     try {
       const products = await readPickedProducts([...selected.keys()])
       if (!current()) return
-      if (
-        products.some(
-          (product) => product.status === 'archived' || product.publicationCount > 0,
-        )
-      )
-        throw new Error('所选商品已归档或已发布，请刷新商品库重新选择。')
+      if (products.some((product) => product.status === 'archived'))
+        throw new Error('所选商品已归档，请刷新商品库重新选择。')
       onAdd(products)
       onClose()
     } catch (cause) {
@@ -97,13 +92,14 @@ export function ProductPicker({
         <DialogHeader>
           <DialogTitle>从商品库选择</DialogTitle>
           <DialogDescription>
-            每件商品包含整组图片；已有发布记录的商品不会重复上架。最多 100 件。
+            每件商品包含整组图片；曾发布的商品可分配给其他账号，同账号重复发布会被拦截。最多
+            100 件。
           </DialogDescription>
         </DialogHeader>
         <div className="sales-agent-toolbar">
           <Input
             aria-label="搜索商品库"
-            placeholder="搜索商品名称、标题或 SKU"
+            placeholder="搜索商品名称或标题"
             value={query}
             maxLength={200}
             disabled={busy}

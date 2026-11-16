@@ -463,3 +463,11 @@ SQLite 的旧窗口仅在启动时升级一次，此后正常读取只接受 sch
 CloakBrowser 版本与授权限制见[CloakBrowser 授权](16-cloakbrowser-license.md)。
 窗口列表来自 SQLite 窗口记录及提供方观察；仅点击“打开”触发真实启动。
 具体字段映射见[浏览器接入](05-browser-integration.md)，验证边界见[质量矩阵](09-quality-and-testing.md)。
+
+# 实验室
+
+启用 AliasMode 后，窗口管理显示对应浏览器 Tab，浏览器接入设置提供连接入口。
+关闭开关只隐藏新接入入口；已有连接和窗口仍可查看和处理，不删除数据。
+AliasMode 由官方应用管理，必须先在本机启动其 Local API；本应用不下载其内核。
+目前仅支持创建直连默认指纹环境、启动、停止、删除和已运行 Chromium CDP 自动化；
+不支持接管、代理配置或修改厂商指纹。Camoufox 仍是占位，不提供实际连接。

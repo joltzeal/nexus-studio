@@ -148,14 +148,12 @@ export function englishText(value: string): boolean {
 export function listingProblems(draft: AgentDraft, product: Product): string[] {
   const current = effectiveProduct(draft, product)
   const issues: string[] = []
-  if (product.publicationCount > 0) issues.push('已有发布记录，禁止重复上架')
   if (product.status === 'archived') issues.push('商品已归档')
   if (!product.images.length) issues.push('缺少图片')
   if (!current.title.trim()) issues.push('缺少标题')
   if (!current.description.trim()) issues.push('缺少描述')
   if (current.price === null || !Number.isFinite(current.price) || current.price <= 0)
     issues.push('价格无效')
-  if (!current.condition.trim()) issues.push('缺少成色')
   return issues
 }
 

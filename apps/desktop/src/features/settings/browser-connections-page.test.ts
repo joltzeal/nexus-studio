@@ -42,6 +42,7 @@ vi.mock('@/lib/platform/browser-connections', async (importOriginal) => ({
   confirmBrowserConnection: vi.fn(),
   activateBrowserConnection: vi.fn(),
 }))
+vi.mock('./lab-preferences', () => ({ useAliasModeEnabled: () => false }))
 
 let hooks: KernelHookHarness
 let props: ComponentProps<typeof BrowserConnectionEditor>
@@ -108,6 +109,20 @@ it('uses defaults for a new provider and does not ask BitBrowser for an unsuppor
   expect(components(tree, Input).some((node) => node.props.id === 'connection-key')).toBe(
     false,
   )
+})
+
+it('keeps an existing AliasMode connection editable when its lab entry is hidden', () => {
+  props.connection = browserConnection({
+    id: 'alias',
+    providerId: 'aliasmode',
+    endpoint: 'http://127.0.0.1:50400',
+  })
+  const tree = render()
+  expect(
+    components(tree, Input).find((node) => node.props.id === 'connection-endpoint')?.props
+      .value,
+  ).toBe('http://127.0.0.1:50400')
+  expect(text(tree)).toContain('AliasMode')
 })
 
 it('remembers the saved connection after an offline failure and retries without creating another identity', async () => {

@@ -102,8 +102,20 @@ describe('product library picker metadata and selection', () => {
       query: '',
       page: 1,
       pageSize: 20,
-      publicationStatus: 'unpublished',
     })
+  })
+
+  it('offers published products for another assignment', async () => {
+    vi.mocked(listProducts).mockResolvedValue({
+      items: [summary({ publicationCount: 2 })],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      storageDurable: true,
+    })
+    await settle()
+    expect(checkbox(product.name).props.disabled).toBe(false)
+    expect(text(render())).toContain('上架次数 2')
   })
 
   it('does not replace missing or invalid timestamps with the current time', async () => {

@@ -6,7 +6,9 @@ use uuid::Uuid;
 use super::artifacts::Artifacts;
 use super::dto::*;
 use super::gateway::{fields, validate_confirmation};
-use super::service::{AgentService, job_budgets, validate_account, validate_settings};
+use super::service::{
+    AgentService, job_budgets, validate_account, validate_listing_product, validate_settings,
+};
 use super::sql::read_u64;
 use super::store::{AgentStore, Job};
 use crate::core::database::open_database;
@@ -29,6 +31,45 @@ fn fixture() -> (TempDir, AgentStore) {
     let temp = tempfile::tempdir().unwrap();
     let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
     (temp, store)
+}
+
+#[test]
+fn listing_preflight_accepts_missing_dynamic_attributes_but_requires_publishable_material() {
+    let product = json!({
+        "name":"Used tin sign","title":"Used tin sign","description":"Small marks on edge.",
+        "condition":"","brand":"","size":"","category":"","price":12.0,"currency":"USD",
+        "platformFacts":{"vinted":[]},"images":[{"id":id()}]
+    });
+    assert!(validate_listing_product(&product).is_ok());
+    let mut missing_image = product.clone();
+    missing_image["images"] = json!([]);
+    assert!(validate_listing_product(&missing_image).is_err());
+    let mut missing_price = product;
+    missing_price["price"] = Value::Null;
+    assert!(validate_listing_product(&missing_price).is_err());
+}
+
+#[test]
+fn archived_publication_blocks_same_account_but_allows_other_account() {
+    let (temp, store) = fixture();
+    let mut original = snapshot();
+    let product_id = id();
+    original.products.push(json!({"id":product_id}));
+    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    db.execute(
+        "INSERT INTO agent_archived_publications(operation_id,product_id,result_json)
+         VALUES(?1,?2,?3)",
+        rusqlite::params![
+            id(),
+            product_id,
+            json!({"accountId":original.account_id().unwrap()}).to_string()
+        ],
+    )
+    .unwrap();
+    assert!(!store.preflight_resources(&original, true).unwrap());
+    let mut another = original;
+    another.account["accountId"] = json!(id());
+    assert!(store.preflight_resources(&another, true).unwrap());
 }
 fn settings() -> Value {
     json!({
