@@ -30,7 +30,11 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Tabs } from '@/components/ui/tabs'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
-import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenuCheckboxItem,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { FieldError } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectGroup, SelectItem, SelectTrigger } from '@/components/ui/select'
@@ -503,7 +507,7 @@ async function mountedPage(waitForAccounts = true) {
 }
 
 function visibleWindowNames(tree: ReactNode) {
-  return components(tree, DropdownMenuItem).flatMap((node) => {
+  return components(tree, Button).flatMap((node) => {
     const match = node.props['aria-label']?.match(/^查看 (.*) 详情$/)
     return match ? [match[1]!] : []
   })
@@ -511,7 +515,7 @@ function visibleWindowNames(tree: ReactNode) {
 
 function windowRow(tree: ReactNode, name: string) {
   const row = components(tree, TableRow).find((node) =>
-    components(node, DropdownMenuItem).some(
+    components(node, Button).some(
       (button) => button.props['aria-label'] === `查看 ${name} 详情`,
     ),
   )
@@ -833,10 +837,10 @@ describe('window management', () => {
       connectionId: 'builtin',
       operationId: expect.any(String),
     })
-    const edit = components(page.render(), DropdownMenuItem).find(
+    const edit = components(page.render(), Button).find(
       (node) => node.props['aria-label'] === '编辑 first',
     )!
-    edit.props.onSelect?.({} as never)
+    edit.props.onClick?.({} as never)
     const updated = {
       name: 'renamed',
       proxyMode: input.proxyMode,
@@ -859,11 +863,11 @@ describe('window management', () => {
     async (windowState) => {
       state.windows[0] = { ...state.windows[0]!, state: windowState }
       const page = await mountedPage()
-      const edit = components(page.render(), DropdownMenuItem).find(
+      const edit = components(page.render(), Button).find(
         (node) => node.props['aria-label'] === '编辑 first',
       )!
       expect(edit.props.disabled).toBe(false)
-      edit.props.onSelect?.({} as never)
+      edit.props.onClick?.({} as never)
       expect(components(page.render(), WindowEditor)[0]!.props.window?.state).toBe(
         windowState,
       )
@@ -1006,9 +1010,9 @@ describe('window list pagination', () => {
     state.windows = state.windows.filter((window) => Number(window.name.slice(-2)) <= 21)
     const page = await mountedPage()
     clickPage(page, '下一页')
-    components(page.render(), DropdownMenuItem)
+    components(page.render(), Button)
       .find((node) => node.props['aria-label'] === '删除 window-21')!
-      .props.onSelect?.({} as never)
+      .props.onClick?.({} as never)
     components(page.render(), AlertDialogAction)[0]!.props.onClick?.({
       preventDefault() {},
     } as never)
@@ -1787,9 +1791,9 @@ describe('browser connections and global associations', () => {
     search.props.onChange?.({
       target: { value: 'first' },
     } as ChangeEvent<HTMLInputElement>)
-    components(page.render(), DropdownMenuItem)
+    components(page.render(), Button)
       .find((node) => node.props['aria-label'] === '编辑 first')!
-      .props.onSelect?.({} as never)
+      .props.onClick?.({} as never)
     expect(components(page.render(), WindowEditor)).toHaveLength(1)
     selectProvider(page.render(), 'adspower')
     expect(components(page.render(), WindowEditor)).toHaveLength(0)
@@ -1884,9 +1888,9 @@ describe('browser connections and global associations', () => {
   it('describes an attached window proxy as provider-managed in its details', async () => {
     const page = await externalPage()
     selectProvider(page.render(), 'adspower')
-    components(page.render(), DropdownMenuItem)
+    components(page.render(), Button)
       .find((node) => node.props['aria-label'] === '查看 Ads shop 详情')!
-      .props.onSelect?.({} as never)
+      .props.onClick?.({} as never)
     const row = elements(page.render()).find(
       (node) =>
         node.props.className === 'about-row' &&
@@ -2265,6 +2269,48 @@ describe('window proxy summary', () => {
       createElement(ProxyCell, { window, catalog: null }),
     )
     expect(unavailable).toContain('#7 · 详情暂不可用')
+  })
+})
+
+describe('window table presentation', () => {
+  it('shows all available columns by default and preserves direct row actions', async () => {
+    const page = await mountedPage()
+    const tree = page.render()
+    expect(
+      components(tree, DropdownMenuCheckboxItem).every((item) => item.props.checked),
+    ).toBe(true)
+    const row = windowRow(tree, 'first')
+    for (const label of [
+      '编辑 first',
+      '查看 first 详情',
+      '查看 first 的执行记录',
+      '删除 first',
+    ]) {
+      expect(
+        components(row, Button).some((button) => button.props['aria-label'] === label),
+      ).toBe(true)
+    }
+    expect(components(row, DropdownMenuTrigger)).toHaveLength(1)
+  })
+
+  it('keeps only the existing environment menu for an external window', async () => {
+    state.connections.push(browserConnection({ id: 'ads', providerId: 'adspower' }))
+    state.windows.push(
+      browserWindow({
+        id: 'external',
+        name: 'external',
+        providerId: 'adspower',
+        connectionId: 'ads',
+        origin: 'attached',
+      }),
+    )
+    const page = await mountedPage()
+    components(page.render(), Tabs)
+      .find((node) => node.props.value === 'cloakbrowser')!
+      .props.onValueChange?.('adspower')
+    expect(
+      components(windowRow(page.render(), 'external'), DropdownMenuTrigger),
+    ).toHaveLength(1)
   })
 })
 

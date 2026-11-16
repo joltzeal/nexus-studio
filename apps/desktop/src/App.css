@@ -536,15 +536,19 @@
 }
 /* The window table gained an account column; keep the other panels tighter. */
 .space-table-panel [data-slot='table'] {
-  min-width: 800px;
-  table-layout: fixed;
+  min-width: max-content;
+  table-layout: auto;
 }
 .space-table-panel [data-slot='table-container'] {
   min-width: 0;
   max-width: 100%;
 }
 .space-table-panel .space-name-column {
-  overflow: hidden;
+  min-width: 190px;
+  max-width: 260px;
+}
+.space-table-panel .space-actions-column {
+  min-width: 300px;
 }
 .space-table-panel .space-name-cell strong,
 .space-table-panel .space-name-cell small {
@@ -680,7 +684,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
+  gap: 8px;
 }
 .account-cell strong {
   display: block;

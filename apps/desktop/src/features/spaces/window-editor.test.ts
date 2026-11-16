@@ -23,6 +23,7 @@ import {
   text,
 } from '@/features/settings/kernel-test-support'
 import { WindowEditor, type SaveWindow } from './window-editor'
+import { ProxyPicker } from '@/features/proxy/proxy-picker'
 import { WindowKernelField } from './window-kernel-field'
 
 const state = vi.hoisted(() => ({ hooks: null as KernelHookHarness | null }))
@@ -370,6 +371,27 @@ it('saves local metadata without resolving or rewriting an external read-only pr
     settings: props.window.settings,
     groupId: null,
   })
+})
+
+it('retains the selected pool proxy when editing a stopped window', async () => {
+  props.window = browserWindow({
+    proxyMode: 'plugin',
+    proxyPlugin: 'studio.proxy-pool',
+    proxyEndpoint: 7,
+  })
+  vi.mocked(listProxyProviders).mockResolvedValue([
+    { id: 'studio.proxy-pool', state: 'running' } as never,
+  ])
+  await mount()
+  expect(components(render(), ProxyPicker)[0]!.props.endpointId).toBe(7)
+  await submit()
+  expect(props.onSave).toHaveBeenCalledWith(
+    expect.objectContaining({
+      proxyMode: 'plugin',
+      proxyPlugin: 'studio.proxy-pool',
+      proxyEndpoint: 7,
+    }),
+  )
 })
 
 it.each(['running', 'unknown', 'missing'] as const)(

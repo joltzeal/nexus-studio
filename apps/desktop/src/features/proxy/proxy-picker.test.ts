@@ -115,7 +115,7 @@ describe('proxy picker', () => {
     expect(matchesProxyQuery(row, 'missing')).toBe(false)
   })
 
-  it('keeps the edited endpoint first and filters only proxies used by other windows', () => {
+  it('keeps the pool order after selection and filters only proxies used by other windows', () => {
     const usage: ProxyUsageState = {
       status: 'loaded',
       byEndpoint: indexProxyUsage(
@@ -134,8 +134,8 @@ describe('proxy picker', () => {
     }
     const rows = [{ ...row, id: '8' }, { ...row, id: '9' }, row]
     expect(visibleProxyRows(rows, '', true, 7, usage).map((item) => item.id)).toEqual([
-      '7',
       '9',
+      '7',
     ])
     expect(
       visibleProxyRows(rows, 'unmatched', true, 7, usage).map((item) => item.id),

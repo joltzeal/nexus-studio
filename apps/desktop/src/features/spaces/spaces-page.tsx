@@ -282,13 +282,7 @@ export function SpacesPage() {
   const [groups, setGroups] = useState<WindowGroup[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof WINDOW_PAGE_SIZES)[number]>(20)
-  const [hiddenColumns, setHiddenColumns] = useState<WindowColumn[]>([
-    'platform',
-    'group',
-    'kernel',
-    'created',
-    'opened',
-  ])
+  const [hiddenColumns, setHiddenColumns] = useState<WindowColumn[]>([])
   const showColumn = (column: WindowColumn) => !hiddenColumns.includes(column)
   const [filters, setFilters] = useState<
     Record<string, { group: string; account: string; query: string }>
@@ -1425,7 +1419,7 @@ export function SpacesPage() {
                 <TableHead className="w-28">上次打开</TableHead>
               ) : null}
               <TableHead className="w-28">状态</TableHead>
-              <TableHead className="w-64 text-right">操作</TableHead>
+              <TableHead className="space-actions-column text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1701,127 +1695,110 @@ export function SpacesPage() {
                                 ? '停止'
                                 : '打开'}
                       </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`操作 ${window.name}`}
-                          >
-                            <Ellipsis />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            aria-label={`编辑 ${window.name}`}
-                            disabled={busy}
-                            onSelect={() => setEditing(window.id)}
-                          >
-                            <Pencil />
-                            编辑窗口
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            aria-label={`查看 ${window.name} 详情`}
-                            onSelect={() => setViewing(window.id)}
-                          >
-                            <ArrowUpRight />
-                            查看详情
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            aria-label={`查看 ${window.name} 的执行记录`}
-                            onSelect={() =>
-                              navigateDetail({
-                                kind: 'agent',
-                                id: window.id,
-                                related: 'window',
-                              })
-                            }
-                          >
-                            <ClipboardList />
-                            执行记录
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            aria-label={`删除 ${window.name}`}
-                            variant="destructive"
-                            disabled={
-                              busy ||
-                              (window.providerId !== 'cloakbrowser' &&
-                              window.origin === 'attached'
-                                ? unconfirmed
-                                : window.state !== 'stopped') ||
-                              (window.origin === 'created' &&
-                                !connection?.capabilities.deleteEnvironment)
-                            }
-                            onSelect={() => {
-                              setDeleteEnvironment(
-                                window.providerId === 'cloakbrowser' ||
-                                  window.origin === 'created',
-                              )
-                              setDeleting(window.id)
-                            }}
-                          >
-                            <Trash2 />
-                            {window.providerId !== 'cloakbrowser' &&
-                            window.origin === 'attached'
-                              ? '移出 Raccoon'
-                              : '删除'}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                      {window.providerId !== 'cloakbrowser' ? (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`环境操作 ${window.name}`}
-                            >
-                              <Ellipsis />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              disabled={busy || unconfirmed}
-                              onSelect={() => {
-                                setDeleteEnvironment(false)
-                                setDeleting(window.id)
-                              }}
-                            >
-                              移出 Raccoon
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              variant="destructive"
-                              disabled={
-                                busy ||
-                                window.state !== 'stopped' ||
-                                !connection?.capabilities.deleteEnvironment
-                              }
-                              onSelect={() => {
-                                setDeleteEnvironment(true)
-                                setDeleting(window.id)
-                              }}
-                            >
-                              删除浏览器环境
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      ) : null}
-                      {accountsInstalled ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`编辑 ${window.name}`}
+                        disabled={busy}
+                        onClick={() => setEditing(window.id)}
+                      >
+                        <Pencil />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`查看 ${window.name} 详情`}
+                        onClick={() => setViewing(window.id)}
+                      >
+                        <ArrowUpRight />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`查看 ${window.name} 的执行记录`}
+                        title="执行记录"
+                        onClick={() =>
+                          navigateDetail({
+                            kind: 'agent',
+                            id: window.id,
+                            related: 'window',
+                          })
+                        }
+                      >
+                        <ClipboardList />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Raccoon' : '删除'} ${window.name}`}
+                        disabled={
+                          busy ||
+                          (window.providerId !== 'cloakbrowser' &&
+                          window.origin === 'attached'
+                            ? unconfirmed
+                            : window.state !== 'stopped') ||
+                          (window.origin === 'created' &&
+                            !connection?.capabilities.deleteEnvironment)
+                        }
+                        onClick={() => {
+                          setDeleteEnvironment(
+                            window.providerId === 'cloakbrowser' ||
+                              window.origin === 'created',
+                          )
+                          setDeleting(window.id)
+                        }}
+                      >
+                        <Trash2 />
+                      </Button>
+                      {accountsInstalled || window.providerId !== 'cloakbrowser' ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
                               variant="ghost"
                               size="icon"
                               aria-label={`更多操作 ${window.name}`}
-                              disabled={!accountsReady}
+                              disabled={
+                                window.providerId === 'cloakbrowser' && !accountsReady
+                              }
                             >
                               <Ellipsis />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
-                            {linked === null ? null : (
+                            {window.providerId !== 'cloakbrowser' ? (
+                              <>
+                                <DropdownMenuItem
+                                  disabled={busy || unconfirmed}
+                                  onSelect={() => {
+                                    setDeleteEnvironment(false)
+                                    setDeleting(window.id)
+                                  }}
+                                >
+                                  移出 Raccoon
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  disabled={
+                                    busy ||
+                                    window.state !== 'stopped' ||
+                                    !connection?.capabilities.deleteEnvironment
+                                  }
+                                  onSelect={() => {
+                                    setDeleteEnvironment(true)
+                                    setDeleting(window.id)
+                                  }}
+                                >
+                                  删除浏览器环境
+                                </DropdownMenuItem>
+                              </>
+                            ) : null}
+                            {accountsInstalled && window.providerId !== 'cloakbrowser' ? (
+                              <DropdownMenuSeparator />
+                            ) : null}
+                            {accountsInstalled ? (
+                              <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
+                            ) : null}
+                            {accountsInstalled && linked !== null ? (
                               <DropdownMenuItem
                                 disabled={!accountsReady || phoneUnlinkPending}
                                 onSelect={() => setEditingAccount(linked)}
@@ -1829,22 +1806,24 @@ export function SpacesPage() {
                                 <Pencil />
                                 编辑账号资料
                               </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem
-                              disabled={!accountsReady || bindingPending}
-                              onSelect={() => {
-                                if (!accountsReady || !accountSync.current.ready) return
-                                dismissBinding()
-                                setBinding({
-                                  ...relationSnapshot(window),
-                                  session: bindingSession.current,
-                                })
-                              }}
-                            >
-                              <UserRound />
-                              {account === null ? '关联账号' : '更换账号'}
-                            </DropdownMenuItem>
-                            {account === null ? null : (
+                            ) : null}
+                            {accountsInstalled ? (
+                              <DropdownMenuItem
+                                disabled={!accountsReady || bindingPending}
+                                onSelect={() => {
+                                  if (!accountsReady || !accountSync.current.ready) return
+                                  dismissBinding()
+                                  setBinding({
+                                    ...relationSnapshot(window),
+                                    session: bindingSession.current,
+                                  })
+                                }}
+                              >
+                                <UserRound />
+                                {account === null ? '关联账号' : '更换账号'}
+                              </DropdownMenuItem>
+                            ) : null}
+                            {!accountsInstalled || account === null ? null : (
                               <>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem

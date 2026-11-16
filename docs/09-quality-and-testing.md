@@ -1,5 +1,12 @@
 # 质量门禁与验证记录
 
+## 2026-11-16 v0.1.40 窗口表格修复
+
+窗口表格、编辑回填和代理选择相关 Vitest 3 个文件、138 项通过；桌面
+TypeScript `--noEmit`、涉及文件 ESLint 与 Prettier、公开仓库边界检查通过。
+上轮全量 Vitest 4952 项通过、85 项跳过。本次不执行本地应用构建或真实
+代理联网测试；三平台发行结果以 GitHub Actions 为准。
+
 ## 2026-11-16 v0.1.39 发布前检查
 
 桌面 TypeScript `--noEmit`、桌面 ESLint、涉及文件 Prettier、`git diff --check`
