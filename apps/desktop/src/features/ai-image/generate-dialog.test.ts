@@ -12,6 +12,7 @@ import {
 } from '@/features/settings/kernel-test-support'
 import { generate, uploadImage, uploadRemoteImage } from './api'
 import { GenerateDialog } from './generate-dialog'
+import { PhotoMetadataEditor } from './photo-metadata-editor'
 import { trackGeneratedProduct } from './auto-product-import-runtime'
 import {
   EMPTY_SELECTIONS,
@@ -245,6 +246,25 @@ describe('independent photo aging selection', () => {
     await settle()
     expect(select('ai-aging-level').value).toBe('light')
     expect(vi.mocked(useScenePlanner).mock.lastCall![0].agingLevel).toBe('light')
+  })
+})
+
+describe('optional EXIF template', () => {
+  it('adds a snapshot to generation only when the template is enabled', async () => {
+    props.selections = remembered
+    await settle()
+    await submit()
+    expect(vi.mocked(generate).mock.lastCall![0]).not.toHaveProperty('photoMetadata')
+
+    const editor = components(render(), PhotoMetadataEditor)[0]!.props
+    editor.onEnabledChange(true)
+    await settle()
+    await submit()
+    expect(vi.mocked(generate).mock.lastCall![0].photoMetadata).toMatchObject({
+      make: 'Apple',
+      model: 'iPhone 17 Pro Max',
+      exposureTime: '1/66',
+    })
   })
 })
 

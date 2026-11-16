@@ -12,6 +12,7 @@ import { openExternalUrl } from '@/lib/platform/external-url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from '@/components/ui/toast'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { onAiImageHandoff } from '@/lib/page-handoff'
 import {
   components,
@@ -34,6 +35,8 @@ vi.mock('react', async (importOriginal) => {
     ...react,
     useState: (initial: unknown) =>
       state.hooks ? state.hooks.state(initial) : react.useState(initial),
+    useRef: (initial: unknown) =>
+      state.hooks ? state.hooks.state({ current: initial })[0] : react.useRef(initial),
     useEffect: (effect: EffectCallback, deps?: DependencyList) =>
       state.hooks ? state.hooks.effect(effect, deps) : react.useEffect(effect, deps),
   }
@@ -260,6 +263,81 @@ describe('Vinted external links', () => {
       })
       expect(components(tree(), ItemDetailSheet)).toHaveLength(0)
       expect(openExternalUrl).not.toHaveBeenCalled()
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('loads selected products and opens a guided batch with separate sources', async () => {
+    const second = {
+      ...item,
+      id: 'vinted.fr:456',
+      url: 'https://www.vinted.fr/items/456',
+      imageUrl: 'https://www.vinted.fr/456.webp',
+    }
+    vi.mocked(listItems).mockResolvedValue({
+      items: [{ ...item, imageUrl: 'https://www.vinted.fr/123.webp' }, second],
+      total: 2,
+      page: 0,
+      pageSize: 20,
+      totalPages: 1,
+    })
+    vi.mocked(getItem).mockImplementation(async (id) => ({
+      item: {
+        ...(id === item.id ? item : second),
+        imageUrl: `https://www.vinted.fr/${id === item.id ? '123' : '456'}.webp`,
+      },
+    }))
+    const tree = () => hooks.render(() => VintedItemsTable({ aiImageReady: true }))
+    tree()
+    hooks.flushEffects()
+    await flushPromises()
+    const selectAll = components(tree(), Checkbox).find(
+      (node) => node.props['aria-label'] === '全选本页商品',
+    )!
+    selectAll.props.onCheckedChange?.(true)
+    const listener = vi.fn()
+    const unsubscribe = onAiImageHandoff(listener)
+    try {
+      const action = components(tree(), Button).find(
+        (node) =>
+          String(node.props.children).includes('批量生图') ||
+          node.props.title === '选择本页商品，逐件确认并提交',
+      )!
+      await action.props.onClick?.({} as MouseEvent<HTMLButtonElement>)
+      await flushPromises()
+      expect(getItem).toHaveBeenCalledTimes(2)
+      expect(listener).toHaveBeenCalledOnce()
+      const handoff = listener.mock.calls[0]![0]
+      expect(handoff.source.itemId).toBe(item.id)
+      expect(handoff.images).toEqual(['https://www.vinted.fr/123.webp'])
+      expect(handoff.batch[0].source.itemId).toBe(second.id)
+      expect(handoff.batch[0].images).toEqual([second.imageUrl])
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('keeps the selection for retry when a product cannot be loaded', async () => {
+    vi.mocked(getItem).mockRejectedValueOnce(new Error('商品详情暂不可用'))
+    const tree = () => hooks.render(() => VintedItemsTable({ aiImageReady: true }))
+    tree()
+    hooks.flushEffects()
+    await flushPromises()
+    components(tree(), Checkbox).find(
+      (node) => node.props['aria-label'] === '全选本页商品',
+    )!.props.onCheckedChange?.(true)
+    const listener = vi.fn()
+    const unsubscribe = onAiImageHandoff(listener)
+    try {
+      components(tree(), Button).find(
+        (node) => node.props.title === '选择本页商品，逐件确认并提交',
+      )!.props.onClick?.({} as MouseEvent<HTMLButtonElement>)
+      await flushPromises()
+      expect(listener).not.toHaveBeenCalled()
+      expect(components(tree(), Checkbox).find(
+        (node) => node.props['aria-label'] === '全选本页商品',
+      )!.props.checked).toBe(true)
     } finally {
       unsubscribe()
     }

@@ -8,7 +8,7 @@ export function isVintedVerification(message: MailMessage, startedAt: number): b
     /^no-reply@vinted\.[a-z]{2,10}(?:\.[a-z]{2,3})?$/.test(sender) &&
     subject === 'verify your email address' &&
     Number.isFinite(received) &&
-    received >= startedAt - 2000
+    received >= startedAt - 5 * 60_000
   )
 }
 

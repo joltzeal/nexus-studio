@@ -62,6 +62,7 @@ export interface AiImagePageProps {
   /** Pictures another page sent over; `null` means nothing is pending. */
   handoff?: AiImageHandoff | null
   onHandoffConsumed?: () => void
+  onHandoffSubmitted?: () => void
 }
 
 export function AiImagePage({
@@ -70,6 +71,7 @@ export function AiImagePage({
   presentation = 'page',
   handoff = null,
   onHandoffConsumed,
+  onHandoffSubmitted,
 }: AiImagePageProps) {
   const showHistory = presentation === 'page'
   const running = hostAvailable && plugin?.enabled === true && plugin.state === 'running'
@@ -320,12 +322,18 @@ export function AiImagePage({
           {...(handoff?.initialPrompt === undefined
             ? {}
             : { initialPrompt: handoff.initialPrompt })}
+          {...(handoff?.batchPosition === undefined
+            ? {}
+            : { batchPosition: handoff.batchPosition })}
           onOpenChange={(open) => {
             setGenerating(open)
             // Closing the dialog ends the handoff, otherwise it would reopen.
             if (!open) onHandoffConsumed?.()
           }}
-          onSubmitted={refreshGeneration}
+          onSubmitted={async () => {
+            onHandoffSubmitted?.()
+            await refreshGeneration()
+          }}
           onModelsChanged={refreshProviders}
           onConfigure={() => setConfiguring(true)}
         />

@@ -1,4 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useReducer, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import {
   AlertCircle,
   ArrowLeft,
@@ -92,6 +100,8 @@ export function AppShell() {
   const [pluginsOpen, setPluginsOpen] = useState(true)
   // The shell keeps the editor payload until close, including in-place dialogs.
   const [aiImageHandoff, setAiImageHandoff] = useState<AiImageHandoff | null>(null)
+  const aiImageQueue = useRef<AiImageHandoff[]>([])
+  const handoffSubmitted = useRef(false)
   const {
     loading,
     loadError,
@@ -167,7 +177,10 @@ export function AppShell() {
   useEffect(
     () =>
       onAiImageHandoff((payload) => {
-        setAiImageHandoff(payload)
+        const { batch = [], ...first } = payload
+        aiImageQueue.current = batch
+        handoffSubmitted.current = false
+        setAiImageHandoff(first)
         if (payload.presentation !== 'dialog') {
           cancelDetailNavigation()
           setDetailIntent(null)
@@ -178,7 +191,15 @@ export function AppShell() {
     [],
   )
 
-  const consumeAiImageHandoff = useCallback(() => setAiImageHandoff(null), [])
+  const consumeAiImageHandoff = useCallback(() => {
+    const next = handoffSubmitted.current ? aiImageQueue.current.shift() : undefined
+    handoffSubmitted.current = false
+    if (!next) aiImageQueue.current = []
+    setAiImageHandoff(next ?? null)
+  }, [])
+  const markAiImageSubmitted = useCallback(() => {
+    handoffSubmitted.current = true
+  }, [])
 
   useEffect(
     () =>
@@ -417,6 +438,7 @@ export function AppShell() {
                 presentation="dialog"
                 handoff={dialogHandoff}
                 onHandoffConsumed={consumeAiImageHandoff}
+                onHandoffSubmitted={markAiImageSubmitted}
               />
             )}
           </>

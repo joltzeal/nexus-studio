@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
   calls: [] as string[],
   emailCode: '000001',
   sender: 'no-reply@vinted.com',
+  receivedOffsetMs: 1000,
   arm: vi.fn(async () => true),
   play: vi.fn(async () => true),
   close: vi.fn(),
@@ -44,7 +45,7 @@ vi.mock('@/features/email/api', () => ({
                 id: 'mail-1',
                 subject: 'Verify your email address.',
                 from: { name: 'Vinted', address: state.sender },
-                receivedAt: new Date(Date.now() + 1000).toISOString(),
+                receivedAt: new Date(Date.now() + state.receivedOffsetMs).toISOString(),
                 isRead: false,
                 hasAttachments: false,
                 preview: '',
@@ -179,6 +180,7 @@ beforeEach(() => {
   state.read = async () => result(null)
   state.emailCode = '000001'
   state.sender = 'no-reply@vinted.com'
+  state.receivedOffsetMs = 1000
   vi.clearAllMocks()
   state.play.mockResolvedValue(true)
   reconcileSmsWaitPlugin([plugin])
@@ -330,6 +332,15 @@ describe('Email wait integration', () => {
     await flush()
     expect(state.calls).toContain('email.messages.list:inbox')
     expect(state.calls).toContain('email.messages.get')
+    expect(notices()).toContain('000001')
+    expect(state.play).toHaveBeenCalledWith('email', '000001')
+    expect(emailWaits.getSnapshot()).toEqual([])
+  })
+
+  it('announces a verification email received shortly before clicking wait', async () => {
+    state.receivedOffsetMs = -2 * 60_000
+    startEmailWait(emailTarget())
+    await flush()
     expect(notices()).toContain('000001')
     expect(state.play).toHaveBeenCalledWith('email', '000001')
     expect(emailWaits.getSnapshot()).toEqual([])

@@ -1,4 +1,5 @@
 import type { GenerationSource } from '@/lib/page-handoff'
+import type { PhotoMetadata } from './photo-metadata'
 
 export type { GenerationSource } from '@/lib/page-handoff'
 
@@ -82,6 +83,7 @@ export interface ProviderCatalog {
   modelConfigVersion: number
   /** Missing on plugins that only support the original two-model settings. */
   transportSettingsVersion?: number | undefined
+  photoMetadataVersion?: number | undefined
   selections: ModelSelections
 }
 
@@ -152,6 +154,7 @@ export interface GenerationRecord {
   stage: RecordStage
   mode: GenerationMode
   agingLevel?: AgingLevel
+  photoMetadata?: PhotoMetadata
   prompt: string
   basePrompt?: string
   userRequirements?: string

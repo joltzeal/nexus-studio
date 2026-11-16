@@ -22,6 +22,8 @@ vi.mock('react', async (importOriginal) => {
     ...react,
     useState: (initial: unknown) =>
       state.hooks ? state.hooks.state(initial) : react.useState(initial),
+    useRef: (initial: unknown) =>
+      state.hooks ? state.hooks.state({ current: initial })[0] : react.useRef(initial),
     useEffect: (effect: EffectCallback, deps?: DependencyList) =>
       state.hooks ? state.hooks.effect(effect, deps) : react.useEffect(effect, deps),
     useCallback: <T extends (...args: never[]) => unknown>(
@@ -177,5 +179,20 @@ describe('product image generation navigation', () => {
         (page) => page.props.plugin.id === 'studio.ai-image',
       )?.props.handoff,
     ).toEqual(handoff)
+  })
+
+  it('advances a batch only after submission and cancels the rest on close', () => {
+    const first = itemAiHandoff(item, ['first.webp'])
+    const second = itemAiHandoff({ ...item, id: 'vinted.fr:456' }, ['second.webp'])
+    sendToAiImage({ ...first, batch: [second] })
+    expect(composer().handoff).toEqual(first)
+
+    composer().onHandoffSubmitted?.()
+    composer().onHandoffConsumed?.()
+    expect(composer().handoff).toEqual(second)
+    expect(navigation().value).toBe(vintedPage)
+
+    composer().onHandoffConsumed?.()
+    expect(components(render(), AiImagePage)).toHaveLength(0)
   })
 })

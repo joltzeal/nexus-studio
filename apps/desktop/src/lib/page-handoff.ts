@@ -22,6 +22,9 @@ export interface AiImageHandoff {
   source?: GenerationSource
   /** Editable product title/description, without automatically added directions. */
   initialPrompt?: string
+  /** Remaining products in a guided batch; each opens its own editor and source. */
+  batch?: AiImageHandoff[]
+  batchPosition?: { index: number; total: number }
 }
 
 type Listener = (payload: AiImageHandoff) => void

@@ -19,6 +19,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Columns3,
   Ellipsis,
   FolderInput,
   Loader2,
@@ -58,6 +59,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/u
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -150,6 +152,16 @@ import { getConfig, listPickerProxies } from '@/features/proxy/api'
 import { PROXY_PLUGIN_ID, type ProxyRow } from '@/features/proxy/types'
 
 const WINDOW_PAGE_SIZES = [20, 50, 100] as const
+const WINDOW_COLUMNS = [
+  { id: 'platform', label: '平台' },
+  { id: 'account', label: 'Vinted 账号' },
+  { id: 'group', label: '分组' },
+  { id: 'kernel', label: '内核' },
+  { id: 'proxy', label: '代理' },
+  { id: 'created', label: '创建时间' },
+  { id: 'opened', label: '上次打开' },
+] as const
+type WindowColumn = (typeof WINDOW_COLUMNS)[number]['id']
 
 interface WindowRelationSnapshot {
   window: BrowserWindow
@@ -270,6 +282,14 @@ export function SpacesPage() {
   const [groups, setGroups] = useState<WindowGroup[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof WINDOW_PAGE_SIZES)[number]>(20)
+  const [hiddenColumns, setHiddenColumns] = useState<WindowColumn[]>([
+    'platform',
+    'group',
+    'kernel',
+    'created',
+    'opened',
+  ])
+  const showColumn = (column: WindowColumn) => !hiddenColumns.includes(column)
   const [filters, setFilters] = useState<
     Record<string, { group: string; account: string; query: string }>
   >({})
@@ -1284,6 +1304,35 @@ export function SpacesPage() {
           <span className="result-count">{visible.length} 个窗口</span>
         </div>
         <div className="window-list-actions" role="group" aria-label="窗口批量操作">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Columns3 data-icon="inline-start" />
+                显示列
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>窗口表格列</DropdownMenuLabel>
+              {WINDOW_COLUMNS.filter(
+                (column) => column.id !== 'account' || accountsInstalled,
+              ).map((column) => (
+                <DropdownMenuCheckboxItem
+                  key={column.id}
+                  checked={showColumn(column.id)}
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={(checked) =>
+                    setHiddenColumns((current) =>
+                      checked
+                        ? current.filter((id) => id !== column.id)
+                        : [...current, column.id],
+                    )
+                  }
+                >
+                  {column.label}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <span className="result-count" aria-live="polite">
             已选 {selectedWindows.length}
           </span>
@@ -1337,7 +1386,7 @@ export function SpacesPage() {
           <h2>全部窗口</h2>
           <Badge variant="secondary">{connectionWindows.length}</Badge>
         </div>
-        <Table aria-label="窗口列表">
+        <Table aria-label="窗口列表" containerLabel="窗口表格，可左右滚动">
           <TableHeader>
             <TableRow>
               <TableHead className="w-10">
@@ -1359,16 +1408,24 @@ export function SpacesPage() {
                   }
                 />
               </TableHead>
-              <TableHead>窗口名称</TableHead>
-              <TableHead>平台</TableHead>
-              {accountsInstalled ? <TableHead>Vinted 账号</TableHead> : null}
-              <TableHead>分组</TableHead>
-              <TableHead>内核</TableHead>
-              <TableHead>代理</TableHead>
-              <TableHead>创建时间</TableHead>
-              <TableHead>上次打开</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead className="text-right">操作</TableHead>
+              <TableHead className="space-name-column">窗口名称</TableHead>
+              {showColumn('platform') ? (
+                <TableHead className="w-24">平台</TableHead>
+              ) : null}
+              {accountsInstalled && showColumn('account') ? (
+                <TableHead className="w-64">Vinted 账号</TableHead>
+              ) : null}
+              {showColumn('group') ? <TableHead className="w-24">分组</TableHead> : null}
+              {showColumn('kernel') ? <TableHead className="w-16">内核</TableHead> : null}
+              {showColumn('proxy') ? <TableHead className="w-36">代理</TableHead> : null}
+              {showColumn('created') ? (
+                <TableHead className="w-28">创建时间</TableHead>
+              ) : null}
+              {showColumn('opened') ? (
+                <TableHead className="w-28">上次打开</TableHead>
+              ) : null}
+              <TableHead className="w-28">状态</TableHead>
+              <TableHead className="w-64 text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1413,7 +1470,7 @@ export function SpacesPage() {
                       }
                     />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="space-name-column">
                     <div className="space-name-cell">
                       <span
                         className="space-avatar"
@@ -1441,10 +1498,12 @@ export function SpacesPage() {
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{window.settings.platform}</Badge>
-                  </TableCell>
-                  {accountsInstalled ? (
+                  {showColumn('platform') ? (
+                    <TableCell>
+                      <Badge variant="outline">{window.settings.platform}</Badge>
+                    </TableCell>
+                  ) : null}
+                  {accountsInstalled && showColumn('account') ? (
                     <TableCell>
                       {!accountsReady ? (
                         <span className="table-muted">账号资料暂不可用</span>
@@ -1542,29 +1601,39 @@ export function SpacesPage() {
                       )}
                     </TableCell>
                   ) : null}
-                  <TableCell>
-                    <span className="table-group">
-                      {groups.find((group) => group.id === window.groupId)?.name ??
-                        '未分组'}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="kernel-version" title={window.version}>
-                      {majorVersion(window.version)}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <ProxyCell
-                      window={window}
-                      catalog={proxyCatalog?.scope === proxyScope ? proxyCatalog : null}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <TimeCell at={window.createdAt} now={now} fallback="—" />
-                  </TableCell>
-                  <TableCell>
-                    <TimeCell at={window.lastOpenedAt} now={now} fallback="从未打开" />
-                  </TableCell>
+                  {showColumn('group') ? (
+                    <TableCell>
+                      <span className="table-group">
+                        {groups.find((group) => group.id === window.groupId)?.name ??
+                          '未分组'}
+                      </span>
+                    </TableCell>
+                  ) : null}
+                  {showColumn('kernel') ? (
+                    <TableCell>
+                      <span className="kernel-version" title={window.version}>
+                        {majorVersion(window.version)}
+                      </span>
+                    </TableCell>
+                  ) : null}
+                  {showColumn('proxy') ? (
+                    <TableCell>
+                      <ProxyCell
+                        window={window}
+                        catalog={proxyCatalog?.scope === proxyScope ? proxyCatalog : null}
+                      />
+                    </TableCell>
+                  ) : null}
+                  {showColumn('created') ? (
+                    <TableCell>
+                      <TimeCell at={window.createdAt} now={now} fallback="—" />
+                    </TableCell>
+                  ) : null}
+                  {showColumn('opened') ? (
+                    <TableCell>
+                      <TimeCell at={window.lastOpenedAt} now={now} fallback="从未打开" />
+                    </TableCell>
+                  ) : null}
                   <TableCell>
                     <span
                       className="status-badge min-w-24 justify-center"
@@ -1632,61 +1701,74 @@ export function SpacesPage() {
                                 ? '停止'
                                 : '打开'}
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`编辑 ${window.name}`}
-                        disabled={busy}
-                        onClick={() => setEditing(window.id)}
-                      >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`查看 ${window.name} 详情`}
-                        onClick={() => setViewing(window.id)}
-                      >
-                        <ArrowUpRight />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`查看 ${window.name} 的执行记录`}
-                        title="执行记录"
-                        onClick={() =>
-                          navigateDetail({
-                            kind: 'agent',
-                            id: window.id,
-                            related: 'window',
-                          })
-                        }
-                      >
-                        <ClipboardList />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Raccoon' : '删除'} ${window.name}`}
-                        disabled={
-                          busy ||
-                          (window.providerId !== 'cloakbrowser' &&
-                          window.origin === 'attached'
-                            ? unconfirmed
-                            : window.state !== 'stopped') ||
-                          (window.origin === 'created' &&
-                            !connection?.capabilities.deleteEnvironment)
-                        }
-                        onClick={() => {
-                          setDeleteEnvironment(
-                            window.providerId === 'cloakbrowser' ||
-                              window.origin === 'created',
-                          )
-                          setDeleting(window.id)
-                        }}
-                      >
-                        <Trash2 />
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`操作 ${window.name}`}
+                          >
+                            <Ellipsis />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            aria-label={`编辑 ${window.name}`}
+                            disabled={busy}
+                            onSelect={() => setEditing(window.id)}
+                          >
+                            <Pencil />
+                            编辑窗口
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            aria-label={`查看 ${window.name} 详情`}
+                            onSelect={() => setViewing(window.id)}
+                          >
+                            <ArrowUpRight />
+                            查看详情
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            aria-label={`查看 ${window.name} 的执行记录`}
+                            onSelect={() =>
+                              navigateDetail({
+                                kind: 'agent',
+                                id: window.id,
+                                related: 'window',
+                              })
+                            }
+                          >
+                            <ClipboardList />
+                            执行记录
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            aria-label={`删除 ${window.name}`}
+                            variant="destructive"
+                            disabled={
+                              busy ||
+                              (window.providerId !== 'cloakbrowser' &&
+                              window.origin === 'attached'
+                                ? unconfirmed
+                                : window.state !== 'stopped') ||
+                              (window.origin === 'created' &&
+                                !connection?.capabilities.deleteEnvironment)
+                            }
+                            onSelect={() => {
+                              setDeleteEnvironment(
+                                window.providerId === 'cloakbrowser' ||
+                                  window.origin === 'created',
+                              )
+                              setDeleting(window.id)
+                            }}
+                          >
+                            <Trash2 />
+                            {window.providerId !== 'cloakbrowser' &&
+                            window.origin === 'attached'
+                              ? '移出 Raccoon'
+                              : '删除'}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       {window.providerId !== 'cloakbrowser' ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>

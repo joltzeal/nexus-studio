@@ -41,15 +41,27 @@ describe('Vinted email verification', () => {
     ).toBeNull()
   })
 
-  it('rejects unrelated sender, subject and messages predating the wait', () => {
+  it('rejects unrelated sender, subject and stale messages', () => {
     const start = Date.parse('2026-11-16T00:05:00Z')
-    expect(isVintedVerification(email, start)).toBe(false)
+    expect(
+      isVintedVerification({ ...email, receivedAt: '2026-11-15T23:59:59Z' }, start),
+    ).toBe(false)
     expect(isVintedVerification({ ...email, subject: 'Reset password' }, 0)).toBe(false)
     expect(
       isVintedVerification(
         { ...email, from: { name: '', address: 'no-reply@vinted.com.evil.test' } },
         0,
       ),
+    ).toBe(false)
+  })
+
+  it('accepts an already received recent verification message, not an older one', () => {
+    const start = Date.parse('2026-11-16T00:05:00Z')
+    expect(
+      isVintedVerification({ ...email, receivedAt: '2026-11-16T00:03:00Z' }, start),
+    ).toBe(true)
+    expect(
+      isVintedVerification({ ...email, receivedAt: '2026-11-15T23:50:00Z' }, start),
     ).toBe(false)
   })
 })

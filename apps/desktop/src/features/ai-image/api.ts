@@ -1,5 +1,6 @@
 import { callPlugin } from '@/lib/platform/native-plugins'
 import { checkReference } from './prepare-reference'
+import type { PhotoMetadata } from './photo-metadata'
 import { providerCatalog } from './model-selection'
 import {
   parseScenePlan,
@@ -71,6 +72,7 @@ export async function listProviders(): Promise<ProviderCatalog> {
   const result = await call<ProviderCatalog>('image.providers.list')
   return {
     ...providerCatalog(result),
+    ...(result.photoMetadataVersion === 1 ? { photoMetadataVersion: 1 } : {}),
     transportSettingsVersion: result.transportSettingsVersion === 1 ? 1 : 0,
     items: result.items.map((provider) => ({
       ...provider,
@@ -257,6 +259,7 @@ export interface GenerateInput {
   imageModel: string
   mode: GenerationRecord['mode']
   agingLevel?: AgingLevel
+  photoMetadata?: PhotoMetadata
   presetId: string | null
   prompt: string
   size: string
@@ -273,6 +276,8 @@ export async function generate(
   input: GenerateInput,
 ): Promise<{ record: GenerationRecord }> {
   validateAgingLevel(input.agingLevel)
+  if (input.photoMetadata && (await listProviders()).photoMetadataVersion !== 1)
+    throw new Error('请更新 AI 生图插件后使用 EXIF 模板。')
   if (!input.providerId.trim() || !input.imageModel.trim())
     throw new Error('请选择生图服务商和模型。')
   if (
@@ -373,6 +378,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 export async function uploadImage(
   input: { base64: string; mime: string; name: string } | File,
   signal?: AbortSignal,
+  photoMetadata?: PhotoMetadata,
 ): Promise<StoredFile> {
   signal?.throwIfAborted()
   const isFile = input instanceof File
@@ -382,6 +388,8 @@ export async function uploadImage(
     : base64ToBytes(input.base64)
   const invalid = checkReference({ type: mime, size: bytes.byteLength })
   if (invalid !== null) throw new Error(invalid)
+  if (photoMetadata && (await listProviders()).photoMetadataVersion !== 1)
+    throw new Error('请更新 AI 生图插件后使用 EXIF 模板。')
   signal?.throwIfAborted()
   const begun = await call<{ uploadId: string; chunkSize: number }>(
     'image.upload.begin',
@@ -414,6 +422,7 @@ export async function uploadImage(
     const finished = await call<{ file: StoredFile }>('image.upload.finish', {
       uploadId: begun.uploadId,
       name: input.name,
+      ...(photoMetadata === undefined ? {} : { photoMetadata }),
     })
     signal?.throwIfAborted()
     return finished.file
@@ -427,10 +436,20 @@ export async function uploadImage(
  * The webview cannot read a picture from a supplier's CDN (CORS), so the plugin
  * downloads it and stores it like any other upload.
  */
-export function uploadRemoteImage(url: string, name?: string): Promise<StoredFile> {
+export async function uploadRemoteImage(
+  url: string,
+  name?: string,
+  photoMetadata?: PhotoMetadata,
+): Promise<StoredFile> {
+  if (photoMetadata && (await listProviders()).photoMetadataVersion !== 1)
+    throw new Error('请更新 AI 生图插件后使用 EXIF 模板。')
   return call<{ file: StoredFile }>(
     'image.upload.remote',
-    name === undefined ? { url } : { url, name },
+    {
+      url,
+      ...(name === undefined ? {} : { name }),
+      ...(photoMetadata === undefined ? {} : { photoMetadata }),
+    },
     UPLOAD_DEADLINE,
   ).then((result) => result.file)
 }

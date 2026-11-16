@@ -1,5 +1,37 @@
 import type { AiImageHandoff, GenerationSource } from '@/lib/page-handoff'
 import { VINTED_PLUGIN_ID, type Item } from './types'
+import { safeExternalUrl } from './item-filters'
+
+export function itemReferencePhotos(item: Pick<Item, 'images' | 'imageUrl'>): string[] {
+  return [
+    ...new Set(
+      (item.images?.length ? item.images : [item.imageUrl]).filter(
+        (url) => !!safeExternalUrl(url),
+      ),
+    ),
+  ].slice(0, 6)
+}
+
+export function itemBatchHandoffs(
+  items: readonly Pick<
+    Item,
+    | 'id'
+    | 'title'
+    | 'url'
+    | 'brand'
+    | 'size'
+    | 'condition'
+    | 'detail'
+    | 'images'
+    | 'imageUrl'
+  >[],
+): AiImageHandoff[] {
+  const missing = items.filter((item) => itemReferencePhotos(item).length === 0)
+  if (missing.length) {
+    throw new Error(`${missing.length} 件商品没有可用图片，请取消选择后重试`)
+  }
+  return items.map((item) => itemAiHandoff(item, itemReferencePhotos(item)))
+}
 
 export function vintedItemSource(
   item: Pick<Item, 'id' | 'title' | 'url'>,

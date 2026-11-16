@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { itemAiHandoff } from './item-ai-handoff'
+import { itemAiHandoff, itemBatchHandoffs, itemReferencePhotos } from './item-ai-handoff'
 
 const item = {
   id: 'vinted.fr:123',
@@ -19,6 +19,40 @@ const item = {
 }
 
 describe('Vinted product AI handoff', () => {
+  it('deduplicates and bounds each product gallery before batch submission', () => {
+    expect(
+      itemReferencePhotos({
+        imageUrl: 'https://www.vinted.com/cover.webp',
+        images: [
+          'https://www.vinted.com/one.webp',
+          'https://www.vinted.com/one.webp',
+          ...Array.from(
+            { length: 7 },
+            (_, index) => `https://www.vinted.com/${index}.webp`,
+          ),
+        ],
+      }),
+    ).toHaveLength(6)
+    expect(itemReferencePhotos({ imageUrl: '', images: [] })).toEqual([])
+  })
+  it('keeps each selected product source and reference image separate', () => {
+    const first = {
+      ...item,
+      imageUrl: 'https://www.vinted.com/first.webp',
+      images: ['https://www.vinted.com/first.webp'],
+    }
+    const second = {
+      ...first,
+      id: 'vinted.fr:456',
+      images: ['https://www.vinted.com/second.webp'],
+    }
+    const handoffs = itemBatchHandoffs([first, second])
+    expect(handoffs.map((entry) => entry.source?.itemId)).toEqual([first.id, second.id])
+    expect(handoffs.map((entry) => entry.images)).toEqual([first.images, second.images])
+    expect(() => itemBatchHandoffs([{ ...first, images: [], imageUrl: '' }])).toThrow(
+      '没有可用图片',
+    )
+  })
   it('passes only public product fields, source identity, and chosen images', () => {
     expect(itemAiHandoff(item, ['third.webp', 'first.webp'])).toEqual({
       presentation: 'dialog',

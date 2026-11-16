@@ -30,6 +30,12 @@ import { toast } from '@/components/ui/toast'
 import { generate, uploadImage } from './api'
 import { trackGeneratedProduct } from './auto-product-import-runtime'
 import { checkReference, prepareReference } from './prepare-reference'
+import {
+  loadPhotoMetadata,
+  parsePhotoMetadata,
+  savePhotoMetadata,
+} from './photo-metadata'
+import { PhotoMetadataEditor } from './photo-metadata-editor'
 import { PresetPicker } from './preset-picker'
 import { RecordImage } from './record-image'
 import { FIRST_REFERENCE, MAX_PROMPT_CHARACTERS, selectedVisionFile } from './selection'
@@ -91,6 +97,7 @@ export function GenerateDialog({
   initialImages,
   source,
   initialPrompt,
+  batchPosition,
   pluginMethods,
   loadError = null,
   submittedMessage = '已提交生成任务，记录里可以查看进度',
@@ -107,6 +114,7 @@ export function GenerateDialog({
   initialImages?: InitialImage[]
   source?: GenerationSource
   initialPrompt?: string
+  batchPosition?: { index: number; total: number }
   pluginMethods?: readonly string[]
   loadError?: string | null
   submittedMessage?: string
@@ -149,6 +157,15 @@ export function GenerateDialog({
   const [size, setSize] = useState('1024x1024')
   const [count, setCount] = useState(1)
   const [agingLevel, setAgingLevel] = useState<AgingLevel>(DEFAULT_AGING_LEVEL)
+  const [initialPhotoMetadata] = useState(loadPhotoMetadata)
+  const [photoMetadataEnabled, setPhotoMetadataEnabled] = useState(
+    initialPhotoMetadata.enabled,
+  )
+  const [photoMetadataForm, setPhotoMetadataForm] = useState(initialPhotoMetadata.form)
+  const photoMetadataRef = useRef({
+    enabled: photoMetadataEnabled,
+    form: photoMetadataForm,
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
@@ -197,6 +214,14 @@ export function GenerateDialog({
     () => presets.find((entry) => entry.id === presetId) ?? null,
     [presets, presetId],
   )
+  useEffect(() => {
+    photoMetadataRef.current = { enabled: photoMetadataEnabled, form: photoMetadataForm }
+    try {
+      savePhotoMetadata(photoMetadataEnabled, photoMetadataForm)
+    } catch {
+      // Local preferences may be disabled; the current dialog state still works.
+    }
+  }, [photoMetadataEnabled, photoMetadataForm])
 
   const transfer = useCallback(
     (entry: Reference) =>
@@ -206,7 +231,13 @@ export function GenerateDialog({
           if (entry.initialImage === undefined) {
             return Promise.reject(new Error('请重新选择本地图片。'))
           }
-          return transferInitialImage(entry.initialImage, origin, signal)
+          const current = photoMetadataRef.current
+          return transferInitialImage(
+            entry.initialImage,
+            origin,
+            signal,
+            current.enabled ? parsePhotoMetadata(current.form) : undefined,
+          )
         },
         (stored) =>
           setReferences((current) =>
@@ -292,7 +323,12 @@ export function GenerateDialog({
           async (signal) => {
             const prepared = await prepareReference(file, signal)
             signal.throwIfAborted()
-            return uploadImage(prepared, signal)
+            const current = photoMetadataRef.current
+            return uploadImage(
+              prepared,
+              signal,
+              current.enabled ? parsePhotoMetadata(current.form) : undefined,
+            )
           },
           (stored) =>
             setReferences((current) =>
@@ -375,6 +411,15 @@ export function GenerateDialog({
       setError('参考图片没有上传成功，请重新选择。')
       return
     }
+    let photoMetadata
+    try {
+      photoMetadata = photoMetadataEnabled
+        ? parsePhotoMetadata(photoMetadataForm)
+        : undefined
+    } catch (cause) {
+      setError(message(cause))
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -388,6 +433,7 @@ export function GenerateDialog({
         size,
         count,
         agingLevel,
+        ...(photoMetadata === undefined ? {} : { photoMetadata }),
         inputFileIds: files.map((entry) => entry.id),
         ...(origin === undefined ? {} : { source: origin }),
         ...(planner.smart && planner.draft
@@ -438,7 +484,12 @@ export function GenerateDialog({
     >
       <DialogContent className="ai-dialog">
         <DialogHeader>
-          <DialogTitle>AI 生图</DialogTitle>
+          <DialogTitle>
+            AI 生图
+            {batchPosition && batchPosition.total > 1
+              ? ` · 第 ${batchPosition.index} / ${batchPosition.total} 件`
+              : ''}
+          </DialogTitle>
           <DialogDescription>
             上传一张或多张参考图会走改图接口；不上传图片则按提示词直接生成。每次生成都会写入记录。
           </DialogDescription>
@@ -745,6 +796,13 @@ export function GenerateDialog({
               />
               <FieldDescription>{AGING_LEVEL_HINT}</FieldDescription>
             </Field>
+            <PhotoMetadataEditor
+              enabled={photoMetadataEnabled}
+              form={photoMetadataForm}
+              disabled={busy}
+              onEnabledChange={setPhotoMetadataEnabled}
+              onChange={setPhotoMetadataForm}
+            />
             {planner.smart && planner.draft ? (
               <ScenePlanEditor
                 key={planner.draft.plan.id}

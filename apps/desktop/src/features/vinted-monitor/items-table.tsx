@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowDown,
   ArrowUp,
@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -40,9 +41,16 @@ import {
 import { toast } from '@/components/ui/toast'
 import { SourceImageHistoryDialog } from '@/features/ai-image/source-image-history-dialog'
 import { sendToAiImage } from '@/lib/page-handoff'
-import { listItems, listMonitors, monitorSeller, removeItem, starItem } from './api'
+import {
+  getItem,
+  listItems,
+  listMonitors,
+  monitorSeller,
+  removeItem,
+  starItem,
+} from './api'
 import { VintedExternalLink } from './external-link'
-import { itemAiHandoff, vintedItemSource } from './item-ai-handoff'
+import { itemAiHandoff, itemBatchHandoffs, vintedItemSource } from './item-ai-handoff'
 import { AvailabilityBadge, ItemDetailSheet } from './item-detail-sheet'
 import {
   EMPTY_FILTERS,
@@ -115,6 +123,10 @@ export function VintedItemsTable({
   const [monitors, setMonitors] = useState<Monitor[]>([])
   const [monitorError, setMonitorError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchError, setBatchError] = useState<string | null>(null)
+  const batchRequest = useRef(0)
   const [detail, setDetail] = useState<{ id: string; preview: boolean } | null>(null)
   const [history, setHistory] = useState<ItemSummary | null>(null)
   const [removing, setRemoving] = useState<ItemSummary | null>(null)
@@ -122,6 +134,7 @@ export function VintedItemsTable({
   const key = JSON.stringify({ ...filters, order, page, pageSize, nonce, refreshKey })
   const current = state?.key === key ? state : null
   const rows = current?.data?.items ?? []
+  const selectedRows = rows.filter((item) => selected.has(item.id))
   useEffect(() => {
     let active = true
     void listItems({ ...filters, order, page, pageSize }).then(
@@ -160,12 +173,25 @@ export function VintedItemsTable({
     }
   }, [nonce, refreshKey])
   useEffect(() => () => vintedImageCache.clearUnused(), [])
+  useEffect(
+    () => () => {
+      batchRequest.current += 1
+    },
+    [],
+  )
+  function cancelBatch() {
+    batchRequest.current += 1
+    setBatchBusy(false)
+    setBatchError(null)
+    setSelected(new Set())
+  }
   function patch(next: Partial<FilterDraft>) {
     setDraft((old) => ({ ...old, ...next }))
   }
   function search() {
     try {
       const next = itemFilterParams(draft)
+      cancelBatch()
       setFilters(next)
       setPage(0)
       setNonce((value) => value + 1)
@@ -175,6 +201,7 @@ export function VintedItemsTable({
     }
   }
   function reset() {
+    cancelBatch()
     setDraft({ ...EMPTY_FILTERS })
     setFilters({})
     setPage(0)
@@ -217,6 +244,11 @@ export function VintedItemsTable({
     setRemoveError(null)
     try {
       await removeItem(removing.id)
+      setSelected((current) => {
+        const next = new Set(current)
+        next.delete(removing.id)
+        return next
+      })
       if (detail?.id === removing.id) setDetail(null)
       setRemoving(null)
       setNonce((value) => value + 1)
@@ -231,6 +263,41 @@ export function VintedItemsTable({
     if (!aiImageReady || images.length === 0) return
     sendToAiImage(itemAiHandoff(item, images))
     setDetail(null)
+  }
+  async function generateSelected() {
+    if (!aiImageReady || batchBusy || selectedRows.length === 0) return
+    const request = ++batchRequest.current
+    setBatchBusy(true)
+    setBatchError(null)
+    try {
+      const items: Item[] = []
+      for (let offset = 0; offset < selectedRows.length; offset += 5) {
+        items.push(
+          ...(await Promise.all(
+            selectedRows
+              .slice(offset, offset + 5)
+              .map(async (row) => (await getItem(row.id)).item),
+          )),
+        )
+        if (request !== batchRequest.current) return
+      }
+      const [first, ...batch] = itemBatchHandoffs(items)
+      if (first) {
+        sendToAiImage({
+          ...first,
+          batchPosition: { index: 1, total: items.length },
+          batch: batch.map((entry, index) => ({
+            ...entry,
+            batchPosition: { index: index + 2, total: items.length },
+          })),
+        })
+      }
+      setSelected(new Set())
+    } catch (cause) {
+      if (request === batchRequest.current) setBatchError(message(cause))
+    } finally {
+      if (request === batchRequest.current) setBatchBusy(false)
+    }
   }
   const visible = COLUMNS.filter((column) => !hidden.includes(column.id))
   const SortIcon =
@@ -377,8 +444,25 @@ export function VintedItemsTable({
             <Button
               type="button"
               size="sm"
+              disabled={!aiImageReady || batchBusy || selectedRows.length === 0}
+              title={
+                aiImageReady ? '选择本页商品，逐件确认并提交' : '请先启用 AI 生图插件'
+              }
+              onClick={() => void generateSelected()}
+            >
+              {batchBusy ? (
+                <Loader2 className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <Sparkles data-icon="inline-start" />
+              )}
+              批量生图（{selectedRows.length}）
+            </Button>
+            <Button
+              type="button"
+              size="sm"
               variant="outline"
               onClick={() => {
+                cancelBatch()
                 vintedImageCache.clearUnused()
                 setNonce((value) => value + 1)
               }}
@@ -391,6 +475,7 @@ export function VintedItemsTable({
         </div>
       </form>
       {filterError ? <FieldError role="alert">{filterError}</FieldError> : null}
+      {batchError ? <FieldError role="alert">{batchError}</FieldError> : null}
       {monitorError ? (
         <FieldError role="alert">
           监控筛选列表加载失败：{monitorError}
@@ -443,6 +528,25 @@ export function VintedItemsTable({
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    aria-label="全选本页商品"
+                    checked={
+                      rows.every((item) => selected.has(item.id))
+                        ? true
+                        : selectedRows.length > 0
+                          ? 'indeterminate'
+                          : false
+                    }
+                    onCheckedChange={(checked) =>
+                      setSelected(
+                        checked === true
+                          ? new Set(rows.map((item) => item.id))
+                          : new Set(),
+                      )
+                    }
+                  />
+                </TableHead>
                 {visible.map((column) => (
                   <TableHead
                     key={column.id}
@@ -462,6 +566,7 @@ export function VintedItemsTable({
                         size="sm"
                         aria-label={`点赞数排序：${order === 'collected_desc' ? '未排序' : order === 'favourite_asc' ? '升序' : '降序'}`}
                         onClick={() => {
+                          cancelBatch()
                           setOrder(nextFavouriteOrder(order))
                           setPage(0)
                         }}
@@ -575,6 +680,20 @@ export function VintedItemsTable({
                 }
                 return (
                   <TableRow key={item.id}>
+                    <TableCell>
+                      <Checkbox
+                        aria-label={`选择商品 ${item.title}`}
+                        checked={selected.has(item.id)}
+                        onCheckedChange={(checked) =>
+                          setSelected((current) => {
+                            const next = new Set(current)
+                            if (checked === true) next.add(item.id)
+                            else next.delete(item.id)
+                            return next
+                          })
+                        }
+                      />
+                    </TableCell>
                     {visible.map((column) => (
                       <TableCell key={column.id}>{cells[column.id]}</TableCell>
                     ))}
@@ -630,10 +749,14 @@ export function VintedItemsTable({
         <TablePager
           {...{ page, pageSize }}
           total={current.data.total}
-          onPageChange={setPage}
+          onPageChange={(next) => {
+            cancelBatch()
+            setPage(next)
+          }}
           onPageSizeChange={(size) => {
             setPageSize(size)
             setPage(0)
+            cancelBatch()
           }}
         />
       ) : null}

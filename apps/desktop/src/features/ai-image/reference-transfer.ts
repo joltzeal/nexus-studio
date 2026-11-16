@@ -2,6 +2,7 @@ import type { AiImageHandoff, GenerationSource } from '@/lib/page-handoff'
 import { loadVintedImage } from '@/features/vinted-monitor/api'
 import { uploadImage, uploadRemoteImage } from './api'
 import { prepareReference } from './prepare-reference'
+import type { PhotoMetadata } from './photo-metadata'
 import { generationSource } from './source'
 import type { StoredFile } from './types'
 
@@ -27,6 +28,7 @@ export async function transferInitialImage(
   image: InitialImage,
   source: GenerationSource | undefined,
   signal: AbortSignal,
+  photoMetadata?: PhotoMetadata,
 ): Promise<StoredFile> {
   signal.throwIfAborted()
   const validSource = source === undefined ? undefined : generationSource(source)
@@ -36,9 +38,14 @@ export async function transferInitialImage(
     const file = new File([blob], image.name, { type: blob.type })
     const prepared = await prepareReference(file, signal)
     signal.throwIfAborted()
-    return uploadImage(prepared, signal)
+    return photoMetadata === undefined
+      ? uploadImage(prepared, signal)
+      : uploadImage(prepared, signal, photoMetadata)
   }
-  const stored = await uploadRemoteImage(image.url, image.name)
+  const stored =
+    photoMetadata === undefined
+      ? await uploadRemoteImage(image.url, image.name)
+      : await uploadRemoteImage(image.url, image.name, photoMetadata)
   signal.throwIfAborted()
   return stored
 }

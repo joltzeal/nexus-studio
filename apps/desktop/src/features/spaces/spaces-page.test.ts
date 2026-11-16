@@ -503,7 +503,7 @@ async function mountedPage(waitForAccounts = true) {
 }
 
 function visibleWindowNames(tree: ReactNode) {
-  return components(tree, Button).flatMap((node) => {
+  return components(tree, DropdownMenuItem).flatMap((node) => {
     const match = node.props['aria-label']?.match(/^查看 (.*) 详情$/)
     return match ? [match[1]!] : []
   })
@@ -511,7 +511,7 @@ function visibleWindowNames(tree: ReactNode) {
 
 function windowRow(tree: ReactNode, name: string) {
   const row = components(tree, TableRow).find((node) =>
-    components(node, Button).some(
+    components(node, DropdownMenuItem).some(
       (button) => button.props['aria-label'] === `查看 ${name} 详情`,
     ),
   )
@@ -833,10 +833,10 @@ describe('window management', () => {
       connectionId: 'builtin',
       operationId: expect.any(String),
     })
-    const edit = components(page.render(), Button).find(
+    const edit = components(page.render(), DropdownMenuItem).find(
       (node) => node.props['aria-label'] === '编辑 first',
     )!
-    edit.props.onClick?.({} as never)
+    edit.props.onSelect?.({} as never)
     const updated = {
       name: 'renamed',
       proxyMode: input.proxyMode,
@@ -859,11 +859,11 @@ describe('window management', () => {
     async (windowState) => {
       state.windows[0] = { ...state.windows[0]!, state: windowState }
       const page = await mountedPage()
-      const edit = components(page.render(), Button).find(
+      const edit = components(page.render(), DropdownMenuItem).find(
         (node) => node.props['aria-label'] === '编辑 first',
       )!
       expect(edit.props.disabled).toBe(false)
-      edit.props.onClick?.({} as never)
+      edit.props.onSelect?.({} as never)
       expect(components(page.render(), WindowEditor)[0]!.props.window?.state).toBe(
         windowState,
       )
@@ -1006,9 +1006,9 @@ describe('window list pagination', () => {
     state.windows = state.windows.filter((window) => Number(window.name.slice(-2)) <= 21)
     const page = await mountedPage()
     clickPage(page, '下一页')
-    components(page.render(), Button)
+    components(page.render(), DropdownMenuItem)
       .find((node) => node.props['aria-label'] === '删除 window-21')!
-      .props.onClick?.({} as never)
+      .props.onSelect?.({} as never)
     components(page.render(), AlertDialogAction)[0]!.props.onClick?.({
       preventDefault() {},
     } as never)
@@ -1787,9 +1787,9 @@ describe('browser connections and global associations', () => {
     search.props.onChange?.({
       target: { value: 'first' },
     } as ChangeEvent<HTMLInputElement>)
-    components(page.render(), Button)
+    components(page.render(), DropdownMenuItem)
       .find((node) => node.props['aria-label'] === '编辑 first')!
-      .props.onClick?.({} as never)
+      .props.onSelect?.({} as never)
     expect(components(page.render(), WindowEditor)).toHaveLength(1)
     selectProvider(page.render(), 'adspower')
     expect(components(page.render(), WindowEditor)).toHaveLength(0)
@@ -1884,9 +1884,9 @@ describe('browser connections and global associations', () => {
   it('describes an attached window proxy as provider-managed in its details', async () => {
     const page = await externalPage()
     selectProvider(page.render(), 'adspower')
-    components(page.render(), Button)
+    components(page.render(), DropdownMenuItem)
       .find((node) => node.props['aria-label'] === '查看 Ads shop 详情')!
-      .props.onClick?.({} as never)
+      .props.onSelect?.({} as never)
     const row = elements(page.render()).find(
       (node) =>
         node.props.className === 'about-row' &&
@@ -2583,7 +2583,13 @@ describe('account refresh consistency', () => {
         .every((node) => node.props.disabled),
     ).toBe(true)
     expect(
-      components(unavailable, DropdownMenuItem).every((node) => node.props.disabled),
+      components(unavailable, DropdownMenuItem)
+        .filter((node) =>
+          ['编辑账号资料', '关联账号', '更换账号', '解除关联'].some((label) =>
+            text(node.props.children).includes(label),
+          ),
+        )
+        .every((node) => node.props.disabled),
     ).toBe(true)
     expect(components(unavailable, AccountEditor)[0]!.props.ready).toBe(false)
     expect(components(unavailable, AccountSmsPopover)).toHaveLength(0)
