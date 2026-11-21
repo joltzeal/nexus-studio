@@ -1,5 +1,18 @@
 # 质量门禁与验证记录
 
+## 2026-11-21 0.2.2 GitHub 发版结果
+
+- 标签 `v0.2.2` 对应提交 `316d2d3a1033509fb6c068ef1b3f2afc778fab5d`，发行工作流 `44902613774` 完成成功。
+  macOS arm64 与 Intel 均通过 602 项 Rust 回归、Rustfmt、Clippy、Tauri 打包和包内 runtime 校验。
+- 公开 Release [Raccoon v0.2.2](https://github.com/joltzeal/nexus-studio/releases/tag/v0.2.2)
+  包含 arm64/Intel DMG、`.app.tar.gz`、签名文件和 `latest.json`。版本发行不是 GitHub Latest。
+- `raccoon-v2` 预发布更新通道已写入同一版本的 `latest.json`，其中包含 `darwin-aarch64` 与 `darwin-x86_64`。
+  已安装 v1 客户端继续使用 GitHub Latest 的 `v0.1.43` 清单。
+- 独立 Foundation CI 的 macOS 原生 job 通过。Windows 原生 job 为 584 项通过、6 项失败、5 项忽略，
+  失败集中在 CloakBrowser 子进程 fixture 的 Windows 行为和源码插件 `NotInstalled`，未进入 Windows 发行包。
+  全仓 `format:check` 仍受 916 个已跟踪上游/历史文件格式差异影响，发行 job 的 Rust 门禁不受此影响。
+- 当前发布使用 macOS ad-hoc 签名，未完成 Developer ID 公证；Windows 0.2 安装包未构建。
+
 ## 2026-11-21 0.2.2 Clippy 修复候选
 
 - `0.2.1` 的 macOS 原生回归为 602 项通过、0 项失败、5 项忽略，随后被 68 处 Clippy 诊断拦截，未发布。
