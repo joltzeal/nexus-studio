@@ -1,0 +1,212 @@
+import type { DependencyList, EffectCallback, ReactNode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Button, toast } from './controls'
+import { Input } from '@proxyshard/shardx-ui-kit'
+
+import {
+  components,
+  deferred,
+  flushPromises,
+  KernelHookHarness,
+  text,
+} from './test-support'
+import { saveAgentSettings, testAgentModel } from './api'
+import { AgentSettingsForm } from './settings-dialog'
+import { ExecutionSettings } from './execution-settings'
+import { settings } from './test-data'
+
+const state = vi.hoisted(() => ({ hooks: null as KernelHookHarness | null }))
+vi.mock('react', async (original) => {
+  const react = await original<typeof import('react')>()
+  return {
+    ...react,
+    useState: (initial: unknown) =>
+      state.hooks ? state.hooks.state(initial) : react.useState(initial),
+    useEffect: (effect: EffectCallback, deps?: DependencyList) =>
+      state.hooks ? state.hooks.effect(effect, deps) : react.useEffect(effect, deps),
+  }
+})
+vi.mock('./api', async (original) => ({
+  ...(await original<typeof import('./api')>()),
+  saveAgentSettings: vi.fn(),
+  testAgentModel: vi.fn(),
+}))
+vi.mock('./controls', async (original) => ({
+  ...(await original<typeof import('./controls')>()),
+  toast: { success: vi.fn() },
+}))
+
+describe('model settings persistence and credential boundaries', () => {
+  let hooks: KernelHookHarness
+  const onSaved = vi.fn()
+  const render = (): ReactNode =>
+    hooks.render(() => AgentSettingsForm({ initial: settings, onSaved }))
+  const button = (label: string) =>
+    components(render(), Button).find((node) => text(node.props.children) === label)!
+  const click = (label: string) =>
+    button(label).props.onClick?.({} as React.MouseEvent<HTMLButtonElement>)
+  const edit = (id: string, value: string) =>
+    components(render(), Input)
+      .find((node) => node.props.id === id)!
+      .props.onChange?.({ target: { value } } as React.ChangeEvent<HTMLInputElement>)
+  beforeEach(() => {
+    vi.clearAllMocks()
+    hooks = new KernelHookHarness(state)
+    render()
+    hooks.flushEffects()
+  })
+  afterEach(() => hooks.dispose())
+
+  it('saves changed settings before testing instead of disabling the test action', async () => {
+    edit('agent-generation-model', 'updated-vision')
+    expect(button('保存并测试生成 / 识图模型').props.disabled).toBe(false)
+    vi.mocked(saveAgentSettings).mockResolvedValue({
+      ...settings,
+      generation: { ...settings.generation, model: 'updated-vision' },
+    })
+    vi.mocked(testAgentModel).mockResolvedValue({
+      ok: true,
+      kind: 'generation',
+      model: 'updated-vision',
+      checks: { vision: true, english: true },
+    })
+    click('保存并测试生成 / 识图模型')
+    await flushPromises()
+    expect(saveAgentSettings).toHaveBeenCalledExactlyOnceWith({
+      ...settings,
+      generation: { ...settings.generation, model: 'updated-vision' },
+    })
+    expect(onSaved).toHaveBeenCalledTimes(1)
+    expect(testAgentModel).toHaveBeenCalledExactlyOnceWith('generation')
+    expect(vi.mocked(saveAgentSettings).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(testAgentModel).mock.invocationCallOrder[0]!,
+    )
+    expect(text(render())).toContain('图片识别：通过')
+    expect(text(render())).toContain('英文文案：通过')
+  })
+
+  it('retains a password input after failed save and does not echo a credential in UI or logs', async () => {
+    const log = vi.spyOn(console, 'log')
+    const warn = vi.spyOn(console, 'warn')
+    const error = vi.spyOn(console, 'error')
+    const fixture = 'fixture-new-key-for-test'
+    edit('agent-generation-key', fixture)
+    vi.mocked(saveAgentSettings).mockRejectedValue(
+      new Error(`Provider refused key ${fixture}`),
+    )
+    click('保存模型配置')
+    await flushPromises()
+    const input = components(render(), Input).find(
+      (node) => node.props.id === 'agent-generation-key',
+    )!
+    expect(input.props).toMatchObject({ type: 'password', value: fixture })
+    expect(text(render())).toContain('保存未确认')
+    expect(text(render())).not.toContain(fixture)
+    expect(onSaved).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it('hides an old passing result after editing and clears it before a failed retest', async () => {
+    vi.mocked(testAgentModel)
+      .mockResolvedValueOnce({
+        ok: true,
+        kind: 'decision',
+        model: settings.decision.model,
+        checks: { judgement: true },
+      })
+      .mockRejectedValueOnce(new Error('Controlled test failure'))
+    click('测试判断模型')
+    await flushPromises()
+    expect(text(render())).toContain('结构化判断：通过')
+    click('测试判断模型')
+    await flushPromises()
+    expect(text(render())).toContain('模型测试失败')
+    expect(text(render())).not.toContain('结构化判断：通过')
+    vi.mocked(testAgentModel).mockResolvedValueOnce({
+      ok: true,
+      kind: 'decision',
+      model: settings.decision.model,
+      checks: { judgement: true },
+    })
+    click('测试判断模型')
+    await flushPromises()
+    edit('agent-decision-model', 'another-model')
+    expect(text(render())).not.toContain('结构化判断：通过')
+    expect(button('保存并测试判断模型').props.disabled).toBe(false)
+  })
+
+  it('validates an incomplete first configuration without throwing or losing input', async () => {
+    hooks.dispose()
+    hooks = new KernelHookHarness(state)
+    const tree = () => hooks.render(() => AgentSettingsForm({ initial: null, onSaved }))
+    tree()
+    hooks.flushEffects()
+    const input = (id: string) =>
+      components(tree(), Input).find((node) => node.props.id === id)!
+    input('agent-generation-model').props.onChange?.({
+      target: { value: 'retained-vision-model' },
+    } as React.ChangeEvent<HTMLInputElement>)
+    const save = components(tree(), Button).find(
+      (node) => text(node.props.children) === '保存模型配置',
+    )!
+    expect(() =>
+      save.props.onClick?.({} as React.MouseEvent<HTMLButtonElement>),
+    ).not.toThrow()
+    await flushPromises()
+    expect(text(tree())).toContain('请填写判断模型的接口地址')
+    expect(input('agent-decision-url').props['aria-invalid']).toBe(true)
+    expect(input('agent-generation-model').props.value).toBe('retained-vision-model')
+    expect(saveAgentSettings).not.toHaveBeenCalled()
+    expect(testAgentModel).not.toHaveBeenCalled()
+  })
+
+  it('does not test unsaved credentials when persistence fails', async () => {
+    edit('agent-generation-key', 'fixture-unsaved-key')
+    vi.mocked(saveAgentSettings).mockRejectedValue(new Error('Controlled save failure'))
+    click('保存并测试生成 / 识图模型')
+    await flushPromises()
+    expect(testAgentModel).not.toHaveBeenCalled()
+    expect(text(render())).toContain('保存未确认')
+    expect(button('保存并测试生成 / 识图模型').props.disabled).toBe(false)
+  })
+
+  it('explains the missing prices when a fee budget fails before saving', async () => {
+    components(render(), ExecutionSettings)[0]!.props.onChange({
+      ...settings,
+      execution: { ...settings.execution, maxBatchCostUsd: 2 },
+    })
+    click('保存模型配置')
+    await flushPromises()
+    expect(saveAgentSettings).not.toHaveBeenCalled()
+    expect(text(render())).toContain('设置费用预算前，请完整填写两个模型的价格')
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it('ignores a save completion after replacing or closing the settings session', async () => {
+    const pending = deferred<typeof settings>()
+    edit('agent-generation-model', 'updated-vision')
+    vi.mocked(saveAgentSettings).mockReturnValue(pending.promise)
+    click('保存模型配置')
+    hooks.dispose()
+    pending.resolve(settings)
+    await flushPromises()
+    expect(onSaved).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+})
+
+vi.mock('./scope', async () => {
+  const react = await import('react')
+  const { RequestScope } = await import('./state')
+  return {
+    useAgentConnection: () => 'local',
+    useAgentRequestScope: () => {
+      const [scope] = react.useState(() => new RequestScope())
+      react.useEffect(() => () => scope.invalidate(), [scope])
+      return scope
+    },
+  }
+})

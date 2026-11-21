@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Copy, Heart, Loader2, Sparkles, Trash2 } from 'lucide-react'
+import { Copy, Heart, Loader2, Sparkles, Trash2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,

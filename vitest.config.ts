@@ -4,6 +4,15 @@ import { fileURLToPath } from 'node:url'
 export default defineConfig({
   resolve: {
     alias: {
+      '@nexus/plugin-contracts/proxy-pool': fileURLToPath(
+        new URL('./packages/plugin-contracts/src/proxy-pool.ts', import.meta.url),
+      ),
+      '@nexus/plugin-contracts/vinted-helper': fileURLToPath(
+        new URL('./packages/plugin-contracts/src/vinted-helper.ts', import.meta.url),
+      ),
+      '@nexus/plugin-sdk/ui': fileURLToPath(
+        new URL('./packages/plugin-sdk/src/ui.ts', import.meta.url),
+      ),
       '@nexus/contracts/browser': fileURLToPath(
         new URL('./packages/contracts/src/browser.ts', import.meta.url),
       ),
@@ -36,6 +45,10 @@ export default defineConfig({
   },
   test: {
     include: [
+      'apps/desktop-v2/src/raccoon/cloak-form-adapter.vitest.ts',
+      'apps/desktop-v2/src/raccoon/update.test.ts',
+      'apps/desktop-v2/src/raccoon/plugins/address-generator/labels.test.ts',
+      'apps/desktop-v2/src/raccoon/plugins/address-generator/label-download.test.ts',
       'packages/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.mjs',

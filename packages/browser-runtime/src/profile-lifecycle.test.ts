@@ -43,17 +43,25 @@ class ContextDouble extends EventEmitter {
   closed = false
   captureOptions: unknown
   state = { cookies: [], origins: [] }
+  tabs = [this.createTab()]
+
+  createTab() {
+    return Object.assign(new EventEmitter(), {
+      goto: (_url: string, options?: { timeout?: number; waitUntil?: string }) => {
+        this.events.push('navigate')
+        this.navigationOptions = options
+        return this.navigation.promise
+      },
+    })
+  }
 
   pages() {
-    return [
-      {
-        goto: (_url: string, options?: { timeout?: number; waitUntil?: string }) => {
-          this.events.push('navigate')
-          this.navigationOptions = options
-          return this.navigation.promise
-        },
-      },
-    ]
+    return this.tabs.slice()
+  }
+
+  closeTab() {
+    const page = this.tabs.shift()
+    page?.emit('close', page)
   }
 
   async route() {
@@ -134,6 +142,9 @@ beforeEach(async () => {
       locale: '',
       viewport: 'default',
       fingerprintSeed: 123456789,
+      aliasEngine: null,
+      operatingSystem: 'host',
+      cpuCores: null,
       startUrl: 'https://start.example',
     },
   })
@@ -442,6 +453,21 @@ describe('profile context lifecycle', () => {
     expect(options.geoip).toBe(false)
     expect(options.browserVersion).toBe('155.0.8059.39.2')
     expect(options.licenseKey).toBe('synthetic-lifecycle-key')
+  })
+
+  it('stops the Profile when the last tab closes and the context is still alive', async () => {
+    context.tabs.push(context.createTab())
+    running = runtime.openProfile(join(directory, 'user-data'), profile, commands())
+    await vi.waitFor(() => expect(output).toContain('NEXUS_READY'))
+    vi.useFakeTimers()
+    context.closeTab()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(context.closed).toBe(false)
+    context.closeTab()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(context.closed).toBe(true)
+    await running
+    expect(context.events.filter((event) => event === 'close')).toHaveLength(1)
   })
 
   it('keeps a healthy context usable after start-page timeout and redacts navigation secrets', async () => {

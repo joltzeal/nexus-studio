@@ -1,4 +1,4 @@
-import { ArrowLeft, CircleCheck, Clock3, Square } from 'lucide-react'
+import { ArrowLeft, CircleCheck, Clock3, Square } from '@/components/icons'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'

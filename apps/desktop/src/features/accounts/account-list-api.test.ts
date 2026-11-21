@@ -92,6 +92,11 @@ function page(number: number, total = accounts.length): Page {
 beforeEach(() => vi.resetAllMocks())
 
 describe('complete account list adapter', () => {
+  it('reads an unknown account without promoting it to active', async () => {
+    vi.mocked(callPlugin).mockResolvedValue({ ...page(1, 1), items: [{ ...account(0), status: 'unknown' }], bindings: [] })
+    expect((await listAccounts()).items[0]?.status).toBe('unknown')
+  })
+
   it.each([
     { firstHeavy: 0, sessionCount: 0 },
     { firstHeavy: 16, sessionCount: 0 },

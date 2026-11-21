@@ -237,7 +237,7 @@ export async function listAgentTargets(): Promise<AgentTarget[]> {
           !['email', 'google', 'apple', 'facebook'].includes(
             String(item.account.loginMethod),
           ) ||
-          !['active', 'pending', 'limited', 'blocked'].includes(
+          !['unknown', 'active', 'pending', 'limited', 'blocked'].includes(
             String(item.account.status),
           )))
     )

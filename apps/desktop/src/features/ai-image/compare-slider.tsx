@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronsLeftRight } from 'lucide-react'
+import { ChevronsLeftRight } from '@/components/icons'
 import { RecordImage } from './record-image'
 import type { StoredFile } from './types'
 

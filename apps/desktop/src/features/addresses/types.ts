@@ -1,6 +1,6 @@
 /**
  * Shapes returned by the address generator plugin. They mirror
- * `plugins/address-generator` (`AddressRecord`, `ProfileRecord`, catalog rows)
+ * `plugins/vinted-helper` (`AddressRecord`, `ProfileRecord`, catalog rows)
  * field by field; the plugin is the only writer, the page never invents fields.
  */
 

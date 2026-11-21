@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Info, X } from '@/components/icons'
 import { cn } from 'cn'
 import { Button } from './button'
 

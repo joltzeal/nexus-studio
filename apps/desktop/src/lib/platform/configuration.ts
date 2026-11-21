@@ -91,8 +91,8 @@ export async function exportConfiguration(
     })
   }
   const archive = ConfigurationArchiveSchema.parse({
-    format: 'nexus-configuration',
-    schemaVersion: 1,
+    format: 'raccoon-configuration',
+    schemaVersion: 2,
     exportedAt: new Date().toISOString(),
     ...settings,
     plugins,
@@ -150,7 +150,7 @@ export async function importConfiguration(options: {
   if (selected.has('preferences') && preferences !== null)
     operations.push({
       id: 'preferences',
-      name: '外观与工作区',
+      name: '外观偏好',
       write: () => options.writePreferences(preferences),
     })
   // Changing the application route restarts plugin processes, so apply it last.

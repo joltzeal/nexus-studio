@@ -1,4 +1,7 @@
-use super::browser::provider::{BUILTIN_CONNECTION_ID, BrowserCapabilities, BrowserProviderId};
+use super::browser::provider::{
+    BUILTIN_CONNECTION_ID, BrowserCapabilities, BrowserProviderId, ProxyMode,
+};
+use super::browser::providers::cloakbrowser::encode_runtime_window;
 use super::database::open_database;
 use super::group_store::GroupStore;
 use super::plugin_host::{PluginHost, manifest::Capability};
@@ -368,8 +371,15 @@ impl TransferService {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // The offline snapshot has no resolved proxy connection. The saved
+        // record still carries its proxy settings in the export manifest.
+        let mut snapshot_record = record.clone();
+        snapshot_record.proxy_mode = ProxyMode::Direct;
+        snapshot_record.proxy = None;
+        snapshot_record.proxy_plugin = None;
+        snapshot_record.proxy_endpoint = None;
+        let record = encode_runtime_window(&snapshot_record).map_err(|_| "无法编码窗口配置")?;
         let mut child = command.spawn().map_err(|_| "无法启动浏览器数据读取进程")?;
-        let record = serde_json::to_vec(record).map_err(|_| "无法编码窗口配置")?;
         let write = child
             .stdin
             .take()
@@ -467,7 +477,8 @@ impl TransferService {
         let _guard = self.windows.lock_transfer(ids)?;
         let records = self.transfer_records(ids)?;
         let working = tempfile::tempdir_in(&self.root).map_err(|_| failure("无法创建快照目录"))?;
-        let groups = GroupStore::new(self.windows.store.database_path())?.list()?;
+        let groups = GroupStore::new(self.windows.store.database_path())?
+            .list(BrowserProviderId::CloakBrowser)?;
         let kernels = self.windows.builtin.kernels.installed()?;
         let mut windows = Vec::new();
         let mut warnings = Vec::new();
@@ -872,7 +883,8 @@ impl TransferService {
                 group_id: old.and_then(|value| value.1),
             });
         }
-        let local_groups = GroupStore::new(self.windows.store.database_path())?.list()?;
+        let local_groups = GroupStore::new(self.windows.store.database_path())?
+            .list(BrowserProviderId::CloakBrowser)?;
         let mut group_map = HashMap::new();
         let mut new_groups = Vec::new();
         for window in &manifest.windows {
@@ -989,8 +1001,14 @@ impl TransferService {
             for group in &journal.groups {
                 transaction
                     .execute(
-                        "INSERT INTO groups(id,name,note) VALUES(?1,?2,?3)",
-                        params![group.id, group.name, group.note],
+                        "INSERT INTO groups(id,provider_id,connection_id,name,note) VALUES(?1,?2,?3,?4,?5)",
+                        params![
+                            group.id,
+                            BrowserProviderId::CloakBrowser.as_str(),
+                            crate::core::browser::provider::BUILTIN_CONNECTION_ID,
+                            group.name,
+                            group.note
+                        ],
                     )
                     .map_err(|_| "无法导入分组")?;
             }
@@ -1008,7 +1026,7 @@ impl TransferService {
                     .group
                     .as_ref()
                     .and_then(|group| group_map.get(&group.id));
-                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,(SELECT id FROM groups WHERE id=?3))
+                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,?3)
                     ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,group_id=excluded.group_id",
                     params![record.id,serde_json::to_string(record).map_err(|_| "无法编码窗口")?,group_id])
                     .map_err(|_| "无法保存导入窗口")?;
@@ -1392,7 +1410,7 @@ fn rollback_native(
                 .as_ref()
                 .is_none_or(|(json, group)| json != record || group != &original.group_id)
             {
-                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,(SELECT id FROM groups WHERE id=?3))
+                transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,?3)
                     ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,group_id=excluded.group_id",
                     params![original.id,record,original.group_id]).map_err(|_| "无法恢复原窗口资料")?;
             }
@@ -1435,7 +1453,7 @@ pub fn recover_pending(app_data: &Path) -> Result<usize, String> {
         let mut journal: ImportJournal = json_file(&path.join("journal.json"), MAX_MANIFEST)?;
         if !journal.committed && !journal.native_rolled_back {
             rollback_native(
-                &app_data.join("nexus.sqlite"),
+                &super::workspace_paths::database_path(app_data),
                 &app_data.join("profiles"),
                 &path,
                 &journal,
@@ -1688,13 +1706,14 @@ if (action === 'validate-state') {{
             browser_script: runner,
             network_preload: root.join("preload.js"),
         };
-        let licenses = LicenseStore::new(root.join("nexus.sqlite")).unwrap();
+        let licenses = LicenseStore::new(root.join("raccoon.sqlite")).unwrap();
         licenses
             .save_validated("synthetic-transfer-key", "pro", None)
             .unwrap();
         let windows = Arc::new(
             WindowService::with_runtime(root.join("profiles"), None, licenses, runtime).unwrap(),
         );
+        windows.connections.set_managed_cloakbrowser(true).unwrap();
         let host = Arc::new(PluginHost::open(root.join("plugins"), Vec::new()).unwrap());
         TransferService::new(windows, host, root.join("transfers")).unwrap()
     }
@@ -1731,6 +1750,7 @@ if (action === 'validate-state') {{
             binary_path: Some(binary),
             kernel_version: Some(inventory[0]["version"].as_str().unwrap().into()),
             proxy: None,
+            proxy_id: None,
             proxy_plugin: None,
             proxy_endpoint: None,
             proxy_mode: ProxyMode::Direct,
@@ -1759,6 +1779,7 @@ if (action === 'validate-state') {{
             name: name.into(),
             proxy_mode: record.proxy_mode,
             proxy: record.proxy.clone(),
+            proxy_id: record.proxy_id.clone(),
             proxy_plugin: record.proxy_plugin.clone(),
             proxy_endpoint: record.proxy_endpoint,
             settings: record.settings.clone(),
@@ -1780,6 +1801,7 @@ if (action === 'validate-state') {{
             binary_path: None,
             kernel_version: None,
             proxy: None,
+            proxy_id: None,
             proxy_plugin: None,
             proxy_endpoint: None,
             proxy_mode: ProxyMode::Provider,
@@ -2805,7 +2827,9 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             let service = service(root.path());
             let exported = window(&service);
             let groups = GroupStore::new(service.windows.store.database_path()).unwrap();
-            let group = groups.create("Original group", "").unwrap();
+            let group = groups
+                .create(BrowserProviderId::CloakBrowser, "Original group", "")
+                .unwrap();
             service
                 .windows
                 .store
@@ -2925,7 +2949,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 let journal: ImportJournal =
                     json_file(&operation.join("journal.json"), MAX_MANIFEST).unwrap();
                 // Both saved originals and the import's group map still name this group.
-                let deleted = groups.delete(&group.id);
+                let deleted = groups.delete(BrowserProviderId::CloakBrowser, &group.id);
                 fs::write(&resume, b"resume").unwrap();
                 let result = importing.join().unwrap();
                 deleted.unwrap();
@@ -2955,7 +2979,12 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 expected_record
             );
             assert_eq!(fs::read(&cookies).unwrap(), expected_cookies);
-            assert!(groups.list().unwrap().is_empty());
+            assert!(
+                groups
+                    .list(BrowserProviderId::CloakBrowser)
+                    .unwrap()
+                    .is_empty()
+            );
             assert_eq!(service.windows.store.group_id(&original.id).unwrap(), None);
             assert_eq!(
                 fs::read_dir(service.root.join("pending")).unwrap().count(),
@@ -2980,7 +3009,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
             assert!(
                 GroupStore::new(restarted.store.database_path())
                     .unwrap()
-                    .list()
+                    .list(BrowserProviderId::CloakBrowser)
                     .unwrap()
                     .is_empty()
             );
@@ -3297,15 +3326,28 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
         let service = service(root.path());
         let record = window(&service);
         let groups = GroupStore::new(service.windows.store.database_path()).unwrap();
-        let adopted = groups.create("Imported group", "").unwrap();
-        let edited = groups.create("Initial name", "").unwrap();
-        let unused = groups.create("Unused", "").unwrap();
+        let adopted = groups
+            .create(BrowserProviderId::CloakBrowser, "Imported group", "")
+            .unwrap();
+        let edited = groups
+            .create(BrowserProviderId::CloakBrowser, "Initial name", "")
+            .unwrap();
+        let unused = groups
+            .create(BrowserProviderId::CloakBrowser, "Unused", "")
+            .unwrap();
         service
             .windows
             .store
             .save(&record, Some(&adopted.id))
             .unwrap();
-        groups.update(&edited.id, "User edited", "keep").unwrap();
+        groups
+            .update(
+                BrowserProviderId::CloakBrowser,
+                &edited.id,
+                "User edited",
+                "keep",
+            )
+            .unwrap();
         rollback_native(
             &service.windows.store.database_path(),
             service.windows.store.root(),
@@ -3334,7 +3376,7 @@ require('node:readline').createInterface({{input:process.stdin}}).on('line', lin
                 .unwrap()
                 .is_some()
         );
-        let remaining = groups.list().unwrap();
+        let remaining = groups.list(BrowserProviderId::CloakBrowser).unwrap();
         assert_eq!(remaining.len(), 2);
         assert!(remaining.iter().any(|group| group.name == "User edited"));
         assert!(!remaining.iter().any(|group| group.id == unused.id));

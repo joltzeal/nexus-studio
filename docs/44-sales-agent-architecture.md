@@ -1,5 +1,34 @@
 # Ecom Agent 架构与执行规范
 
+## desktop-v2 源码迁移（2026-11-21）
+
+新入口为 `apps/desktop-v2/src/pages/plugins/sales-agent/index.tsx`，由插件页按
+`studio.sales-agent` 懒加载。页面使用 ShardX UI Kit、PageHeader 和统一 PluginWorkspace Card；
+不引用旧桌面前端、shadcn 组件或 `legacy-pages.css`。完整功能清单与逐文件对应见
+[迁移记录](superpowers/plans/2026-11-21-plugin-icons-ecom-agent-v2.md)。
+
+业务仍调用 Rust `sales_agent_*` 命令及插件 `salesAgent.*` 方法，并使用公共 Agent schema 校验；
+Node LangGraph、工具、提示词、分类资源及既有恢复语义未删减。
+Profile 候选读取显式 connectionId，拒绝外 Workspace 返回；创建与预检同样传入 connectionId，
+Rust 核对每个 Raccoon Profile UUID 的连接及回收站状态。相关命令的 v2 入口要求该参数，
+没有增加旧 IPC 或旧页面的兼容路由。
+
+运行记录、审查和历史查询保留应用级资料；切换 Workspace 重置当前分配表单和弹窗，
+不把另一连接的 Profile 自动带入新批次。商品、账号及 Profile 详情均有按来源查看 Agent 记录的入口，
+Agent 的商品和账号链接打开各自业务资料，Profile 链接先定位对应连接。
+`nexus://agent/<UUID>` 仅定位历史批次，不执行创建、继续、发布或清理。
+
+同一连接内跳出 Agent 使用 React Activity 保留页面状态，返回时保留当前草稿、编辑、分配与原请求标识。
+查询轮询、观察器和 portal 在隐藏时暂停；写请求使用位于 Activity 外的生命周期登记，
+隐藏不等于销毁，原回执仍可收敛；真正关闭对话框或切换连接时使相应请求失效。
+Profile 详情定位使用已注册的 `browser_window_list` 按 Raccoon UUID 查找，不调用不存在的 get 命令。
+失败、取消和进入插件管理均清理对应导航意图，旧意图不能重复弹错或覆盖新目的地。
+
+本轮仅完成源码接线与受控测试；真实浏览器、模型计费、Bark、安装包和系统深链注册未验证。
+下面的版本和发行记录为 0.1 历史，不能作为本轮 v2 发行或原生验收证据。
+
+## 历史架构与执行约束
+
 更新日期：2026-11-14。已按获批方案接入 `studio.sales-agent` 源码、
 Rust 持久任务协调器、Playwright 工具层与真实商品库页面。
 当前配套核心版本为 `0.1.31`，插件版本为 `1.1.1`，展示名统一为 `Ecom Agent`。

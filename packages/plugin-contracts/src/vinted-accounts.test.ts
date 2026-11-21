@@ -27,6 +27,49 @@ const bank = {
 }
 
 describe('standalone account observation DTO contracts', () => {
+  it('accepts unknown account snapshots while requiring explicit status evidence', () => {
+    const snapshot = {
+      windowId: context.windowId,
+      bindingRevision: context.bindingRevision,
+      session: null,
+      account: {
+        accountId: context.accountId,
+        account: 'fixture@example.invalid',
+        status: 'unknown',
+        homepageUrl: '',
+        platformUserId: null,
+        observation: null,
+      },
+    }
+    expect(AccountAgentSnapshotResultSchema.parse(snapshot).account.status).toBe(
+      'unknown',
+    )
+    expect(
+      AccountObservationStateSchema.safeParse({
+        sessions: {},
+        checks: {},
+        statusEvidence: {
+          status: 'unknown',
+          source: 'official',
+          observedAt: now,
+          reason: 'legacy_status',
+        },
+      }).success,
+    ).toBe(false)
+    expect(
+      AccountObservationStateSchema.safeParse({
+        sessions: {},
+        checks: {},
+        statusEvidence: {
+          status: 'blocked',
+          source: 'official',
+          observedAt: now,
+          reason: 'current_account_banned',
+        },
+      }).success,
+    ).toBe(true)
+  })
+
   it('preserves independent money precision, currency, time and zero', () => {
     const state = AccountObservationStateSchema.parse({
       wallet: {

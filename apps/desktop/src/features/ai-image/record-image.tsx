@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ImageOff } from 'lucide-react'
+import { ImageOff } from '@/components/icons'
 import { Skeleton } from '@/components/ui/skeleton'
 import { imageObjectUrl } from './api'
 import type { StoredFile } from './types'

@@ -9,6 +9,7 @@ import {
   listBrowserProviderGroups,
   probeBrowserConnection,
   saveBrowserConnection,
+  setManagedCloakBrowser,
 } from './browser-connections'
 import { browserConnection, browserWindow } from './browser-test-support'
 
@@ -37,6 +38,15 @@ it('uses exact connection save/confirm/activate commands and fields', async () =
   ])
   vi.mocked(invoke).mockResolvedValueOnce([connection])
   await expect(listBrowserConnections()).resolves.toEqual([connection])
+})
+
+it('enables a managed browser only through an explicit native command', async () => {
+  const enabled = browserConnection({ name: 'CloakBrowser' })
+  vi.mocked(invoke).mockResolvedValueOnce(enabled)
+  await expect(setManagedCloakBrowser(true)).resolves.toEqual(enabled)
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('browser_managed_cloakbrowser_set', { enabled: true })
+  vi.mocked(invoke).mockResolvedValueOnce({ ...enabled, enabled: false })
+  await expect(setManagedCloakBrowser(false)).resolves.toMatchObject({ enabled: false })
 })
 
 it('validates probe, remote discovery and provider groups at the desktop boundary', async () => {

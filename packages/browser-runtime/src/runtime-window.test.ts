@@ -77,6 +77,33 @@ describe('version 2 built-in runtime window', () => {
     },
   )
 
+  it('accepts CloakBrowser overrides and the metadata-only shardbrowser object', () => {
+    const record = runtimeWindow()
+    record.settings.cloakbrowser = {
+      platform: 'macos',
+      gpuVendor: 'intel',
+      screenWidth: 2560,
+      screenHeight: 1440,
+      webrtcIp: 'auto',
+      noise: false,
+    }
+    record.settings.shardbrowser = {
+      _meta: { color: '#ff0000' },
+      navigator: { platform: 'CloakBrowser' },
+    }
+    expect(parseRuntimeWindow(record)).toEqual(record)
+  })
+
+  it.each([
+    ['unknown platform', { platform: 'android' }],
+    ['out-of-range screen', { screenWidth: 799 }],
+    ['unknown override field', { brand: 'Acme' }],
+  ])('rejects a malformed CloakBrowser override: %s', (_label, cloakbrowser) => {
+    const record = runtimeWindow()
+    record.settings.cloakbrowser = cloakbrowser
+    expect(() => parseRuntimeWindow(record)).toThrow('PROFILE_RECORD_INVALID')
+  })
+
   it('accepts an unresolved plugin proxy for offline snapshots without resolving or rewriting it', () => {
     const record = runtimeWindow({
       proxy_mode: 'plugin',

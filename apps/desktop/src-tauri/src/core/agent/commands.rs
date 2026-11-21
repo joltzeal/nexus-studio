@@ -11,15 +11,37 @@ fn interrupted() -> PluginErrorPayload {
     PluginErrorPayload::new("UNAVAILABLE", "Agent command was interrupted", false)
 }
 
+fn require_connection(
+    service: &AgentService,
+    input: &BatchCreateInput,
+    connection_id: &str,
+) -> Result<(), PluginErrorPayload> {
+    if connection_id.trim().is_empty() || connection_id.len() > 128 {
+        return Err(super::invalid("Agent Workspace is required"));
+    }
+    validate_create(input)?;
+    let windows = service.windows()?;
+    for assignment in &input.assignments {
+        windows
+            .automation_record(connection_id, &assignment.window_id)
+            .map_err(super::service::browser_error)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn sales_agent_batch_create(
     state: State<'_, Arc<AgentService>>,
     input: BatchCreateInput,
+    connection_id: String,
 ) -> Result<Value, PluginErrorPayload> {
     let service = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || service.create(input))
-        .await
-        .map_err(|_| interrupted())?
+    tauri::async_runtime::spawn_blocking(move || {
+        require_connection(&service, &input, &connection_id)?;
+        service.create(input)
+    })
+    .await
+    .map_err(|_| interrupted())?
 }
 
 #[tauri::command]
@@ -111,8 +133,13 @@ where
 pub async fn sales_agent_preflight(
     state: State<'_, Arc<AgentService>>,
     input: BatchCreateInput,
+    connection_id: String,
 ) -> Result<Value, PluginErrorPayload> {
-    run_agent(state, move |s| s.preflight(input)).await
+    run_agent(state, move |s| {
+        require_connection(&s, &input, &connection_id)?;
+        s.preflight(input)
+    })
+    .await
 }
 
 #[tauri::command]

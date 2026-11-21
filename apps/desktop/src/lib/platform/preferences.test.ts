@@ -28,14 +28,22 @@ describe('preview preferences', () => {
     const next: Preferences = { ...DEFAULT_PREFERENCES, theme: 'dark' }
     await repository.save(next)
     expect(await createPreviewRepository(storage).load()).toEqual(next)
-    expect(storage.key(0)).toBe('nexus.preview.preferences.v1')
+    expect(storage.key(0)).toBe('raccoon.preferences.v2')
   })
 
   it('preserves incompatible data and reports an error instead of resetting it', async () => {
     const storage = memoryStorage()
-    storage.setItem('nexus.preview.preferences.v1', '{"schemaVersion":99}')
+    storage.setItem('raccoon.preferences.v2', '{"schemaVersion":99}')
     await expect(createPreviewRepository(storage).load()).rejects.toThrow()
-    expect(storage.getItem('nexus.preview.preferences.v1')).toBe('{"schemaVersion":99}')
+    expect(storage.getItem('raccoon.preferences.v2')).toBe('{"schemaVersion":99}')
+  })
+
+  it('does not read or rewrite preferences saved by 0.1', async () => {
+    const storage = memoryStorage()
+    const old = '{"schemaVersion":1,"workspaceName":"Old studio"}'
+    storage.setItem('nexus.preview.preferences.v1', old)
+    expect(await createPreviewRepository(storage).load()).toEqual(DEFAULT_PREFERENCES)
+    expect(storage.getItem('nexus.preview.preferences.v1')).toBe(old)
   })
 })
 

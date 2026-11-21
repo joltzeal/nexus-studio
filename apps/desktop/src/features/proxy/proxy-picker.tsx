@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, RefreshCw, Search } from 'lucide-react'
+import { Check, RefreshCw, Search } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { listBrowserWindows } from '@/lib/platform/windows'

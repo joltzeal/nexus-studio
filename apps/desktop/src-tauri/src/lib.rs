@@ -1,15 +1,46 @@
 pub mod core;
 
+fn configure_main_window(config: &mut tauri::Config) {
+    if config.identifier != "com.raccoon.desktop" {
+        return;
+    }
+    let v2: tauri::Config = serde_json::from_str(include_str!("../tauri.v2.conf.json"))
+        .expect("Raccoon v2 must embed a valid window configuration");
+    let chrome = v2
+        .app
+        .windows
+        .into_iter()
+        .find(|window| window.label == "main")
+        .expect("Raccoon v2 must define its main window");
+    if let Some(window) = config
+        .app
+        .windows
+        .iter_mut()
+        .find(|window| window.label == "main")
+    {
+        window.title_bar_style = chrome.title_bar_style;
+        window.hidden_title = chrome.hidden_title;
+        window.traffic_light_position = chrome.traffic_light_position;
+        window.drag_drop_enabled = chrome.drag_drop_enabled;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    };
+    const EXIT_READY: u8 = 0;
+    const EXIT_STOPPING_BROWSERS: u8 = 1;
+    const EXIT_BROWSERS_HANDLED: u8 = 2;
+    let exit_phase = Arc::new(AtomicU8::new(EXIT_READY));
     use tauri::Manager;
+    let mut context = tauri::generate_context!();
+    configure_main_window(context.config_mut());
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            core::workbench_settings::show_main_window(app);
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
@@ -17,12 +48,101 @@ pub fn run() {
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
-        .setup(core::plugin_service::initialize)
+        .setup(|app| {
+            #[cfg(not(target_os = "macos"))]
+            if app.config().identifier == "com.raccoon.desktop" {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.set_decorations(false)?;
+                }
+            }
+            core::plugin_service::initialize(app)?;
+            core::workbench_settings::initialize(app.handle()).map_err(std::io::Error::other)?;
+            core::automation::host::initialize(app).map_err(std::io::Error::other)?;
+            core::automation::http::initialize(app).map_err(std::io::Error::other)?;
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                let ns_window = window.ns_window()?;
+                unsafe {
+                    let window = &*ns_window.cast::<objc2_app_kit::NSWindow>();
+                    window.setMovableByWindowBackground(false);
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(core::workbench_settings::window_event)
         .invoke_handler(tauri::generate_handler![
+            core::automation::commands::browser_automation_available,
+            core::automation::commands::browser_automation_capabilities,
+            core::automation::commands::browser_automation_list,
+            core::automation::commands::browser_automation_create,
+            core::automation::commands::browser_automation_save,
+            core::automation::commands::browser_automation_delete,
+            core::automation::commands::browser_automation_duplicate,
+            core::automation::commands::browser_automation_attach,
+            core::automation::commands::browser_automation_detach,
+            core::automation::commands::browser_automation_attached,
+            core::automation::commands::browser_automation_screencast,
+            core::automation::commands::browser_automation_call,
+            core::automation::commands::browser_automation_launch,
+            core::automation::commands::browser_automation_pick,
+            core::automation::commands::browser_automation_run,
+            core::automation::commands::browser_automation_run_stop,
+            core::automation::commands::browser_automation_run_status,
+            core::automation::commands::browser_automation_run_reconcile,
+            core::automation::commands::browser_automation_fleet,
+            core::automation::commands::browser_automation_fleet_window,
+            core::automation::commands::browser_automation_tls_fingerprints,
+            core::automation::commands::browser_automation_modules,
+            core::automation::commands::browser_automation_module_permissions,
+            core::automation::commands::browser_automation_module_grant,
+            core::automation::commands::browser_automation_module_install,
+            core::automation::commands::browser_automation_module_remove,
+            core::automation::commands::browser_automation_modules_dir,
+            core::automation::commands::browser_automation_export,
+            core::automation::commands::browser_automation_import,
+            core::automation::commands::browser_automation_display,
+            core::automation::commands::browser_automation_helper_fields,
+            core::automation::commands::browser_automation_helper_fill,
+            core::automation::commands::browser_automation_helper_profiles,
+            core::automation::commands::browser_automation_helper_show,
+            core::automation::commands::browser_automation_helper_close,
+            core::automation::commands::browser_automation_helper_dismiss,
+            core::automation::http::browser_automation_http_start,
+            core::automation::http::browser_automation_http_status,
+            core::automation::http::browser_automation_http_stop,
+            core::automation::http::browser_automation_http_token,
+            core::automation::http::browser_automation_http_rotate_token,
+            core::automation::http::browser_automation_mcp_download,
+            core::workbench_settings::workbench_settings_get,
+            core::workbench_settings::workbench_settings_set,
+            core::workbench_settings::workbench_info,
+            core::workbench_settings::workbench_storage_reveal,
             core::external_url::external_url_open,
             core::configuration_service::configuration_file_export,
+            core::plugin_pdf_export::plugin_pdf_export,
             core::configuration_service::configuration_file_import,
+            core::browser::proxy_library::browser_proxy_list,
+            core::browser::proxy_library::browser_proxy_save,
+            core::browser::proxy_library::browser_proxy_delete,
+            core::browser::proxy_library::browser_proxy_usage,
+            core::browser::proxy_library::browser_proxy_full_test,
+            core::browser::proxy_library::browser_proxy_last_test,
+            core::browser::proxy_library::browser_proxy_history,
+            core::browser::proxy_library::browser_proxy_bulk_parse,
+            core::browser::proxy_library::browser_proxy_bulk_save,
+            core::browser::proxy_library::browser_proxy_bulk_import,
+            core::clipboard::browser_clipboard_read,
+            core::clipboard::browser_clipboard_write,
             core::window_service::browser_window_list,
+            core::workbench_tags::browser_tag_list,
+            core::workbench_tags::browser_tag_save,
+            core::workbench_tags::browser_tag_delete,
+            core::workbench_tags::browser_tag_assign,
+            core::workbench_trash::browser_trash_list,
+            core::workbench_trash::browser_profile_trash,
+            core::workbench_trash::browser_trash_restore,
+            core::workbench_trash::browser_trash_purge,
+            core::workbench_trash::browser_trash_empty,
             core::window_service::browser_window_create,
             core::window_service::browser_window_update,
             core::window_service::browser_window_update_note,
@@ -30,15 +150,60 @@ pub fn run() {
             core::window_service::browser_window_delete,
             core::window_service::browser_window_start,
             core::window_service::browser_window_stop,
+            core::window_service::browser_cloakbrowser_cleanup,
+            core::window_service::browser_cloakbrowser_sessions,
             core::window_service::browser_connection_list,
+            core::window_service::browser_managed_cloakbrowser_set,
+            core::window_service::browser_managed_aliasmode_set,
+            core::window_service::browser_managed_shardbrowser_set,
+            core::shardbrowser_kernels::shardbrowser_kernel_status,
+            core::shardbrowser_kernels::shardbrowser_kernel_download,
+            core::shardbrowser_kernels::shardbrowser_kernel_delete,
+            core::shardbrowser_fingerprints::shardbrowser_fingerprint_list,
+            core::shardbrowser_fingerprints::shardbrowser_fingerprint_import,
+            core::shardbrowser_fingerprints::shardbrowser_fingerprint_delete,
+            core::shardbrowser_fingerprints::shardbrowser_fingerprint_dir,
+            core::shardbrowser_fingerprints::shardbrowser_fingerprint_reveal,
+            core::shardbrowser_fingerprints::shardbrowser_fingerprint_enrich_picks,
+            core::shardbrowser_fingerprints::shardbrowser_profile_config,
+            core::shardbrowser_fingerprints::shardbrowser_host_hardware,
+            core::shardbrowser_fingerprints::shardbrowser_host_screen,
+            core::shardbrowser_bookmarks::shardbrowser_bookmark_list,
+            core::shardbrowser_bookmarks::shardbrowser_bookmark_save,
+            core::shardbrowser_bookmarks::shardbrowser_bookmark_delete,
+            core::shardbrowser_bookmarks::shardbrowser_bookmark_delete_many,
+            core::shardbrowser_extensions::shardbrowser_extension_list,
+            core::shardbrowser_extensions::shardbrowser_extension_import,
+            core::shardbrowser_extensions::shardbrowser_extension_import_url,
+            core::shardbrowser_extensions::shardbrowser_extension_delete,
+            core::shardbrowser_extensions::shardbrowser_extension_updates,
+            core::shardbrowser_extensions::shardbrowser_extension_updates_check,
+            core::shardbrowser_extensions::shardbrowser_extension_update,
+            core::shardbrowser_extensions::shardbrowser_extension_link_source,
+            core::shardbrowser_extensions::shardbrowser_extension_update_cancel,
+            core::shardbrowser_extensions::shardbrowser_extension_update_skip,
+            core::shardbrowser_gpu::shardbrowser_gpu_caps,
+            core::shardbrowser_gpu::shardbrowser_gpu_compat,
+            core::shardbrowser_profiles::shardbrowser_cookies_import,
+            core::shardbrowser_profiles::shardbrowser_cookies_export_to_file,
+            core::shardbrowser_profiles::shardbrowser_profile_cdp,
+            core::shardbrowser_profiles::shardbrowser_profile_focus,
+            core::shardbrowser_profiles::browser_window_set_pin,
+            core::aliasmode_kernels::aliasmode_kernel_status,
+            core::aliasmode_kernels::aliasmode_kernel_job,
+            core::aliasmode_kernels::aliasmode_kernel_check_latest,
+            core::aliasmode_kernels::aliasmode_kernel_download,
+            core::aliasmode_kernels::aliasmode_kernel_delete,
             core::window_service::browser_connection_save,
             core::window_service::browser_connection_probe,
+            core::window_service::browser_bitbrowser_launch,
             core::window_service::browser_connection_confirm,
             core::window_service::browser_connection_activate,
             core::window_service::browser_profile_discover,
             core::window_service::browser_group_list,
             core::window_service::browser_window_attach,
             core::window_service::browser_operation_list,
+            core::window_service::browser_operation_get,
             core::window_service::browser_operation_reconcile,
             core::window_service::browser_operation_resolve,
             core::transfer_service::window_transfer_pick,
@@ -56,7 +221,9 @@ pub fn run() {
             core::kernel_service::kernel_status,
             core::kernel_service::kernel_check_latest,
             core::kernel_service::kernel_download,
+            core::kernel_service::kernel_delete,
             core::license_service::license_status,
+            core::license_service::license_seats,
             core::license_service::license_set,
             core::license_service::license_remove,
             core::network_proxy::network_proxy_get,
@@ -65,7 +232,14 @@ pub fn run() {
             core::group_store::group_create,
             core::group_store::group_update,
             core::group_store::group_delete,
+            core::group_store::browser_folder_list,
+            core::group_store::browser_folder_create,
+            core::group_store::browser_folder_update,
+            core::group_store::browser_folder_delete,
             core::plugin_service::plugin_catalog,
+            core::plugin_ui::plugin_ui_command,
+            core::plugin_ui::plugin_ui_task_command,
+            core::plugin_ui::plugin_ui_profiles,
             core::plugin_service::plugin_license_status,
             core::plugin_service::plugin_license_activate,
             core::plugin_service::plugin_proxy_providers,
@@ -97,14 +271,57 @@ pub fn run() {
             core::agent::commands::sales_agent_attention,
             core::agent::commands::sales_agent_related
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Raccoon could not initialize its desktop runtime")
-        .run(|app, event| {
+        .run(move |app, event| {
             use tauri::Manager;
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Reopen { .. })
+                && core::workbench_settings::is_v2_workbench(app)
+                && app
+                    .get_webview_window("main")
+                    .is_some_and(|window| matches!(window.is_visible(), Ok(false)))
+            {
+                core::workbench_settings::show_main_window(app);
+            }
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event
+                && let Some(windows) = app.try_state::<Arc<core::window_service::WindowService>>()
+            {
+                if *code == Some(tauri::RESTART_EXIT_CODE) {
+                    windows.builtin.shutdown();
+                } else if exit_phase.load(Ordering::Acquire) != EXIT_BROWSERS_HANDLED {
+                    api.prevent_exit();
+                    if exit_phase
+                        .compare_exchange(
+                            EXIT_READY,
+                            EXIT_STOPPING_BROWSERS,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        let app = app.clone();
+                        let browser = windows.builtin.clone();
+                        let exit_phase = exit_phase.clone();
+                        let code = code.unwrap_or(0);
+                        tauri::async_runtime::spawn_blocking(move || {
+                            browser.shutdown();
+                            exit_phase.store(EXIT_BROWSERS_HANDLED, Ordering::Release);
+                            app.exit(code);
+                        });
+                    }
+                    return;
+                }
+            }
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
+                if let Some(automation) =
+                    app.try_state::<std::sync::Arc<core::automation::AutomationService>>()
+                {
+                    automation.shutdown();
+                }
                 if let Some(agent) = app.try_state::<std::sync::Arc<core::agent::AgentService>>() {
                     agent.shutdown();
                 }
@@ -114,4 +331,68 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod window_chrome_tests {
+    use super::configure_main_window;
+
+    fn stale_v2_config() -> tauri::Config {
+        let mut config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        config.identifier = "com.raccoon.desktop".into();
+        config
+    }
+
+    #[test]
+    fn stale_v2_cli_config_gets_overlay_chrome() {
+        let mut config = stale_v2_config();
+        assert_eq!(
+            config.app.windows[0].title_bar_style,
+            tauri::TitleBarStyle::Visible
+        );
+
+        configure_main_window(&mut config);
+
+        let main = &config.app.windows[0];
+        assert_eq!(main.title_bar_style, tauri::TitleBarStyle::Overlay);
+        assert!(main.hidden_title);
+        assert!(main.decorations);
+        assert!(!main.drag_drop_enabled);
+        let position = main.traffic_light_position.as_ref().unwrap();
+        assert_eq!((position.x, position.y), (14.0, 21.0));
+    }
+
+    #[test]
+    fn v2_chrome_preserves_window_state_and_other_windows() {
+        let mut config = stale_v2_config();
+        config.app.windows[0].width = 1120.0;
+        config.app.windows[0].height = 760.0;
+        config.app.windows[0].visible = false;
+        let mut helper = config.app.windows[0].clone();
+        helper.label = "automation-helper-test".into();
+        config.app.windows.push(helper.clone());
+        let security = config.app.security.clone();
+
+        configure_main_window(&mut config);
+
+        let main = &config.app.windows[0];
+        assert_eq!((main.width, main.height), (1120.0, 760.0));
+        assert!(!main.visible);
+        assert_eq!(config.app.windows[1], helper);
+        assert_eq!(config.app.security, security);
+    }
+
+    #[test]
+    fn other_entries_keep_their_native_chrome() {
+        for identifier in ["com.nexusstudio.desktop", "com.raccoon.preview"] {
+            let mut config = stale_v2_config();
+            config.identifier = identifier.into();
+            let expected = config.clone();
+
+            configure_main_window(&mut config);
+
+            assert_eq!(config, expected);
+        }
+    }
 }

@@ -1,6 +1,23 @@
 # 桌面分发与运行时规划
 
+## Raccoon Preview 本地构件
+
+2026-11-18 用户明确授权构建 Preview。macOS arm64 使用 v2、release、macOS
+及 `tauri.preview.conf.json` 四份配置，生成 `Raccoon Preview.app`，版本为
+`0.2.0-preview.1`，应用标识为 `com.raccoon.preview`。该构件包含全局代理库和
+ShardBrowser 原生入口，数据保存到 Preview 独立应用目录。使用 ad-hoc 签名，
+未公证。具体构建与资源检查结果见质量记录。
+
 ## 当前交付状态
+
+desktop-v2 的 ShardBrowser 原生开发入口使用
+`rtk proxy pnpm --filter @raccoon/desktop-v2 run desktop:dev`，通过独立
+`tauri.v2.conf.json` 指向 v2 前端，并设置与旧桌面端分开的
+`com.raccoon.desktop` 应用标识。其 `v2/raccoon.sqlite` 位于独立应用数据目录，
+不打开或迁移旧桌面端数据。开发服务使用 `1422` 端口，与旧版的 `1420` 分开；
+Preview 配置继续使用单独标识。该命令会启动 Tauri
+并触发 Rust 编译，仍遵循本地禁止应用/Rust 构建的约定，由允许的 CI 或验收环境执行。
+现有默认发行脚本保留旧前端入口，v2 原生开发配置尚未作为正式发行验证。
 
 当前桌面开发构件已有 Rust 原生窗口、插件宿主与 SQLite 授权，
 分组及外观/工作区偏好仍使用 localStorage；授权密钥在未加密数据库中明文保存。
@@ -75,11 +92,63 @@ macOS 结果不能代表 Windows，也不能由跨平台框架名称推定通过
 
 ## 后续更新与数据
 
-Tauri updater 使用独立签名密钥，关于页提供检查、下载、安装和重启；
-安装前要求停止所有运行中的窗口。私有源码仓库的 GitHub Release 不能作为公开更新源，
-需要单独的公开更新分发仓库。当前发行工作流只创建私有草稿，
-未接通公开更新源，也没有完成操作系统签名或公证。
+Tauri updater 使用独立签名密钥；0.2 启动后静默检查并在后台下载，下载完成后才在
+侧边栏版本行显示升级按钮，点击并二次确认后安装并重启；
+0.1 的关于页检查、下载、安装和重启入口仍保留在旧前端；
+发布版始终初始化 updater，因此基础 `tauri.conf.json` 必须包含公钥与更新地址，
+不能只放在 release 覆盖配置中；本地打包也必须叠加 release 和对应平台配置，
+否则安装包可能缺少插件宿主的 Node helper 与 runtime。未提供签名私钥的本地
+打包可仅关闭更新产物生成，应用内更新仍使用相同的公钥和地址。
+安装前要求停止所有运行中的窗口。发行工作流当前用 `tauri.v2.conf.json` 与
+`tauri.release.v2.conf.json` 构建 0.2，并生成 updater 清单与签名产物。
+工作流暂只构建 macOS arm64 与 x64，Windows 矩阵在恢复 Windows 验收前不运行。
+旧版 updater 继续读取 GitHub Latest 的 `latest.json`；v2 从 `raccoon-v2` 预发布
+Release 读取独立 updater 清单。版本化 v2 Release 显式不设为 GitHub Latest，发布完成后
+工作流将其中的 `latest.json` 复制到 `raccoon-v2`，使旧版客户端继续留在 0.1 更新通道。
+地址生成器的浏览器 Key 由仓库 Secret `VITE_GOOGLE_MAPS_API_KEY` 注入前端构建；
+Secret 未配置时构建仍可完成，但地图选点会提示未配置。
+版本化 v2 Release 与 updater 通道均位于公开 GitHub 仓库。
+当前发行工作流使用 ad-hoc macOS 签名，尚未完成 Developer ID 签名或公证，
+Windows 0.2 安装包尚未进入工作流。
 当前授权 SQLite 与未来业务表均遵守[本地数据](07-data-storage.md)的所有权与迁移规则。
 演示 localStorage 不自动成为正式业务数据，升级策略需明确设计。
 插件依赖和浏览器来源进入可追溯发布清单，诊断信息脱敏。
 当前不将本机应用构建等同于完整运行时、授权与双平台分发链闭环。
+
+## 2026-11-18 用户本机 Preview 编译
+
+用户自行执行应用编译。当前 macOS Preview 使用 v2 前端与独立应用标识。
+在仓库根目录执行以下命令。
+
+```bash
+rtk proxy pnpm --config.verify-deps-before-run=false --filter @raccoon/desktop-v2 run build && \
+rtk proxy pnpm --config.verify-deps-before-run=false --filter @nexus/desktop exec tauri build \
+  --config src-tauri/tauri.v2.conf.json \
+  --config src-tauri/tauri.release.conf.json \
+  --config src-tauri/tauri.release.macos.conf.json \
+  --config src-tauri/tauri.preview.conf.json \
+  --bundles app
+```
+
+应用输出为 apps/desktop/src-tauri/target/release/bundle/macos/Raccoon Preview.app。
+此命令使用现有已准备的运行时资源，Preview 采用 ad-hoc 签名。
+
+## 2026-11-20 本机 macOS 0.2 构建
+
+按用户要求只构建当前机器架构，使用 `aarch64-apple-darwin`。前端通过
+`VITE_GOOGLE_MAPS_API_KEY` 注入已有浏览器 Key；该 Key 同时写入仓库 Secret
+供发行工作流使用。临时使用本机生成的 updater 私钥完成签名，因此本次
+`Raccoon.app.tar.gz.sig` 与配置中的 CI 公钥不匹配，不代表真实自动更新通过。
+
+构建结果位于
+`apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/`：
+
+- `macos/Raccoon.app`，ad-hoc 签名，`codesign --verify --deep --strict` 通过，
+  `runtime:verify-packaged` 通过。
+- `macos/Raccoon.app.tar.gz` 与 `.sig`，更新签名使用上述临时私钥。
+- `dmg/Raccoon_0.2.0_aarch64.dmg`，SHA-256
+  `5db2e9199ef746b8f2fe8adc8a34e9a2b8d7fa8074861d83ed4038cfd7803fc6`。
+
+应用可启动并进入真实 SQLite 工作区；未公证，未验证 Gatekeeper 干净环境安装，
+未构建 x64 或 Windows。构建时需要至少约 11 GiB 可用磁盘，`target/debug`
+可在不影响 release 构件的前提下清理。

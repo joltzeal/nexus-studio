@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Download, Radio, Upload } from 'lucide-react'
+import { Download, Radio, Upload } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import type { BrowserConnection } from '@/lib/platform/browser-connections'
 import type { BrowserWindow } from '@/lib/platform/windows'
@@ -64,11 +64,6 @@ export function TransferToolbar({
         <Radio data-icon="inline-start" />
         设备同步
       </Button>
-      {unsupported ? (
-        <p className="text-xs text-muted-foreground" role="status">
-          {unsupported}
-        </p>
-      ) : null}
       {native && (active === 'export' || active === 'import') ? (
         <FileTransferDialog
           key={active}

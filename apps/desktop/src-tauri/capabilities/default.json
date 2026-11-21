@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
-  "permissions": ["core:default", "deep-link:allow-get-current"]
+  "windows": ["main", "automation-fleet-*", "automation-helper-*"],
+  "permissions": ["core:default", "core:window:allow-close", "deep-link:allow-get-current", "dialog:allow-save", "dialog:allow-open"]
 }

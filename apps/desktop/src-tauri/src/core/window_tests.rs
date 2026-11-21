@@ -1,11 +1,47 @@
 use super::{
-    browser::{connection_store::ConnectionStore, operation_store::OperationStore, provider::*},
+    browser::{operation_store::OperationStore, provider::*},
     database::open_database,
     group_store::GroupStore,
     scheduler::{LaunchRequest, ProxyBinding, Scheduler, SchedulerError},
-    window_store::{StoreError, WindowRecord, WindowSettings, WindowStore},
+    window_store::{
+        BitBrowserFingerprintConfig, CloakFingerprintConfig, StoreError, WindowRecord,
+        WindowSettings, WindowStore, validate_bit_fingerprint, validate_cloak_fingerprint,
+    },
 };
 use serde_json::json;
+
+fn seed_connection(
+    path: &std::path::PathBuf,
+    id: &str,
+    provider: BrowserProviderId,
+    enabled: bool,
+) {
+    let connection = super::browser::connection_store::BrowserConnection {
+        id: id.into(),
+        provider_id: provider,
+        name: "Fixture connection".into(),
+        endpoint: "http://127.0.0.1:50325/".into(),
+        api_key: None,
+        default_group_id: None,
+        scope_label: "Fixture".into(),
+        scope_id: None,
+        scope_confirmed: true,
+        enabled,
+        revision: 1,
+    };
+    open_database(path)
+        .unwrap()
+        .execute(
+            "INSERT INTO browser_connections(id,provider,enabled,record_json) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                id,
+                serde_json::to_string(&provider).unwrap(),
+                enabled,
+                serde_json::to_string(&connection).unwrap()
+            ],
+        )
+        .unwrap();
+}
 
 fn record(root: &std::path::Path) -> WindowRecord {
     let id = uuid::Uuid::new_v4().to_string();
@@ -21,6 +57,7 @@ fn record(root: &std::path::Path) -> WindowRecord {
         binary_path: Some(root.join("chromium-155.0.8059.39.5-pro/browser")),
         kernel_version: Some("155.0.8059.39.5".into()),
         proxy: None,
+        proxy_id: None,
         proxy_plugin: None,
         proxy_endpoint: None,
         proxy_mode: ProxyMode::Direct,
@@ -71,213 +108,284 @@ fn observed_external_profile() -> RemoteProfile {
     }
 }
 
-fn legacy_record(root: &std::path::Path) -> serde_json::Value {
-    let mut value = serde_json::to_value(record(root)).unwrap();
-    value["schema_version"] = json!(1);
-    value["binding"] = json!({
-        "profile_id": value["id"],
-        "channel_id": "cloak:155.0.8059.39",
-        "channel_version": "155.0.8059.39"
-    });
-    let fields = value.as_object_mut().unwrap();
-    for field in [
-        "kernel_version",
-        "proxy_mode",
-        "origin",
-        "provider_config",
-        "sort_order",
-    ] {
-        fields.remove(field);
-    }
-    value
+#[test]
+fn fresh_workspace_uses_new_schema_without_touching_previous_data() {
+    let root = tempfile::tempdir().unwrap();
+    let previous = root.path().join("nexus.sqlite");
+    std::fs::write(&previous, b"previous database").unwrap();
+    let workspace = super::workspace_paths::workspace_root(root.path());
+    let database = super::workspace_paths::database_path(&workspace);
+
+    let connection = open_database(&database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT version FROM browser_schema", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    assert_eq!(std::fs::read(previous).unwrap(), b"previous database");
+    assert_eq!(
+        WindowStore::new(workspace.join("profiles"))
+            .reserve_sort_order()
+            .unwrap(),
+        1
+    );
 }
 
-fn legacy_database(path: &std::path::Path, rows: &[serde_json::Value]) {
-    let db = rusqlite::Connection::open(path).unwrap();
-    db.execute_batch(
-        "CREATE TABLE groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,note TEXT NOT NULL);
-         CREATE TABLE profile_records(id TEXT PRIMARY KEY,record_json TEXT NOT NULL,group_id TEXT REFERENCES groups(id));",
-    )
-    .unwrap();
-    for row in rows {
-        db.execute(
-            "INSERT INTO profile_records(id,record_json) VALUES(?1,?2)",
-            rusqlite::params![row["id"].as_str().unwrap(), row.to_string()],
+#[test]
+fn groups_are_scoped_by_browser_space() {
+    let root = tempfile::tempdir().unwrap();
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        "external-connection",
+        BrowserProviderId::AdsPower,
+        true,
+    );
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        "bit-connection",
+        BrowserProviderId::BitBrowser,
+        true,
+    );
+    let groups = GroupStore::new(root.path().join("raccoon.sqlite")).unwrap();
+    let ads = groups
+        .create(BrowserProviderId::AdsPower, "Shop", "")
+        .unwrap();
+    let bit = groups
+        .create(BrowserProviderId::BitBrowser, "Shop", "")
+        .unwrap();
+    assert_eq!(
+        groups.list(BrowserProviderId::AdsPower).unwrap()[0].id,
+        ads.id
+    );
+    assert_eq!(
+        groups.list(BrowserProviderId::BitBrowser).unwrap()[0].id,
+        bit.id
+    );
+
+    let store = WindowStore::new(root.path().join("profiles"));
+    let external = external_record(root.path());
+    assert!(store.insert(&external, Some(&bit.id)).is_err());
+    assert!(
+        store
+            .insert(&external, Some(&uuid::Uuid::new_v4().to_string()))
+            .is_err()
+    );
+    store.insert(&external, Some(&ads.id)).unwrap();
+    let mut renamed = external.clone();
+    renamed.name = "Updated".into();
+    assert!(
+        store
+            .save(&renamed, Some(&uuid::Uuid::new_v4().to_string()))
+            .is_err()
+    );
+    assert_eq!(store.get(&external.id).unwrap().name, external.name);
+    assert!(
+        groups
+            .assign(BrowserProviderId::BitBrowser, &external.id, Some(&bit.id))
+            .is_err()
+    );
+    assert_eq!(
+        store.group_id(&external.id).unwrap().as_deref(),
+        Some(ads.id.as_str())
+    );
+}
+
+#[test]
+fn existing_legacy_database_is_rejected_without_migration_or_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("raccoon.sqlite");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE groups(id TEXT PRIMARY KEY,name TEXT NOT NULL);
+         CREATE TABLE profile_records(id TEXT PRIMARY KEY,record_json TEXT NOT NULL);",
         )
         .unwrap();
-    }
+    drop(connection);
+    let before = std::fs::read(&path).unwrap();
+
+    assert!(open_database(&path).unwrap_err().contains("独立工具迁移"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
 #[test]
-fn database_upgrade_preserves_identity_and_records_the_full_pinned_package() {
+fn provider_only_schema_three_is_rejected_without_mutation() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
-    let id = uuid::Uuid::new_v4().to_string();
-    let group = uuid::Uuid::new_v4().to_string();
+    let path = root.path().join("raccoon.sqlite");
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("CREATE TABLE groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,note TEXT NOT NULL);
-        CREATE TABLE profile_records(id TEXT PRIMARY KEY,record_json TEXT NOT NULL,group_id TEXT REFERENCES groups(id));
-        CREATE INDEX idx_profile_group ON profile_records(group_id);").unwrap();
-    db.execute("INSERT INTO groups VALUES(?1,'Group','')", [&group])
-        .unwrap();
-    let original = json!({"schema_version":1,"id":id,"name":"Old",
-        "binding":{"profile_id":id,"channel_id":"cloak:155.0.8059.39","channel_version":"155.0.8059.39"},
-        "binary_path":root.path().join("chromium-155.0.8059.39.5-pro/browser"),"proxy":null,
-        "proxy_plugin":null,"proxy_endpoint":null,"settings":{"platform":"Vinted","note":"keep",
-        "geoip":true,"timezone":"","locale":"","viewport":"default","fingerprintSeed":321,"startUrl":""},
-        "created_at":20,"last_opened_at":30});
-    db.execute(
-        "INSERT INTO profile_records VALUES(?1,?2,?3)",
-        rusqlite::params![id, original.to_string(), group],
-    )
-    .unwrap();
+    db.execute_batch(
+        "CREATE TABLE browser_schema(version INTEGER NOT NULL);
+         INSERT INTO browser_schema VALUES(3);
+         CREATE TABLE groups(id TEXT PRIMARY KEY,provider_id TEXT NOT NULL,name TEXT NOT NULL,note TEXT NOT NULL);
+         INSERT INTO groups VALUES('existing','adspower','Preserved','Original note');",
+    ).unwrap();
     drop(db);
-    open_database(&path).unwrap();
-    ConnectionStore::new(path.clone()).unwrap();
-    let store = WindowStore::new(root.path().join("profiles"));
-    let saved = store.get(&id).unwrap();
-    assert_eq!(saved.binding.profile_id, id);
-    assert_eq!(saved.binding.connection_id, BUILTIN_CONNECTION_ID);
-    assert_eq!(saved.kernel_version.as_deref(), Some("155.0.8059.39.5"));
-    assert_eq!(saved.settings.fingerprint_seed, Some(321));
-    assert_eq!(saved.settings.note, "keep");
-    assert_eq!(saved.created_at, 20);
-    assert_eq!(saved.last_opened_at, Some(30));
-    assert_eq!(
-        store.group_id(&id).unwrap().as_deref(),
-        Some(group.as_str())
-    );
-    assert_eq!(
-        GroupStore::new(path.clone()).unwrap().list().unwrap()[0].window_count,
-        1
-    );
-    assert_eq!(
-        std::fs::read_dir(root.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry
-                .file_name()
-                .to_string_lossy()
-                .contains("before-browser-v2"))
-            .count(),
-        1
-    );
-    open_database(&path).unwrap();
-    assert_eq!(store.get(&id).unwrap(), saved);
-    assert_eq!(store.reserve_sort_order().unwrap(), saved.sort_order + 1);
+    let before = std::fs::read(&path).unwrap();
+    assert!(open_database(&path).unwrap_err().contains("版本不受"));
+    assert_eq!(std::fs::read(path).unwrap(), before);
 }
 
 #[test]
-fn database_upgrade_rolls_back_every_row_and_keeps_backup_on_invalid_new_records() {
-    for field in [
-        "unknown_field",
-        "missing_settings",
-        "invalid_settings",
-        "missing_seed",
-        "invalid_binary",
-        "invalid_name",
-        "invalid_proxy",
-        "negative_created_at",
-        "negative_last_opened_at",
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
-        let valid = legacy_record(root.path());
-        let mut invalid = legacy_record(root.path());
-        match field {
-            "unknown_field" => invalid["unexpected"] = json!(true),
-            "missing_settings" => {
-                invalid.as_object_mut().unwrap().remove("settings");
-            }
-            "invalid_settings" => invalid["settings"]["viewport"] = json!("invalid"),
-            "missing_seed" => invalid["settings"]["fingerprintSeed"] = json!(null),
-            "invalid_binary" => invalid["binary_path"] = json!("relative/browser"),
-            "invalid_name" => invalid["name"] = json!(""),
-            "invalid_proxy" => invalid["proxy"] = json!("not a proxy URL"),
-            "negative_created_at" => invalid["created_at"] = json!(-1),
-            "negative_last_opened_at" => invalid["last_opened_at"] = json!(-1),
-            _ => unreachable!(),
-        }
-        let rows = [valid, invalid];
-        legacy_database(&path, &rows);
-
-        assert!(open_database(&path).is_err(), "{field}");
-        let db = rusqlite::Connection::open(&path).unwrap();
-        for row in &rows {
-            let text: String = db
-                .query_row(
-                    "SELECT record_json FROM profile_records WHERE id=?1",
-                    [row["id"].as_str().unwrap()],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(text, row.to_string(), "{field}");
-        }
-        assert_eq!(
-            db.query_row(
-                "SELECT COALESCE(MAX(version),0) FROM browser_schema",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap(),
-            0,
-            "{field}"
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name IN('browser_connections','browser_operations','browser_sequences')",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap(),
-            0,
-            "{field}"
-        );
-        let backups: Vec<_> = std::fs::read_dir(root.path())
-            .unwrap()
-            .map(Result::unwrap)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("before-browser-v2")
-            })
-            .collect();
-        assert_eq!(backups.len(), 1, "{field}");
-        let backup = rusqlite::Connection::open(backups[0].path()).unwrap();
-        for row in &rows {
-            let text: String = backup
-                .query_row(
-                    "SELECT record_json FROM profile_records WHERE id=?1",
-                    [row["id"].as_str().unwrap()],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(text, row.to_string(), "{field}");
-        }
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn database_upgrade_validates_profile_symlinks_under_the_database_parent() {
+fn folders_isolate_same_provider_connections_and_provider_methods_follow_activation() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
-    let row = legacy_record(root.path());
-    let profiles = root.path().join("profiles");
-    let target = root.path().join("outside");
-    std::fs::create_dir_all(&profiles).unwrap();
-    std::fs::create_dir_all(&target).unwrap();
-    std::os::unix::fs::symlink(&target, profiles.join(row["id"].as_str().unwrap())).unwrap();
-    legacy_database(&path, std::slice::from_ref(&row));
-
-    assert!(open_database(&path).is_err());
-    std::fs::remove_file(profiles.join(row["id"].as_str().unwrap())).unwrap();
-    open_database(&path).unwrap();
+    let path = root.path().join("raccoon.sqlite");
+    seed_connection(&path, "first", BrowserProviderId::AdsPower, true);
+    seed_connection(&path, "second", BrowserProviderId::AdsPower, false);
+    let groups = GroupStore::new(path.clone()).unwrap();
+    let first = groups
+        .create(BrowserProviderId::AdsPower, " Shop ", " Note ")
+        .unwrap();
+    open_database(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TRIGGER group_connection_scope_insert;
+             CREATE TRIGGER group_connection_scope_insert BEFORE INSERT ON groups
+               WHEN NOT EXISTS(SELECT 1 FROM browser_connections WHERE id=NEW.connection_id AND provider=NEW.provider_id)
+               BEGIN SELECT RAISE(ABORT,'folder provider does not match connection'); END;",
+        )
+        .unwrap();
+    let second = groups
+        .create_with_appearance(
+            "second",
+            "Shop",
+            "",
+            super::group_store::FolderAppearance {
+                color: Some("blue".into()),
+                icon: "cart".into(),
+            },
+        )
+        .unwrap();
+    assert_ne!(first.id, second.id);
+    uuid::Uuid::parse_str(&first.id).unwrap();
+    assert_eq!(first.connection_id, "first");
+    assert_eq!((&first.name[..], &first.note[..]), ("Shop", "Note"));
+    assert_eq!(groups.list_for_connection("first").unwrap().len(), 1);
+    let saved_second = groups.list_for_connection("second").unwrap().remove(0);
+    assert_eq!(saved_second.id, second.id);
+    assert_eq!(saved_second.color.as_deref(), Some("blue"));
+    assert_eq!(saved_second.icon, "cart");
     assert!(
-        WindowStore::new(profiles)
-            .get(row["id"].as_str().unwrap())
-            .is_ok()
+        groups
+            .update_for_connection("second", &first.id, "Wrong", "")
+            .is_err()
+    );
+    assert!(groups.delete_for_connection("second", &first.id).is_err());
+    assert!(groups.create_for_connection("missing", "No", "").is_err());
+    assert!(groups.list_for_connection("missing").is_err());
+    assert!(groups.create_for_connection("first", " ", "").is_err());
+    assert!(
+        groups
+            .create_for_connection("first", "Shop", &"x".repeat(121))
+            .is_err()
+    );
+
+    super::browser::connection_store::ConnectionStore::new(path.clone())
+        .unwrap()
+        .activate("second")
+        .unwrap();
+    let active = groups
+        .create(BrowserProviderId::AdsPower, "Active", "")
+        .unwrap();
+    assert_eq!(active.connection_id, "second");
+    assert_eq!(groups.list(BrowserProviderId::AdsPower).unwrap().len(), 2);
+    assert!(
+        groups
+            .update(BrowserProviderId::AdsPower, &first.id, "Wrong", "")
+            .is_err()
+    );
+    assert!(
+        groups
+            .delete(BrowserProviderId::AdsPower, &first.id)
+            .is_err()
+    );
+    groups
+        .update_for_connection("first", &first.id, "Renamed", "Saved")
+        .unwrap();
+    let reopened = GroupStore::new(path.clone()).unwrap();
+    let saved = reopened.list_for_connection("first").unwrap().remove(0);
+    assert_eq!(saved.name, "Renamed");
+    assert_eq!(saved.note, "Saved");
+    let folder = serde_json::to_value(super::group_store::Folder::from(saved)).unwrap();
+    assert_eq!(
+        folder,
+        json!({"id":first.id,"connectionId":"first","name":"Renamed","note":"Saved","windowCount":0,"color":null,"icon":"folder"})
+    );
+
+    let db = open_database(&path).unwrap();
+    db.execute("UPDATE browser_connections SET enabled=0,record_json=json_set(record_json,'$.enabled',json('false'))", []).unwrap();
+    assert!(
+        groups
+            .create(BrowserProviderId::AdsPower, "Missing active", "")
+            .is_err()
+    );
+    assert_eq!(groups.list_for_connection("first").unwrap().len(), 1);
+}
+
+#[test]
+fn folder_database_constraints_and_batch_moves_reject_cross_connection_writes_atomically() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("raccoon.sqlite");
+    seed_connection(&path, "first", BrowserProviderId::AdsPower, true);
+    seed_connection(&path, "second", BrowserProviderId::AdsPower, false);
+    let groups = GroupStore::new(path.clone()).unwrap();
+    let first = groups.create_for_connection("first", "First", "").unwrap();
+    let second = groups
+        .create_for_connection("second", "Second", "")
+        .unwrap();
+    let store = WindowStore::new(root.path().join("profiles"));
+    let mut a = external_record(root.path());
+    a.binding.connection_id = "first".into();
+    let mut b = external_record(root.path());
+    b.binding.connection_id = "second".into();
+    // The vendor ID is intentionally identical within two different connections.
+    store.insert(&a, Some(&first.id)).unwrap();
+    assert!(store.insert(&b, Some(&first.id)).is_err());
+    assert!(store.insert_confirmed(&b, Some(&first.id)).is_err());
+    store.insert(&b, Some(&second.id)).unwrap();
+    assert!(store.save(&a, Some(&second.id)).is_err());
+    assert!(store.save_confirmed(&a, Some(&second.id)).is_err());
+    for target in [None, Some(second.id.as_str())] {
+        assert!(
+            groups
+                .assign_many_for_connection("second", &[b.id.clone(), a.id.clone()], target)
+                .is_err()
+        );
+        assert_eq!(store.group_id(&a.id).unwrap(), Some(first.id.clone()));
+        assert_eq!(store.group_id(&b.id).unwrap(), Some(second.id.clone()));
+    }
+    assert!(
+        groups
+            .assign_many_for_connection("first", &[a.id.clone()], Some(&second.id))
+            .is_err()
+    );
+    let db = open_database(&path).unwrap();
+    assert!(
+        db.execute(
+            "UPDATE profile_records SET group_id=?2 WHERE id=?1",
+            rusqlite::params![a.id, second.id]
+        )
+        .is_err()
+    );
+    assert!(db.execute("UPDATE profile_records SET record_json=json_set(record_json,'$.binding.connection_id','second','$.binding.profile_id','unbound-profile') WHERE id=?1", [&a.id]).is_err());
+    assert!(
+        db.execute(
+            "UPDATE groups SET connection_id='second' WHERE id=?1",
+            [&first.id]
+        )
+        .is_err()
+    );
+    assert!(db.execute("INSERT INTO groups(id,provider_id,connection_id,name) VALUES('wrong','bitbrowser','first','Wrong')", []).is_err());
+    assert!(db.execute("INSERT INTO groups(id,provider_id,connection_id,name) VALUES('missing','adspower','missing','Wrong')", []).is_err());
+    groups.delete_for_connection("first", &first.id).unwrap();
+    let reopened = WindowStore::new(root.path().join("profiles"));
+    assert_eq!(reopened.group_id(&a.id).unwrap(), None);
+    assert_eq!(reopened.group_id(&b.id).unwrap(), Some(second.id));
+    assert_eq!(reopened.get(&a.id).unwrap(), a);
+    assert_eq!(
+        groups.list_for_connection("second").unwrap()[0].window_count,
+        1
     );
 }
 
@@ -298,7 +406,7 @@ fn sort_reservations_are_durable_even_before_a_window_or_operation_is_saved() {
 fn sort_reservations_exceed_pending_drafts_and_high_imports_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let profiles = root.path().join("profiles");
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
     let store = WindowStore::new(profiles.clone());
     let mut saved = record(root.path());
     saved.sort_order = 40;
@@ -344,10 +452,10 @@ fn sort_reservations_exceed_pending_drafts_and_high_imports_after_restart() {
 }
 
 #[test]
-fn schema_two_rejects_missing_or_corrupt_sort_sequence_without_reconstructing_it() {
+fn schema_four_rejects_missing_or_corrupt_sort_sequence_without_reconstructing_it() {
     for corruption in ["missing_table", "missing_value", "negative_value"] {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
         let store = WindowStore::new(root.path().join("profiles"));
         let saved = record(root.path());
         store.insert(&saved, None).unwrap();
@@ -409,7 +517,7 @@ fn concurrent_sort_reservations_are_unique_and_overflow_is_an_error() {
     let root = tempfile::tempdir().unwrap();
     let profiles = root.path().join("profiles");
     let store = WindowStore::new(profiles.clone());
-    open_database(&root.path().join("nexus.sqlite")).unwrap();
+    open_database(&root.path().join("raccoon.sqlite")).unwrap();
     let barrier = Arc::new(Barrier::new(8));
     let workers: Vec<_> = (0..8)
         .map(|_| {
@@ -433,7 +541,7 @@ fn concurrent_sort_reservations_are_unique_and_overflow_is_an_error() {
     store.insert(&imported, None).unwrap();
     assert_eq!(store.reserve_sort_order(), Err(StoreError::Io));
     assert_eq!(
-        open_database(&root.path().join("nexus.sqlite"))
+        open_database(&root.path().join("raccoon.sqlite"))
             .unwrap()
             .query_row(
                 "SELECT value FROM browser_sequences WHERE name='window_sort_order'",
@@ -448,7 +556,7 @@ fn concurrent_sort_reservations_are_unique_and_overflow_is_an_error() {
 #[test]
 fn window_store_rejects_negative_times_and_sort_orders_and_accepts_zero() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
     let store = WindowStore::new(root.path().join("profiles"));
     let mut zero = record(root.path());
     zero.created_at = 0;
@@ -572,9 +680,17 @@ fn window_list_breaks_duplicate_timestamp_and_sort_order_ties_by_id() {
 #[test]
 fn external_records_have_no_local_binary_or_numeric_seed_and_keep_business_groups() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        "ads",
+        BrowserProviderId::AdsPower,
+        true,
+    );
     let groups = GroupStore::new(path).unwrap();
-    let group = groups.create("Group", "").unwrap();
+    let group = groups
+        .create(BrowserProviderId::AdsPower, "Group", "")
+        .unwrap();
     let store = WindowStore::new(root.path().join("profiles"));
     let mut external = record(root.path());
     external.binding.provider_id = BrowserProviderId::AdsPower;
@@ -586,10 +702,152 @@ fn external_records_have_no_local_binary_or_numeric_seed_and_keep_business_group
     external.proxy_mode = ProxyMode::Provider;
     external.origin = WindowOrigin::Attached;
     store.insert(&external, Some(&group.id)).unwrap();
-    assert_eq!(groups.list().unwrap()[0].window_count, 1);
-    groups.delete(&group.id).unwrap();
+    assert_eq!(
+        groups.list(BrowserProviderId::AdsPower).unwrap()[0].window_count,
+        1
+    );
+    groups
+        .delete(BrowserProviderId::AdsPower, &group.id)
+        .unwrap();
     assert_eq!(store.group_id(&external.id).unwrap(), None);
     assert!(!store.root().join(&external.id).exists());
+}
+
+#[test]
+fn cloak_fingerprint_overrides_are_validated_at_their_documented_bounds() {
+    let allowed = CloakFingerprintConfig {
+        native_fingerprint: Some(true),
+        platform: Some("macos".into()),
+        gpu_vendor: Some("nvidia".into()),
+        hardware_concurrency: Some(64),
+        device_memory: Some(1),
+        screen_width: Some(7680),
+        screen_height: Some(600),
+        platform_version: Some("15.0.0".into()),
+        storage_quota: Some(1_048_576),
+        taskbar_height: Some(0),
+        webrtc_ip: Some("auto".into()),
+        noise: Some(false),
+        allow_third_party_cookies: Some(true),
+        sapi_voices: Some(false),
+        max_touch_points: Some(10),
+        search_engine: Some("https://search.example/?q=%s".into()),
+        transparent_proxy: Some(true),
+        transparent_proxy_dns: Some("local".into()),
+        portable_cookies: Some(true),
+    };
+    assert!(validate_cloak_fingerprint(&allowed).is_ok());
+    for invalid in [
+        CloakFingerprintConfig {
+            platform: Some("android".into()),
+            ..Default::default()
+        },
+        CloakFingerprintConfig {
+            hardware_concurrency: Some(0),
+            ..Default::default()
+        },
+        CloakFingerprintConfig {
+            screen_width: Some(799),
+            ..Default::default()
+        },
+        CloakFingerprintConfig {
+            platform_version: Some("15..0".into()),
+            ..Default::default()
+        },
+        CloakFingerprintConfig {
+            webrtc_ip: Some("proxy".into()),
+            ..Default::default()
+        },
+        CloakFingerprintConfig {
+            search_engine: Some("ftp://search.example".into()),
+            ..Default::default()
+        },
+        CloakFingerprintConfig {
+            transparent_proxy_dns: Some("dns".into()),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            validate_cloak_fingerprint(&invalid),
+            Err(StoreError::InvalidSettings)
+        );
+    }
+}
+
+#[test]
+fn bit_fingerprint_fields_follow_the_documented_shapes_and_ranges() {
+    let allowed = BitBrowserFingerprintConfig {
+        core_product: Some("firefox".into()),
+        version: Some("128.0".into()),
+        user_agent: Some("Fixture Agent".into()),
+        web_rtc: Some("3".into()),
+        position: Some("0".into()),
+        is_ip_create_position: Some(false),
+        lat: Some("51.5269".into()),
+        lng: Some("-0.0991".into()),
+        precision_data: Some("50".into()),
+        display_languages: Some("en-GB".into()),
+        resolution_type: Some("1".into()),
+        resolution_width: Some(1920),
+        resolution_height: Some(1080),
+        port_scan_protect: Some("1".into()),
+        port_white_list: Some("9222,3000".into()),
+        host_ip: Some("192.168.1.20".into()),
+        ..Default::default()
+    };
+    assert!(validate_bit_fingerprint(&allowed).is_ok());
+    for invalid in [
+        BitBrowserFingerprintConfig {
+            web_rtc: Some("4".into()),
+            ..Default::default()
+        },
+        BitBrowserFingerprintConfig {
+            lat: Some("91".into()),
+            lng: Some("0".into()),
+            ..Default::default()
+        },
+        BitBrowserFingerprintConfig {
+            lat: Some("51.5".into()),
+            ..Default::default()
+        },
+        BitBrowserFingerprintConfig {
+            resolution_type: Some("1".into()),
+            ..Default::default()
+        },
+        BitBrowserFingerprintConfig {
+            port_white_list: Some("9222,abc".into()),
+            ..Default::default()
+        },
+        BitBrowserFingerprintConfig {
+            host_ip: Some("not-an-ip".into()),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            validate_bit_fingerprint(&invalid),
+            Err(StoreError::InvalidSettings)
+        );
+    }
+}
+
+#[test]
+fn bit_fingerprint_api_keys_round_trip_through_settings_json() {
+    let config = BitBrowserFingerprintConfig {
+        core_product: Some("firefox".into()),
+        web_rtc: Some("3".into()),
+        host_ip: Some("192.168.1.20".into()),
+        disable_ssl_cipher_suites_flag: Some(true),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&config).unwrap();
+    assert_eq!(value["coreProduct"], "firefox");
+    assert_eq!(value["webRTC"], "3");
+    assert_eq!(value["hostIP"], "192.168.1.20");
+    assert_eq!(value["disableSslCipherSuitesFlag"], true);
+    assert_eq!(
+        serde_json::from_value::<BitBrowserFingerprintConfig>(value).unwrap(),
+        config
+    );
 }
 
 #[test]
@@ -600,9 +858,15 @@ fn external_metadata_refresh_persists_official_changes_and_preserves_current_loc
     ] {
         let root = tempfile::tempdir().unwrap();
         let profiles = root.path().join("profiles");
-        let groups = GroupStore::new(root.path().join("nexus.sqlite")).unwrap();
-        let original_group = groups.create("Original group", "").unwrap();
-        let current_group = groups.create("Current group", "").unwrap();
+        seed_connection(
+            &root.path().join("raccoon.sqlite"),
+            "external-connection",
+            provider,
+            true,
+        );
+        let groups = GroupStore::new(root.path().join("raccoon.sqlite")).unwrap();
+        let original_group = groups.create(provider, "Original group", "").unwrap();
+        let current_group = groups.create(provider, "Current group", "").unwrap();
         let store = WindowStore::new(profiles.clone());
         let mut external = external_record(root.path());
         external.binding.provider_id = provider;
@@ -634,7 +898,7 @@ fn external_metadata_refresh_persists_official_changes_and_preserves_current_loc
             .unwrap();
         store.mark_opened(&external.id).unwrap();
         groups
-            .assign(&external.id, Some(&current_group.id))
+            .assign(provider, &external.id, Some(&current_group.id))
             .unwrap();
         let mut expected = store.get(&external.id).unwrap();
         assert!(expected.last_opened_at.is_some());
@@ -842,20 +1106,43 @@ fn external_metadata_refresh_cannot_change_a_builtin_pinned_kernel() {
 #[test]
 fn group_crud_persists_and_deletion_preserves_the_window() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        BUILTIN_CONNECTION_ID,
+        BrowserProviderId::CloakBrowser,
+        true,
+    );
     let groups = GroupStore::new(path.clone()).unwrap();
-    let group = groups.create("First", "Original").unwrap();
+    let group = groups
+        .create(BrowserProviderId::CloakBrowser, "First", "Original")
+        .unwrap();
     let store = WindowStore::new(root.path().join("profiles"));
     let window = record(root.path());
     store.insert(&window, None).unwrap();
-    groups.assign(&window.id, Some(&group.id)).unwrap();
-    groups.update(&group.id, "Renamed", "Updated").unwrap();
-    let saved = GroupStore::new(path).unwrap().list().unwrap().remove(0);
+    groups
+        .assign(BrowserProviderId::CloakBrowser, &window.id, Some(&group.id))
+        .unwrap();
+    groups
+        .update(
+            BrowserProviderId::CloakBrowser,
+            &group.id,
+            "Renamed",
+            "Updated",
+        )
+        .unwrap();
+    let saved = GroupStore::new(path)
+        .unwrap()
+        .list(BrowserProviderId::CloakBrowser)
+        .unwrap()
+        .remove(0);
     assert_eq!(
         (saved.name.as_str(), saved.note.as_str(), saved.window_count),
         ("Renamed", "Updated", 1)
     );
-    groups.delete(&group.id).unwrap();
+    groups
+        .delete(BrowserProviderId::CloakBrowser, &group.id)
+        .unwrap();
     assert_eq!(store.group_id(&window.id).unwrap(), None);
     assert_eq!(store.get(&window.id).unwrap(), window);
 }
@@ -863,14 +1150,26 @@ fn group_crud_persists_and_deletion_preserves_the_window() {
 #[test]
 fn invalid_group_assignment_preserves_existing_membership() {
     let root = tempfile::tempdir().unwrap();
-    let groups = GroupStore::new(root.path().join("nexus.sqlite")).unwrap();
-    let group = groups.create("Original", "").unwrap();
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        BUILTIN_CONNECTION_ID,
+        BrowserProviderId::CloakBrowser,
+        true,
+    );
+    let groups = GroupStore::new(root.path().join("raccoon.sqlite")).unwrap();
+    let group = groups
+        .create(BrowserProviderId::CloakBrowser, "Original", "")
+        .unwrap();
     let store = WindowStore::new(root.path().join("profiles"));
     let window = record(root.path());
     store.insert(&window, Some(&group.id)).unwrap();
     assert!(
         groups
-            .assign(&window.id, Some(&uuid::Uuid::new_v4().to_string()))
+            .assign(
+                BrowserProviderId::CloakBrowser,
+                &window.id,
+                Some(&uuid::Uuid::new_v4().to_string())
+            )
             .is_err()
     );
     assert_eq!(
@@ -882,10 +1181,20 @@ fn invalid_group_assignment_preserves_existing_membership() {
 #[test]
 fn batch_group_assignment_is_atomic_and_persists_without_changing_browser_records() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        BUILTIN_CONNECTION_ID,
+        BrowserProviderId::CloakBrowser,
+        true,
+    );
     let groups = GroupStore::new(path.clone()).unwrap();
-    let first = groups.create("First", "").unwrap();
-    let second = groups.create("Second", "").unwrap();
+    let first = groups
+        .create(BrowserProviderId::CloakBrowser, "First", "")
+        .unwrap();
+    let second = groups
+        .create(BrowserProviderId::CloakBrowser, "Second", "")
+        .unwrap();
     let store = WindowStore::new(root.path().join("profiles"));
     let a = record(root.path());
     let mut b = record(root.path());
@@ -894,7 +1203,9 @@ fn batch_group_assignment_is_atomic_and_persists_without_changing_browser_record
     store.insert(&a, Some(&first.id)).unwrap();
     store.insert(&b, None).unwrap();
     let ids = vec![a.id.clone(), b.id.clone()];
-    groups.assign_many(&ids, Some(&second.id)).unwrap();
+    groups
+        .assign_many(BrowserProviderId::CloakBrowser, &ids, Some(&second.id))
+        .unwrap();
     let reopened = WindowStore::new(root.path().join("profiles"));
     for window in [&a, &b] {
         assert_eq!(
@@ -903,10 +1214,15 @@ fn batch_group_assignment_is_atomic_and_persists_without_changing_browser_record
         );
         assert_eq!(reopened.get(&window.id).unwrap(), *window);
     }
-    let counts = GroupStore::new(path).unwrap().list().unwrap();
+    let counts = GroupStore::new(path)
+        .unwrap()
+        .list(BrowserProviderId::CloakBrowser)
+        .unwrap();
     assert_eq!(counts[0].window_count, 0);
     assert_eq!(counts[1].window_count, 2);
-    groups.assign_many(&ids, None).unwrap();
+    groups
+        .assign_many(BrowserProviderId::CloakBrowser, &ids, None)
+        .unwrap();
     assert_eq!(reopened.group_id(&a.id).unwrap(), None);
     assert_eq!(reopened.group_id(&b.id).unwrap(), None);
 }
@@ -914,9 +1230,19 @@ fn batch_group_assignment_is_atomic_and_persists_without_changing_browser_record
 #[test]
 fn rejected_batch_group_assignments_leave_every_membership_unchanged() {
     let root = tempfile::tempdir().unwrap();
-    let groups = GroupStore::new(root.path().join("nexus.sqlite")).unwrap();
-    let first = groups.create("First", "").unwrap();
-    let second = groups.create("Second", "").unwrap();
+    seed_connection(
+        &root.path().join("raccoon.sqlite"),
+        BUILTIN_CONNECTION_ID,
+        BrowserProviderId::CloakBrowser,
+        true,
+    );
+    let groups = GroupStore::new(root.path().join("raccoon.sqlite")).unwrap();
+    let first = groups
+        .create(BrowserProviderId::CloakBrowser, "First", "")
+        .unwrap();
+    let second = groups
+        .create(BrowserProviderId::CloakBrowser, "Second", "")
+        .unwrap();
     let store = WindowStore::new(root.path().join("profiles"));
     let window = record(root.path());
     store.insert(&window, Some(&first.id)).unwrap();
@@ -940,7 +1266,11 @@ fn rejected_batch_group_assignments_leave_every_membership_unchanged() {
         ),
         (vec![window.id.clone()], Some("invalid".into())),
     ] {
-        assert!(groups.assign_many(&ids, target.as_deref()).is_err());
+        assert!(
+            groups
+                .assign_many(BrowserProviderId::CloakBrowser, &ids, target.as_deref())
+                .is_err()
+        );
         assert_eq!(
             store.group_id(&window.id).unwrap().as_deref(),
             Some(first.id.as_str())
@@ -952,9 +1282,17 @@ fn rejected_batch_group_assignments_leave_every_membership_unchanged() {
 fn deleted_groups_do_not_block_confirmed_create_or_update_commits() {
     for kind in ["create", "update"] {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
+        seed_connection(
+            &root.path().join("raccoon.sqlite"),
+            BUILTIN_CONNECTION_ID,
+            BrowserProviderId::CloakBrowser,
+            true,
+        );
         let groups = GroupStore::new(path.clone()).unwrap();
-        let group = groups.create("Group", "").unwrap();
+        let group = groups
+            .create(BrowserProviderId::CloakBrowser, "Group", "")
+            .unwrap();
         let store = WindowStore::new(root.path().join("profiles"));
         let operations = OperationStore::new(path);
         let mut draft = record(root.path());
@@ -974,12 +1312,14 @@ fn deleted_groups_do_not_block_confirmed_create_or_update_commits() {
             )
             .unwrap();
 
-        groups.delete(&group.id).unwrap();
+        groups
+            .delete(BrowserProviderId::CloakBrowser, &group.id)
+            .unwrap();
         operations.phase(&mut operation, "confirmed", None).unwrap();
         if kind == "create" {
-            store.insert(&draft, Some(&group.id)).unwrap();
+            store.insert_confirmed(&draft, Some(&group.id)).unwrap();
         } else {
-            store.save(&draft, Some(&group.id)).unwrap();
+            store.save_confirmed(&draft, Some(&group.id)).unwrap();
         }
         operations.phase(&mut operation, "committed", None).unwrap();
 
@@ -994,7 +1334,7 @@ fn deleted_groups_do_not_block_confirmed_create_or_update_commits() {
 #[test]
 fn operations_preserve_payload_and_never_reuse_an_id_with_different_input() {
     let root = tempfile::tempdir().unwrap();
-    let store = OperationStore::new(root.path().join("nexus.sqlite"));
+    let store = OperationStore::new(root.path().join("raccoon.sqlite"));
     let id = uuid::Uuid::new_v4().to_string();
     let payload = json!({"secret":"plain-value","window":"one"});
     let mut operation = store
@@ -1003,7 +1343,7 @@ fn operations_preserve_payload_and_never_reuse_an_id_with_different_input() {
     store
         .phase(&mut operation, "uncertain", Some("network timeout".into()))
         .unwrap();
-    let reopened = OperationStore::new(root.path().join("nexus.sqlite"));
+    let reopened = OperationStore::new(root.path().join("raccoon.sqlite"));
     assert_eq!(reopened.get(&id).unwrap().unwrap().payload, payload);
     assert_eq!(
         reopened
@@ -1024,7 +1364,7 @@ fn operations_preserve_payload_and_never_reuse_an_id_with_different_input() {
 #[test]
 fn operations_reject_rebinding_and_request_changes_without_losing_provider_results() {
     let root = tempfile::tempdir().unwrap();
-    let store = OperationStore::new(root.path().join("nexus.sqlite"));
+    let store = OperationStore::new(root.path().join("raccoon.sqlite"));
     let id = uuid::Uuid::new_v4().to_string();
     let payload = json!({"input": {"name": "Window"}, "record": {"sort_order": 1}});
     let original = store
@@ -1078,7 +1418,7 @@ fn operations_reject_rebinding_and_request_changes_without_losing_provider_resul
 #[test]
 fn submitted_update_record_and_evidence_are_immutable() {
     let root = tempfile::tempdir().unwrap();
-    let store = OperationStore::new(root.path().join("nexus.sqlite"));
+    let store = OperationStore::new(root.path().join("raccoon.sqlite"));
     let mut operation = store
         .prepare(
             &uuid::Uuid::new_v4().to_string(),
@@ -1103,7 +1443,7 @@ fn submitted_update_record_and_evidence_are_immutable() {
 #[test]
 fn explicit_operation_resolution_remains_durable_and_terminal() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
     let store = OperationStore::new(path.clone());
     let mut operation = store
         .prepare(
@@ -1148,7 +1488,7 @@ fn concurrent_operation_prepares_cannot_overwrite_a_different_request() {
     use std::sync::{Arc, Barrier};
 
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
     open_database(&path).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
     let barrier = Arc::new(Barrier::new(2));

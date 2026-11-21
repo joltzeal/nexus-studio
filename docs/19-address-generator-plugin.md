@@ -1,189 +1,212 @@
-# 地址生成器插件 `studio.address-generator`
+# VInted helper 插件 `studio.address-generator`
 
-本文说明仓库内地址生成器插件的实际范围。插件规则见[插件对接开发规范](14-plugin-integration-guide.md)，
-产品侧插件边界见[插件系统](06-plugin-system.md)，页面交互见[页面交互](11-demo-pages.md)。
+## 目录与当前启用方式（2026-11-20）
 
-## 当前事实
+源码文件夹已改为 `plugins/vinted-helper/`。保留安装 ID `studio.address-generator`、
+包名 `@nexus/plugin-address-generator`、能力 `address.generator` 与私有地址文件，
+目录改名不会创建第二份地址库；前端地址适配器仍沿用现有内部路径。
 
-插件版本为 `1.1.0`，要求主程序 `0.1.26`，支持保存地址、关联账号以及 Google Maps Key 配置迁移。
+### 本地 Tauri debug
 
-插件包位于 `plugins/address-generator`，实现 `address.generator` 能力的 10 个 `address.*` 业务方法、
-私有存储、密钥库边界与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/addresses`。
+1. 完整停止并重新启动现有 `tauri dev`，让宿主重新扫描改名后的源码目录。
+   仅刷新前端或重启旧插件进程仍可能使用宿主启动时记录的旧入口路径。
+2. debug 宿主自动发现并运行源码插件，无需先 build 或安装本地 `dist`。
+3. 打开 VInted helper 的面单工具，选择 PDF 后自动处理并下载。
 
-- 公开地址来自 OpenStreetMap 的 Overpass 接口，由插件进程发起，页面不直接访问上游。
-- 地图选点由页面里的 Google Maps JavaScript API 完成反向地理编码，插件只负责把选点变成资料。
-- 公开生成的结果先放在页面中，点击「保存地址」后持久化完整资料；地图添加和关联账号会自动保存。
-- 已保存地址写入私有目录的 `address-generator.json`，Google Maps Key 写入 `secrets.json`，均为明文文件。
-- 关联账号时通过账号池 RPC 保存完整快照，不直接读取其他插件的私有文件。
-- 没有 Key 时地图选点不可用，公开地址生成不受影响。
+源码模式直接运行 `src/labels/worker.ts`，继承父进程的 TypeScript source loader，
+从已安装的 `@hyzyla/pdfium` 依赖解析 WASM 的绝对路径，不依赖当前工作目录或生成资源。
+仓库依赖需要事先安装完整，应用不要求最终用户配置环境变量。
 
-本插件不连接任何交易平台，不创建账号，也不校验地址能否收件。
+### 已构建的应用与发布包
 
-## 包结构
-
-```text
-plugins/address-generator/
-├── package.json          # ESM、锁定依赖、dist 由构建生成
-├── nexus.plugin.ts       # manifest 唯一来源，由 definePluginManifest 校验
-├── src/
-│   ├── index.ts          # 组装存储、密钥库、能力与协议；进程入口
-│   ├── capabilities/     # address.generator 方法表
-│   ├── domain/           # 地址与资料类型、CSV、zod 校验、错误码
-│   ├── rpc/              # 协议、服务端、脱敏日志（与代理插件同源，按包自包含）
-│   ├── services/         # 城市白名单、Overpass 查询、姓名池、用户名生成
-│   └── store/            # 私有存储与密钥库端口
-└── dist/                 # 构建产物：dist/src/index.js 与 dist/nexus.plugin.json
-```
-
-`rpc/` 与代理插件是同一份实现的两个副本。插件按独立目录安装、独立进程运行，
-不跨插件共享运行时包，因此这里保留副本而不是引入第三个共享包。
-
-manifest 声明：`apiVersion: 1`、`id: studio.address-generator`、`version: 1.1.0`、
-能力 `address.generator`、域名 `overpass-api.de` 与 `maps.mail.ru`、
-`wantsBrowserAccess: false`、`storage: private`、密钥槽 `google-maps-key`。
-
-## 与 nexus-cart 地址模块的对应关系
-
-| 原模块                                          | 本插件                                                   | 变化                                                 |
-| ----------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------- |
-| `public_addresses.py`（Overpass + 缓存 + 单飞） | `src/services/overpass.ts`                               | httpx 改为 `fetch`，双镜像失败回退与 15 分钟缓存保留 |
-| `maps_settings.py`（Fernet 加密存 SQLite）      | `src/store/secret-vault.ts`                              | 加密与数据库改为私有目录明文文件，仍只回传浏览器 Key |
-| `api.py` 的 `/addresses/public`、`/maps-key`    | `src/capabilities/address-generator.ts`                  | HTTP 路由改为 RPC 方法，鉴权由宿主负责               |
-| `locations.ts`                                  | `src/services/catalog.ts`                                | 城市表随插件分发，上游查询只能用它                   |
-| `identity.ts`（faker + 随机数字）               | `src/services/names.ts`、`username.ts`                   | 改为按国家姓名池与贴近真实的用户名模板               |
-| `address.ts`（归一化、去重、CSV）               | `src/domain/address.ts`                                  | 逻辑保留，字段名统一为 camelCase                     |
-| `google-map.tsx`、`google-loader.ts`            | `apps/desktop/src/features/addresses/address-map.tsx` 等 | 迁移到桌面页面，SDK 用脚本加载而非 npm loader        |
-| `us-base.ts`、`us-selector.tsx`（CSV 基础库）   | 已移除                                                   | 美国地址改走 Overpass，覆盖较薄时如实报告条数        |
-| `error-notice.tsx`                              | 页面内错误文案                                           | 按错误码给出原因，不显示伪造结果                     |
-
-## 方法清单
-
-| 方法                   | 作用                                           |
-| ---------------------- | ---------------------------------------------- |
-| `address.catalog`      | 返回插件支持的国家与城市（含中心坐标）         |
-| `address.generate`     | 按城市抓取公开地址，随机抽样并生成资料         |
-| `address.profile`      | 把一次地图选点转换成资料（姓名、用户名）       |
-| `address.csv`          | 返回 CSV 文本，供页面复制                      |
-| `address.export`       | 把 CSV 写入插件私有目录的 `exports/`，返回路径 |
-| `address.config.get`   | 读取地图 Key 状态与存储是否可持久化            |
-| `address.config.set`   | 保存或清除地图 Key                             |
-| `address.saved.list`   | 搜索、分页读取已保存地址与持久化状态           |
-| `address.saved.save`   | 保存完整地址资料，相同地点保留已保存的资料标识 |
-| `address.saved.remove` | 从地址列表移除，不修改账号地址快照             |
-
-`address.generate` 的入参是 `{ country, cityId, count }`，`count` 为 1–50。
-返回 `{ items, requested, found, poolSize, endpoint, cached }`：`found` 小于 `requested`
-时页面如实说明"该区域仅找到 N 条完整且不重复的地址"，不补齐、不编造。
-
-## 保存地址并关联账号
-
-1. 在「公开地址」生成资料，或在「地图选点」中选择完整地址。
-2. 点击「保存地址」可加入「已保存地址」；地图上的添加操作会自动保存。
-3. 点击资料卡上的「关联账号」，搜索或分页选择账号，再点击「保存并关联」。
-4. 在「Vinted 账号池」的地址列查看、复制或解除关联。
-
-账号池插件需启用并更新到 `1.2.0`。一个账号最多一个地址，一个地址可用于多个账号。
-账号已有地址时，选择器展示原地址，提交会替换该账号的地址快照。
-地址列表和账号资料分别持久化；从已保存列表删除地址后，账号上的地址仍然保留。
-地址保存成功但账号写入失败时，地址保留在保存列表，弹窗保留选择与失败原因，可重新提交。
-
-| RPC                    | 入参                           | 返回                                               |
-| ---------------------- | ------------------------------ | -------------------------------------------------- |
-| `address.saved.list`   | `{ query?, page?, pageSize? }` | `{ items, total, page, pageSize, storageDurable }` |
-| `address.saved.save`   | `{ profile }`                  | `{ item, created, storageDurable }`                |
-| `address.saved.remove` | `{ id }`                       | `{ removed }`                                      |
-
-`query` 最多 200 字符；默认每页 20 条，最多 50 条；搜索覆盖姓名、用户名、街道、
-门牌、城市、邮编、州与国家。超出末页时回到最后一页，结果按保存顺序倒序排列。
-保存上限为 2000 条。相同规范化地址去重，保留首次保存的姓名、用户名与 profile ID，
-不因再次生成而覆盖。`savedAt` 是保存时间，资料包含来源、坐标及近似位置标记。
-首次并发读取和写入共用初始化；写入通过队列和临时文件替换，失败时保留上一份数据。
-
-## 上游查询
-
-- 查询窗口是以城市中心为原点、±0.035° 的矩形，`out center 300` 最多 300 个元素。
-- 只接受同时具备门牌号、街道、城市、邮编的要素；缺一项即丢弃，不用猜补全。
-- 单个响应上限 2 MiB，超过即判为无效响应。
-- 镜像顺序：`overpass-api.de`（12 s）→ `maps.mail.ru`（35 s），整体 50 s 超时。
-- 同一城市 15 分钟缓存，同城并发请求合并为一次，不同城市之间 5 s 冷却。
-- 失败原因映射为 `RATE_LIMITED` / `TIMEOUT` / `UNAVAILABLE`，由页面显示对应文案。
-
-## 用户名生成
-
-旧实现是 `faker.internet.username()` 加一个 10–9999 的均匀随机数，输出像
-`marie.laurent4821` 这类现实中不存在的账号名。现在的规则：
-
-- 姓名先去变音符号（`Łukasz` → `lukasz`、`Straße` → `strasse`），只保留 a–z。
-- 模板按权重抽样：`first.last`、`firstlast`、`first_last`、`first.last94`、
-  `firstlast94`、`mlaurent`、`last.first`、`first-last`、`first94`、`first-last94`、`last94`。
-- 数字后缀模拟真实习惯：55% 为 1970–2005 的两位年份，25% 为 1–9，12% 为四位年份，
-  其余为 10–99；不再使用 1000–9999 的均匀随机数。
-- 结果固定为小写 ASCII、以字母开头、4–20 字符，不含连续分隔符，也不以分隔符结尾。
-- 一批结果内保证唯一：冲突时重掷模板，仍有冲突则追加递增计数。
-
-测试覆盖字符集、长度、变音符号、无数字比例（>40%）、四位数字比例（<15%）、
-分隔符比例（25%–80%）与批内唯一性。
-
-## 地图选点
-
-- 国家和城市选项同时用于公开查询与地图定位；美国提供 21 个主要城市，完整目录共 48 个城市。
-  新增城市包括 Seattle、Houston、Miami、San Francisco、Boston、Washington, DC 等。
-  这些坐标仅控制地图中心和公开查询范围，不是已校验的收货地址。
-- 页面用脚本标签加载 `https://maps.googleapis.com/maps/api/js`，Key 由
-  `address.config.get` 提供；`tauri.conf.json` 的 CSP 只放行 `maps.googleapis.com`
-  与 `maps.gstatic.com` 等必要主机。
-- 点击地图后调用 Geocoding API，只接受 `street_address`、`premise`、`subpremise`
-  级别的结果，并且国家必须与当前选择一致。
-- `location_type` 不是 `ROOFTOP` 时标注为近似位置，页面照实说明。
-- Maps JS 每个文档只能用一个 Key 加载一次；保存新 Key 后需要重启应用，页面会说明这一点。
-
-## 密钥与数据边界
-
-- 地图 Key 保存在插件私有目录的 `secrets.json`，权限 0600，与插件文档
-  `address-generator.json` 同一目录；宿主不接收、不托管。
-- 这是浏览器 Key，页面必须拿到它才能加载 SDK，因此它对本机进程可见；
-  它不是服务端凭据，也不应被当作机密。推荐在 Google Cloud 控制台配置来源限制。
-- 宿主未提供私有目录时使用内存存储，Key 与已保存地址重启即失效，页面会说明。
-- 完整地址和资料在保存、地图添加或关联账号时写入私有文件；显式「写入 CSV 文件」
-  另写入 `exports/`。文件没有本地加密，不写入 Keychain。
-- 账号快照由账号池插件保存，生成器不能访问账号密码或接码链接；选择账号只使用不含凭据的目标 RPC。
-
-## 外部服务、费用与数据发送
-
-| 服务                                  | 用途           | 发送内容                           | 费用与限制                              |
-| ------------------------------------- | -------------- | ---------------------------------- | --------------------------------------- |
-| `overpass-api.de`                     | 公开地址查询   | 城市边界内的只读查询，无用户数据   | 公共免费实例，限流时切镜像              |
-| `maps.mail.ru`                        | Overpass 镜像  | 同上                               | 公共镜像，无 SLA                        |
-| `maps.googleapis.com`（页面直接调用） | 地图显示与反查 | 选点坐标、地图瓦片请求、浏览器 Key | 需要启用 Maps JS 与 Geocoding，按量计费 |
-
-公开地址生成不需要任何密钥，也不向 Google 发送请求；只有地图选点会加载 Google SDK。
-插件不向上述服务发送生成的姓名、用户名或已生成的地址。
-
-## 已知限制
-
-- 美国城市的 OSM 门牌覆盖较薄，`found` 常小于请求数量；插件不提供 CSV 基础库补齐。
-- 地图选点依赖 Google Maps 的网络与配额；Geocoding 未启用时选点会失败，页面提示检查 API。
-- 用户名是本地生成的合成数据，不保证在任何平台可用或未被占用。
-- 插件不校验地址真实收件能力，也不做地址标准化（如邮编格式校验）。
-- 仅在 macOS 上执行过类型检查、单测与宿主安装/启用/调用测试；Windows 未验证。
-
-## 本地验证
+正式应用不扫描工作区 TypeScript 源码，必须安装完整的新版 `.nexuspkg`。
+维护者构建、打包、验证后，由插件中心更新安装；仅改源码或改名文件夹不会更新已经安装的包。
+发布前手动步骤如下，本轮按用户约束不执行：
 
 ```sh
-rtk proxy pnpm exec vitest run plugins/address-generator apps/desktop/src/features/addresses --maxWorkers=2
-rtk proxy pnpm exec tsc -p plugins/address-generator/tsconfig.json --noEmit
-rtk proxy pnpm exec eslint plugins/address-generator apps/desktop/src/features/addresses --max-warnings 0
+rtk proxy pnpm --filter '@nexus/plugin-address-generator...' build
+rtk proxy node scripts/pack-plugin.mjs plugins/vinted-helper
+rtk proxy pnpm run market:verify market/plugins/studio.address-generator/1.3.0.nexuspkg
 ```
 
-检查范围包括地址回读、去重、分页、并发初始化、写入失败、严格响应校验、
-城市目录、用户名模板、Overpass 响应、CSV 与页面状态。
-实际执行结果与浏览器交互证据记录在[质量记录](09-quality-and-testing.md)。
-本地不构建或执行 Rust 检查；安装包、Windows 与真实地图服务由后续发行验证覆盖。
+加密包加载器已有 `NEXUS_PLUGIN_PACKAGE_DIR` 注入；客户端按该目录加载 Worker 与六段 WASM，
+不回退工作区依赖。直接运行编译入口时从 `dist/resources/vinted-labels` 加载。
+Worker 与 WASM 路径统一由客户端传入，避免资源位置随源码/打包入口不同而计算错误。
+安装包缺少任一必要资源仍返回组件不可用，不能用开发机依赖掩盖不完整发布包。
 
-## 设置配置迁移
+## desktop-v2 面单提取（2026-11-20）
 
-新增通用 `configuration.export / configuration.validate / configuration.import` 三个 RPC，
-通过插件原有能力调用，统一接入「应用设置 → 配置迁移」。
-迁移 Google Maps Key，不包含查询缓存、已保存地址、页面生成结果或 CSV 文件。
-账号地址跟随账号的窗口迁移附件；配置迁移不等同于业务地址列表备份。
-文件、校验和失败写入规则见[配置导入导出](37-configuration-transfer.md)。
+插件显示名称改为 **VInted helper**，本地源码版本 `1.3.0`。保留原安装 ID、
+`address.generator` 授权与私有地址文件，更新显示名称不创建第二份地址库。
+地图选点、firstname/lastname/username 生成、字段复制、地址保存和账号关联继续保留。
+页面采用左侧工具分类、右侧内容的布局，外层沿用工作台 Card：
+
+- **地址工具**：地图选点与已保存地址，保留姓名、用户名和地址字段复制、保存、导出及账号关联。
+- **面单工具**：选择或拖入 PDF 即自动提取，直接提供 A6 下载；不显示待处理、手动开始和任务状态表格。
+
+分类切换保留各工具内容与面单结果。面单不依赖地图 Key，也不受地图目录读取失败影响。
+
+### 面单处理与下载
+
+1. 同时选择或拖入一个或多个 PDF 后立即处理，无需再次点击开始。最多保留 20 个文件；
+   每个不超过 10 MiB、50 页，当前页面的输入与下载结果合计最多 100 MiB。
+2. 默认自动识别、A6 边距 3 mm，低频参数收在“选项”内。支持统一指定裁剪区，坐标为旋转后的可见页面左上角起算的
+   左、上、右、下毫米值。边距可设为 0 至小于 52.5 mm；裁剪区必须在每页内部。
+3. 插件串行执行文件，每个文件在独立 Node Worker 中处理；单文件最长 180 秒。
+   任一页面失败使该文件失败，但不会中断批量的其他文件。处理期间只有上传按钮忙碌反馈和取消入口，
+   不呈现任务流水账。取消后不启动剩余文件，失败或取消文件可按当前选项重试。
+4. 提取完成后立即分块读取、校验 SHA-256 并释放插件会话；结果在 helper 页面内存中暂存，
+   切换地址/面单分类仍可下载，离开 helper 后清除。结果以紧凑文件列表显示，提供带 Tooltip 的下载、重试和移除图标。
+   自动隔离失败时保留必要的整页回退提示，可调整裁剪区后重新提取，不伪装成已识别面单。
+5. 点击下载使用已校验的缓存，调用通用原生命令 `plugin_pdf_export`，
+   由系统“另存为”选择位置。Rust 再检查大小、PDF 标识和哈希，经同目录临时文件原子保存；
+   取消不显示成功，写入失败保留原目标文件。默认文件名为原名加 `-A6.pdf`。
+
+算法参考 `nexus-cart/apps/api/backend/app/vinted/labels/extractor.py`：检查页面实际调用的
+Form XObject，以 `FROM:`、`TO:` 与 `TRACKING` 识别面单；多个候选明确拒绝。
+处理 CropBox 与页面旋转，在 3 倍分辨率下测量灰度墨迹（阈值 245，最多 1200 万像素），
+去除留白、保留约 1 pt 安全边缘，等比居中到 105 × 148 mm A6。
+PDFium WASM 仅用于测量；结果使用 pdf-lib 嵌入原始 PDF 矢量内容，不把面单转成截图。
+不做 OCR、物流商格式猜测、平台下载或第三方上传。提取阶段不改写原文件，默认另存为新文件名，
+也不从本机其他目录读取资料。
+
+加密 PDF、空白页、无效 PDF、超大页面和越界裁剪均返回可读错误。
+只有结构化结果与受限分块进入宿主 IPC，不返回文件原文到诊断日志。
+协议会话在插件进程内存中临时保留，闲置 30 分钟自动过期，退出/重启不恢复；
+前端完成结果读取后立即关闭会话，因此已显示的下载结果不依赖该过期时间。
+插件临时数据和前端文件缓存各自受 100 MiB 上限约束，下载后可移除文件释放缓存空间。
+
+### 公开契约与资源
+
+`@nexus/plugin-contracts/vinted-helper` 定义严格 schema、限额及公开类型。
+新增方法沿用 `address.generator` 授权，完整方法组缺失时仅禁用面单工具：
+
+| 方法                   | 用途                                       |
+| ---------------------- | ------------------------------------------ |
+| `vinted.labels.begin`  | 建立临时上传会话、校验文件名/大小/提取参数 |
+| `vinted.labels.append` | 按偏移上传，单块最多 192 KiB               |
+| `vinted.labels.start`  | 完整性检查后加入串行任务队列               |
+| `vinted.labels.status` | 读取状态与逐页报告                         |
+| `vinted.labels.read`   | 按偏移读取完成结果，单块最多 192 KiB       |
+| `vinted.labels.close`  | 幂等释放上传、任务及结果，终止运行 Worker  |
+
+Worker 与 PDFium WASM 由插件构建脚本显式准备至 `dist/resources/vinted-labels`，
+随 `nexusResources` 打包；WASM 分为六段以遵循每个资源 1 MiB 的已有上限。
+处理不依赖 Python、系统 PDF 工具、额外本地服务或网络下载。
+当前只完成源码及直接检查，未执行插件构建/打包、原生另存为、实际面单打印或双平台验收。
+
+## desktop-v2 地址功能基线（2026-11-19）
+
+插件源码版本为 `1.2.0`，最低核心版本 `0.1.43`，用于当前 desktop-v2 插件宿主。
+`apiVersion: 1` 是插件进程协议版本，不代表继续适配旧桌面页面。
+本轮按用户要求移除 OpenStreetMap/Overpass 地址查询，只通过 Google Maps 地图选点。
+
+- 页面：`apps/desktop-v2/src/pages/plugins/address-generator/`，按需加载，沿用 ShardX UI Kit、
+  PageHeader、主题、表格、选择器和弹窗。未接原生桥的普通网页预览不调用插件或地图。
+- 适配：`src/raccoon/plugins/address-generator/` 包含 RPC 响应校验、能力门禁、地图加载、
+  地址解析、选点生命周期和账号关联协调。
+- 插件：`plugins/vinted-helper/` 保留国家/城市目录、姓名/用户名生成、地址保存与
+  CSV。插件进程不再请求网络，manifest 的 `networkDomains` 为空。
+- Overpass 服务、镜像回退、缓存、随机批量抽样及 `address.generate` 方法均已移除。
+  不删除已有地址文件；历史地址仍可查看、复制、导出和关联，不再通过 OSM 产生新地址。
+
+这是本轮源码和本地检查范围。Google 实际 Key、配额、Tauri WebView、Windows 与正式安装
+仍须单独验收，受控 SDK/IPC 浏览器检查不能替代真实地图联调。
+
+## 使用流程
+
+1. 在插件中心安装、启用并授权地址生成器。
+2. 应用构建时已配置地图服务，无需用户填写 Key；未配置的版本明确提示地图暂不可用。
+3. 选择国家和定位城市，在地图中放大并点击建筑物。
+4. 地图 SDK 反向解析坐标；只接受当前国家下带门牌、街道、城市和邮编的建筑级结果。
+5. 插件为这个地址生成 firstname、lastname 和 username；右侧逐字段显示姓名、地址、
+   坐标、精度和来源，每个字段均有独立复制按钮，另可复制完整地址。
+6. 点击“保存地址”后才写入插件私有文件；“已保存地址”提供搜索、分页、复制与 CSV 导出。
+7. “关联账号”可将资料保存后关联到 Vinted 账号，确认前展示将被替换的旧地址。
+
+城市目录仅定位地图中心。可以在地图内平移选点，不把城市中心或坐标本身当作收件地址。
+地址不完整、国家不符、授权失败或服务错误时给出原因，不补门牌、不猜邮编。
+姓名和用户名是本地合成资料，不保证平台可用，也不校验地址收件能力。
+
+## 地图与生命周期
+
+Maps JavaScript API 由页面脚本加载，Geocoding 在 SDK 内完成。Key 只用于现有地图链路，
+没有新增页面直连地址搜索 API。地图按应用浅色/深色主题创建。
+选中位置通过标准 OverlayView 标记，不依赖示例 Map ID 或已弃用的 Marker。
+
+- 一个文档复用一次 SDK 加载；并发请求复用同一 Promise，网络加载失败可重试。
+- 更换构建 Key 后需重新构建应用；开发期更换环境变量需重启开发服务。
+- 连续点击仅接收最后一次结果；旧反查在生成资料前以及返回后都会核对会话。
+- 切换城市/主题或离开地图会使在途反查失效，清理点击监听、标记和地图绑定。
+- 缺少构建 Key 时提示应用尚未配置地图，已保存地址的查看、复制、导出不受影响。
+- `location_type` 不是 `ROOFTOP` 时标记近似位置；建筑精度同样不代表已验证收件。
+
+`tauri.v2.conf.json` 分别声明生产 CSP 和开发 CSP，允许 Google Maps 脚本、服务连接、
+瓦片、字体与样式。脚本来源只增加 `maps.googleapis.com` 和 `maps.gstatic.com`，
+不使用任意 HTTPS 脚本白名单；Maps 脚本执行需要的 `unsafe-eval` 限定在 v2 配置中。
+这属于原生配置修改，应完整重启 `tauri dev` 父 CLI，不能只刷新前端。
+
+## RPC 与能力门禁
+
+页面使用统一 `plugin_call`，能力为 `address.generator`。基础门禁要求插件已启用、
+运行中、声明且获准该能力，并支持全部基础方法。可选功能单独检查，不阻塞地图选点。
+
+| 分组         | 方法                                                                     |
+| ------------ | ------------------------------------------------------------------------ |
+| 基础         | `address.catalog`、`address.profile`                                     |
+| 已保存地址   | `address.saved.list`、`address.saved.save`、`address.saved.remove`       |
+| 复制 CSV     | `address.csv`                                                            |
+| 写入私有 CSV | `address.export`                                                         |
+| 通用配置迁移 | `configuration.export`、`configuration.validate`、`configuration.import` |
+
+`address.profile` 只接受 `source: map` 的新选点。保存、读取与 CSV 保留历史记录的来源。
+响应在进入页面状态前校验：目录对应关系、完整地址、经纬度、资料标识、
+持久化标志、分页计数、重复标识、保存时间和导出计数。
+
+## 保存与账号关联
+
+地址文件为插件私有目录的 `address-generator.json`，最多 2000 条。默认每页 20 条，
+后端上限 50 条；支持姓名、用户名、地址、州、国家和邮编搜索。
+写入通过队列与临时文件替换完成，失败时保留旧文件。页面在成功回读前不显示已保存。
+同一规范化地点沿用首次保存的 ID、姓名和用户名，重复选择不会覆盖原资料。
+
+账号关联要求 Vinted 账号池已启用、运行中、获准 `account.pool`，并提供：
+
+- `vinted.accounts.address.targets`：只读账号标识、状态与已有地址，不读取密码。
+- `vinted.accounts.address.set`：保存完整地址快照，传入确认时的 `expectedProfileId`。
+
+关联先保存地址，再使用返回的规范资料写账号快照，避免重复地址带来两个资料 ID。
+地址保存失败不写账号；账号写入失败则保留已保存地址及弹窗选择。离开会话后不再发起
+后续账号写入。并发变更由账号池的旧地址标识检查拒绝，需重新读取目标后确认。
+删除保存列表中的地址不影响账号已有快照；双方数据继续由各自插件独立持有。
+
+## 构建注入 Key、费用与数据边界
+
+构建主程序前设置 `VITE_GOOGLE_MAPS_API_KEY`，Vite 将其替换进前端产物。
+没有要求用户创建 `.env`；可直接从构建机/CI 环境提供。`client.ts` 读取构建值，
+只交给当前主程序 WebView 中的地图 SDK，不放入插件 RPC、地址资料或插件私有文件。
+Node 插件进程不会自动继承打包时的前端变量，也不需要这个 Key：它只接收规范地址、
+生成资料并处理本地保存。更新插件包不能更改已打入主程序的 Key。
+
+这是包含在前端产物中的浏览器 Key，不能作为服务端密钥保密。
+应启用 Maps JavaScript API 与 Geocoding API，并在 Google 控制台配置合适的应用来源限制。
+地图请求使用用户自己的 Google 服务配额，地址选点坐标、瓦片请求和浏览器 Key 会发往 Google。
+本地生成的姓名、用户名和账号密码不发给地图服务。
+
+旧插件已有的 Key 配置/迁移 RPC 与私有文件暂未删除，以免破坏已有数据；v2 页面
+不调用它们，不读取旧 Key，也不在缺少构建 Key 时回退到用户填写。
+宿主没有提供私有目录时使用内存存储，页面明确提示地址在退出后失效。
+CSV 显式写入私有目录 `exports/`，返回路径不等于系统下载目录。
+旧配置迁移不包含新的构建 Key、已保存地址、CSV 或账号快照。
+
+## 本地检查入口
+
+```sh
+rtk proxy pnpm exec vitest run plugins/vinted-helper plugins/integration/src/plugin-configuration.test.mjs --maxWorkers=2
+rtk proxy node --experimental-strip-types --test apps/desktop-v2/src/raccoon/plugins/address-generator/{contract,google-maps,picker-session,profile-fields,relations}.test.ts
+rtk proxy pnpm exec vitest run packages/plugin-contracts/src/vinted-helper.test.ts apps/desktop-v2/src/raccoon/plugins/address-generator/labels.test.ts apps/desktop-v2/src/raccoon/plugins/address-generator/label-download.test.ts --maxWorkers=2
+rtk proxy pnpm exec tsc -p plugins/vinted-helper/tsconfig.json --noEmit --rootDir . --customConditions development
+```
+
+后续按用户最新要求不运行插件/应用构建、Rust 编译/测试或图像验证。
+实际执行结果见[质量记录](09-quality-and-testing.md)，不将历史 0.1 页面检查当作 v2 验收。

@@ -1,24 +1,58 @@
-# 浏览器内核下载与本地缓存
+# 浏览器内核下载与本地管理
 
-本文只描述内置 CloakBrowser。`KernelService`、授权、缓存和 Node 准备流程由
+> 0.2 的实验室另有 ShardBrowser 标签：通过 `shardx` Rust SDK 在 Raccoon
+> 本机目录下载当前官方内核，并按实际 Chromium 完整版本保存到独立目录。
+> 窗口只能选择本机已安装版本，创建后不换核；删除仍有窗口绑定的版本会被拒绝。
+> 同一 Chromium 版本只保留一个固定包；本机清单按数字版本倒序排列。
+> 上游 SDK 默认会自动更新，因此窗口启动走经适配的 `use_installed` /
+> `launch_pinned_cdp`，不会在启动时更新内核。内核下载读取应用代理设置，
+> 未进行本机编译、真机安装和跨平台验证。
+
+ShardBrowser 的 `shardbrowser_kernel_status` 保留 `downloading`，并返回 `download`。
+任务阶段为 `idle / preparing / downloading / extracting / verifying / ready / failed`，
+包含当前构件 `label`、实际 `receivedBytes`、可空 `totalBytes`、可空 `percent` 和错误 `error`。
+Rust 将 ShardX SDK 的字节回调写入内存任务，下载百分比按当前构件的响应总长度计算。
+浏览器、Widevine 和指纹库分别报告进度，切换构件时重新计数。
+SDK 保持原有 `ProgressCb` 类型，新增 `extracting:<label>`、`verifying:<label>` 阶段通知，
+此时两个字节计数均为零。解压、校验和总长度未知时显示不定进度条。
+完成本机完整性记录和目录保存后才报告 `ready`，失败信息保留在任务状态供重访读取。
+
+v2 实验室在发起下载命令时立即开始轮询，命令等待期间持续读取任务；
+返回设置时先读取状态，发现活动任务后继续轮询。已知下载百分比使用原版 UI Kit 的
+`ProgressBar`，其他活动阶段使用原生不定进度条。v2 其他 Provider 标签的禁用状态按现有接入范围保留。
+旧实验室的 ShardBrowser、CloakBrowser 及 AliasMode Chromium / Firefox 均显示进度条，
+已知百分比使用各自后端上报值。AliasMode 重访时也轮询准备阶段，完成后刷新本机清单。
+
+> 0.2 页面现状：在「应用设置 → 实验室」的 CloakBrowser 与 AliasMode
+> 标签页分别启用接入、下载和删除已安装版本；AliasMode 内按 Chromium / Firefox 分开管理。Camoufox 标签页仅占位。
+> 页面不展示缓存目录、可执行文件路径。下文的「应用设置 → 浏览器内核」指
+> 0.1 版历史页面位置，不代表 0.2 的独立设置入口。
+
+本文主要描述 CloakBrowser，并列出 AliasMode Chromium 的独立管理命令。
+`KernelService`、授权、缓存和 Node 准备流程由
 `CloakBrowserProvider` 持有，通用 `WindowService` 只在内置操作时使用这些资源。
 AdsPower 和比特浏览器的内核由厂商管理，不使用这些命令，也不要求 Raccoon 激活码。
 外部版本未知时保留未知，不填入本机内置版本。
 
 ## 页面与操作
 
-「应用设置 → 浏览器内核」显示官方最新稳定版本、下载入口、本机已安装版本、
-平台架构和缓存目录。进入页面会检查一次最新版本，也可以点击「检查更新」重新查询。
-先在「激活码」页保存激活码，再下载或创建窗口；不要求用户安装 CLI、Node.js 或配置环境变量。
-页面不回显激活码，不提供内核类型切换或本机路径覆盖。
+「应用设置 → 实验室 → CloakBrowser」显示官方最新稳定版本、下载入口与本机
+已安装版本。进入标签页读取授权和本机清单，点击「检查更新」查询最新版本。
+先在同一标签页保存激活码，再下载或创建窗口；不要求用户安装 CLI、Node.js 或配置环境变量。
+页面明文回显已保存激活码，不提供内核类型切换或本机路径覆盖。
 保留最新版本检查与下载卡片，并提供紧凑的「下载指定版本」输入框和按钮。
 指定版本必须是完整包版本：4–5 段数字、点号分隔、最多 48 个字符；
 页面提交前去除首尾空白，无效输入不发送下载请求。不提供虚构的官方历史版本目录。
 下载权限和包可用性由 SDK 校验，不根据本地缓存的授权方案提前禁止版本选择。
 
 已安装内核区域的「刷新」只读取本地清单，不连接下载服务、不创建窗口。
+0.2 实验室中的已安装版本提供「删除」确认。Rust 拒绝删除被窗口绑定的版本，
+或该接入仍有待确认操作的版本；准备中的内核同样不能删除。成功后刷新本机清单，
+失败时保留版本并在确认弹窗内提示错误。页面不展示缓存目录和具体路径。
+激活码保存或移除后立即通知当前内核页面更新下载按钮状态，并异步核对原生状态；
+无需切换标签页。
 「检查更新」只请求当前平台的版本元数据，不下载内核、不读取或发送激活码。
-已取得的版本显示完整包修订号、检查时间和「可下载 / 已下载 / 本机已有更新版本」状态。
+已取得的版本显示完整包修订号、检查时间和下载按钮。
 检查失败明确显示错误；旧查询结果标记为「上次查询版本」，不能据此显示已是最新。
 浏览器预览显示桌面应用入口提示，
 不模拟下载结果。清单只识别 SDK 的 `chromium-<完整版本>-pro` 安装目录，
@@ -36,13 +70,25 @@ SDK 未报告传输量时只显示阶段，不生成估计进度。离开设置�
 
 ## 数据与命令
 
-内置 Provider 的 `KernelService` 托管 Node 适配器，提供三个命令：
+内置 Provider 的 `KernelService` 托管 Node 适配器，提供以下命令：
 
 | 命令                  | 输入                       | 结果                                               |
 | --------------------- | -------------------------- | -------------------------------------------------- |
 | `kernel_status`       | `refresh: boolean`         | 本地目录、平台、安装清单、激活码配置标志和当前任务 |
 | `kernel_check_latest` | 无                         | 官方当前平台的 `{ version, platform, checkedAt }`  |
 | `kernel_download`     | `version?: string \| null` | 成功准备后的 Chrome 显示版本；失败返回可操作错误   |
+| `kernel_delete`       | `version: string`          | 确认无窗口绑定和待确认操作后删除本机版本           |
+
+AliasMode Chromium 使用独立的 `aliasmode_kernel_status`、`aliasmode_kernel_job`、
+`aliasmode_kernel_check_latest`、`aliasmode_kernel_download` 和
+`aliasmode_kernel_delete` 命令管理官方发行包；该发行版基于 Apostate 并对
+Chromium 打补丁，不是未修改的通用 Chromium 编译产物。
+源码和构建说明见 [AliasMode Chromium 官方仓库](https://github.com/aliasmode/aliasmode-chromium)。
+同一组命令通过 `engine: "chromium" | "firefox"` 分别管理独立目录和下载任务；
+Firefox 的官方发行仓库为 [AliasMode Firefox](https://github.com/aliasmode/aliasmode-firefox)，
+标签使用完整 `aliasmode-runtime-<版本>-r<修订>`，校验文件为 `SHA256SUMS`。
+已创建窗口的引擎、内核版本、操作系统、CPU 数量与种子固定；删除内核前检查
+该引擎下的窗口绑定。Firefox 不提供 CDP 自动化能力。
 
 `kernel_download` 省略版本或传 `null` 时重新检查并下载最新稳定版；
 传完整包版本时只准备该包，不因失败回退最新版本。前端适配层同样校验传入版本。
@@ -62,6 +108,13 @@ SDK 未报告传输量时只显示阶段，不生成估计进度。离开设置�
 避免同一应用中多个请求争抢下载与解压。任务进行中再次请求准备会返回等待提示。
 读取清单不会占用准备锁；轮询当前任务使用内存状态，不在每次轮询时启动 Node。
 任务状态是内存状态，内核文件保存在磁盘，激活码继续由 Rust 从明文 SQLite 读取。
+
+桌面 v2 的 Tauri 标识固定为 `com.raccoon.desktop`，实验室内核位于系统应用数据目录的
+`v2/cloakbrowser/`、`v2/shardbrowser-kernels/`、`v2/aliasmode-kernels/` 和
+`v2/aliasmode-firefox-kernels/`。macOS 的根目录为
+`~/Library/Application Support/com.raccoon.desktop/v2/`。同一标识启动的 dev 实例重用这些目录，
+退出应用不会删除已完成并通过完整性检查的内核；下载进度与临时解压目录不作为已安装版本保留。
+这只保存内核文件，不改变 Profile、SQLite、授权或其他应用数据的目录与归属。
 
 ## 适配器协议
 
@@ -136,6 +189,9 @@ SDK 返回的二进制还必须属于受管安装清单，不能接受其他下�
 Chrome `--version` 显示值单独保存于可选 `provider_config.displayVersion`，
 不能把缺失修订号的显示值补成完整包标识，也不再通过旧记录读取器推导绑定。
 正常启动和 Node 快照只读当前 v2 schema。
+Rust 向运行组件传递固定内核路径、完整包版本和实际运行所需字段。代理库 ID 保存在
+Raccoon 配置中，启动前由 Rust 解析为连接地址，离线快照无需解析。运行组件拒绝配置格式时
+单独反馈配置读取错误，内核绑定错误用于路径或版本校验失败。
 
 默认最新版本的内置批量任务在首个确认创建结果后固定完整包版本，
 后续创建、继续及失败重试均复用它；种子和原始配置快照不随之修改。

@@ -1,8 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "theme": "light",
   "accent": "cobalt",
   "density": "comfortable",
-  "reducedMotion": false,
-  "workspaceName": "我的工作室"
+  "reducedMotion": false
 }

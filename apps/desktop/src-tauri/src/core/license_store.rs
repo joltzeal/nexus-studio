@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct LicenseStatus {
     pub configured: bool,
+    pub key: Option<String>,
     pub plan: Option<String>,
     pub expires: Option<String>,
 }
@@ -61,20 +62,28 @@ impl LicenseStore {
         let connection = self.open()?;
         let metadata = connection
             .query_row(
-                "SELECT plan, expires FROM cloakbrowser_license WHERE id = 1",
+                "SELECT license_key, plan, expires FROM cloakbrowser_license WHERE id = 1",
                 [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|_| "无法读取 CloakBrowser 授权状态")?;
         Ok(match metadata {
-            Some((plan, expires)) => LicenseStatus {
+            Some((key, plan, expires)) => LicenseStatus {
                 configured: true,
+                key: Some(key),
                 plan: Some(plan),
                 expires,
             },
             None => LicenseStatus {
                 configured: false,
+                key: None,
                 plan: None,
                 expires: None,
             },

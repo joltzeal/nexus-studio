@@ -1,4 +1,4 @@
-import { Loader2, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { Loader2, ShieldAlert, ShieldCheck } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   DialogContent,

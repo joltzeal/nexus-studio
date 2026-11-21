@@ -1,5 +1,513 @@
 # 质量门禁与验证记录
 
+## 2026-11-21 0.2 GitHub 发版准备
+
+- desktop-v2 全量 lint 与 `pnpm run build:v2` 通过，Vite 保留超过 500 kB 的 chunk 提示。
+- contracts、plugin-sdk、plugin-contracts、browser-runtime 与发行配置回归共 647 项通过，78 项跳过。
+  browser-runtime 子进程夹具补齐页面事件接口后，原 3 项失败通过。
+- Rustfmt、Actions workflow 的 actionlint、发行改动格式与 Git 空白检查通过。
+- Rust host 版本对齐 0.2.0。v2 使用独立 `raccoon-v2` updater Release，版本化发行不设为
+  GitHub Latest，保留已安装 v1 客户端的旧更新通道。
+- 发行目标为 macOS arm64 与 x64，采用 ad-hoc 签名。Rust 测试、Clippy、原生打包及最终
+  运行时验证由 tag 触发的 GitHub Actions 执行，完成状态以实际运行结果为准。
+
+## 2026-11-21 desktop-v2 lint 与前端构建
+
+- `pnpm --dir apps/desktop-v2 run lint` 通过，ESLint 无错误，allowlist 检查为 0 项。
+- 根 `pnpm run build:v2` 通过，包含 workspace packages、UI Kit、v2 TypeScript 与 Vite 生产构建；未调用 v1 桌面构建或 Rust/Tauri 构建。
+- Vite 提示部分压缩 chunk 超过 500 kB，最大约 576 kB；不影响本次构建结果。
+- 单独运行 v2 包 build 时，因 workspace contracts 包尚未生成 `dist` 失败；按仓库 v2 build 入口先构建 workspace packages 后完成。
+
+## 2026-11-21 比特浏览器完整指纹表单
+
+新建与编辑共用 `/browser/add` 的 `browserFingerPrint` 字段集，覆盖内核类型/版本、
+UA、WebRTC、地理位置、显示语言、分辨率限制、噪声、端口保护、设备信息、
+TLS 特性和插件指纹。表单的“默认”不发送字段；经纬度、端口白名单、Host IP
+和数值区间在前后端分别校验，编辑仍只提交变化键。
+
+- 比特浏览器适配器 37 项 Rust 回归通过，其中创建用例核对全部新增字段到请求体。
+- 指纹边界及设置 JSON 键往返 Rust 用例 2 项、desktop-v2 表单规则 8 项通过。
+- `cargo check --release`、desktop-v2 无产物 TypeScript、改动文件 ESLint、
+  Prettier、Rustfmt 和 Vite 构建通过。
+
+未运行真实比特浏览器 API，未修改真实厂商环境；表单布局只做代码与构建检查，
+未做原生 WebView 截图验收。
+
+## 2026-11-21 desktop-v2 两级代理选择器
+
+新建、编辑、快捷换绑、批量分配和批量创建使用同一套选择器。
+主程序代理保留在顶级，代理池从顶级进入二级，列表不提供直连选项。
+
+- 选择器 DOM 回归 5 项通过，覆盖按需分页、返回保留搜索、混合多选、失败重试和能力门禁。
+- CloakBrowser 表单 4 项、批量/Profile 代理池契约 Node 回归 25 项通过，覆盖端点回显、提交与原生代理引用。
+- desktop-v2 无产物 TypeScript 和改动范围 ESLint 通过；未执行构建、图像检查或真实代理启动。
+
+## 2026-11-21 Graph 邮件本机已读
+
+desktop-v2 的 Graph 阅读器按邮箱和目录保存本机已读标记，并应用于列表筛选和未读计数。
+设备授权源码请求 `Mail.Read`。正文载入后的自动标记和批量标记只更新本机记录。
+
+- 阅读器 DOM 回归 7 项通过，覆盖重新打开、批量标记、本机筛选、目录隔离和 IMAP 写入确认。
+- 邮箱领域 Node 回归 18 项及插件 Vitest 237 项通过。
+- desktop-v2 和邮箱插件无产物 TypeScript、定向 ESLint 检查通过。
+
+验证使用受控夹具，已安装包的设备授权与真实 Microsoft 邮箱尚待验收。
+
+## 2026-11-21 CloakBrowser Profile 启动与表单修复
+
+Rust 的持久化 Profile 包含 `proxy_id`。启动时直接发送整条记录，导致 Node 严格解析拒绝，
+原生层将配置格式错误误报为内核绑定不一致。启动和离线快照现在使用统一的运行载荷编码，
+保留固定内核绑定，代理库 ID 只在 Rust 侧使用。CloakBrowser 新建与编辑只准备自己的表单草稿，
+不调用 ShardBrowser 指纹库，编辑直接读取已绑定的内核版本。
+
+- 只读检查两条本机 CloakBrowser Profile，旧载荷均被现有 Node 运行组件拒绝，移除 `proxy_id` 后通过记录解析、受管缓存路径与二进制 `--version` 校验。
+- 定向 Vitest 5 个文件、158 项通过，含 2 项 CloakBrowser 表单回归。表单规则与内核响应解析 Node 测试 13 项通过。
+- desktop-v2 无产物 TypeScript、改动文件 ESLint、Prettier 和 Rustfmt 检查通过。
+
+本轮未编译、运行 dev 或启动实际浏览器会话。新增 Rust 边界回归待运行。
+
+## 2026-11-21 desktop-v2 关闭主窗口后保留 Dock 图标
+
+macOS 点击关闭只隐藏主窗口并保留 Dock 图标。系统发出 Tauri `Reopen` 事件时，
+隐藏的主窗口重新显示并获得焦点。菜单栏图标也可重新打开窗口。
+窗口配置与权限检查 3 项通过，desktop-v2 无产物 TypeScript、设置页定向 ESLint 和 Rustfmt 检查通过。
+本轮未编译或运行 dev，Dock 图标显示和点击恢复待原生验收。
+
+## 2026-11-21 desktop-v2 邮件正文与自动已读
+
+邮箱管理与 Vinted 账号池共用的阅读器在页面内按应用主题渲染 HTML 正文。
+打开邮件后按详情和服务端写入结果同步已读状态。写入失败时保留正文，并提示检查邮箱授权。
+
+- 阅读器 DOM 回归 6 项通过，覆盖正文结构、纯文本回退、安全过滤、确认后更新、权限失败和关闭后的迟到响应。
+- 邮箱适配器及领域 Node 回归 18 项通过，邮箱插件 Vitest 237 项通过。
+- desktop-v2 无产物 TypeScript、改动源码定向 ESLint 检查通过。
+
+本轮使用受控夹具验证，真实 Microsoft 邮箱与原生 WebView 尚待验收。
+
+## 2026-11-21 desktop-v2 主窗口关闭到系统托盘
+
+Windows 和 macOS 的 v2 主窗口在 Tauri `CloseRequested` 事件中拦截关闭并隐藏。
+Windows 通知区域与 macOS 菜单栏中的 Raccoon 图标可恢复主窗口。「设置 → 通用」提供主动退出入口，并在退出前检查未保存的编辑。
+
+macOS arm64 和 Windows x64 的 Cargo 锁定依赖解析均包含 Tauri `tray-icon` 特性。
+窗口 chrome 与权限的 Node 检查 3 项通过，desktop-v2 无产物 TypeScript、设置页定向 ESLint 和
+修改的 Rust 文件 rustfmt 检查通过。本轮未执行编译或启动 dev，托盘图标显示、窗口隐藏及恢复待原生验收。
+
+## 2026-11-20 Vinted 账号池完整关系表格
+
+账号池 desktop-v2 表格改为账号、登录方式、邮箱、手机、地址、状态、余额、收款账户、关联配置、
+创建时间和操作 11 列。账号列提供密码遮挡与眼睛显隐，创建时间提供绝对时间和相对时间。
+邮箱列接入邮箱管理关联与读信，手机列接入 SIM8 选号、验证码读取和解除，地址列接入 VInted helper
+已保存地址选择、替换和解除，关联配置列显示当前与其他 Workspace 的 Profile 名称并限制写操作范围。
+表格采用弹性列宽和内部横向滚动，操作统一使用带 Tooltip 的图标按钮。
+
+- 账号池页面 Vitest：5 个文件、17 项通过，覆盖完整列顺序、密码显隐及失焦遮挡、绝对/相对创建时间、
+  Profile 关系投影、邮箱/SIM8/地址操作路由、地址来源变化拒绝和分页。
+- 账号池插件地址/邮箱能力 Vitest：2 个文件、81 项通过。
+- vinted-accounts 领域 Node 回归：20 项通过，覆盖筛选、分页、关系查重、财务观察和 Workspace 生命周期。
+- desktop-v2 无产物 TypeScript、账号池页面及领域定向 ESLint、改动源码 Prettier 检查通过。
+
+没有执行应用或插件 build、打包发布、Rust 编译/测试、截图、图像验证或真实邮箱/SIM8/Vinted 请求。
+收款账户、余额和 Profile 登录状态仍展示插件已保存的观察数据，页面不会把观察记录描述为实时状态。
+
+## 2026-11-20 VInted helper 目录改名与源码引擎加载
+
+插件源码目录由 `plugins/address-generator` 改为 `plugins/vinted-helper`，安装 ID、包名、
+权限和地址存储身份保留；更新 workspace 锁文件、跨插件测试和 Rust 安装夹具的目录引用。
+debug 源码模式直接运行 TypeScript Worker，并从已安装依赖解析 PDFium WASM；编译入口和安装包
+仍读取生成的 Worker 与六段 WASM，由客户端显式传入资源绝对路径。
+加密包 bootstrap 原本已设置包目录环境变量，未因此修改宿主运行代码。
+
+- 直接 Vitest：15 个文件、92 项通过，包含新增的 3 项真实 Node 子进程运行检查。
+  修复前，源码 Worker 加载和安装资源路径检查均失败；修复后确认无 `dist` 资源的源码加载、
+  非工作区 cwd、真实 PDF → A6，以及安装资源缺一段时拒绝而不回退工作区依赖。
+- helper 页面 DOM 交互：2 个文件、9 项通过。
+- 实际源码 manifest 扫描：仅发现一个 `studio.address-generator`，入口位于新目录，
+  显示名称为 VInted helper、版本为 1.3.0。
+- 插件和 desktop-v2 无产物 TypeScript、定向 ESLint、Rust 安装夹具 rustfmt（edition 2024）通过。
+- 独立只读复核未发现本轮确定性重要问题。
+
+安装资源检查使用源码桥接 Worker 夹具，没有构建最终加密包；不能替代实际发布包、
+Tauri 重启、原生另存为或打印验收。未执行插件/应用构建、打包、发布、Rust 编译/测试或图像验证。
+本地 debug 需完整重启 `tauri dev` 重新扫描改名目录；正式应用仍需安装携带完整资源的新插件包。
+
+## 2026-11-20 VInted helper 工具布局与上传即提取
+
+修复原上传入口只创建“待处理”记录、未实际调用提取的问题。helper 调整为左侧地址/面单两类工具，
+地图和地址库归在地址分类内；面单选择或拖入后直接处理，移除手动开始、任务状态表格、统计和大段说明，
+边距与裁剪收进选项。成功后读取并校验 PDF 缓存，再关闭插件会话；分类切换保留下载结果。
+
+- 新增 DOM 交互回归：2 个文件、9 项通过。覆盖选择与拖入即提取、原生保存参数、批量失败隔离、
+  当前参数重试、取消/卸载与迟到会话清理、重复上传阻断、损坏结果拒绝、分类切换保留及文件数上限。
+  自动提取用例已在旧实现上失败，确认旧入口没有发起提取调用。
+- 插件、面单公开契约、传输/下载适配器与配置迁移直接 Vitest：14 个文件、89 项通过。
+- 原地址目录/地图/资料/关联 Node 回归：16 项通过。
+- desktop-v2 无产物 TypeScript、改动页面/测试的定向 ESLint、改动源码和模块文档的 Prettier 检查通过，
+  定向 diff 空白检查无错误。
+- 独立只读复核未发现本轮确定性重要问题。
+
+本轮仅修改前端源码、交互测试与相关文档；未执行插件或应用 build、打包、发布、Rust 检查、
+截图、图像验证、原生 WebView 或真实面单打印验收。
+
+## 2026-11-20 VInted helper 本地面单提取
+
+地址生成器显示名称改为 VInted helper，保留 `studio.address-generator` 身份与原地址数据。
+新增本地 PDF → A6 提取器、独立 Worker 任务、分块传输、逐页报告、批量页面与原生另存为源码。
+提取器参考 nexus-cart 的 Form 识别和墨迹测量算法；未引入 Python 服务、OCR 或面单第三方上传。
+
+- 插件、公共面单契约、前端传输与保存适配器、通用配置迁移直接 Vitest：14 个文件、89 项通过。
+  合成 PDF 覆盖 A6 尺寸、原始文字、独立 Form 隔离、整页回退、旋转/CropBox、毫米裁剪、
+  多候选拒绝、空白/损坏/超大页面/超页数；任务覆盖顺序、取消、过期、迟到响应和下载完整性。
+  另用真实合成 PDF 验证上传至结果读取的严格参数投影，并启动独立 Worker 夹具验证诊断不混入协议 stdout。
+- 原地图、资料与账号关联 Node 回归：16 项通过。
+- desktop-v2 与插件无产物 TypeScript、定向 ESLint、改动文件 Prettier、`git diff --check` 通过。
+- 新增原生保存模块通过 rustfmt；已编写哈希/文件名验证与文件保存测试，但按仓库约定未运行 Rust 测试或编译。
+
+未执行插件/应用构建、资源打包、发布、截图、图像验证、真实面单打印、原生另存为交互、
+Windows 或 macOS 安装验收。Worker 打包资源和原生命令的实际运行仍需后续安装验证；
+直接提取器测试不等于这些检查已经通过。
+
+## 2026-11-20 Vinted 账号池紧凑表格与分页
+
+账号池主表默认缩减为账号、验证码、状态、Profile 绑定和余额五列；低频邮箱、手机号、地址关系操作移入行菜单，观察、编辑、复制密码和删除继续使用 UI Kit 图标操作。表格数据列使用 `minmax(0, fr)` 弹性轨道，无固定像素列宽。页脚改用单行账号分页器，加载时保留结构并禁用选择与翻页。
+
+- 账号列表 Node 测试：5 项通过，覆盖紧凑列筛选、组合筛选、排序、分页边界与跨页选择。
+- 账号分页组件 Vitest：2 项通过，覆盖单行结构、页码文本、图标操作、空结果与加载禁用状态。
+- desktop-v2 无产物 TypeScript、账号页定向 ESLint、改动文件 Prettier 和 `git diff --check` 通过。
+
+未执行应用或插件构建、Rust 检查、截图、图像验证或真实账号/邮箱请求。
+
+## 2026-11-20 商品分页与插件操作栏
+
+商品管理页的列表页脚改为稳定的单行结构：总数与当前页在左侧，每页条数和上一页/下一页图标按钮在右侧。请求加载或失败时保留页脚、隐藏旧总数并禁用分页；删除末页最后一件商品后，以服务端返回的有效页码为准。AI 导入和发布历史弹窗复用同一分页组件。
+商品管理、AI 生图、Vinted 监控和插件中心的行内操作改用带 Tooltip 与无障碍名称的语义图标按钮；确认、授权、禁用和菜单逻辑保持不变。
+
+- 商品页面/适配器直接 Vitest：3 个文件，23 项通过。
+- 共享货源适配器直接 Vitest：4 个文件，13 项通过。
+- AI 生图页面直接 Vitest：3 个文件，11 项通过；Vinted 监控 `node:test` 合约：7 项通过。
+- 插件页面与共享图标定向 ESLint、desktop-v2 无产物 TypeScript、改动文件 Prettier 检查通过。
+
+未执行应用或插件构建、打包发布、Rust 检查、截图、图像验证、原生 WebView 联调或真实上游请求。
+
+## 2026-11-20 desktop-v2 插件 Card 与单行筛选
+
+插件中心和九个专用业务页共用 ShardX Card。筛选保持单行，窄窗口只在筛选栏内横向滚动；
+独立与嵌入式 AI 生图历史共用全宽筛选，搜索占剩余宽度。未修改插件 RPC、存储或提示词源码。
+
+- 直接 Vitest：商品管理 21 项、AI 生图页面 11 项与领域 116 项、共享货源 11 项通过。
+- 直接 Node 测试：商品监控、代理池、SIM8、邮箱、地址和账号池共 110 项通过。
+- desktop-v2 无产物 TypeScript、插件页面目录 ESLint、改动文件格式检查通过。
+- Tailwind 静态检查确认共享 Card、单行布局和定宽控件的关键类可生成 CSS；全量主题检查仍有既有的 `from-image`、尺寸及 token 规则问题。
+- AI 生图四个提示词源码的 SHA-256 与此前迁移记录一致。
+
+未执行应用或插件构建、打包和发布、Rust 检查、原生 WebView 联调或图像验证。
+
+## 2026-11-20 商品管理 desktop-v2 迁移
+
+商品页新增独立 v2 路由，沿用公开商品协议和宿主 RPC。覆盖分层筛选、商品列表、修订号写入、
+图片分块、CSV/JSON 导入、AI 草稿入库和只读发布历史。未修改商品插件协议或存储格式。
+
+- 商品 v2 页面/适配器与公共契约：直接 Vitest 3 个文件、21 项通过。
+- 商品插件后端：直接 Vitest 7 个文件、150 项通过。
+- AI v2 适配器与入库回归：直接 Vitest 11 个文件、116 项通过。
+- desktop-v2 与商品插件无产物 TypeScript、定向 ESLint 和源码格式检查通过。
+
+未执行插件或应用构建、安装联调、Rust 检查、截图及图像验证，也未打包或发布。
+
+## 2026-11-19 插件控件、邮箱批量操作、AI 生图与筛选分层
+
+按用户本轮最新指示，后续不执行插件 build 或图像验证。本轮只做源码、协议、文本呈现、
+状态生命周期和静态检查；没有启动浏览器、截图、付费模型或真实邮箱/SIM8 请求，
+没有执行应用构建、Rust 编译/测试/Clippy、打包或发布。
+
+源码变更包括 SIM8 局部主题边框、邮箱 TXT 导入/含凭据导出、多邮箱向 Vinted 本地建档、
+三类重复检查和事务内确认，以及 AI 生图的完整 v2 页面、严格 API、分块传输、后台商品入库。
+账号、代理、SIM8、邮箱、地址和 AI 筛选区均检查并按搜索 Input / 枚举 Select / 操作分层；
+插件中心的搜索已受 PageHeader 限宽，已安装/商店是业务 Tabs，未改成筛选控件。
+图标仅形成插件自主声明方案，尚未更改公共契约或侧栏渲染。
+
+| 实际检查                                           | 结果                                                           |
+| -------------------------------------------------- | -------------------------------------------------------------- |
+| AI v2 领域/API/状态/入库/参考图直接 Vitest         | 11 个文件，115 项通过                                          |
+| AI 编辑器完整文本、EXIF 字段及共享图片资源生命周期 | 2 个文件，7 项通过；仅服务端文本标记与资源计数，不渲染图片     |
+| AI 原有场景、手机实拍、自动场景纯字符串测试        | 3 个文件，24 项通过；包含 100 个场景和超长原文保留             |
+| 地址插件及配置迁移直接 Vitest                      | 8 个文件，71 项通过                                            |
+| v2 地址/SIM8/邮箱/账号 API 与邮箱关系直接 Node     | 74 项通过；包含当前并行账号改动的新增检查                      |
+| 邮箱插件完整直接 Vitest                            | 13 个文件，237 项通过                                          |
+| 账号池插件完整直接 Vitest                          | 22 个文件，530 项通过                                          |
+| 邮箱插件和账号池测试工程无产物 TypeScript          | 通过                                                           |
+| SIM8 控件静态检查                                  | 17 处 Input/Textarea/Select 框体均有局部主题边框，TSX 解析通过 |
+| AI 四个提示词源码 SHA-256                          | 与迁移前记录全部一致，未删减或改写                             |
+
+AI 的测试通过独立 Vitest 配置直接运行，邮箱/账号/地址插件通过根 Vitest 直接指定目录运行，
+不调用根 test/typecheck/check 脚本。pnpm 工具调用使用
+`pnpm_config_verify_deps_before_run=false`，避免执行前隐式安装或构建。
+本轮 AI、邮箱、SIM8、地址、代理及账号筛选组件的定向 ESLint 通过，不将此结果扩展为全仓 lint。
+最后两次 TS 检查使用 `pnpm --dir apps/desktop-v2 exec tsc --noEmit --types node,vite/client`，
+其中一次另带 `--customConditions development`，均无诊断。早期根工具链及并行改动期间曾出现
+指纹 mock 的 BlobPart、更新模块依赖和未完成的账号测试文件诊断；不将这些早期快照与最终
+desktop-v2 自身工具链的检查混为一谈，也未为本任务重写相应业务模块。
+
+只读审查发现本地多图串行上传在弹窗关闭或排队项被移除后仍可能继续启动下一张；
+现已把本地和来源图传输统一为每次启动前核对页面存活与选择成员的队列。
+另增加 3 项受控异步检查，覆盖队列开始前已关闭、首张等待中关闭，以及移除尚未开始的图片；
+最终 AI 页面检查为 3 个文件、10 项通过。后续定向 ESLint 与同一 desktop-v2 无产物 TS 再次通过。
+本轮修改源码与相关文档的 Prettier 检查通过，文档范围 `git diff --check` 无空白错误。
+
+TXT 导出入口只表示发起下载，原生 WebView 的下载落盘尚未验证。地图使用构建注入的浏览器 Key，
+真实授权/计费请求未验收；AI 的原生运行、真实服务商、系统下载目录与 Windows 也未验收。
+SIM8 边框及筛选的最终视觉效果按用户要求未做图像验证。
+
+## 2026-11-19 地址生成器地图选点与构建 Key
+
+地址插件源码升级至 1.2.0，移除 Overpass/OSM 生成路径及网络域名，v2 使用 Google Maps
+直接选点并生成 firstname、lastname、username 和地址资料。逐字段复制、保存、CSV、
+账号关系和重复保存使用规范身份均已接入源码。已保存历史地址不删除。
+`VITE_GOOGLE_MAPS_API_KEY` 由主程序前端构建注入，不提供用户 Key 表单、不经 RPC 传给 Node 插件。
+
+上述 71 项插件测试和 16 项地址前端 Node 测试通过；插件无产物 TypeScript 和定向 lint 通过。
+在用户追加“后续不再 build 和图像验证”之前，已执行一次地址插件单独编译，
+并使用受控 Google SDK/IPC 检查亮暗主题、逐字段复制、保存失败保留、去重、分页、
+CSV、账号关联及 960px 列表布局；之后未重复执行 build 或图像验证。
+测试专用 1443 端口服务已停止。受控 SDK 结果不证明真实 Google Maps 或原生 WebView 连通；
+应用构建、Rust、真实地图服务和双平台验收仍未执行。
+
+## 2026-11-19 desktop-v2 标题栏与重复顶部留白
+
+用户截图仍显示白色系统标题栏和前端额外的 38px 顶部留白。排查正在运行的进程与
+Cargo 构建指纹，确认父 Tauri CLI 启动于 14:29，窗口 Overlay 配置在 14:42 修改；
+15:44 启动的 Rust 子进程所用 `TAURI_CONFIG` 仍只有 v2 入口等旧覆盖项，缺少
+`app.windows`。此前浏览器受控 IPC 检查没有覆盖这条原生配置缓存路径。
+
+Rust 现在在窗口创建前将编译时嵌入的 v2 主窗口 chrome 应用到生成的 context，
+限定 v2 标识与主窗口，保留尺寸、可见性及其他窗口。前端继续使用上游 38px
+红绿灯区域，不额外叠加布局补丁。
+
+实际检查：新增启动接线检查先失败、修复后与配置/拖动检查合计 8/8 通过；
+改动测试文件的 ESLint、改动 Rust 文件的 Rustfmt 通过。新增 3 项 Rust 行为测试
+覆盖旧 v2 配置恢复、窗口状态/其他窗口保留及旧版/Preview 入口隔离，尚未运行。
+本轮未执行应用构建、Rust 编译/测试、原生重启或 macOS/Windows 外观验收。
+配置变化应完整退出并重启父 `tauri dev`，前端 HMR 或单独重启 Rust 子进程不足以
+保证加载新配置。
+
+## 2026-11-19 desktop-v2 desktop:dev 数据库初始化修复
+
+启动日志显示 v2 Vite 服务与 Tauri 命令均已启动，原生 setup 随后在 SQLite
+schema 检查中退出。v2 Tauri 配置此前继承旧桌面端的应用标识，使两者解析到同一
+应用数据目录；旧数据因此被 v2 的独立 schema 校验拒绝。为 `tauri.v2.conf.json`
+设置独立的 `com.raccoon.desktop` 标识后，v2 使用自己的 `v2/raccoon.sqlite`，
+既有目录保留原样，Preview 保持自己的标识。
+
+按本地工具链约定，未重新启动 Tauri 或运行 Rust 构建。配置解析、Rust 重启、
+macOS/Windows 启动及已有 v2 数据目录行为尚未重新验证。
+
+随后直接复跑指定命令，确认新的启动失败原因是 Vite 无法绑定 `127.0.0.1:1420`，
+该端口已被旧开发服务占用。v2 Vite 与 Tauri `devUrl`/开发 CSP 现已同步改用
+`127.0.0.1:1422`，与旧桌面开发服务分离。端口配置静态核对完成，Tauri 原生启动
+仍需运行命令验证。
+
+再次运行时发现 `1422` 已有 desktop-v2 Vite 服务，Tauri 又尝试启动第二份 Vite，
+因此仍因端口占用退出。before-dev 命令现在先检查现有页面的模块入口是否为 v2，
+验证成功后复用该服务；空闲端口则启动新的 Vite；其他应用占用时给出明确错误。
+新增 Node 用例验证 v2 与旧版页面入口识别。
+
+## 2026-11-19 BitBrowser 默认接入与启动引导
+
+比特浏览器改为常开默认 Provider：`ConnectionStore` 在初始化时建立
+`builtin-bitbrowser` 并恢复启用，其他实验接入仍在实验室手动开启。工作区默认优先选择比特，
+本机 API 不可达时探测返回可操作的不可达状态，配置页显示启动/重试引导，
+`browser_bitbrowser_launch` 调用本机官方应用并在超时后给出明确错误。
+
+创建改走文档的 `/browser/add`；缺失默认分组时依次使用已有 `Raccoon` 分组、第一个分组或
+新建 `Raccoon` 分组。表单新增 BitBrowser 自己的 Fingerprint 标签，映射平台、GPU、
+硬件、屏幕、噪声、启动参数和随机指纹，空值不下发；契约与 Rust 均做边界校验。
+
+实际执行并通过：
+
+- `packages/contracts` BitBrowser 指纹契约 Vitest（10 项）。
+- desktop-v2 定向 TypeScript 检查，除既有 `src/raccoon/plugins/**` 缺文件和隐式 `any`
+  诊断外无新增错误；定向 ESLint 与 Prettier 通过。
+- desktop-v2 `controller.test.ts`（17 项），含默认选择比特与历史偏好优先。
+- desktop-v2 `profile-form-model.test.ts`（8 项），含 Bit 内核/屏幕成对校验与标签归属。
+- Rust 改动文件 `rustfmt --check` 通过。
+- 新增 Rust 单元用例：离线探测返回可操作的不可连接状态、`coreVersion` 与自定义时区
+  `timeZoneOffset` 只进入变更字段；尚未执行 `cargo test`。
+
+未执行 Rust 编译/测试/Clippy、真实 BitBrowser 登录与本地 API、真实环境创建/启停/删除、
+macOS 应用启动实测或 Windows 验收。因此“可调用”仍不等于已完成真实厂商联调。
+
+## 2026-11-19 desktop-v2 代理池页面重构
+
+新增 `apps/desktop-v2` 专用代理池页面与 Raccoon 插件 RPC adapter，页面沿用 ShardX UI Kit，
+通过 `plugin_call` 调用 `studio.proxy-pool` 的 `proxy.provider` 能力。网页预览库存明确标注为
+示例数据。页面在读取库存前校验所有实际使用的方法；接口不完整时引导更新插件。插件服务端
+协议保持当前公开 `proxy.provider` 契约，不保留旧版桌面页面或 0.1 IPC 适配。
+
+实际执行并通过：
+
+- `plugins/proxy-pool` TypeScript `--noEmit` 与插件独立构建。
+- 代理池插件 Vitest：12 个文件、139 项通过。
+- 插件进程 RPC transfer 与 proxy resolution 专项：2 个文件、25 项通过，覆盖真实 Node 子进程、
+  插件私有目录重启后的传输回执/代理读取及代理连接解析。
+- desktop-v2 代理池边界解析与页面方法门禁：2 个文件、4 项通过。
+- 代理池页面、adapter、插件入口相关 ESLint 与 Prettier 检查，以及模块文档 `git diff --check`。
+
+desktop-v2 全项目 `tsc --noEmit` 未通过：现有 `realFingerprints.ts` 有 `Uint8Array<ArrayBufferLike>`
+与 `BlobPart` 类型不兼容；多个既有测试文件缺少 Node 类型声明并有严格空值诊断。本次没有为此修改
+无关配置或测试。未执行 UI 浏览器/E2E、应用构建、Rust 编译/测试/Clippy、真实代理网络、Windows
+或桌面包验收；插件 RPC 测试不等于真实浏览器代理联调。
+
+## 2026-11-19 desktop-v2 CloakBrowser Fingerprint 标签与基础元数据
+
+CloakBrowser 表单补齐 ShardBrowser 的 Fingerprint 标签页结构与基础资料字段：
+Basics 增加标签和颜色，代理出口匹配、时区、语言、种子和尺寸移入
+Fingerprint，不再以属性行混放。Fingerprint 复用 ShardBrowser 的分组标题、两列字段网格、
+开关和帮助文案节奏，但不读取指纹库。指纹字段变更归属 Fingerprint，标签归属 Basics，
+标签页错误标记按字段归属显示。
+
+颜色和标签关系写入可选 `settings.shardbrowser._meta`；Rust 草稿校验相应允许
+CloakBrowser 携带该字段。该字段只含 `navigator.platform` 与元数据，不进入 Cloak 启动参数。
+
+实际执行并通过：
+
+- desktop-v2 无产物 TypeScript 检查。
+- desktop-v2 全量 ESLint、`check:errors`。
+- desktop-v2 `check:classes` 新增文件 0 无效类名、0 未声明属性、0 离刻度间距。
+- desktop-v2 `check:kit`（390 项测试）与 4 项定向 Node 测试（标签页与字段归属）。
+- mock 预览中临时挂载 CloakBrowser 表单，截图核对 Basics 与 Fingerprint 的分组、
+  两列网格、开关和 Footer 节奏。
+- 改动文件 Prettier 与 `git diff --check`。
+
+未执行 Rust 编译/测试/Clippy、真实 Tauri 创建、标签 SQLite 触发器联调或真实界面截图验收。
+
+## 2026-11-19 desktop-v2 CloakBrowser 共享 Profile 表单
+
+CloakBrowser 的创建与编辑改为复用 ShardBrowser 的 `ProfileFormDialog` 大型弹窗、
+固定标签栏、属性行、提示位和保存栏，只保留 Basics / Proxy；Provider 属性替换
+ShardBrowser 的指纹字段，不再挂载第二套独立网格弹窗。内核、种子和 Provider 绑定的
+只读边界，以及代理、激活阻断和创建结果待核对规则保持不变。
+
+实际执行并通过：
+
+- desktop-v2 无产物 TypeScript 检查。
+- desktop-v2 全量 ESLint 检查。
+- desktop-v2 `check:errors`（错误对象未直接进入 toast）。
+- desktop-v2 `check:classes`：0 个无效类名、0 个未声明自定义属性、0 个离刻度间距；
+  仍有 10 个既有数字尺寸提示和 5 个既有 token 提示，均不在本轮新增文件。
+- desktop-v2 `check:kit`：UI Kit TypeScript 检查通过，43 个测试文件、390 项测试通过。
+- 直接 Node 测试 23 项全部通过，覆盖 Provider 标签、Cloak 字段校验、变更归属、
+  CloakBrowser 内核/授权响应解析、Provider 选择、授权阻断、免预装内核创建条件、
+  Workspace 切换和既有 controller 行为。
+- 改动文件的 Prettier 检查与 `git diff --check`。
+
+未执行应用或 Rust 构建、Rust 测试、Clippy、真实激活码/内核下载、真实启动与代理、
+应用重启恢复、Windows 和打包验收；也没有在真实 Tauri WebView 中做截图级视觉验收。
+不能把上述检查记为真实联调通过。
+
+## 2026-11-18 desktop-v2 CloakBrowser 接入
+
+实验室新增 CloakBrowser 启用、明文激活码回显、内核检查/下载/删除和 Profile 全生命周期
+前端适配；CloakBrowser 使用独立 Provider 表单，隐藏仅属于 ShardBrowser 的指纹、
+书签和扩展入口。授权状态接口增加明文 `key`，SQLite 存储格式不变。
+
+实际执行并通过：
+
+- desktop-v2 无产物 TypeScript 检查。
+- desktop-v2 全量 ESLint 检查。
+- desktop-v2 `check:errors`（错误对象未直接进入 toast）。
+- 直接 Node 测试 20 项，覆盖 CloakBrowser 内核/授权响应解析、Provider 选择、
+  授权阻断、免预装内核创建条件、启用后 Workspace 切换及既有 controller 行为。
+- desktop-v2 全量 Node 测试 135 项中 122 项通过、13 项失败。失败与上一轮相同，
+  均来自上游测试读取尚未迁入 `apps/desktop-v2` 的 `src-tauri` / `team-server`
+  源文件；新增的 CloakBrowser 与 controller 测试全部通过。
+- `license_store.rs` 与 `license_store_tests.rs` 的 rustfmt。
+
+未执行应用或 Rust 构建、Rust 测试、Clippy、真实激活码/内核下载、真实启动与代理、
+应用重启恢复、Windows 和打包验收。CloakBrowser 当前运行会话只保存在内存，
+重启后运行窗口可能被观察为 `stopped`；不能把上述检查记为真实联调通过。
+
+## 2026-11-18 内部自动化源码接入
+
+本轮新增 Rust 内部自动化服务，沿用 ShardBrowser 固定源码的 runner、CDP、
+WASM、HTTP 与数据库步骤，接入 Raccoon v2 SQLite、Provider 会话、资源租约、
+操作意图与中断核对。原生前端挂载上游自动化页面，增加连接隔离、事件过滤、
+辅助窗口与 API 设置。HTTP/MCP 入口调用同一内部服务。
+
+用户停止测试指令到达前，直接 Node 组合检查 33 项通过，涵盖原生客户端、
+作用域、现有 Workspace controller 与 MCP 路由。browser-runtime 的启动参数、
+runner 和生命周期三个文件 85 项 Vitest 检查通过。desktop-v2 与 browser-runtime
+无产物 TypeScript 检查通过，自动化范围 ESLint 通过，MCP 包和锁文件格式检查
+通过。Cargo 依赖解析、下载与 locked metadata 成功，静态命令清单核对包含
+42 个命令，上游 68 个步骤均有分派，MIT 许可证与上游一致。
+
+叫停前的受控 IPC 页面记录覆盖项目创建、编辑、画布拖动、保存、运行日志、
+失败反馈、Workspace 迟到响应隔离、Helper 自动挂钩、运行核对确认及 API 设置。
+1280×800、DPR 1、相同数据下，列表与编辑器各自 1026×786 的主内容区与导入的
+上游预览截图均为 0 差异像素，比较不含侧栏。此结果只覆盖上述页面、数据和尺寸。
+原生受控入口控制台无错误或警告，普通网页预览仍有缺少
+`workbench_settings_get` mock handler 的警告。临时交互与像素记录位于
+`/tmp/raccoon-automation-*-evidence.json`，这些受控响应不能替代真实 Provider 证据。
+
+用户随后明确要求停止运行测试。收到指令后停止新增测试执行和浏览器验证。
+最后的生产代码整合包含 owner-aware 操作核对与已知恢复问题修复，这部分
+未重新运行检查。Rust 单元测试仅保留源码，未执行。Rust 编译、Clippy、构建、
+打包、真实 Provider、Windows 和实际重启恢复均未验证。
+
+最终恢复修复覆盖 update/delete/start/stop 在自身自动化租约内的结果核对，
+以及运行快照串行持久化、已结束运行注册表回收和恢复后权威终态回读。
+
+Wasmtime 41.0.4、wreq 0.15.3 和 wreq-util 0.1.0 用于保持 Rust 1.93 工具链，
+相对上游依赖的区别记录在引擎来源说明。标准 CDP 输入的轨迹、触摸和流量行为
+需要各 Provider 的实际证据，Firefox 和 Camoufox 仍有真实执行能力缺口。
+
+## 2026-11-18 全局代理库与 Raccoon Preview 桌面构件
+
+用户要求先完成业务，并明确授权构建 Preview。代理页沿用 ShardBrowser 列表、导入、
+编辑与详情组件，通过 Raccoon 命令读写全局 SQLite 代理库。ShardBrowser Profile
+通过 proxyId 选择、编辑和批量分配，使用量从全部连接读取。缺失代理阻断启动，
+被 Profile 或待核对操作引用的代理拒绝删除。原生剪贴板支持导入、导出及复制。
+
+实际执行 desktop-v2 TypeScript 检查、Vite 生产构建及 Rust release 编译，通过。
+Preview 使用 `com.raccoon.preview` 独立应用标识，版本 `0.2.0-preview.1`，
+包含 Node helper 与 browser-runtime。采用 macOS ad-hoc 签名，未做公证。
+首轮 Tauri DMG 制作因临时卷繁忙失败，随后使用同一 .app 创建压缩 DMG。
+包内运行时检查通过。应用直接启动保持运行并建立独立 v2 数据目录。
+
+本轮按用户要求未新增或运行专项测试。真实第三方代理、出口一致性、浏览器登录态、
+Windows 及系统签名/公证仍未验收。代理检测支持经代理的 HTTPS 请求与出口 IP，
+UDP 尚未检测。Rust 编译保留 ShardBrowser 未使用导入和 AliasMode relay 字段警告。
+
+## 2026-11-18 desktop-v2 ShardBrowser 原生命令接入
+
+新增真实 Tauri 入口、Raccoon 数据 adapter、连接范围 Workspace、Profile 生命周期、
+Folder 与实验室内核操作。创建未知结果保留操作 ID，重启读取待处理操作；已提交但
+响应丢失的创建读回原 Profile。Folder 数据库改为 schema 4，以 connectionId
+校验成员关系，保留旧数据库文件并拒绝自动升级。受管 Provider 补充启动字段映射、
+跨进程锁、持久创建意图及状态核对。默认旧发行入口保留，v2 使用独立 Tauri 配置。
+
+本地实际检查包括下列内容。
+
+- 新增 domain controller 的 Node 测试 11 项通过，覆盖连接切换竞态、未知状态、
+  已提交响应丢失、创建重放阻断及写失败。
+- desktop-v2 完整 Node 测试 111 项中 98 项通过、13 项失败。失败均来自上游测试
+  读取未引入的 `src-tauri` / `team-server` 源文件，涉及 `extUpdates`、密码与自动化
+  拒绝文案、后端警告、epoch 写命令以及团队/同步协议。详细输出保留在本机
+  `/tmp/raccoon-unit-tests.log`，这些测试不能计为通过。
+- 公开 browser 契约与旧前端连接 adapter 的直接 Vitest 检查，2 文件、12 项通过。
+- 旧前端 `tsc --noEmit` 通过。本次接入文件及相关 UI 文件 ESLint 通过。
+- Playwright 使用已安装的 Chromium headless shell，1440×1000，验证真实前端入口下的
+  受控 Raccoon IPC。创建、启动、停止、编辑、删除 Profile，创建/移动/改名 Folder，
+  实验室启停保存、内核删除/下载，以及未保存设置离开确认均通过，未见应用控制台错误。
+- 1100×800 的错误场景验证创建结果未知后禁止再次提交、刷新页面恢复操作和核对入口。
+  测试 IPC 为受控响应，未访问厂商环境或真实内核。
+- 提取实际 SQL 初始化语句，在临时内存 SQLite 验证同厂商跨连接 Folder 关系拒绝及
+  删除 Folder 后保留 Profile。
+- 13 个相关 Rust 文件通过 rustfmt 解析。全文件 rustfmt 格式检查仍报告导入源码及
+  既有修改的格式差异，未批量重排。`git diff --check` 通过。
+
+本次遵循仓库约定，未执行应用构建、打包、Rust 编译、Rust 测试或 Clippy。
+真实 ShardBrowser 下载、启动、代理、应用重启、Windows、签名与发行安装验收仍待完成。
+
 ## 2026-11-16 v0.1.42 自动场景多样性
 
 普通参考图任务不再将铁皮画、帆布画固定为靠墙摆放；新任务按商品类型和任务 ID 选取合理的家庭摆放与机位，批次多图请求包含逐张不同的场景要求。手动预设与重试快照保持原逻辑。AI 插件专项 21 文件、421 项通过；插件 `tsc --noEmit`、全仓 ESLint、涉及文件 Prettier、公开源码边界与 `git diff --check` 通过。全仓 Vitest 最终复跑 329 文件、4968 项通过，85 项跳过；首轮一项浏览器运行时 SOCKS5 测试遇到 `EPIPE`，单独复跑 31 项通过，最终全仓复跑亦通过。未调用真实生图服务商验证成片多样性，未执行应用或 Rust 本地构建。插件 `1.6.5` 单独编译、打包并从最终包启动握手，R2 包和完整索引均回读校验；详细 SHA-256 见[插件商店](25-plugin-market.md)。
@@ -3723,3 +4231,222 @@ apps/desktop/src/components/ui` 32 个用例全过。仍未跑 `tsc` 与 `vite b
 用户已在 Manager 验证隔离和持久化，保留这一外部参考，不作为本项目已接入的证明。
 SDK 与 Manager 的代理责任待接入时核实，见[浏览器接入](05-browser-integration.md)。
 当前开发演示通过不等于正式可分发，发布门禁见[应用分发](08-distribution.md)。
+
+## 2026-11-18 官方 ShardBrowser 表单恢复
+
+- 对照官方提交 99e780e2e685e5b3b5357c5baee8796e10b3ce1e，复用原有表单、指纹页和编辑字段组件。
+- 本轮主线仅执行无产物 TypeScript、修改范围 ESLint、Rustfmt 与源码核对。
+- 用户已下载内核，本轮未触发内核下载、浏览器启动或重新打包。Rust 编译和真实运行仍由后续用户构建核对。
+- 下载进度子任务额外执行了既有 controller 和实验室检查。controller 11 项通过，内核设置的 Node 检查有 13 项因缺少 window 失败，未作为原生集成通过证据。
+
+## 2026-11-18 原版工作台交互接线
+
+本轮继续补齐 Folder 外观、Workspace 标签、原版 Overview/ProfilePeek、
+Cookie/克隆/置顶菜单、回收站和原生设置。编译命令交给用户执行。
+检查范围为无产物 TypeScript、修改范围 ESLint、Rustfmt 与源码核对。
+未执行本轮应用构建、Rust 编译或真实浏览器 Cookie/代理/重启联调。
+
+用户随后明确要求停止测试。本轮此后停止测试、类型检查、lint 与格式检查，
+继续业务源码修改，后续原生编译及运行由用户自行执行。
+
+上述检查在用户停止检查指示之前执行。停止之后的业务改动尚未运行检查。
+
+## 2026-11-19 Profile 插件列与插件自有面板
+
+本次按用户确认的首版范围，增加可选 manifest UI 声明、Rust 通用面板会话、
+共享插件列及结构化 ShardX 渲染器。本地 Vinted 示例将面板字段、文案和操作
+保存在插件源码。安装和商店目录继续由宿主提供事实。
+
+本轮实际检查结果如下。
+
+| 检查                                        | 结果                                                                   |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| 直接 Vitest，SDK 与 Vinted 账号池目录       | 25 个文件、544 项通过                                                  |
+| 原生 Node UI 会话检查，development 条件     | 2 项通过，覆盖迟到打开响应、关闭后的响应及非法视图                     |
+| SDK、Vinted 插件、desktop-v2 无产物类型检查 | 通过，后两者使用 development 条件，v2 添加 node 类型                   |
+| 修改范围 ESLint                             | 通过                                                                   |
+| 新 UI Rust 模块及 manifest 的 Rustfmt 检查  | 通过                                                                   |
+| 公开仓库边界                                | 通过，主应用不依赖本地插件源码                                         |
+| 受控 Playwright，1440×960 与 1100×800       | 通过，浏览器控制台无错误                                               |
+| desktop-v2 全量 i18n 检查                   | 267 个问题，未作为通过记录                                             |
+| 全量 Vitest，在允许本机端口的环境重跑       | 327 个文件通过、5 个失败、6 个跳过，4870 项通过、125 项失败、85 项跳过 |
+
+受控 UI 使用实际 AccountPool 源码、内存存储及受控 IPC。已验证图标来自插件声明、
+创建并绑定、编辑保存、联系方式变更确认、退出时保存遇到中间确认仍留在原面板、
+返回编辑保留草稿、方向键退出保护、确认解绑保留账号、Profile/插件面板切换、
+Workspace 切换关闭面板，以及声明移除后自动隐藏列和显示菜单项。
+宽窗口面板实测 420px，窄窗口实测 360px。
+
+独立源码审查发现的并发重复绑定、保存与中间确认混淆、方向键丢失草稿、
+确认返回丢失草稿、长衣柜标题及原生 open 会话 ID 覆盖问题已在本轮修复。
+前述并发与长标题回归通过测试验证，原生会话改动完成源码审查和 Rustfmt。
+
+全量 Vitest 的失败集中在以下文件，保留真实失败结果。
+
+- `apps/desktop/src/features/spaces/spaces-page.test.ts`，106 项失败。
+- `apps/desktop/src/features/settings/kernel-settings-page.test.ts`，13 项失败。
+- `apps/desktop/src/components/app-shell-handoff.test.ts`，4 项失败。
+- `apps/desktop/src/features/proxy/proxy-pool-page.test.ts`，1 项失败。
+- `scripts/lib/release-config.test.mjs`，1 项失败。
+
+初次全量运行另受沙箱端口限制影响，随后在允许本机端口的环境重跑得到上表结果。
+本轮未执行应用构建、Rust 编译/测试、真实厂商浏览器操作或插件发布。
+Tauri 命令注册、安装包行为及 macOS/Windows 原生验收仍需更新后的宿主完成。
+SIM8/邮箱跨插件后台协作、验证码等待任务和完整账号池页面另行迁移。
+
+## 2026-11-19 desktop-v2 开发启动与插件源码加载
+
+修复 Vite 热更新脚本参数导致的开发服务器误判；开发宿主现在直接读取 `/plugins/*` 的
+TypeScript manifest 和入口，使用工作区 SDK 源码运行，源码插件不进入安装登记表或第一方卡密检查。
+内核缓存仍使用稳定的 `com.raccoon.desktop/v2` 应用数据目录。
+
+本轮检查记录如下。
+
+| 检查                                | 结果                                                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Node.js Vite 守卫与源码 loader 测试 | 6 项通过                                                                                              |
+| `/plugins` TypeScript manifest 扫描 | 11 个插件有效，0 个错误                                                                               |
+| desktop-v2 无产物 TypeScript 检查   | 通过                                                                                                  |
+| desktop-v2 插件页 ESLint            | 通过                                                                                                  |
+| 修改的 Rust 文件 rustfmt            | 通过                                                                                                  |
+| `desktop:dev`                       | 用户要求停止后不再运行；本次尝试因磁盘空间不足，创建 `libnexus_desktop_lib.rlib` 失败，未完成应用启动 |
+
+当前 macOS 应用数据目录中存在 CloakBrowser 缓存和 ShardBrowser `157.0.8103.50` 完整内核目录。
+未执行清理或迁移。源码插件宿主的 Rust 编译、端到端 Tauri 调用、进程重启后重新加载和双平台验证
+仍未完成；不得以本次静态检查替代运行验收。
+
+## 2026-11-19 Profile Peek 插件入口与 Vinted 面板布局
+
+Profile Peek 标题栏与表格共用插件声明入口，插件面板增加受未保存确认保护的
+返回详情操作。通用渲染器支持分区标题操作与固定底栏，Vinted 插件自行声明
+资料、联系方式、关联操作及三组表单字段。
+
+本次实际检查结果如下。
+
+| 检查                                      | 结果                     |
+| ----------------------------------------- | ------------------------ |
+| 直接 Vitest，SDK 与 Vinted 账号池目录     | 25 个文件、546 项通过    |
+| 原生 Node UI 会话检查，development 条件   | 2 项通过                 |
+| SDK、Vinted、desktop-v2 无产物 TypeScript | 通过                     |
+| 本次修改的 SDK、插件及 v2 文件 ESLint     | 通过                     |
+| 本次修改源码 Prettier 检查                | 通过                     |
+| 受控 Playwright，1440×960 与 1100×800     | 通过，控制台无错误或警告 |
+
+界面检查使用本地真实 AccountPool 源码、内存存储与受控 IPC。
+覆盖 Profile 标题栏图标进入插件、返回详情、表格入口、创建关联、编辑保存、
+联系方式确认、返回编辑保留草稿、方向键和返回详情的未保存保护、确认解绑保留账号、
+Workspace 切换及声明移除后隐藏入口。面板实测宽度为 420px 与 360px，
+表单滚动前后底栏位置一致。另用五个受控插件声明验证标题栏无水平溢出，
+超出图标可随键盘聚焦横向滚动。
+
+首次界面运行因既有开发服务器已关闭而连接失败，启动 Vite 开发服务器后完成检查。
+检查中修正了多插件图标组挤压标题的问题。全量仓库测试未在本次重复运行。
+本次未执行桌面应用构建、Rust 编译/测试、插件安装包验收或发布，
+以上结果不作为安装后原生运行或真实厂商集成证据。
+
+## 2026-11-19 Vinted Peek 完整账号与验证码交互
+
+本轮按用户要求未启动 dev。代码接入覆盖衣柜快照内联分页、账号分配、
+SIM8 号码与接码链接事务保存、单独编辑链接、确认解除手机号、邮箱选择/更换/解除、
+手机单次取码、手机与邮箱后台等待、常驻复制通知、数字语音及账号状态图标。
+业务规则和状态到语义 tone 的映射保留在本地 Vinted 插件。
+
+宿主增加声明式服务续传、独立后台任务/批量 Profile 状态入口和固定进程调用。
+状态查询每批最多 200 个 Profile，服务转发核对声明、能力、方法及双方安装/进程身份。
+应用级任务控制器处理重叠、截止、取消、迟到结果和跨 Profile 的首次 scope 保留。
+
+| 检查                                                   | 实际结果                                   |
+| ------------------------------------------------------ | ------------------------------------------ |
+| SDK 与 Vinted 直接 Vitest                              | 27 个文件、593 项通过                      |
+| v2 会话、任务与状态控制器直接 Node                     | 21 项通过                                  |
+| v2 通知与音频受控 Vitest 集成                          | 7 项通过                                   |
+| SDK、Vinted、desktop-v2 无产物 TypeScript              | 通过，v2 指定 node 类型和 development 条件 |
+| 本次 SDK、插件及 v2 修改范围 ESLint                    | 通过                                       |
+| 本次 SDK、插件及通用面板源码 Prettier                  | 通过                                       |
+| 12 个 OTP 音频素材与 v1 字节核对                       | 全部一致                                   |
+| 原生网关、manifest、插件宿主、命令分发、lib 的 Rustfmt | 通过，仅格式检查                           |
+
+单元检查覆盖服务续传翻页不重复推进、失败后页面状态回滚、号码未占用筛选保留、
+来源记录和确认后的绑定集合变化、号码及链接同步提交、仅编辑链接、解绑保留号码池、
+邮箱选择到验证码结果、四种账号状态投影，以及重复停止不会重新开始等待。
+验证码模块另覆盖取消重开、来源插件替换、绑定修订、5 分钟后结果、共享账号、
+Vinted 邮件发件人/标题/时间筛选、前导零及大邮件的有界分批读取。
+
+通用运行时使用受控时钟、IPC、音频和真实 toast store，验证关闭面板继续等待、
+跨 Profile 取消沿用首次 scope、取消后不超时/播报、语音失败保留代码提示、复制结果反馈，
+以及六条常驻通知超过一分钟仍保留。音频素材复用 v1 的 12 个 MP3。
+
+本轮未运行浏览器渲染检查、应用构建/打包、Rust 编译/测试/Clippy、真实 SIM8/邮箱请求，
+也未发布插件。新增 Rust 测试仅写入源码，未执行。macOS/Windows 原生安装、
+实际网络接码及系统可听语音仍待真实环境验收。局部类型和测试通过不替代这些证据。
+
+## 2026-11-21 插件导航图标与 Ecom Agent desktop-v2
+
+本轮交付 11 个本地插件的不同导航路径、SDK 与 Rust manifest 对应校验、侧栏/插件中心通用渲染，
+以及完整 Ecom Agent v2 工作台源码。原 Node 工作流、平台工具、提示词和分类资源未在本轮改写。
+页面保留商品与 Profile 分配、草稿模板、预检、模型和执行设置、运行与审查、用量及清理功能。
+实现与逐模块保留清单见[实施记录](superpowers/plans/2026-11-21-plugin-icons-ecom-agent-v2.md)。
+
+| 检查                                                        | 实际结果                                                                                 |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Ecom Agent v2 定向 Vitest                                   | 20 个文件、166 项通过                                                                    |
+| Agent 插件、SDK UI/manifest/agent 与 11 插件图标定向 Vitest | 26 个文件、519 项通过，另 2 个真实环境集成文件共 6 项跳过                                |
+| Profile 状态控制器直接 Node 测试                            | 6 项通过，包含仅导航声明不发起 Profile 状态调用                                          |
+| desktop-v2、plugin-sdk、sales-agent 无产物 TypeScript       | 通过；直接调用 tsc --noEmit，未调用根 typecheck                                          |
+| v2 本次修改范围 ESLint                                      | 通过                                                                                     |
+| 本轮源码范围 Prettier                                       | 通过，包含被 Git 忽略的 11 个插件清单和图标回归文件                                      |
+| Rust manifest、plugin_ui、Agent commands 的 rustfmt         | 通过，仅语法格式检查                                                                     |
+| 源码只读审查与修复                                          | 已修复商品首次挂载详情、Profile 定位、失败意图、管理入口和页面保留；限定复核无剩余阻断项 |
+
+回归包括原创建标识在重试中的保留、批次与单 Profile 控制、未知提交和补登记区分、
+事件游标、预算未知值、模型先保存再测试、密钥错误反馈、草稿修订、冻结素材审查、
+Workspace 列表越界、跨页原请求保留、隐藏期间请求收敛、可见对话框关闭，以及 StrictMode 隐藏后返回时原请求 token 的保留。
+
+未执行插件 build、应用 build、打包、发布、图像验证、Rust 编译/测试/Clippy、真实平台写入、
+真实模型计费或 Bark 投递；系统深链注册及 macOS/Windows 原生安装也未验收。
+Rust 新增和改动的校验/测试源码未作为已运行的 Rust 验证。
+现有已安装插件包不会因本轮源码修改自动具备新图标，需要后续获授权的构建和安装。
+同版本源码修改不代表已有宿主发行包支持新 manifest 字段；发布时仍须核对实际宿主版本。
+
+## 2026-11-21 desktop-v2 插件配置导入导出
+
+插件中心右上角新增「插件配置」，使用现有 ShardX Modal、选择控件与原生文件命令，
+只迁移插件设置，不导入应用偏好、应用代理、业务库存或浏览器环境。
+原生文件格式对齐当前公共 `raccoon-configuration` / schemaVersion 2；配置 RPC 通过
+`expectedIdentity` 调用现有 `call_generation`，不向替代安装/进程代次执行已预检操作。
+
+实际检查结果：
+
+- v2 适配器与实际 UI Kit DOM 的直接 Vitest：2 个文件、24 项通过。
+- 现有配置平台、v1 配置页面与 SDK 配置契约直接 Vitest：3 个文件、12 项通过。
+- desktop-v2 无产物 TypeScript 与本次源码范围 ESLint：通过。
+- 新增源码/实施计划 Prettier 与原生配置服务、插件调用分派 rustfmt：通过。
+- 独立只读审查：修正紧凑归档被漂亮打印放大后误判 8 MiB 超限的问题；
+  回归用例先失败，再修复并通过全部新增测试。其余审查范围没有阻断问题。
+
+回归覆盖导出所选、不提前读取密钥、缺失插件禁选、完整预校验后写入、失败重试不重复成功项、
+文件对话框取消、处理中重复点击/关闭、安装/进程代次变化以及页面卸载后的迟到结果隔离。
+未运行应用/插件构建、打包、发布、图像验证、Rust 编译/测试/Clippy，
+真实原生文件对话框及 macOS/Windows 发行行为仍待原生环境验收。
+
+## 2026-11-21 desktop-v2 Decodo TXT 手动订阅
+
+代理池新增服务商接入管理页与 Decodo 手动订阅管理。可配置 Decodo 接入、保存和同步 API 套餐，
+为数据中心及 ISP 上传 UTF-8 TXT 并指定到期时间；已有订阅支持原 ID 续期、修改或替换成员。
+配置和订阅都通过代理池原生插件 RPC 保存；Profile 代理选择器显示订阅来源。
+手动与 API 来源分别显示。普通库存不能独立编辑或删除 Provider 端点，续期/撤订经订阅操作管理。
+
+| 检查                                    | 实际结果                                           |
+| --------------------------------------- | -------------------------------------------------- |
+| `plugins/proxy-pool` Vitest             | 14 个文件、147 项通过                              |
+| desktop-v2 手动订阅 Dialog DOM 测试     | 4 项通过，含上传、UTC 期限、续期、UTF-8 及数量校验 |
+| Profile 代理选择器 DOM 测试             | 6 项通过，含 Decodo 手动订阅端点展示               |
+| desktop-v2 代理来源和页面方法 Node 测试 | 6 项通过                                           |
+| 代理池插件 `tsc --noEmit`               | 通过                                               |
+| desktop-v2 改动文件 ESLint              | 通过                                               |
+| desktop-v2 全项目 `tsc --noEmit`        | 未通过：既有 `src/dev/mock/realFingerprints.ts` 中 |
+|                                         | `Uint8Array<ArrayBufferLike>` 不能赋给 `BlobPart`  |
+
+单独删除端点的服务端保护测试先失败，修改删除实现后通过。TXT 行数与 UTF-8 校验、到期时间转换、续期不重传保持成员均由表单测试覆盖；手动订阅导入、无效行原子拒绝、续期端点 ID 保持及到期解析阻断由现有插件服务用例覆盖。
+
+未执行插件 build、应用 build、Rust 编译/测试/Clippy、真实 Decodo API、代理连通性、应用安装或 Windows 验收。测试只使用合成响应和代理地址。

@@ -161,9 +161,21 @@ fn complete(settings: &mut Value) -> AgentResult<()> {
     }
     object(
         &execution["providerConcurrency"],
-        &["cloakbrowser", "adspower", "bitbrowser"],
+        &[
+            "cloakbrowser",
+            "adspower",
+            "bitbrowser",
+            "aliasmode",
+            "shardbrowser",
+        ],
     )?;
-    for provider in ["cloakbrowser", "adspower", "bitbrowser"] {
+    for provider in [
+        "cloakbrowser",
+        "adspower",
+        "bitbrowser",
+        "aliasmode",
+        "shardbrowser",
+    ] {
         integer(&mut execution["providerConcurrency"], provider, 3, 1, 10)?;
     }
     if execution.get("maxBatchCostUsd").is_none() {

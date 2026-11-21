@@ -2,7 +2,7 @@ import { ensureBinary, launchPersistentContext, validateLicense } from 'cloakbro
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolve } from 'node:path'
-import type { BrowserContext } from 'playwright-core'
+import type { BrowserContext, Page } from 'playwright-core'
 import {
   compareKernelVersions,
   inspectKernelCache,
@@ -30,6 +30,7 @@ const execFileAsync = promisify(execFile)
 export function browserOptionsForWindow(
   userDataDir: string,
   record: Pick<RuntimeWindow, 'proxy' | 'proxy_plugin' | 'settings'>,
+  automationDebugging = false,
 ): Parameters<typeof launchPersistentContext>[0] {
   if (record.proxy_plugin && !record.proxy?.trim()) {
     throw new Error('PROFILE_PROXY_MISSING')
@@ -41,6 +42,14 @@ export function browserOptionsForWindow(
       : settings.viewport === '1920x1080'
         ? { width: 1920, height: 1080 }
         : undefined
+  const cloak = settings.cloakbrowser
+  const args = [
+    `--fingerprint=${cloak?.nativeFingerprint ? 'off' : settings.fingerprintSeed}`,
+    ...fingerprintArgs(settings),
+    ...(automationDebugging
+      ? ['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0']
+      : []),
+  ]
   return {
     userDataDir,
     headless: false,
@@ -49,8 +58,50 @@ export function browserOptionsForWindow(
     ...(settings.timezone ? { timezone: settings.timezone } : {}),
     ...(settings.locale ? { locale: settings.locale } : {}),
     ...(viewport ? { viewport } : {}),
-    args: [`--fingerprint=${settings.fingerprintSeed}`],
+    args,
   }
+}
+
+function fingerprintArgs(settings: RuntimeWindow['settings']): string[] {
+  const cloak = settings.cloakbrowser
+  const locale = [
+    ...(settings.timezone ? [`--fingerprint-timezone=${settings.timezone}`] : []),
+    ...(settings.locale ? [`--fingerprint-locale=${settings.locale}`] : []),
+  ]
+  if (!cloak) return locale
+  return [
+    ...locale,
+    ...(cloak.platform ? [`--fingerprint-platform=${cloak.platform}`] : []),
+    ...(cloak.gpuVendor
+      ? [`--fingerprint-gpu-vendor=${cloak.gpuVendor === 'nvidia' ? 'NVIDIA' : 'Intel'}`]
+      : []),
+    ...(cloak.hardwareConcurrency
+      ? [`--fingerprint-hardware-concurrency=${cloak.hardwareConcurrency}`]
+      : []),
+    ...(cloak.deviceMemory ? [`--fingerprint-device-memory=${cloak.deviceMemory}`] : []),
+    ...(cloak.screenWidth ? [`--fingerprint-screen-width=${cloak.screenWidth}`] : []),
+    ...(cloak.screenHeight ? [`--fingerprint-screen-height=${cloak.screenHeight}`] : []),
+    ...(cloak.platformVersion
+      ? [`--fingerprint-platform-version=${cloak.platformVersion}`]
+      : []),
+    ...(cloak.storageQuota ? [`--fingerprint-storage-quota=${cloak.storageQuota}`] : []),
+    ...(cloak.taskbarHeight !== undefined
+      ? [`--fingerprint-taskbar-height=${cloak.taskbarHeight}`]
+      : []),
+    ...(cloak.webrtcIp ? [`--fingerprint-webrtc-ip=${cloak.webrtcIp}`] : []),
+    ...(cloak.noise === false ? ['--fingerprint-noise=false'] : []),
+    ...(cloak.allowThirdPartyCookies === true ? ['--fingerprint-allow-3p-cookies'] : []),
+    ...(cloak.sapiVoices === false ? ['--fingerprint-sapi-voices=false'] : []),
+    ...(cloak.maxTouchPoints !== undefined
+      ? [`--fingerprint-max-touch-points=${cloak.maxTouchPoints}`]
+      : []),
+    ...(cloak.searchEngine ? [`--fingerprint-search-engine=${cloak.searchEngine}`] : []),
+    ...(cloak.transparentProxy === true ? ['--fingerprint-transparent-proxy'] : []),
+    ...(cloak.transparentProxy === true && cloak.transparentProxyDns
+      ? [`--fingerprint-transparent-proxy-dns=${cloak.transparentProxyDns}`]
+      : []),
+    ...(cloak.portableCookies === true ? ['--fingerprint-portable-cookies'] : []),
+  ]
 }
 
 export function parseBrowserVersion(output: string): string {
@@ -158,6 +209,7 @@ async function launchProfileContext(
   userDataDir: string,
   record: RuntimeWindow,
   snapshot = false,
+  sessionId?: string,
 ): Promise<BrowserContext> {
   parseRuntimeWindow(record)
   const licenseKey = requireActivation(process.env.CLOAKBROWSER_LICENSE_KEY)
@@ -188,6 +240,7 @@ async function launchProfileContext(
       ...browserOptionsForWindow(
         userDataDir,
         snapshot ? { ...record, proxy: null, proxy_plugin: null } : record,
+        !snapshot,
       ),
       licenseKey,
       browserVersion: record.kernel_version,
@@ -204,6 +257,7 @@ async function launchProfileContext(
           }
         : {}),
     }
+    if (sessionId) options.args = [...(options.args ?? []), `--raccoon-session-id=${sessionId}`]
     const launch = (async () =>
       launchPersistentContext(
         await prepareBrowserProxy(options, controller.signal),
@@ -268,16 +322,43 @@ export async function openProfile(
   userDataDir: string,
   record: RuntimeWindow,
   commands: AsyncIterable<string>,
+  sessionId?: string,
 ): Promise<void> {
-  const context = await launchProfileContext(userDataDir, record)
+  const context = await launchProfileContext(userDataDir, record, false, sessionId)
   let onClose!: () => void
   const closed = new Promise<void>((resolve) => {
     onClose = resolve
     context.once('close', onClose)
   })
+  let removePageListeners: (() => void) | undefined
   try {
     await restorePortableState(context, userDataDir)
     await context.setOffline(false)
+    const lastTabClosed = new Promise<void>((resolve) => {
+      const watched = new Set<Page>()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const watch = (page: Page) => {
+        clearTimeout(timer)
+        watched.add(page)
+        page.once('close', onTabClose)
+      }
+      const onTabClose = (page: Page) => {
+        watched.delete(page)
+        if (context.pages().length !== 0) return
+        clearTimeout(timer)
+        // Chromium may replace a page while moving it between windows.
+        timer = setTimeout(() => {
+          if (context.pages().length === 0) resolve()
+        }, 250)
+      }
+      context.on('page', watch)
+      for (const page of context.pages()) watch(page)
+      removePageListeners = () => {
+        clearTimeout(timer)
+        context.off('page', watch)
+        for (const page of watched) page.off('close', onTabClose)
+      }
+    })
     process.stdout.write('NEXUS_READY\n')
     let startup: Promise<unknown> | undefined
     if (record.settings.startUrl) {
@@ -293,8 +374,9 @@ export async function openProfile(
       })
     }
     const actor = new AutomationActor(context, startup)
-    await Promise.race([closed, automationCommandLoop(actor, commands)])
+    await Promise.race([closed, lastTabClosed, automationCommandLoop(actor, commands)])
   } finally {
+    removePageListeners?.()
     context.off('close', onClose)
     await context.close()
   }

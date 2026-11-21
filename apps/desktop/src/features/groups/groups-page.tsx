@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Trash2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -20,7 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { Empty, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
@@ -32,6 +32,8 @@ import {
   type WindowGroup,
 } from '@/lib/platform/native-groups'
 import { listBrowserWindows, type BrowserWindow } from '@/lib/platform/windows'
+import { useActiveBrowserSpace } from '@/lib/active-browser-space'
+import type { BrowserProviderId } from '@nexus/contracts/browser'
 
 function message(cause: unknown): string {
   return typeof cause === 'string'
@@ -42,6 +44,11 @@ function message(cause: unknown): string {
 }
 
 export function GroupsPage() {
+  const providerId = useActiveBrowserSpace()
+  return <GroupsSpace key={providerId} providerId={providerId} />
+}
+
+function GroupsSpace({ providerId }: { providerId: BrowserProviderId }) {
   const native = nativeGroupsAvailable()
   const [groups, setGroups] = useState<WindowGroup[]>([])
   const [windows, setWindows] = useState<BrowserWindow[]>([])
@@ -52,21 +59,21 @@ export function GroupsPage() {
   const [error, setError] = useState<string | null>(null)
   const load = useCallback(async () => {
     const [nextGroups, nextWindows] = await Promise.all([
-      listGroups(),
+      listGroups(providerId),
       listBrowserWindows(),
     ])
     setGroups(nextGroups)
-    setWindows(nextWindows)
-  }, [])
+    setWindows(nextWindows.filter((window) => window.providerId === providerId))
+  }, [providerId])
 
   useEffect(() => {
     if (!native) return
     let active = true
-    void Promise.all([listGroups(), listBrowserWindows()]).then(
+    void Promise.all([listGroups(providerId), listBrowserWindows()]).then(
       ([nextGroups, nextWindows]) => {
         if (!active) return
         setGroups(nextGroups)
-        setWindows(nextWindows)
+        setWindows(nextWindows.filter((window) => window.providerId === providerId))
       },
       (cause: unknown) => {
         if (active) setError(message(cause))
@@ -75,12 +82,12 @@ export function GroupsPage() {
     return () => {
       active = false
     }
-  }, [native])
+  }, [native, providerId])
 
   async function save(name: string, note: string) {
     if (editing === null) return
-    if (editing === 'new') await createGroup(name, note)
-    else await updateGroup(editing.id, name, note)
+    if (editing === 'new') await createGroup(providerId, name, note)
+    else await updateGroup(providerId, editing.id, name, note)
     await load()
     setEditing(null)
   }
@@ -90,7 +97,7 @@ export function GroupsPage() {
     setBusy(true)
     setError(null)
     try {
-      await deleteGroup(deleting.id)
+      await deleteGroup(providerId, deleting.id)
       await load()
       setDeleting(null)
     } catch (cause) {
@@ -101,24 +108,22 @@ export function GroupsPage() {
   }
 
   return (
-    <section className="collection-page page-reveal" aria-labelledby="groups-heading">
-      <div className="section-intro">
+    <section className="collection-page flex min-w-0 flex-col gap-3" aria-labelledby="groups-heading">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="page-heading" id="groups-heading">
+          <h1 className="text-lg font-semibold leading-tight" id="groups-heading">
             分组管理
           </h1>
-          <p className="page-description">整理窗口，快速找到常用的店铺。</p>
         </div>
         <Button disabled={!native} onClick={() => setEditing('new')}>
           <Plus data-icon="inline-start" />
           新建分组
         </Button>
       </div>
-      {!native ? <p className="browser-windows-hint">请在桌面应用中管理分组。</p> : null}
       {error ? <FieldError role="alert">{error}</FieldError> : null}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {groups.map((group) => (
-          <Card key={group.id}>
+          <Card key={group.id} className="border-0 bg-card transition-colors hover:bg-muted/70">
             <CardHeader className="pb-2">
               <CardTitle>{group.name}</CardTitle>
               <p className="text-sm text-muted-foreground">{group.windowCount} 个窗口</p>
@@ -148,7 +153,6 @@ export function GroupsPage() {
         <Empty>
           <EmptyHeader>
             <EmptyTitle>还没有分组</EmptyTitle>
-            <EmptyDescription>新建分组后，可在窗口编辑页选择归属。</EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : null}

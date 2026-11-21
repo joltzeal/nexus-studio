@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ImageIcon, Loader2, RefreshCw, Settings2, Sparkles, Wand2 } from 'lucide-react'
+import { ImageIcon, Loader2, RefreshCw, Settings2, Sparkles, Wand2 } from '@/components/icons'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -378,9 +378,6 @@ export function AiImagePage({
             <h1 className="page-heading" id="ai-heading">
               AI 生图
             </h1>
-            <p className="page-description">
-              每次提交集中为一个批次，多视角与成片保存在同一详情中。最多同时执行两个生成任务，其余排队。
-            </p>
           </div>
           <div className="section-actions">
             <Button

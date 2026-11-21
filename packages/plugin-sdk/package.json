@@ -6,8 +6,14 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./ui": {
+      "development": "./src/ui.ts",
+      "types": "./src/ui.ts",
+      "import": "./dist/ui.js"
+    },
     "./agent": {
-      "types": "./dist/agent.d.ts",
+      "development": "./src/agent.ts",
+      "types": "./src/agent.ts",
       "import": "./dist/agent.js"
     },
     "./configuration": {
@@ -24,7 +30,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "src/ui.ts",
+    "src/agent.ts"
   ],
   "sideEffects": false,
   "scripts": {

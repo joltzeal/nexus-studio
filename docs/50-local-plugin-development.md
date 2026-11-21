@@ -23,12 +23,24 @@
 
 工作区允许可选的本地 `plugins/*`。没有该目录的公开检出仍能安装、检查和构建主应用。
 
+Tauri debug 启动会直接扫描 `/plugins/*` 的 `nexus.plugin.ts` 和 `src/index.ts`，使用工作区
+`plugin-sdk`、`plugin-contracts` 源码并通过 Node loader 执行 TypeScript。无需先构建、安装或激活
+第一方源码插件。插件进程保留宿主 manifest、方法和能力检查，数据写入应用数据目录的
+`plugins/data/<id>`；退出开发应用后，由下次启动重新发现源码并自动加载。
+代码修改在插件进程重启后生效，当前宿主不提供模块热替换。
+
+VInted helper 源码目录为 `plugins/vinted-helper/`，保留安装 ID `studio.address-generator`。
+源码面单 Worker 直接读取已安装依赖中的 PDFium WASM，不要求先生成 `dist` 资源。
+文件夹改名后必须完整重启 Tauri debug 以重新扫描路径，不能只重启旧插件进程。
+正式安装包仍需携带 Worker 与六段 WASM，详见[VInted helper 启用方式](19-address-generator-plugin.md)。
+
 ```sh
 rtk proxy pnpm install --frozen-lockfile
 rtk proxy pnpm run plugin:dev ai-image
 ```
 
-监听入口先编译选中插件及其共享依赖，再监听该插件的 TypeScript 改动。开发桌面宿主发现本地插件后，在插件中心安装或重启它；编译文件更新不会替换已经运行的 Node 进程。仅启动网页预览不能执行插件。
+`plugin:dev` 仍为独立打包、资源生成和发布前验证入口。普通桌面调试无需使用该监听脚本。
+编译文件更新不会替换已经运行的 Node 进程。仅启动网页预览不能执行原生插件进程。
 
 修改 manifest、资源或生成脚本后，重新执行插件构建，不能只依赖 TypeScript 监听：
 

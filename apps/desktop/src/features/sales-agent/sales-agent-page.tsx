@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Bot, Settings2 } from 'lucide-react'
+import { Bot, Settings2 } from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -159,9 +158,6 @@ export function SalesAgentWorkspace() {
                 Ecom Agent
               </h1>
             </CardTitle>
-            <CardDescription>
-              固定商品与账号归属，查看真实任务进度与待处理结果。
-            </CardDescription>
           </div>
           <Button variant="outline" onClick={() => setSettingsOpen(true)}>
             <Settings2 data-icon="inline-start" />

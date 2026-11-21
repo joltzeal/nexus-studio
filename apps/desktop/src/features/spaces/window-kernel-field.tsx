@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import {
@@ -16,12 +16,19 @@ import {
   KernelOperationError,
   type InstalledKernel,
 } from '@/lib/platform/native-kernels'
+import { aliasStatus, isAliasVersion, isAliasFirefoxVersion } from '@/lib/platform/aliasmode-kernels'
+import { isShardVersion, shardStatus } from '@/lib/platform/shardbrowser-kernels'
+import type { BrowserProviderId } from '@nexus/contracts/browser'
 
 export function WindowKernelField({
+  providerId,
+  engine = 'chromium',
   value,
   disabled,
   onChange,
 }: {
+  providerId: BrowserProviderId
+  engine?: 'chromium' | 'firefox'
   value: string | null
   disabled: boolean
   onChange: (version: string | null) => void
@@ -39,7 +46,7 @@ export function WindowKernelField({
       reading = true
       setLoading(true)
       setError(null)
-      void getKernelStatus(true)
+      void (providerId === 'aliasmode' ? aliasStatus(engine) : providerId === 'shardbrowser' ? shardStatus() : getKernelStatus(true))
         .then(
           (status) => {
             if (active) setInstalled(status.installed)
@@ -65,7 +72,7 @@ export function WindowKernelField({
       active = false
       refresh.current = () => {}
     }
-  }, [])
+  }, [providerId, engine])
 
   const versions = [...new Set(installed.map((kernel) => kernel.version))]
   const missingSelection = value !== null && !versions.includes(value)
@@ -79,7 +86,7 @@ export function WindowKernelField({
           disabled={disabled}
           onValueChange={(next) => {
             if (next === 'latest') onChange(null)
-            else if (isKernelVersion(next)) onChange(next)
+            else if (providerId === 'aliasmode' ? (engine === 'firefox' ? isAliasFirefoxVersion(next) : isAliasVersion(next)) : providerId === 'shardbrowser' ? isShardVersion(next) : isKernelVersion(next)) onChange(next)
           }}
         >
           <SelectTrigger
@@ -91,7 +98,7 @@ export function WindowKernelField({
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="latest">最新稳定版（默认）</SelectItem>
+              <SelectItem value="latest">{providerId === 'aliasmode' || providerId === 'shardbrowser' ? '最新已安装版本' : '最新稳定版（默认）'}</SelectItem>
               {versions.map((version) => (
                 <SelectItem key={version} value={version}>
                   {version}（已安装）
@@ -114,14 +121,18 @@ export function WindowKernelField({
         </Button>
       </div>
       <FieldDescription id="window-kernel-description">
-        其他版本可到「应用设置 → 浏览器内核」下载。
+        {providerId === 'aliasmode' || providerId === 'shardbrowser'
+          ? '其他版本可到「应用设置 → 实验室」下载。'
+          : '其他版本可到「应用设置 → 浏览器内核」下载。'}
         {missingSelection && !loading && !error
-          ? '所选版本不在当前清单中，创建时将尝试获取该版本。'
+          ? providerId === 'aliasmode' || providerId === 'shardbrowser'
+            ? '所选版本尚未安装，请先到实验室下载。'
+            : '所选版本不在当前清单中，创建时将尝试获取该版本。'
           : null}
       </FieldDescription>
       {error ? (
         <FieldError role="alert">
-          {error} 已保留版本选择；仍可使用最新稳定版创建窗口。
+          {error} 已保留版本选择；{providerId === 'aliasmode' || providerId === 'shardbrowser' ? '请在实验室检查本机内核。' : '仍可使用最新稳定版创建窗口。'}
         </FieldError>
       ) : null}
     </Field>

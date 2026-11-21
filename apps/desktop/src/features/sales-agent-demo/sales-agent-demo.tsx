@@ -18,7 +18,7 @@ import {
   Sparkles,
   Sun,
   Users,
-} from 'lucide-react'
+} from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -175,30 +175,30 @@ export default function SalesAgentDemo() {
       value={page}
       onValueChange={setPage}
       orientation="vertical"
-      className="app-shell agent-demo-shell"
+      className="agent-demo-shell grid h-dvh min-h-0 grid-cols-[216px_minmax(0,1fr)] grid-rows-[48px_minmax(0,1fr)] gap-0 overflow-hidden bg-card max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_44px_minmax(0,1fr)]"
     >
-      <aside className="app-sidebar">
-        <div className="sidebar-brand">
+      <aside className="col-start-1 row-span-full flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto border-r bg-card px-2 pb-3 pt-2 max-[700px]:row-span-1 max-[700px]:flex-row max-[700px]:items-center max-[700px]:overflow-x-auto max-[700px]:overflow-y-hidden max-[700px]:border-b max-[700px]:border-r-0">
+        <div className="flex h-9 shrink-0 items-center gap-2.5 px-2 max-[700px]:hidden">
           <img
-            className="brand-symbol"
+            className="size-[30px] shrink-0 rounded-md object-cover"
             src="/raccoon.png"
             alt=""
             width={30}
             height={30}
           />
-          <span className="wordmark">Raccoon</span>
+          <span className="text-[17px] font-semibold">Raccoon</span>
         </div>
-        <div className="workspace-switcher">
-          <span className="workspace-avatar">
+        <div className="flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5 max-[700px]:hidden">
+          <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted">
             <Bot className="size-4" />
           </span>
-          <div>
-            <strong>销售工作台</strong>
-            <small>独立交互预览</small>
+          <div className="grid min-w-0 gap-0.5">
+            <strong className="truncate text-xs font-semibold">销售工作台</strong>
+            <small className="truncate text-[11px] text-muted-foreground">独立交互预览</small>
           </div>
         </div>
-        <span className="nav-caption">Ecom Agent</span>
-        <TabsList variant="navigation" aria-label="Agent 导航">
+        <span className="px-3 text-xs text-muted-foreground max-[700px]:hidden">Ecom Agent</span>
+        <TabsList variant="navigation" aria-label="Agent 导航" className="!h-auto !w-full !flex-none flex-col items-stretch justify-start gap-1 max-[700px]:!w-auto max-[700px]:flex-row [&_[data-slot=tabs-trigger]]:!h-9 [&_[data-slot=tabs-trigger]]:!w-full [&_[data-slot=tabs-trigger]]:!flex-none max-[700px]:[&_[data-slot=tabs-trigger]]:!w-auto">
           <TabsTrigger value="prepare">
             <ClipboardList />
             任务准备
@@ -208,7 +208,7 @@ export default function SalesAgentDemo() {
             运行记录{running ? <span className="agent-live-dot" /> : null}
           </TabsTrigger>
         </TabsList>
-        <Separator />
+        <Separator className="max-[700px]:hidden" />
         <div className="agent-sidebar-rules">
           <span>已确认的执行规则</span>
           <p>
@@ -224,24 +224,24 @@ export default function SalesAgentDemo() {
             封禁只停止当前账号
           </p>
         </div>
-        <div className="sidebar-version">
+        <div className="mt-auto flex justify-between px-3 pt-2 text-[10px] text-muted-foreground max-[700px]:hidden">
           <span>交互原型</span>
           <span>DEMO</span>
         </div>
-        <Button asChild variant="ghost" size="sm" className="justify-start">
+        <Button asChild variant="ghost" size="sm" className="justify-start max-[700px]:ml-auto">
           <a href="/">
             <ArrowLeft data-icon="inline-start" />
             返回 Raccoon
           </a>
         </Button>
       </aside>
-      <header className="app-header">
-        <div className="header-breadcrumb">
+      <header className="col-start-2 flex min-w-0 items-center justify-between gap-3 border-b bg-card px-4 max-[700px]:col-start-1 max-[700px]:row-start-2">
+        <div className="flex min-w-0 items-center gap-2 text-xs [&>span]:text-muted-foreground [&>svg]:size-3.5 [&>strong]:font-medium">
           <span>插件中心</span>
           <ChevronRight />
           <strong>Ecom Agent</strong>
         </div>
-        <div className="header-actions">
+        <div className="flex shrink-0 items-center gap-2">
           <Badge variant="outline">交互预览</Badge>
           <Button
             variant="ghost"
@@ -253,14 +253,11 @@ export default function SalesAgentDemo() {
           </Button>
         </div>
       </header>
-      <main className="app-main agent-demo-main">
+      <main className="agent-demo-main col-start-2 min-h-0 min-w-0 overflow-y-auto overscroll-contain bg-background p-4 max-[700px]:col-start-1 max-[700px]:row-start-3 max-[700px]:p-3">
         <TabsContent value="prepare" className="agent-scroll-page">
           <div className="agent-page-heading">
             <div>
               <h1 className="page-heading">Ecom Agent</h1>
-              <p className="page-description">
-                准备资料、分配窗口，让每个账号按自己的任务执行。
-              </p>
             </div>
             <Button variant="outline" onClick={reset} disabled={running}>
               <RotateCcw data-icon="inline-start" />

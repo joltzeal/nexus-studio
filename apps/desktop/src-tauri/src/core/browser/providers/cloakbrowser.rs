@@ -23,6 +23,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
+#[path = "cloakbrowser_process.rs"]
+mod process;
+
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -30,6 +33,24 @@ const STDERR_LIMIT: usize = 8192;
 const CREATE_DIRECTORY: &str = ".native-create";
 const CREATE_WITNESS: &str = ".native-create.json";
 const CREATE_MARKER_LIMIT: u64 = 1024 * 1024;
+const SESSION_DIRECTORY: &str = ".cloakbrowser-sessions";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunningReceipt {
+    token: uuid::Uuid,
+    binary: PathBuf,
+    runner: PathBuf,
+    node: PathBuf,
+}
+
+#[derive(Serialize)]
+pub struct LocalSession {
+    id: String,
+    name: String,
+    state: WindowState,
+    residual: bool,
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -75,6 +96,19 @@ struct Session {
     automation: Arc<AutomationChannel>,
 }
 
+impl Session {
+    fn request_stop(&mut self) {
+        self.state = WindowState::Stopping;
+        if !self.stop_requested {
+            self.stop_requested = true;
+            let automation = self.automation.clone();
+            // A stalled automation write must not hold the process-state lock
+            // while stop_local checks the graceful shutdown deadline.
+            std::thread::spawn(move || automation.stop());
+        }
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         if !matches!(self.child.try_wait(), Ok(Some(_))) && self.child.kill().is_ok() {
@@ -94,6 +128,7 @@ pub struct CloakBrowserProvider {
     pub(crate) network: Option<NetworkProxyStore>,
     sessions: Mutex<HashMap<String, SharedSession>>,
     process_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
+    quitting: Mutex<bool>,
 }
 
 impl CloakBrowserProvider {
@@ -115,6 +150,7 @@ impl CloakBrowserProvider {
             network,
             sessions: Mutex::new(HashMap::new()),
             process_locks: Mutex::new(HashMap::new()),
+            quitting: Mutex::new(false),
         }
     }
 
@@ -149,29 +185,150 @@ impl CloakBrowserProvider {
         Ok(())
     }
 
-    fn observe(&self, id: &str) -> BrowserResult<WindowState> {
-        let Some(session) = self.session(id)? else {
-            return Ok(WindowState::Stopped);
-        };
-        let state = {
-            let mut process = session.lock().map_err(|_| state_error())?;
-            match process.child.try_wait() {
-                Ok(Some(_)) => WindowState::Stopped,
-                Ok(None) => process.state,
-                Err(_) => {
-                    process.state = WindowState::Unknown;
-                    WindowState::Unknown
-                }
-            }
-        };
-        if state == WindowState::Stopped {
-            self.remove_session(id, &session)?;
-        }
-        Ok(state)
+    fn receipt_path(&self, id: &str) -> BrowserResult<PathBuf> {
+        self.profile_dir(id)?;
+        Ok(self.root.join(SESSION_DIRECTORY).join(format!("{id}.json")))
     }
 
-    fn require_stopped(&self, id: &str) -> BrowserResult<()> {
-        match self.observe(id)? {
+    fn read_running_receipt(&self, id: &str) -> BrowserResult<Option<RunningReceipt>> {
+        let path = self.receipt_path(id)?;
+        if !managed_directory_exists(&self.root.join(SESSION_DIRECTORY))
+            .map_err(|_| process::uncertain())?
+        {
+            return Ok(None);
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= 16 * 1024 => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => return Err(process::uncertain()),
+        }
+        let file = fs::File::open(path).map_err(|_| process::uncertain())?;
+        let receipt: RunningReceipt =
+            serde_json::from_reader(file.take(16 * 1024 + 1)).map_err(|_| process::uncertain())?;
+        if receipt.token.is_nil()
+            || !receipt.binary.is_absolute()
+            || !receipt.runner.is_absolute()
+            || (!receipt.node.is_absolute() && receipt.node != Path::new("node"))
+        {
+            return Err(process::uncertain());
+        }
+        Ok(Some(receipt))
+    }
+
+    fn persist_running_receipt(&self, id: &str, receipt: &RunningReceipt) -> BrowserResult<()> {
+        let directory = self.root.join(SESSION_DIRECTORY);
+        match fs::create_dir(&directory) {
+            Ok(()) => sync_directory(&self.root).map_err(|_| process::uncertain())?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(process::uncertain()),
+        }
+        if !managed_directory_exists(&directory).map_err(|_| process::uncertain())? {
+            return Err(process::uncertain());
+        }
+        let path = self.receipt_path(id)?;
+        let mut file =
+            tempfile::NamedTempFile::new_in(&directory).map_err(|_| process::uncertain())?;
+        serde_json::to_writer(&mut file, receipt).map_err(|_| process::uncertain())?;
+        file.as_file()
+            .sync_all()
+            .map_err(|_| process::uncertain())?;
+        file.persist(path).map_err(|_| process::uncertain())?;
+        sync_directory(&directory).map_err(|_| process::uncertain())
+    }
+
+    fn inspect_processes(
+        &self,
+        id: &str,
+        legacy_binary: Option<&Path>,
+        scan: &mut process::Scan,
+    ) -> BrowserResult<process::Owned> {
+        let profile = self.profile_dir(id)?;
+        let data = profile.join("user-data");
+        if let Some(receipt) = self.read_running_receipt(id)? {
+            return scan.owned(
+                &receipt.node,
+                &receipt.runner,
+                &receipt.binary,
+                &data,
+                Some(&receipt.token.simple().to_string()),
+            );
+        }
+        let Some(binary) = legacy_binary else {
+            return Ok(process::Owned::default());
+        };
+        match fs::symlink_metadata(profile) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Ok(process::Owned::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(process::Owned::default());
+            }
+            Err(_) => return Err(process::uncertain()),
+        }
+        let data = self.user_data_dir(id)?;
+        if !["DevToolsActivePort", "SingletonLock"]
+            .into_iter()
+            .try_fold(false, |marked, name| {
+                match fs::symlink_metadata(data.join(name)) {
+                    Ok(_) => Ok(true),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(marked),
+                    Err(_) => Err(process::uncertain()),
+                }
+            })?
+        {
+            return Ok(process::Owned::default());
+        }
+        scan.owned(
+            &self.runtime.node,
+            &self.runtime.browser_script,
+            binary,
+            &data,
+            None,
+        )
+    }
+
+    fn observe_with_scan(
+        &self,
+        id: &str,
+        binary: Option<&Path>,
+        scan: &mut process::Scan,
+    ) -> BrowserResult<(WindowState, bool)> {
+        let session = self.session(id)?;
+        if let Some(session) = &session {
+            let mut runtime = session.lock().map_err(|_| state_error())?;
+            match runtime.child.try_wait() {
+                Ok(None) => return Ok((runtime.state, false)),
+                Ok(Some(_)) => {}
+                Err(_) => return Ok((WindowState::Unknown, false)),
+            }
+        }
+        // A runner that just exited may have spawned Chromium after an earlier
+        // Profile in this list populated the shared process snapshot.
+        let mut fresh = process::Scan::default();
+        let scan = if session.is_some() { &mut fresh } else { scan };
+        match self.inspect_processes(id, binary, scan) {
+            Ok(owned) if owned.is_empty() => {
+                if let Some(session) = &session
+                    && let Ok(lock) = self.process_lock(id)
+                    && let Ok(_operation) = lock.try_lock()
+                    && self
+                        .session(id)?
+                        .is_some_and(|current| Arc::ptr_eq(&current, session))
+                {
+                    let _ = self.clear_stopped_receipt(id);
+                    self.remove_session(id, session)?;
+                }
+                Ok((WindowState::Stopped, false))
+            }
+            Ok(_) => Ok((WindowState::Unknown, true)),
+            Err(_) => Ok((WindowState::Unknown, false)),
+        }
+    }
+
+    fn require_stopped(&self, id: &str, binary: Option<&Path>) -> BrowserResult<()> {
+        match self
+            .observe_with_scan(id, binary, &mut process::Scan::default())?
+            .0
+        {
             WindowState::Stopped => Ok(()),
             WindowState::Unknown | WindowState::Missing => Err(BrowserError::new(
                 "operation_uncertain",
@@ -457,7 +614,7 @@ impl CloakBrowserProvider {
             .ok_or_else(|| BrowserError::new("auth_required", "请先在应用设置中保存并验证激活码"))
     }
 
-    fn launch_command(&self, user_data: PathBuf) -> BrowserResult<Command> {
+    fn launch_command(&self, user_data: &Path, token: &str) -> BrowserResult<Command> {
         if !self.runtime.browser_script.is_file() {
             return Err(BrowserError::new(
                 "unavailable",
@@ -479,6 +636,7 @@ impl CloakBrowserProvider {
             .arg(&self.runtime.browser_script)
             .arg("launch")
             .arg(user_data)
+            .arg(token)
             .env(
                 "CLOAKBROWSER_CACHE_DIR",
                 self.license_store.browser_cache_dir(),
@@ -496,37 +654,262 @@ impl CloakBrowserProvider {
         Ok(command)
     }
 
-    fn terminate_failed_start(&self, id: &str, session: &SharedSession) -> BrowserResult<()> {
+    fn wait_for_runner(session: &SharedSession, timeout: Duration) -> BrowserResult<bool> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if session
+                .lock()
+                .map_err(|_| state_error())?
+                .child
+                .try_wait()
+                .map_err(|_| process::uncertain())?
+                .is_some()
+            {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn debugger_receipt(&self, id: &str) -> BrowserResult<(u16, String)> {
+        let unavailable = || BrowserError::new("unavailable", "无法读取浏览器 CDP 会话");
+        let invalid = || BrowserError::new("invalid_config", "浏览器 CDP 收据无效");
+        let path = self.user_data_dir(id)?.join("DevToolsActivePort");
+        let metadata = fs::symlink_metadata(&path).map_err(|_| unavailable())?;
+        if !metadata.is_file() || metadata.len() > 4096 {
+            return Err(invalid());
+        }
+        let file = fs::File::open(path).map_err(|_| unavailable())?;
+        let mut receipt = String::new();
+        if file.take(4097).read_to_string(&mut receipt).is_err() || receipt.len() > 4096 {
+            return Err(invalid());
+        }
+        let mut lines = receipt.lines();
+        let port = lines
+            .next()
+            .and_then(|port| port.parse::<u16>().ok())
+            .ok_or_else(|| BrowserError::new("invalid_config", "浏览器 CDP 端口无效"))?;
+        let path = lines
+            .next()
+            .ok_or_else(|| BrowserError::new("invalid_config", "浏览器 CDP 身份无效"))?;
+        Ok((port, path.into()))
+    }
+
+    fn close_browser_over_cdp(&self, id: &str, browser: &process::Identity) {
+        let Ok((port, path)) = self.debugger_receipt(id) else {
+            return;
+        };
+        let url = format!("ws://127.0.0.1:{port}{path}");
+        if let Ok(endpoint) = super::super::provider::automation::CdpEndpoint::websocket(&url)
+            && process::owns_debugger(browser, port)
         {
-            let mut process = session.lock().map_err(|_| state_error())?;
-            process.state = WindowState::Stopping;
-            process.child.stdin.take();
-            let exited = matches!(process.child.try_wait(), Ok(Some(_)))
-                || if process.child.kill().is_ok() {
-                    process.child.wait().is_ok()
-                } else {
-                    matches!(process.child.try_wait(), Ok(Some(_)))
-                };
-            if !exited {
-                process.state = WindowState::Unknown;
+            tauri::async_runtime::block_on(shardx::request_browser_close(endpoint.as_str()));
+        }
+    }
+
+    fn stop_local(
+        &self,
+        id: &str,
+        binary: Option<&Path>,
+        session: Option<SharedSession>,
+        graceful_wait: Duration,
+    ) -> BrowserResult<()> {
+        let runner_exited = if let Some(session) = &session {
+            session.lock().map_err(|_| state_error())?.request_stop();
+            Self::wait_for_runner(session, graceful_wait)?
+        } else {
+            true
+        };
+        let inspect = || self.inspect_processes(id, binary, &mut process::Scan::default());
+        let mut owned = inspect()?;
+        if runner_exited && owned.is_empty() {
+            if let Some(session) = &session {
+                self.remove_session(id, session)?;
+            }
+            return self.clear_stopped_receipt(id);
+        }
+        if let Some(browser) = &owned.browser {
+            self.close_browser_over_cdp(id, browser);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while owned.browser.is_some() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(200));
+                owned = inspect()?;
+            }
+        }
+        if let Some(session) = &session {
+            let mut session = session.lock().map_err(|_| state_error())?;
+            if session
+                .child
+                .try_wait()
+                .map_err(|_| process::uncertain())?
+                .is_none()
+            {
+                let _ = session.child.kill();
+            }
+        } else if let Some(runner) = &owned.runner {
+            process::force_stop(runner, false)?;
+        }
+        if let Some(session) = &session
+            && !Self::wait_for_runner(session, Duration::from_secs(2))?
+        {
+            return Err(process::uncertain());
+        }
+        // A runner can spawn Chromium as it is being stopped. Check again after
+        // signaling it so a late browser cannot be mistaken for a closed Profile.
+        if let Some(browser) = &inspect()?.browser {
+            process::force_stop(browser, true)?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !inspect()?.is_empty() {
+            if Instant::now() >= deadline {
+                return Err(process::uncertain());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if let Some(session) = &session {
+            self.remove_session(id, session)?;
+        }
+        self.clear_stopped_receipt(id)
+    }
+
+    fn clear_stopped_receipt(&self, id: &str) -> BrowserResult<()> {
+        let path = self.receipt_path(id)?;
+        if self.read_running_receipt(id)?.is_none() {
+            return Ok(());
+        }
+        if let Ok(data) = self.user_data_dir(id) {
+            let _ = fs::remove_file(data.join("DevToolsActivePort"));
+        }
+        match fs::remove_file(path) {
+            Ok(()) => {
+                sync_directory(&self.root.join(SESSION_DIRECTORY)).map_err(|_| process::uncertain())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(process::uncertain()),
+        }
+    }
+
+    pub(crate) fn recover_session(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+    ) -> BrowserResult<()> {
+        validate_record(connection, record)?;
+        let lock = self.process_lock(&record.id)?;
+        let _operation = lock.try_lock().map_err(|_| busy_error())?;
+        let session = self.session(&record.id)?;
+        if let Some(session) = &session {
+            let mut current = session.lock().map_err(|_| state_error())?;
+            if !current.stop_requested
+                && current
+                    .child
+                    .try_wait()
+                    .map_err(|_| process::uncertain())?
+                    .is_none()
+            {
                 return Err(BrowserError::new(
-                    "operation_uncertain",
-                    "无法确认启动失败的浏览器已退出，环境仍被占用",
+                    "not_submitted",
+                    "此 Profile 仍由 Raccoon 管理，请使用「停止」",
                 ));
             }
         }
-        self.remove_session(id, session)
+        self.stop_local(
+            &record.id,
+            record.binary_path.as_deref(),
+            session,
+            Duration::ZERO,
+        )
+    }
+
+    pub(crate) fn shutdown(&self) {
+        let sessions = {
+            let Ok(mut quitting) = self.quitting.lock() else {
+                return;
+            };
+            *quitting = true;
+            let Ok(sessions) = self.sessions.lock() else {
+                return;
+            };
+            sessions
+                .iter()
+                .map(|(id, session)| (id.clone(), session.clone()))
+                .collect::<Vec<_>>()
+        };
+        std::thread::scope(|scope| {
+            for (id, session) in sessions {
+                scope.spawn(move || {
+                    if let Ok(lock) = self.process_lock(&id)
+                        && let Ok(_operation) = lock.try_lock()
+                    {
+                        let _ = self.stop_local(&id, None, Some(session), Duration::from_secs(8));
+                        return;
+                    }
+                    if let Ok(mut current) = session.lock() {
+                        current.request_stop();
+                    }
+                    let _ = Self::wait_for_runner(&session, Duration::from_secs(8));
+                });
+            }
+        });
+    }
+
+    pub(crate) fn local_diagnostics(
+        &self,
+        connection: &BrowserConnection,
+        records: &[WindowRecord],
+    ) -> BrowserResult<Vec<LocalSession>> {
+        validate_connection(connection)?;
+        let mut scan = process::Scan::default();
+        let mut sessions = Vec::new();
+        for record in records {
+            validate_record(connection, record)?;
+            let (state, residual) =
+                self.observe_with_scan(&record.id, record.binary_path.as_deref(), &mut scan)?;
+            if state != WindowState::Stopped {
+                sessions.push(LocalSession {
+                    id: record.id.clone(),
+                    name: record.name.clone(),
+                    state,
+                    residual,
+                });
+            }
+        }
+        Ok(sessions)
     }
 
     fn start(&self, record: &WindowRecord, proxy: &ResolvedProxy) -> BrowserResult<()> {
         let launch_record = browser_launch_record(record, proxy)?;
         self.validate_kernel(record)?;
         let user_data = self.user_data_dir(&record.id)?;
-        let config = serde_json::to_vec(&launch_record)
+        match fs::remove_file(user_data.join("DevToolsActivePort")) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(BrowserError::new(
+                    "storage_failed",
+                    "无法清理上次浏览器调试会话，请检查 Profile 目录",
+                ));
+            }
+        }
+        let config = encode_runtime_window(&launch_record)
             .map_err(|_| BrowserError::new("invalid_config", "无法编码窗口配置"))?;
+        let receipt = RunningReceipt {
+            token: uuid::Uuid::new_v4(),
+            binary: record.binary_path.clone().ok_or_else(state_error)?,
+            runner: self.runtime.browser_script.clone(),
+            node: self.runtime.node.clone(),
+        };
+        let mut command = self.launch_command(&user_data, &receipt.token.simple().to_string())?;
+        let quitting = self.quitting.lock().map_err(|_| state_error())?;
+        if *quitting {
+            return Err(BrowserError::new("not_submitted", "Raccoon 正在退出"));
+        }
+        self.persist_running_receipt(&record.id, &receipt)?;
         let mut process = Session {
-            child: self
-                .launch_command(user_data)?
+            child: command
                 .spawn()
                 .map_err(|_| BrowserError::new("unavailable", "无法启动浏览器运行组件"))?,
             state: WindowState::Starting,
@@ -545,6 +928,7 @@ impl CloakBrowserProvider {
             .lock()
             .map_err(|_| state_error())?
             .insert(record.id.clone(), Arc::clone(&session));
+        drop(quitting);
         let launched = (|| {
             {
                 let stdin = configured
@@ -556,6 +940,10 @@ impl CloakBrowserProvider {
                     })?;
                 let process = session.lock().map_err(|_| state_error())?;
                 process.automation.set_writer(stdin)?;
+                if process.stop_requested {
+                    process.automation.stop();
+                    return Err(BrowserError::new("unavailable", "启动已结束"));
+                }
             }
             let remaining = START_TIMEOUT.saturating_sub(started.elapsed());
             if !matches!(ready.recv_timeout(remaining), Ok(true)) {
@@ -566,7 +954,7 @@ impl CloakBrowserProvider {
             }
             let mut process = session.lock().map_err(|_| state_error())?;
             match process.child.try_wait() {
-                Ok(None) => {
+                Ok(None) if !process.stop_requested => {
                     process.state = WindowState::Running;
                     Ok(())
                 }
@@ -574,7 +962,12 @@ impl CloakBrowserProvider {
             }
         })();
         if let Err(error) = launched {
-            self.terminate_failed_start(&record.id, &session)?;
+            self.stop_local(
+                &record.id,
+                record.binary_path.as_deref(),
+                Some(session),
+                Duration::from_secs(2),
+            )?;
             let detail = errors
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap_or_default();
@@ -591,6 +984,34 @@ impl CloakBrowserProvider {
 impl BrowserProvider for CloakBrowserProvider {
     fn id(&self) -> BrowserProviderId {
         BrowserProviderId::CloakBrowser
+    }
+
+    fn automation_cdp(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+    ) -> BrowserResult<super::super::provider::automation::CdpEndpoint> {
+        use super::super::provider::automation::CdpEndpoint;
+        validate_record(connection, record)?;
+        let session = self
+            .session(&record.id)?
+            .ok_or_else(|| BrowserError::new("unavailable", "Profile 尚未运行"))?;
+        let mut process = session.lock().map_err(|_| state_error())?;
+        if process.state != WindowState::Running || !matches!(process.child.try_wait(), Ok(None)) {
+            return Err(BrowserError::new(
+                "unavailable",
+                "无法确认 Profile 正在运行",
+            ));
+        }
+        let (port, debugger_path) = self.debugger_receipt(&record.id)?;
+        let endpoint = CdpEndpoint::from_port(port)?;
+        if !endpoint.matches_debugger_path(&debugger_path) {
+            return Err(BrowserError::new(
+                "operation_uncertain",
+                "浏览器实例已变化，请核对 Profile 状态",
+            ));
+        }
+        Ok(endpoint)
     }
 
     fn automation_session(
@@ -675,7 +1096,7 @@ impl BrowserProvider for CloakBrowserProvider {
             }
             let lock = self.process_lock(&marker.window_id)?;
             let _window = lock.try_lock().map_err(|_| create_uncertain())?;
-            self.require_stopped(&marker.window_id)?;
+            self.require_stopped(&marker.window_id, Some(&marker.binary_path))?;
             self.finish_create(&marker)?;
             return Ok(marker.created_profile());
         }
@@ -683,7 +1104,8 @@ impl BrowserProvider for CloakBrowserProvider {
         validate_proxy_source(record, true).map_err(create_rejected)?;
         let lock = self.process_lock(&record.id).map_err(create_rejected)?;
         let _window = lock.try_lock().map_err(|_| create_rejected(busy_error()))?;
-        self.require_stopped(&record.id).map_err(create_rejected)?;
+        self.require_stopped(&record.id, record.binary_path.as_deref())
+            .map_err(create_rejected)?;
         let (marker, staging, index) = self
             .stage_create(record, operation_id)
             .map_err(create_rejected)?;
@@ -731,7 +1153,7 @@ impl BrowserProvider for CloakBrowserProvider {
         }
         let lock = self.process_lock(&previous.id)?;
         let _operation = lock.try_lock().map_err(|_| busy_error())?;
-        self.require_stopped(&previous.id)?;
+        self.require_stopped(&previous.id, previous.binary_path.as_deref())?;
         self.user_data_dir(&previous.id)?;
         Ok(())
     }
@@ -753,7 +1175,8 @@ impl BrowserProvider for CloakBrowserProvider {
         validate_record(connection, record)?;
         let lock = self.process_lock(&record.id)?;
         let _operation = lock.try_lock().map_err(|_| busy_error())?;
-        self.require_stopped(&record.id)?;
+        self.require_stopped(&record.id, record.binary_path.as_deref())?;
+        self.clear_stopped_receipt(&record.id)?;
         let profile = self.profile_dir(&record.id)?;
         match fs::symlink_metadata(&profile) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -781,7 +1204,7 @@ impl BrowserProvider for CloakBrowserProvider {
         validate_record(connection, record)?;
         let lock = self.process_lock(&record.id)?;
         let _operation = lock.try_lock().map_err(|_| busy_error())?;
-        self.require_stopped(&record.id)?;
+        self.require_stopped(&record.id, record.binary_path.as_deref())?;
         self.start(record, proxy)
     }
 
@@ -793,45 +1216,12 @@ impl BrowserProvider for CloakBrowserProvider {
         validate_record(connection, record)?;
         let lock = self.process_lock(&record.id)?;
         let _operation = lock.try_lock().map_err(|_| busy_error())?;
-        let Some(session) = self.session(&record.id)? else {
-            return Ok(());
-        };
-        {
-            let mut process = session.lock().map_err(|_| state_error())?;
-            process.state = WindowState::Stopping;
-            if !process.stop_requested {
-                process.automation.stop();
-                process.stop_requested = true;
-            }
-        }
-        let deadline = Instant::now() + STOP_TIMEOUT;
-        loop {
-            {
-                let mut process = session.lock().map_err(|_| state_error())?;
-                match process.child.try_wait() {
-                    Ok(Some(_)) => {
-                        drop(process);
-                        self.remove_session(&record.id, &session)?;
-                        return Ok(());
-                    }
-                    Ok(None) => {}
-                    Err(_) => {
-                        process.state = WindowState::Unknown;
-                        return Err(BrowserError::new(
-                            "operation_uncertain",
-                            "无法确认浏览器已退出，环境仍被占用",
-                        ));
-                    }
-                }
-            }
-            if Instant::now() >= deadline {
-                return Err(BrowserError::new(
-                    "operation_uncertain",
-                    "浏览器仍在关闭，环境仍被占用",
-                ));
-            }
-            std::thread::sleep(POLL_INTERVAL);
-        }
+        self.stop_local(
+            &record.id,
+            record.binary_path.as_deref(),
+            self.session(&record.id)?,
+            STOP_TIMEOUT,
+        )
     }
 
     fn observe_profiles(
@@ -840,11 +1230,16 @@ impl BrowserProvider for CloakBrowserProvider {
         records: &[WindowRecord],
     ) -> BrowserResult<ObservedProfiles> {
         validate_connection(connection)?;
+        let mut scan = process::Scan::default();
         let states = records
             .iter()
             .map(|record| {
                 validate_record(connection, record)?;
-                Ok((record.id.clone(), self.observe(&record.id)?))
+                Ok((
+                    record.id.clone(),
+                    self.observe_with_scan(&record.id, record.binary_path.as_deref(), &mut scan)?
+                        .0,
+                ))
             })
             .collect::<BrowserResult<HashMap<_, _>>>()?;
         Ok(ObservedProfiles {
@@ -868,7 +1263,7 @@ impl BrowserProvider for CloakBrowserProvider {
         };
         let lock = self.process_lock(&marker.window_id)?;
         let _window = lock.try_lock().map_err(|_| create_uncertain())?;
-        self.require_stopped(&marker.window_id)?;
+        self.require_stopped(&marker.window_id, Some(&marker.binary_path))?;
         self.finish_create(&marker)?;
         Ok(Some(marker.remote_profile()))
     }
@@ -896,7 +1291,7 @@ impl BrowserProvider for CloakBrowserProvider {
         validate_record(connection, record)?;
         let lock = self.process_lock(&record.id)?;
         let _operation = lock.try_lock().map_err(|_| busy_error())?;
-        self.require_stopped(&record.id)?;
+        self.require_stopped(&record.id, record.binary_path.as_deref())?;
         let profile = self.profile_dir(&record.id)?;
         let uncertain = || {
             BrowserError::new(
@@ -1029,6 +1424,11 @@ fn validate_record(connection: &BrowserConnection, record: &WindowRecord) -> Bro
             "窗口的内置浏览器绑定无效",
         ));
     }
+    if let Some(config) = &record.settings.cloakbrowser {
+        crate::core::window_store::validate_cloak_fingerprint(config).map_err(|_| {
+            BrowserError::new("invalid_config", "窗口的 CloakBrowser 指纹覆写配置无效")
+        })?;
+    }
     Ok(())
 }
 
@@ -1042,10 +1442,13 @@ fn validate_proxy_source(record: &WindowRecord, allow_resolved_plugin: bool) -> 
                 && record.proxy_endpoint.is_none()
         }
         ProxyMode::Manual => {
-            record
-                .proxy
-                .as_deref()
-                .is_some_and(|proxy| !proxy.trim().is_empty())
+            ((record.proxy_id.as_deref().is_some_and(|id| !id.is_empty())
+                && record.proxy.is_none())
+                || (record.proxy_id.is_none()
+                    && record
+                        .proxy
+                        .as_deref()
+                        .is_some_and(|proxy| !proxy.trim().is_empty())))
                 && record.proxy_plugin.is_none()
                 && record.proxy_endpoint.is_none()
         }
@@ -1118,6 +1521,16 @@ fn browser_launch_record(
     Ok(launching)
 }
 
+pub(crate) fn encode_runtime_window(record: &WindowRecord) -> serde_json::Result<Vec<u8>> {
+    let mut payload = serde_json::to_value(record)?;
+    // The runner consumes the resolved connection URL. The library ID belongs
+    // to the persisted record and is outside the runner's strict schema.
+    if let Some(fields) = payload.as_object_mut() {
+        fields.remove("proxy_id");
+    }
+    serde_json::to_vec(&payload)
+}
+
 #[cfg(test)]
 fn read_readiness(stdout: impl Read + Send + 'static) -> mpsc::Receiver<bool> {
     stdout_pump(stdout, Arc::new(AutomationChannel::default()))
@@ -1168,11 +1581,15 @@ fn runtime_error(detail: &str) -> BrowserError {
                 "激活验证未通过，请在应用设置中重新验证激活码",
             )
         } else if lower.contains("session limit") {
-            ("rate_limited", "已达到浏览器并发上限，请关闭其他窗口后重试")
+            (
+                "rate_limited",
+                "CloakBrowser 报告授权席位已满，请检查本机会话和授权席位",
+            )
         } else if lower.contains("profile_engine_unsupported") {
             ("unsupported", "此窗口的浏览器内核已不受支持")
+        } else if lower.contains("profile_record_invalid") {
+            ("invalid_config", "浏览器运行组件无法读取 Profile 配置")
         } else if lower.contains("profile_engine_mismatch")
-            || lower.contains("profile_record_invalid")
             || lower.contains("profile_kernel")
             || lower.contains("binary_version")
         {

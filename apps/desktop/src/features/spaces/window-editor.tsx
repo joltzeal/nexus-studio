@@ -5,7 +5,7 @@ import type {
   ProxyMode,
   UpdateBrowserWindowInput,
 } from '@nexus/contracts/browser'
-import { Dices, Loader2, ShieldCheck } from 'lucide-react'
+import { Dices, Loader2, ShieldCheck } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   DialogContent,
@@ -91,11 +91,11 @@ export function WindowEditor({
   onSave: SaveWindow
   onCancel: () => void
 }) {
-  const builtin = connection.providerId === 'cloakbrowser'
+  const builtin = connection.providerId === 'cloakbrowser' || connection.providerId === 'aliasmode' || connection.providerId === 'shardbrowser'
   const nameLimit = builtin ? 40 : 100
   const caps = connection.capabilities
   const remoteReadonly = window !== null && (!caps.update || window.state !== 'stopped')
-  const needsLicense = builtin && window === null
+  const needsLicense = connection.providerId === 'cloakbrowser' && window === null
   const [name, setName] = useState(window?.name ?? '')
   const [platform, setPlatform] = useState<WindowSettings['platform']>(
     window?.settings.platform ?? 'Vinted',
@@ -105,6 +105,7 @@ export function WindowEditor({
   const [kernelVersion, setKernelVersion] = useState<string | null>(
     window?.kernelVersion ?? null,
   )
+  const [aliasEngine, setAliasEngine] = useState<'chromium' | 'firefox'>(window?.settings.aliasEngine ?? 'chromium')
   const [config, setConfig] = useState<WindowConfig>(() => {
     const value = configOf(window)
     return window
@@ -113,6 +114,7 @@ export function WindowEditor({
           ...value,
           geoip: builtin && caps.geoip,
           fingerprintSeed: caps.fingerprintSeed ? value.fingerprintSeed : null,
+          aliasEngine: connection.providerId === 'aliasmode' ? 'chromium' : null,
         }
   })
   const [proxySource, setProxySource] = useState<ProxyMode>(window?.proxyMode ?? 'direct')
@@ -241,6 +243,9 @@ export function WindowEditor({
           proxySource === 'provider' && window ? window.settings.locale : checked.locale,
         viewport: checked.viewport,
         fingerprintSeed: !caps.fingerprintSeed || batch ? null : checked.fingerprintSeed,
+        aliasEngine: connection.providerId === 'aliasmode' ? aliasEngine : null,
+        operatingSystem: connection.providerId === 'aliasmode' ? checked.operatingSystem : 'host',
+        cpuCores: connection.providerId === 'aliasmode' ? checked.cpuCores : null,
         startUrl: checked.startUrl,
       }
       if (proxySource === 'plugin' && proxyPlugin === null) {
@@ -388,8 +393,23 @@ export function WindowEditor({
                 : '尚未确认激活码状态，请刷新窗口列表后重试。'}
             </FieldError>
           ) : null}
+          {connection.providerId === 'aliasmode' ? (
+            <Field>
+              <FieldLabel htmlFor="alias-engine">浏览器类型</FieldLabel>
+              <Select value={aliasEngine} disabled={pending || !!window} onValueChange={(value) => {
+                if (value !== 'chromium' && value !== 'firefox') return
+                setAliasEngine(value)
+                setKernelVersion(null)
+              }}>
+                <SelectTrigger id="alias-engine"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="chromium">Chromium</SelectItem><SelectItem value="firefox">Firefox</SelectItem></SelectContent>
+              </Select>
+            </Field>
+          ) : null}
           {!window && builtin && caps.kernelSelection ? (
             <WindowKernelField
+              providerId={connection.providerId}
+              engine={aliasEngine}
               value={kernelVersion}
               disabled={pending}
               onChange={setKernelVersion}
@@ -708,6 +728,20 @@ export function WindowEditor({
             </Field>
           </div>
           <h3>浏览器环境</h3>
+          {connection.providerId === 'aliasmode' ? (
+            <div className="window-form-grid">
+              <Field><FieldLabel htmlFor="alias-os">操作系统</FieldLabel>
+                <Select value={config.operatingSystem} disabled={pending || !!window} onValueChange={(value) => {
+                  if (value === 'host' || value === 'windows' || value === 'macos' || value === 'linux') patch({ operatingSystem: value })
+                }}><SelectTrigger id="alias-os"><SelectValue /></SelectTrigger><SelectContent>
+                  <SelectItem value="host">与本机一致</SelectItem><SelectItem value="windows">Windows</SelectItem><SelectItem value="macos">macOS</SelectItem><SelectItem value="linux">Linux</SelectItem>
+                </SelectContent></Select>
+              </Field>
+              <Field><FieldLabel htmlFor="alias-cpu">CPU 数量</FieldLabel>
+                <Input id="alias-cpu" type="number" min={1} max={64} placeholder="自动" disabled={pending || !!window} value={config.cpuCores ?? ''} onChange={(event) => patch({ cpuCores: event.target.value === '' ? null : Number(event.target.value) })} />
+              </Field>
+            </div>
+          ) : null}
           <div className="window-form-grid">
             <Field>
               <FieldLabel htmlFor="window-viewport">窗口尺寸</FieldLabel>

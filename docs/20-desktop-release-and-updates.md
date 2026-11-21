@@ -554,17 +554,19 @@ Node 专用的 JIT entitlement 授予 Rust 主程序。
 ## CI 与自动发布
 
 `.github/workflows/ci.yml` 在 macOS/Windows 和 Linux 上运行源码检查。
-`.github/workflows/release.yml` 仅在 `v*` 标签触发，构建 macOS arm64、
-macOS x64 与 Windows x64，使用 GitHub Actions 的
-`TAURI_SIGNING_PRIVATE_KEY` 签名更新包。构建阶段先创建草稿 Release，
-三个平台上传构件、更新签名与 `latest.json`，macOS 继续执行最终包内运行时检查。
-`publish` 作业依赖整个 `package` 矩阵；只有全部成功后，才自动取消草稿并设为最新版本。
+`.github/workflows/release.yml` 仅在 `v*` 标签触发，构建 macOS arm64 与
+macOS x64，使用 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` 签名更新包。
+构建阶段先创建草稿 Release，两个架构上传构件与签名后的 `latest.json`，
+macOS 继续执行最终包内运行时检查。`publish` 作业依赖整个 `package` 矩阵；
+只有全部成功后，才公开版本化 Release 并更新 `raccoon-v2` updater 清单。
+版本化 v2 Release 不设为 GitHub Latest，以保留 v1 的 latest 更新通道。
 任一平台失败时保留草稿，不发布不完整版本。无需用户手动将草稿转为正式发布。
 签名密钥不进入源码。本地备份位于开发机的
 `~/Library/Application Support/Nexus Studio Release/updater.key`；丢失密钥后，
 现有安装无法无缝接受新签名。发版前同步根 `package.json`、
 `apps/desktop/package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`
-和 `src-tauri/tauri.conf.json` 中的应用版本。侧栏与关于页共用桌面包版本，
+和 `src-tauri/tauri.conf.json`、`src-tauri/tauri.v2.conf.json`、
+`apps/desktop-v2/package.json` 中的应用版本。侧栏与关于页共用桌面包版本，
 插件保留各自独立的版本号。
 未提供 `APPLE_SIGNING_IDENTITY` 时，macOS 工作流使用临时 ad-hoc 签名使
 应用包及随附 Node 可执行文件具备有效的本地签名；它不提供开发者身份和公证。

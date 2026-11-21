@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Link2, Loader2 } from 'lucide-react'
+import { Link2, Loader2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   DialogContent,

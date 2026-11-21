@@ -102,7 +102,7 @@ fn item_continuation_waits_for_quiescence_and_survives_restart() {
     assert_eq!(store.job(&id).unwrap().state, "review_required");
     assert!(store.claim(&id, "replacement").unwrap().is_none());
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     assert!(reopened.stopped_control_jobs().unwrap().contains(&id));
     assert!(reopened.claim(&id, "replacement").unwrap().is_none());
@@ -244,7 +244,7 @@ fn a_new_running_revision_after_an_acknowledged_decision_still_requests_continua
         )
         .unwrap();
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     store.recover().unwrap();
     assert!(store.stopped_control_jobs().unwrap().contains(&job.id));
     store.actor_stopped(&job.id, true).unwrap();
@@ -578,7 +578,7 @@ fn retry_deadline_survives_actor_release_and_cannot_bypass_admission() {
     );
     drop(db);
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert!(reopened.claim(&job, "replacement").unwrap().is_none());
     assert_eq!(reopened.job_view(&job).unwrap()["retry"]["attempt"], 1);
 }
@@ -1005,7 +1005,7 @@ fn workspace_conflict_preserves_the_winning_revision_after_restart() {
     assert_eq!(store.workspace_save(&input).unwrap()["revision"], 2);
     assert!(store.workspace_delete(&input.id, 1).is_err());
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert_eq!(
         store.workspace_get(&input.id).unwrap()["name"],
         "Saved revision"
@@ -1138,7 +1138,7 @@ fn incomplete_draft_retains_unassigned_edits_with_strict_ownership_and_revision_
         "Unassigned title"
     );
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert_eq!(
         store.workspace_get(&draft.id).unwrap()["data"],
         saved["data"]
@@ -1461,7 +1461,7 @@ fn archived_message_batch_operation_cannot_replay_after_reopen_or_change_its_bod
     );
     drop(db);
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     let body = crate::core::agent::canonical(&serde_json::to_value(&draft).unwrap());
     assert_eq!(
         store
@@ -1558,7 +1558,7 @@ fn notification_id_survives_crash_and_retry_never_recreates_a_sent_delivery() {
     assert_eq!(first.len(), 1);
     let notification = first[0]["notificationId"].as_str().unwrap().to_owned();
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert!(
         store.due_notifications().unwrap().is_empty(),
         "reserved delivery waits its retry deadline"

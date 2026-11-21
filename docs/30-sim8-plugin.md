@@ -11,9 +11,15 @@
 需同时更新主程序和插件；实际构件与上传状态见[质量记录](09-quality-and-testing.md)。
 
 插件包位于 `plugins/sim8`，实现 `verification.provider` 能力的方法、私有 JSON
-存储与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/sim8`，
-安装后显示在「插件中心 → SIM8 接码」。Raccoon `0.1.8` 包含此专用页面，
-侧栏根据宿主启用状态动态显示，未安装时不展示；单独安装插件包不会给旧版主程序增加页面。
+存储与逐行 JSON RPC 服务端。历史页面位于 `apps/desktop/src/features/sim8`；
+0.2 专用页面位于 `apps/desktop-v2/src/pages/plugins/sim8`，沿用 desktop-v2
+ShardX UI Kit 并经 `plugin_call` 访问插件。旧版页面与 IPC 不属于 v2 正常路径。
+
+2026-11-19 修正 desktop-v2 的输入控件边界：Kit 默认 field 变体没有边框，
+SIM8 的 Input、Textarea 采用局部 `border-stroke-soft-200`，Select 仅给实际 combobox
+框体加边框，不把标签/说明包在边框内，不修改全局 Kit。号码与订单搜索补可见标签，
+搜索、枚举选择和操作按钮分组并使用合理列宽。按用户要求仅做源码和静态检查，
+未执行后续插件 build 或图像验证。
 
 - 覆盖 SIM8 OpenAPI 的全部 15 个 HTTP 端点，加上本地管理与接码链接请求共 24 个业务 RPC 方法（另有 3 个通用配置迁移方法）：
   买号、后分配、订单、续费、换链接、筛选检测与取码都能在页面里完成。
@@ -146,6 +152,13 @@ plugins/sim8/
 
 ## 与 Vinted 账号池联动
 
+desktop-v2 的 Profile 插件 Peek 已增加由 Vinted 插件定义的号码选择分区。
+Vinted 通过通用 UI `services` 声明读取 `sim8.records.list`，宿主核对目标进程和授权，
+号码与接码链接在账号插件的一次存储事务中提交。支持分页、搜索、占用和到期说明，
+替换已有联系方式时确认受影响的 Profile 数量，提交前重新核对来源记录。
+该入口不执行购买或续费，解除手机号不删除 SIM8 号码池记录。
+以下为旧专用页面的联动路径。
+
 联动不新增方法、不改账号插件的存储格式：前端通过宿主调用账号池已有的
 `vinted.accounts.list` 与 `vinted.accounts.save`，把号码写进 `phone`、
 把接码链接写进 `smsOtpUrl`。之后在账号页点「手机验证码」读的就是这条链接。
@@ -207,6 +220,24 @@ plugins/sim8/
 - 不校验号码能否收到短信，只如实回传接码链接返回的内容。
 
 ## 本地验证
+
+desktop-v2 页面用 `apps/desktop-v2/src/raccoon/plugins/sim8` 的 adapter 严格校验
+插件响应；号码池与购买为基础方法组，订单、续费、筛选检测、到期提醒分别按完整
+方法集合启用。页面要求 `verification.provider` 已声明并授予且插件正在运行。
+Token 输入不回显；购买、续费、换接码链接和清除 Token 提供明确确认或依赖插件
+返回的实际成功结果，失败操作不会被标为已保存。
+
+写入账号仅在 `studio.vinted-accounts` 的 `account.pool` 已授予并运行，且具备
+账号列表与保存方法时开放。桥接按 revision 一致性分页读取账号，写入时保留其他
+账号字段并携带 `expectedUpdatedAt`；账号池不可用不影响号码池等 SIM8 基础功能。
+普通浏览器预览不返回虚构的 SIM8 数据或成功写入结果。
+
+SIM8 页面打开到期提醒页时读取插件持久化快照并检查待处理号码；页面离开后不维持
+前端计时器或轮询。日期识别、退避和检查状态均由 SIM8 插件持久化逻辑负责。
+
+本轮契约测试可直接运行 `node --test apps/desktop-v2/src/raccoon/plugins/sim8/contract.test.ts`。
+全量 desktop-v2 类型检查仍会报告仓库既有测试类型和非 SIM8 源码诊断；应用构建、
+Rust 检查、真实购买与真实账号联调按仓库约定不在本地执行。
 
 按当前开发约定，不在本地构建、打包或运行需要重新构建入口的验证。
 固定使用 Node.js 24.18.0，前端联动测试可直接执行：

@@ -1,9 +1,9 @@
 use super::license_store::LicenseStore;
 
 #[test]
-fn saved_license_survives_reopen_without_exposing_the_key_in_status() {
+fn saved_license_survives_reopen_and_returns_the_plaintext_key() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
     let store = LicenseStore::new(path.clone()).unwrap();
     store
         .save_validated("cb_private_test_key", "free", None)
@@ -13,8 +13,9 @@ fn saved_license_survives_reopen_without_exposing_the_key_in_status() {
     assert!(status.configured);
     assert_eq!(status.plan.as_deref(), Some("free"));
     assert_eq!(status.expires, None);
+    assert_eq!(status.key.as_deref(), Some("cb_private_test_key"));
     let public_status = serde_json::to_string(&status).unwrap();
-    assert!(!public_status.contains("cb_private_test_key"));
+    assert!(public_status.contains("cb_private_test_key"));
 }
 
 #[cfg(unix)]
@@ -23,7 +24,7 @@ fn license_database_is_readable_only_by_the_current_user() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("nexus.sqlite");
+    let path = root.path().join("raccoon.sqlite");
     LicenseStore::new(path.clone()).unwrap();
 
     assert_eq!(
@@ -35,7 +36,7 @@ fn license_database_is_readable_only_by_the_current_user() {
 #[test]
 fn empty_license_is_not_persisted() {
     let root = tempfile::tempdir().unwrap();
-    let store = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let store = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
 
     assert!(store.save_validated("  ", "free", None).is_err());
     assert!(!store.status().unwrap().configured);
@@ -44,7 +45,7 @@ fn empty_license_is_not_persisted() {
 #[test]
 fn removing_license_clears_configuration_status() {
     let root = tempfile::tempdir().unwrap();
-    let store = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let store = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
     store
         .save_validated("cb_private_test_key", "pro", Some("2027-01-01"))
         .unwrap();
@@ -58,7 +59,7 @@ fn removing_license_clears_configuration_status() {
 #[test]
 fn save_replaces_the_old_key_only_when_explicitly_called_after_validation() {
     let root = tempfile::tempdir().unwrap();
-    let store = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let store = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
     store
         .save_validated("cb_old_test_key", "free", None)
         .unwrap();

@@ -88,6 +88,9 @@ export const nativeWindow: BrowserWindow = {
     locale: 'en-GB',
     viewport: 'default',
     fingerprintSeed: null,
+    aliasEngine: null,
+    operatingSystem: 'host',
+    cpuCores: null,
     startUrl: 'https://www.vinted.co.uk',
   },
 }

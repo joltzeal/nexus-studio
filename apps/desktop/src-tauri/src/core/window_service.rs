@@ -2,22 +2,29 @@ use super::browser::provider::automation::{
     AutomationChannel, AutomationSession, CdpActor, validate_request,
 };
 use super::browser::{
+    bitbrowser_launcher,
     connection_store::{BrowserConnection, ConnectionInput, ConnectionStore},
     operation_store::{BrowserOperation, OperationResolution, OperationStore},
     provider::*,
     providers::{
-        adspower::AdsPowerProvider, bitbrowser::BitBrowserProvider,
-        cloakbrowser::CloakBrowserProvider,
+        adspower::AdsPowerProvider,
+        aliasmode::AliasModeProvider,
+        bitbrowser::BitBrowserProvider,
+        cloakbrowser::{CloakBrowserProvider, LocalSession},
+        shardbrowser::ShardBrowserProvider,
     },
+    proxy_library::ProxyLibrary,
     registry::ProviderRegistry,
     session_store::SessionStore,
 };
 use super::{
+    aliasmode_kernels::{AliasEngine, AliasModeKernelService},
     license_store::LicenseStore,
     network_proxy::NetworkProxyStore,
     plugin_host::PluginHost,
     runtime_paths::RuntimePaths,
     scheduler::{LaunchRequest, ProxyBinding, Scheduler},
+    shardbrowser_kernels::ShardKernelService,
     window_store::{WindowRecord, WindowSettings, WindowStore, now_seconds, validate_draft},
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +44,8 @@ pub struct CreateWindowInput {
     pub name: String,
     pub proxy_mode: ProxyMode,
     pub proxy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_id: Option<String>,
     pub proxy_plugin: Option<String>,
     pub proxy_endpoint: Option<i64>,
     pub settings: WindowSettings,
@@ -50,6 +59,8 @@ pub struct UpdateWindowInput {
     pub name: String,
     pub proxy_mode: ProxyMode,
     pub proxy: Option<String>,
+    #[serde(default)]
+    pub proxy_id: Option<String>,
     pub proxy_plugin: Option<String>,
     pub proxy_endpoint: Option<i64>,
     pub settings: WindowSettings,
@@ -93,6 +104,7 @@ pub struct BrowserWindow {
     pub version: String,
     pub kernel_version: Option<String>,
     pub proxy: Option<String>,
+    pub proxy_id: Option<String>,
     pub proxy_plugin: Option<String>,
     pub proxy_endpoint: Option<i64>,
     pub proxy_mode: ProxyMode,
@@ -101,8 +113,9 @@ pub struct BrowserWindow {
     pub created_at: i64,
     pub last_opened_at: Option<i64>,
     pub sort_order: i64,
+    pub activity: super::profile_activity::ProfileActivity,
 }
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionView {
     #[serde(flatten)]
@@ -168,8 +181,11 @@ impl WindowManagerState {
 pub struct WindowService {
     pub(crate) store: WindowStore,
     pub(crate) builtin: Arc<CloakBrowserProvider>,
+    pub(crate) alias: Arc<AliasModeProvider>,
+    pub(crate) shard: Arc<ShardBrowserProvider>,
+    automation_runtime: RuntimePaths,
     registry: ProviderRegistry,
-    connections: ConnectionStore,
+    pub(crate) connections: ConnectionStore,
     operations: OperationStore,
     observations: SessionStore,
     plugin_host: Option<Arc<PluginHost>>,
@@ -213,6 +229,94 @@ fn known_rejection(error: &BrowserError) -> bool {
 }
 
 impl WindowService {
+    pub(crate) fn save_inline_proxy(
+        &self,
+        connection_url: &str,
+        reference: Option<&str>,
+    ) -> BrowserResult<String> {
+        ProxyLibrary::new(self.store.database_path())
+            .save_inline(connection_url, reference)
+            .map(|entry| entry.id)
+    }
+
+    fn normalize_inline_proxy(
+        &self,
+        proxy_mode: ProxyMode,
+        proxy: &mut Option<String>,
+        proxy_id: &mut Option<String>,
+        reference: Option<&str>,
+    ) -> BrowserResult<bool> {
+        if proxy_mode != ProxyMode::Manual || proxy_id.is_some() {
+            return Ok(false);
+        }
+        let Some(connection_url) = proxy.as_deref() else {
+            return Ok(false);
+        };
+        let id = self.save_inline_proxy(connection_url, reference)?;
+        *proxy = None;
+        *proxy_id = Some(id);
+        Ok(true)
+    }
+
+    fn normalize_saved_proxy(&self, record: &mut WindowRecord) -> BrowserResult<()> {
+        if !self.normalize_inline_proxy(
+            record.proxy_mode,
+            &mut record.proxy,
+            &mut record.proxy_id,
+            None,
+        )? {
+            return Ok(());
+        }
+        let group_id = self.store.group_id(&record.id).map_err(failure)?;
+        self.store
+            .save(record, group_id.as_deref())
+            .map_err(failure)
+    }
+
+    pub fn remove_managed_kernel(
+        &self,
+        provider: BrowserProviderId,
+        version: &str,
+        engine: AliasEngine,
+    ) -> BrowserResult<()> {
+        let connection_id = match provider {
+            BrowserProviderId::CloakBrowser => BUILTIN_CONNECTION_ID,
+            BrowserProviderId::AliasMode => ALIASMODE_CONNECTION_ID,
+            BrowserProviderId::ShardBrowser => SHARDBROWSER_CONNECTION_ID,
+            _ => return Err(BrowserError::unsupported("该接入的内核由厂商管理")),
+        };
+        let _guard = self.hold(&format!("bindings:{connection_id}"))?;
+        if self.store.list().map_err(failure)?.iter().any(|record| {
+            record.binding.connection_id == connection_id
+                && record.kernel_version.as_deref() == Some(version)
+                && (provider != BrowserProviderId::AliasMode
+                    || record.settings.alias_engine.as_deref()
+                        == Some(if engine == AliasEngine::Firefox {
+                            "firefox"
+                        } else {
+                            "chromium"
+                        }))
+        }) {
+            return Err(BrowserError::new(
+                "profile_busy",
+                "该内核仍被窗口使用，请先删除对应窗口",
+            ));
+        }
+        if !self.operations.list(Some(connection_id))?.is_empty() {
+            return Err(BrowserError::new(
+                "operation_uncertain",
+                "该接入有待确认操作，暂时不能删除内核",
+            ));
+        }
+        match provider {
+            BrowserProviderId::CloakBrowser => self.builtin.kernels.remove(version),
+            BrowserProviderId::AliasMode => self.alias.kernel(engine).remove(version),
+            BrowserProviderId::ShardBrowser => self.shard.kernels.remove(version),
+            _ => unreachable!(),
+        }
+        .map_err(|message| BrowserError::new("kernel_remove_failed", message))
+    }
+
     pub fn with_runtime(
         root: PathBuf,
         plugin_host: Option<Arc<PluginHost>>,
@@ -225,17 +329,58 @@ impl WindowService {
         connections
             .reset_confirmations()
             .map_err(|e| e.to_string())?;
-        let builtin = Arc::new(CloakBrowserProvider::new(root, license, runtime, None));
+        let builtin = Arc::new(CloakBrowserProvider::new(
+            root,
+            license,
+            runtime.clone(),
+            None,
+        ));
+        let alias_kernels = Arc::new(AliasModeKernelService::new(
+            store
+                .root()
+                .parent()
+                .unwrap_or(store.root())
+                .join("aliasmode-kernels"),
+            None,
+        ));
+        let firefox_kernels = Arc::new(AliasModeKernelService::for_engine(
+            store
+                .root()
+                .parent()
+                .unwrap_or(store.root())
+                .join("aliasmode-firefox-kernels"),
+            None,
+            AliasEngine::Firefox,
+        ));
+        let alias = Arc::new(AliasModeProvider::new(
+            store.root().join("aliasmode"),
+            alias_kernels,
+            firefox_kernels,
+        ));
+        let shard_kernels = Arc::new(ShardKernelService::new(
+            store
+                .root()
+                .parent()
+                .unwrap_or(store.root())
+                .join("shardbrowser-kernels"),
+            None,
+        ));
+        let shard = Arc::new(
+            ShardBrowserProvider::new(store.root().join("shardbrowser"), shard_kernels)
+                .with_database(path.clone()),
+        );
         let mut registry = ProviderRegistry::default();
         registry.register(builtin.clone());
+        registry.register(alias.clone());
+        registry.register(shard.clone());
         registry.register(Arc::new(AdsPowerProvider::new()));
-        registry.register(Arc::new(
-            crate::core::browser::providers::aliasmode::AliasModeProvider,
-        ));
         registry.register(Arc::new(BitBrowserProvider::new()));
         Ok(Self {
             store,
             builtin,
+            alias,
+            shard,
+            automation_runtime: runtime,
             registry,
             connections,
             operations: OperationStore::new(path.clone()),
@@ -255,6 +400,42 @@ impl WindowService {
         })
     }
     pub fn with_network(mut self, network: NetworkProxyStore) -> Self {
+        let shard_kernels = Arc::new(ShardKernelService::new(
+            self.store
+                .root()
+                .parent()
+                .unwrap_or(self.store.root())
+                .join("shardbrowser-kernels"),
+            Some(network.clone()),
+        ));
+        self.shard = Arc::new(
+            ShardBrowserProvider::new(self.store.root().join("shardbrowser"), shard_kernels)
+                .with_database(self.store.database_path()),
+        );
+        self.registry.register(self.shard.clone());
+        let alias_kernels = Arc::new(AliasModeKernelService::new(
+            self.store
+                .root()
+                .parent()
+                .unwrap_or(self.store.root())
+                .join("aliasmode-kernels"),
+            Some(network.clone()),
+        ));
+        let firefox_kernels = Arc::new(AliasModeKernelService::for_engine(
+            self.store
+                .root()
+                .parent()
+                .unwrap_or(self.store.root())
+                .join("aliasmode-firefox-kernels"),
+            Some(network.clone()),
+            AliasEngine::Firefox,
+        ));
+        self.alias = Arc::new(AliasModeProvider::new(
+            self.store.root().join("aliasmode"),
+            alias_kernels,
+            firefox_kernels,
+        ));
+        self.registry.register(self.alias.clone());
         self.builtin = Arc::new(CloakBrowserProvider::new(
             self.store.root().into(),
             self.builtin.license_store.clone(),
@@ -279,6 +460,97 @@ impl WindowService {
             "connectionId":record.binding.connection_id,
             "profileId":record.binding.profile_id, "state":actual
         }))
+    }
+
+    pub(crate) fn automation_connection(&self, id: &str) -> BrowserResult<BrowserConnection> {
+        self.connection(id, true)
+    }
+
+    pub(crate) fn automation_record(
+        &self,
+        connection_id: &str,
+        id: &str,
+    ) -> BrowserResult<WindowRecord> {
+        self.require_active_profile(id)?;
+        let record = self.store.get(id).map_err(failure)?;
+        if record.binding.connection_id != connection_id {
+            return Err(BrowserError::new(
+                "scope_mismatch",
+                "Profile 不属于此次自动化的 Workspace",
+            ));
+        }
+        Ok(record)
+    }
+
+    pub(crate) fn automation_cdp_endpoint(
+        &self,
+        connection_id: &str,
+        id: &str,
+        owner: &str,
+    ) -> BrowserResult<String> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        let record = self.automation_record(connection_id, id)?;
+        let connection = self.connection(connection_id, true)?;
+        if self.operations.window_pending(id)? {
+            return Err(uncertain());
+        }
+        let endpoint = self
+            .registry
+            .get(connection.provider_id)?
+            .automation_cdp(&connection, &record)?;
+        Ok(endpoint.as_str().to_owned())
+    }
+
+    pub(crate) fn stop_automation_window(
+        &self,
+        connection_id: &str,
+        id: &str,
+        owner: &str,
+    ) -> BrowserResult<()> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        self.automation_record(connection_id, id)?;
+        self.stop_window_held(id)
+    }
+
+    pub(crate) fn delete_automation_window(
+        &self,
+        connection_id: &str,
+        id: &str,
+        owner: &str,
+        delete_environment: bool,
+    ) -> BrowserResult<()> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        self.automation_record(connection_id, id)?;
+        self.delete_window_held(id, delete_environment)
+    }
+
+    pub(crate) fn update_automation_window(
+        &self,
+        connection_id: &str,
+        owner: &str,
+        input: UpdateWindowInput,
+    ) -> BrowserResult<()> {
+        let _guard = self.hold_agent(&input.id, Some(owner))?;
+        self.automation_record(connection_id, &input.id)?;
+        self.update_window_held(input)
+    }
+
+    pub(crate) fn resolve_automation_proxy(
+        &self,
+        connection_id: &str,
+        id: &str,
+        owner: &str,
+    ) -> BrowserResult<Option<String>> {
+        let _guard = self.hold_agent(id, Some(owner))?;
+        let record = self.automation_record(connection_id, id)?;
+        self.connection(connection_id, true)?;
+        if record.proxy_mode == ProxyMode::Provider {
+            return Err(BrowserError::unsupported(
+                "此 Profile 的代理由厂商管理，当前无法确认宿主 HTTP 请求的相同出口",
+            ));
+        }
+        let (_, proxy) = self.proxy(&record)?;
+        Ok(proxy.connection_url)
     }
 
     pub fn agent_provider_capacity(
@@ -339,6 +611,7 @@ impl WindowService {
             }
         }
         let _guard = self.hold(id)?;
+        self.require_active_profile(id)?;
         self.store.get(id).map_err(failure)?;
         if !allow_pending && self.operations.window_pending(id)? {
             return Err(uncertain());
@@ -530,7 +803,7 @@ impl WindowService {
                         _external: None,
                     },
                     AutomationSession::Cdp(endpoint) => {
-                        let external = CdpActor::attach(&self.builtin.runtime, endpoint)?;
+                        let external = CdpActor::attach(&self.automation_runtime, endpoint)?;
                         AgentActor {
                             channel: external.channel.clone(),
                             _external: Some(external),
@@ -581,6 +854,40 @@ impl WindowService {
             id: id.into(),
         })
     }
+    pub(crate) fn with_profile_access<T>(
+        &self,
+        id: &str,
+        access: impl FnOnce() -> BrowserResult<T>,
+    ) -> BrowserResult<T> {
+        self.with_profile_trash_access(id, || {
+            self.require_active_profile(id)?;
+            access()
+        })
+    }
+
+    /// Shared exclusion for recovery/restoration, which may access a Trash record.
+    pub(crate) fn with_profile_trash_access<T>(
+        &self,
+        id: &str,
+        access: impl FnOnce() -> BrowserResult<T>,
+    ) -> BrowserResult<T> {
+        let _guard = self.hold(id)?;
+        if self.operations.window_pending(id)? {
+            return Err(busy());
+        }
+        access()
+    }
+
+    fn require_active_profile(&self, id: &str) -> BrowserResult<()> {
+        if super::workbench_trash::is_trashed(&self.store.database_path(), id)? {
+            return Err(BrowserError::new(
+                "profile_trashed",
+                "Profile 位于回收站，请先恢复",
+            ));
+        }
+        Ok(())
+    }
+
     fn sequence(&self) -> BrowserResult<i64> {
         self.store.reserve_sort_order().map_err(failure)
     }
@@ -632,9 +939,52 @@ impl WindowService {
     }
     pub fn probe_connection(&self, id: &str) -> BrowserResult<ProviderProbe> {
         let connection = self.connections.get(id)?;
-        self.registry
-            .get(connection.provider_id)?
-            .probe(&connection)
+        let provider = self.registry.get(connection.provider_id)?;
+        match provider.probe(&connection) {
+            Ok(probe) => Ok(probe),
+            // BitBrowser is a separate application. A stopped local API is an
+            // ordinary state the workspace guides through, not a broken record.
+            Err(error)
+                if connection.provider_id == BrowserProviderId::BitBrowser
+                    && error.code == "unavailable" =>
+            {
+                Ok(ProviderProbe {
+                    connected: false,
+                    message: "未检测到比特浏览器本地 API，请先启动比特浏览器".into(),
+                    scope_id: None,
+                    capabilities: provider.capabilities(),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+    pub fn launch_bitbrowser(&self) -> BrowserResult<ProviderProbe> {
+        let connection = self.connections.get(BITBROWSER_CONNECTION_ID)?;
+        if !connection.enabled {
+            return Err(BrowserError::new("unavailable", "比特浏览器接入未启用"));
+        }
+        let provider = self.registry.get(BrowserProviderId::BitBrowser)?;
+        if let Ok(probe) = provider.probe(&connection)
+            && probe.connected
+        {
+            return Ok(probe);
+        }
+        bitbrowser_launcher::launch()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            if let Ok(probe) = provider.probe(&connection)
+                && probe.connected
+            {
+                return Ok(probe);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(BrowserError::new(
+                    "unavailable",
+                    "比特浏览器尚未就绪，请完成登录并在系统设置中开启本地接口",
+                ));
+            }
+        }
     }
     pub fn confirm_connection(&self, id: &str, scope_label: &str) -> BrowserResult<ConnectionView> {
         let provider_id = self.connections.get(id)?.provider_id;
@@ -662,27 +1012,124 @@ impl WindowService {
             capabilities: self.registry.get(provider_id)?.capabilities(),
         })
     }
+    pub fn set_managed_cloakbrowser(&self, enabled: bool) -> BrowserResult<ConnectionView> {
+        let _guard = self.hold_connections(BrowserProviderId::CloakBrowser, false)?;
+        if !enabled {
+            let records: Vec<_> = self
+                .store
+                .list()
+                .map_err(failure)?
+                .into_iter()
+                .filter(|record| record.binding.connection_id == BUILTIN_CONNECTION_ID)
+                .collect();
+            if !records.is_empty() {
+                let connection = self.connections.get(BUILTIN_CONNECTION_ID)?;
+                let states = self.observe_states(&connection, &records)?;
+                if records.iter().any(|record| {
+                    states.get(&record.binding.profile_id) != Some(&WindowState::Stopped)
+                }) {
+                    return Err(BrowserError::new(
+                        "profile_busy",
+                        "请先停止并确认所有实验浏览器窗口，再关闭接入",
+                    ));
+                }
+            }
+        }
+        let connection = self.connections.set_managed_cloakbrowser(enabled)?;
+        Ok(ConnectionView {
+            connection,
+            capabilities: self
+                .registry
+                .get(BrowserProviderId::CloakBrowser)?
+                .capabilities(),
+        })
+    }
+    pub fn set_managed_aliasmode(&self, enabled: bool) -> BrowserResult<ConnectionView> {
+        let _guard = self.hold_connections(BrowserProviderId::AliasMode, false)?;
+        if !enabled {
+            let records: Vec<_> = self
+                .store
+                .list()
+                .map_err(failure)?
+                .into_iter()
+                .filter(|r| r.binding.connection_id == ALIASMODE_CONNECTION_ID)
+                .collect();
+            if !records.is_empty() {
+                let connection = self.connections.get(ALIASMODE_CONNECTION_ID)?;
+                let states = self.observe_states(&connection, &records)?;
+                if records
+                    .iter()
+                    .any(|r| states.get(&r.id) != Some(&WindowState::Stopped))
+                {
+                    return Err(BrowserError::new("profile_busy", "请先关闭 AliasMode 窗口"));
+                }
+            }
+        }
+        let connection = self.connections.set_managed_aliasmode(enabled)?;
+        Ok(ConnectionView {
+            connection,
+            capabilities: self
+                .registry
+                .get(BrowserProviderId::AliasMode)?
+                .capabilities(),
+        })
+    }
+    pub fn set_managed_shardbrowser(&self, enabled: bool) -> BrowserResult<ConnectionView> {
+        let _guard = self.hold_connections(BrowserProviderId::ShardBrowser, false)?;
+        if !enabled {
+            let records: Vec<_> = self
+                .store
+                .list()
+                .map_err(failure)?
+                .into_iter()
+                .filter(|record| record.binding.connection_id == SHARDBROWSER_CONNECTION_ID)
+                .collect();
+            if !records.is_empty() {
+                let connection = self.connections.get(SHARDBROWSER_CONNECTION_ID)?;
+                let states = self.observe_states(&connection, &records)?;
+                if records
+                    .iter()
+                    .any(|record| states.get(&record.id) != Some(&WindowState::Stopped))
+                {
+                    return Err(BrowserError::new(
+                        "profile_busy",
+                        "请先停止 ShardBrowser 窗口",
+                    ));
+                }
+            }
+        }
+        let connection = self.connections.set_managed_shardbrowser(enabled)?;
+        Ok(ConnectionView {
+            connection,
+            capabilities: self
+                .registry
+                .get(BrowserProviderId::ShardBrowser)?
+                .capabilities(),
+        })
+    }
     pub fn connection_groups(&self, id: &str) -> BrowserResult<Vec<ProviderGroup>> {
         let connection = self.connections.get(id)?;
         self.registry
             .get(connection.provider_id)?
             .list_groups(&connection)
     }
-    fn validate_group(&self, group: Option<&str>) -> BrowserResult<()> {
+    fn validate_group(&self, connection_id: &str, group: Option<&str>) -> BrowserResult<()> {
         if let Some(group) = group
             && !super::group_store::GroupStore::new(self.store.database_path())
                 .map_err(failure)?
-                .list()
+                .list_for_connection(connection_id)
                 .map_err(failure)?
                 .iter()
                 .any(|g| g.id == group)
         {
-            return Err(BrowserError::new("invalid_config", "所选分组不存在"));
+            return Err(BrowserError::new("invalid_config", "所选文件夹不存在"));
         }
         Ok(())
     }
     fn summary(&self, record: WindowRecord, state: WindowState) -> BrowserResult<BrowserWindow> {
         let group_id = self.store.group_id(&record.id).map_err(failure)?;
+        let activity =
+            super::profile_activity::observe(&self.store.database_path(), &record.id, state)?;
         Ok(BrowserWindow {
             id: record.id,
             name: record.name,
@@ -700,6 +1147,7 @@ impl WindowService {
                 .unwrap_or_default(),
             kernel_version: record.kernel_version,
             proxy: record.proxy,
+            proxy_id: record.proxy_id,
             proxy_plugin: record.proxy_plugin,
             proxy_endpoint: record.proxy_endpoint,
             proxy_mode: record.proxy_mode,
@@ -708,6 +1156,7 @@ impl WindowService {
             created_at: record.created_at,
             last_opened_at: record.last_opened_at,
             sort_order: record.sort_order,
+            activity,
         })
     }
     fn observe(
@@ -719,7 +1168,7 @@ impl WindowService {
             .registry
             .get(connection.provider_id)?
             .observe_profiles(connection, records);
-        if result.is_err() && connection.provider_id != BrowserProviderId::CloakBrowser {
+        if result.is_err() && !connection.provider_id.is_managed() {
             self.connections
                 .unconfirm(&connection.id, connection.revision)?;
         }
@@ -819,15 +1268,13 @@ impl WindowService {
                     Some(active) if active.state == WindowState::Unknown => WindowState::Unknown,
                     _ => observed,
                 };
-                if display == WindowState::Running
-                    && connection.provider_id == BrowserProviderId::CloakBrowser
-                {
+                if display == WindowState::Running && connection.provider_id.is_managed() {
                     Self::retain_running(&mut state, record)?;
                 }
                 let started = previous.is_some_and(|o| o.nexus_started)
                     && !matches!(display, WindowState::Stopped | WindowState::Missing);
                 if !pending
-                    && connection.provider_id != BrowserProviderId::CloakBrowser
+                    && !connection.provider_id.is_managed()
                     && let Some(remote) = observation.as_ref().and_then(|batch| {
                         batch
                             .profiles
@@ -846,9 +1293,12 @@ impl WindowService {
                 states.insert(record.id.clone(), display);
             }
         }
+        let trashed =
+            super::workbench_trash::trashed_ids(&self.store.database_path(), connection_id)?;
         records
             .into_iter()
             .filter(|r| connection_id.is_none_or(|id| id == r.binding.connection_id))
+            .filter(|r| !trashed.contains(&r.id))
             .map(|record| {
                 let record = refreshed.remove(&record.id).unwrap_or(record);
                 let state = states
@@ -887,15 +1337,23 @@ impl WindowService {
         let (binding, url) = match record.proxy_mode {
             ProxyMode::Provider => (ProxyBinding::Provider, None),
             ProxyMode::Direct => (ProxyBinding::Direct, None),
-            ProxyMode::Manual => (
-                ProxyBinding::Configured {
-                    server: record
+            ProxyMode::Manual => {
+                let url = match record.proxy_id.as_deref() {
+                    Some(id) => ProxyLibrary::new(self.store.database_path())
+                        .get(id)?
+                        .connection_url()?,
+                    None => record
                         .proxy
                         .clone()
                         .ok_or_else(|| failure("代理地址缺失"))?,
-                },
-                record.proxy.clone(),
-            ),
+                };
+                (
+                    ProxyBinding::Configured {
+                        server: url.clone(),
+                    },
+                    Some(url),
+                )
+            }
             ProxyMode::Plugin => {
                 let plugin = record
                     .proxy_plugin
@@ -935,8 +1393,9 @@ impl WindowService {
     fn transient(&self, record: &WindowRecord) -> BrowserResult<WindowRecord> {
         let mut transient = record.clone();
         let (_, proxy) = self.proxy(record)?;
-        if record.proxy_mode == ProxyMode::Plugin {
+        if record.proxy_mode == ProxyMode::Plugin || record.proxy_id.is_some() {
             transient.proxy = proxy.connection_url;
+            transient.proxy_id = None;
         }
         Ok(transient)
     }
@@ -946,7 +1405,7 @@ impl WindowService {
         record: &WindowRecord,
         destructive: bool,
     ) -> BrowserResult<()> {
-        if connection.provider_id == BrowserProviderId::CloakBrowser {
+        if connection.provider_id.is_managed() {
             return Ok(());
         }
         let remote = self
@@ -993,7 +1452,7 @@ impl WindowService {
             || (record.proxy_mode == ProxyMode::Plugin && !capabilities.proxy_plugin)
             || (record.settings.fingerprint_seed.is_some() && !capabilities.fingerprint_seed)
             || (record.kernel_version.is_some()
-                && record.binding.provider_id == BrowserProviderId::CloakBrowser
+                && record.binding.provider_id.is_managed()
                 && !capabilities.kernel_selection)
             || (record.settings.geoip
                 && record.proxy_mode != ProxyMode::Provider
@@ -1005,14 +1464,24 @@ impl WindowService {
         }
         Ok(())
     }
-    pub fn create(&self, input: CreateWindowInput) -> BrowserResult<BrowserWindow> {
+    pub fn create(&self, mut input: CreateWindowInput) -> BrowserResult<BrowserWindow> {
         let _guard = self.hold(&format!("operation:{}", input.operation_id))?;
         let _binding_guard = self.hold(&format!("bindings:{}", input.connection_id))?;
-        let input_value = serde_json::to_value(&input).map_err(failure)?;
+        let original_input_value = serde_json::to_value(&input).map_err(failure)?;
         if let Some(mut op) = self.operations.get(&input.operation_id)? {
+            if op.payload["input"] != original_input_value {
+                let operation_id = input.operation_id.clone();
+                self.normalize_inline_proxy(
+                    input.proxy_mode,
+                    &mut input.proxy,
+                    &mut input.proxy_id,
+                    Some(&operation_id),
+                )?;
+            }
+            let input_value = serde_json::to_value(&input).map_err(failure)?;
             if op.kind != "create"
                 || op.connection_id != input.connection_id
-                || op.payload["input"] != input_value
+                || op.payload["input"] != input_value && op.payload["input"] != original_input_value
             {
                 return Err(BrowserError::new(
                     "operation_conflict",
@@ -1043,27 +1512,48 @@ impl WindowService {
             }
             return self.reconcile_operation(&mut op)?.ok_or_else(uncertain);
         }
+        let operation_id = input.operation_id.clone();
+        self.normalize_inline_proxy(
+            input.proxy_mode,
+            &mut input.proxy,
+            &mut input.proxy_id,
+            Some(&operation_id),
+        )?;
+        let input_value = serde_json::to_value(&input).map_err(failure)?;
         let connection = self.connection(&input.connection_id, true)?;
-        self.validate_group(input.group_id.as_deref())?;
-        let builtin = connection.provider_id == BrowserProviderId::CloakBrowser;
+        self.validate_group(&connection.id, input.group_id.as_deref())?;
+        let builtin = connection.provider_id.is_managed();
+        let owns_kernel = builtin || connection.provider_id == BrowserProviderId::BitBrowser;
         let id = uuid::Uuid::new_v4().to_string();
         let mut settings = input.settings.clone();
-        if !builtin && (settings.fingerprint_seed.is_some() || input.kernel_version.is_some()) {
+        if settings.fingerprint_seed.is_some() && !builtin
+            || input.kernel_version.is_some() && !owns_kernel
+        {
             return Err(BrowserError::unsupported(
                 "此接入的内核和指纹由官方浏览器管理",
             ));
         }
         if builtin && settings.fingerprint_seed.is_none() {
-            let seed = uuid::Uuid::new_v4();
-            let bytes = seed.as_bytes();
-            settings.fingerprint_seed = Some(
-                (u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & 0x7fff_ffff).max(1),
-            );
+            settings.fingerprint_seed = Some(random_fingerprint_seed());
+        }
+        if connection.provider_id == BrowserProviderId::CloakBrowser
+            && settings
+                .fingerprint_seed
+                .is_some_and(|seed| !valid_cloak_seed(seed))
+        {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "CloakBrowser 指纹种子应为 10000 至 99999 的整数",
+            ));
         }
         if builtin && input.proxy_mode == ProxyMode::Provider {
             return Err(BrowserError::new(
                 "invalid_config",
-                "内置浏览器需要明确代理来源",
+                if connection.provider_id == BrowserProviderId::BitBrowser {
+                    "新建环境需要明确代理来源"
+                } else {
+                    "内置浏览器需要明确代理来源"
+                },
             ));
         }
         let record = WindowRecord {
@@ -1078,6 +1568,7 @@ impl WindowService {
             binary_path: None,
             kernel_version: input.kernel_version.clone(),
             proxy: input.proxy.clone(),
+            proxy_id: input.proxy_id.clone(),
             proxy_plugin: input.proxy_plugin.clone(),
             proxy_endpoint: input.proxy_endpoint,
             proxy_mode: input.proxy_mode,
@@ -1108,6 +1599,9 @@ impl WindowService {
         let mut record: WindowRecord =
             serde_json::from_value(op.payload["record"].clone()).map_err(failure)?;
         self.validate_capabilities(&record, false)?;
+        if let Some(id) = record.proxy_id.as_deref() {
+            ProxyLibrary::new(self.store.database_path()).get(id)?;
+        }
         let transient = match self.transient(&record) {
             Ok(record) => record,
             Err(error) => {
@@ -1127,7 +1621,7 @@ impl WindowService {
                 record.binary_path = created.binary_path;
                 record.kernel_version = created.kernel_version;
                 record.provider_config = created.provider_config;
-                if connection.provider_id == BrowserProviderId::CloakBrowser {
+                if connection.provider_id.is_managed() {
                     record
                         .provider_config
                         .as_object_mut()
@@ -1170,7 +1664,9 @@ impl WindowService {
                 ));
             }
         } else {
-            self.store.insert(&record, group).map_err(failure)?;
+            self.store
+                .insert_confirmed(&record, group)
+                .map_err(failure)?;
         }
         let connection = self.connections.get(&record.binding.connection_id)?;
         let state = self
@@ -1194,27 +1690,51 @@ impl WindowService {
     }
     pub fn update(&self, input: UpdateWindowInput) -> BrowserResult<()> {
         let _guard = self.hold(&input.id)?;
+        self.update_window_held(input)
+    }
+
+    fn update_window_held(&self, mut input: UpdateWindowInput) -> BrowserResult<()> {
+        self.require_active_profile(&input.id)?;
         if self.operations.window_pending(&input.id)? {
             return Err(uncertain());
         }
-        let previous = self.store.get(&input.id).map_err(failure)?;
-        self.validate_group(input.group_id.as_deref())?;
-        if previous.settings.fingerprint_seed != input.settings.fingerprint_seed {
+        self.normalize_inline_proxy(
+            input.proxy_mode,
+            &mut input.proxy,
+            &mut input.proxy_id,
+            None,
+        )?;
+        let mut previous = self.store.get(&input.id).map_err(failure)?;
+        self.normalize_saved_proxy(&mut previous)?;
+        self.validate_group(&previous.binding.connection_id, input.group_id.as_deref())?;
+        if previous.settings.fingerprint_seed != input.settings.fingerprint_seed
+            || previous.settings.alias_engine != input.settings.alias_engine
+            || previous.settings.operating_system != input.settings.operating_system
+            || previous.settings.cpu_cores != input.settings.cpu_cores
+        {
             return Err(BrowserError::new(
                 "invalid_config",
-                "已创建窗口的指纹种子不能修改",
+                "已创建窗口的浏览器身份不能修改",
             ));
         }
         let mut updated = previous.clone();
         updated.name = input.name.trim().into();
         updated.proxy = input.proxy;
+        updated.proxy_id = input.proxy_id;
         updated.proxy_plugin = input.proxy_plugin;
         updated.proxy_endpoint = input.proxy_endpoint;
         updated.proxy_mode = input.proxy_mode;
         updated.settings = input.settings;
         validate_draft(&updated).map_err(failure)?;
+        // Resolve library bindings even for metadata-only saves so a missing proxy blocks saving.
+        let library_transient = if updated.proxy_id.is_some() {
+            Some(self.transient(&updated)?)
+        } else {
+            None
+        };
         let remote_changed = previous.name != updated.name
             || previous.proxy != updated.proxy
+            || previous.proxy_id != updated.proxy_id
             || previous.proxy_plugin != updated.proxy_plugin
             || previous.proxy_endpoint != updated.proxy_endpoint
             || previous.proxy_mode != updated.proxy_mode
@@ -1222,6 +1742,9 @@ impl WindowService {
             || previous.settings.timezone != updated.settings.timezone
             || previous.settings.locale != updated.settings.locale
             || previous.settings.viewport != updated.settings.viewport
+            || previous.kernel_version != updated.kernel_version
+            || previous.settings.shardbrowser != updated.settings.shardbrowser
+            || previous.settings.bitbrowser != updated.settings.bitbrowser
             || previous.settings.start_url != updated.settings.start_url;
         if !remote_changed {
             return self
@@ -1235,9 +1758,12 @@ impl WindowService {
         self.validate_capabilities(&updated, true)?;
         let proxy_source_changed = previous.proxy_mode != updated.proxy_mode
             || previous.proxy != updated.proxy
+            || previous.proxy_id != updated.proxy_id
             || previous.proxy_plugin != updated.proxy_plugin
             || previous.proxy_endpoint != updated.proxy_endpoint;
-        let transient = if proxy_source_changed {
+        let transient = if let Some(transient) = library_transient {
+            transient
+        } else if proxy_source_changed {
             self.transient(&updated)?
         } else {
             updated.clone()
@@ -1256,7 +1782,7 @@ impl WindowService {
             Ok(()) => {
                 self.operations.phase(&mut op, "confirmed", None)?;
                 self.store
-                    .save(&updated, input.group_id.as_deref())
+                    .save_confirmed(&updated, input.group_id.as_deref())
                     .map_err(failure)?;
                 self.operations.phase(&mut op, "committed", None)
             }
@@ -1276,6 +1802,7 @@ impl WindowService {
     }
     pub fn update_note(&self, id: &str, note: &str) -> BrowserResult<String> {
         let _guard = self.hold(id)?;
+        self.require_active_profile(id)?;
         if self.operations.window_pending(id)? {
             return Err(uncertain());
         }
@@ -1286,10 +1813,11 @@ impl WindowService {
         {
             return Err(BrowserError::new("invalid_config", "请选择不重复的窗口"));
         }
-        self.connections.get(&input.connection_id)?;
+        let connection = self.connections.get(&input.connection_id)?;
         let mut guards = Vec::with_capacity(input.ids.len());
         for id in &input.ids {
             guards.push(self.hold(id)?);
+            self.require_active_profile(id)?;
             if self.operations.window_pending(id)? {
                 return Err(uncertain());
             }
@@ -1300,18 +1828,39 @@ impl WindowService {
                 ));
             }
         }
-        super::group_store::GroupStore::new(self.store.database_path())
-            .map_err(failure)?
-            .assign_many(&input.ids, input.group_id.as_deref())
+        self.store
+            .assign_group_for_connection(
+                &input.connection_id,
+                connection.provider_id,
+                &input.ids,
+                input.group_id.as_deref(),
+            )
             .map_err(failure)?;
         Ok(input)
     }
     pub(crate) fn delete_window(&self, id: &str, delete_environment: bool) -> BrowserResult<()> {
         let _guard = self.hold(id)?;
+        self.require_active_profile(id)?;
+        self.delete_window_held(id, delete_environment)
+    }
+
+    pub(crate) fn delete_trashed_profile(
+        &self,
+        connection_id: &str,
+        id: &str,
+    ) -> BrowserResult<()> {
+        let _guard = self.hold(id)?;
+        super::workbench_trash::require_trashed(&self.store.database_path(), connection_id, id)?;
+        self.delete_window_held(id, true)
+    }
+
+    /// The caller owns the Profile guard and has checked active/Trash membership.
+    fn delete_window_held(&self, id: &str, delete_environment: bool) -> BrowserResult<()> {
         if self.operations.window_pending(id)? {
             return Err(uncertain());
         }
-        let record = self.store.get(id).map_err(failure)?;
+        let mut record = self.store.get(id).map_err(failure)?;
+        self.normalize_saved_proxy(&mut record)?;
         let connection = self.connections.get(&record.binding.connection_id)?;
         if delete_environment {
             self.connection(&connection.id, true)?;
@@ -1325,7 +1874,7 @@ impl WindowService {
             }
             self.stopped(&connection, &record)?;
             self.check_external(&connection, &record, true)?;
-        } else if record.binding.provider_id == BrowserProviderId::CloakBrowser {
+        } else if record.binding.provider_id.is_managed() {
             return Err(BrowserError::unsupported("内置窗口请使用删除浏览器环境"));
         }
         let binding_plugins = self
@@ -1470,10 +2019,12 @@ impl WindowService {
         self.start_window_held(id)
     }
     fn start_window_held(&self, id: &str) -> BrowserResult<()> {
+        self.require_active_profile(id)?;
         if self.operations.window_pending(id)? {
             return Err(uncertain());
         }
-        let record = self.store.get(id).map_err(failure)?;
+        let mut record = self.store.get(id).map_err(failure)?;
+        self.normalize_saved_proxy(&mut record)?;
         let connection = self.connection(&record.binding.connection_id, true)?;
         self.check_external(&connection, &record, false)?;
         let observed = self.observe_states(&connection, std::slice::from_ref(&record))?;
@@ -1532,8 +2083,7 @@ impl WindowService {
                 .and_then(|states| states.get(&record.binding.profile_id).copied())
                 .unwrap_or(WindowState::Unknown);
             if known_rejection(&error)
-                || (connection.provider_id == BrowserProviderId::CloakBrowser
-                    && observed == WindowState::Stopped)
+                || (connection.provider_id.is_managed() && observed == WindowState::Stopped)
             {
                 self.operations
                     .phase(&mut op, "failed", Some(error.message.clone()))?;
@@ -1567,10 +2117,54 @@ impl WindowService {
     }
     pub fn stop(&self, id: &str) -> BrowserResult<()> {
         let _guard = self.hold(id)?;
+        self.stop_window_held(id)
+    }
+
+    fn cleanup_cloakbrowser_session(&self, id: &str) -> BrowserResult<()> {
+        let _guard = self.hold(id)?;
         let record = self.store.get(id).map_err(failure)?;
+        let connection = self.connection(&record.binding.connection_id, false)?;
+        self.builtin.recover_session(&connection, &record)?;
+        self.accept_session(&record, WindowState::Stopped, false)?;
+        for mut operation in self.operations.list(Some(&connection.id))? {
+            if operation.window_id != id {
+                continue;
+            }
+            match operation.kind.as_str() {
+                "start" if operation.phase == "confirmed" => {
+                    self.store.mark_opened(id).map_err(failure)?;
+                    self.operations.phase(&mut operation, "committed", None)?;
+                }
+                "start" => self.operations.phase(
+                    &mut operation,
+                    "failed",
+                    Some("已结束未完成的 CloakBrowser 会话".into()),
+                )?,
+                "stop" => self.operations.phase(&mut operation, "committed", None)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn cloakbrowser_sessions(&self) -> BrowserResult<Vec<LocalSession>> {
+        let connection = self.connection(BUILTIN_CONNECTION_ID, false)?;
+        let records: Vec<_> = self
+            .store
+            .list()
+            .map_err(failure)?
+            .into_iter()
+            .filter(|record| record.binding.connection_id == connection.id)
+            .collect();
+        self.builtin.local_diagnostics(&connection, &records)
+    }
+
+    fn stop_window_held(&self, id: &str) -> BrowserResult<()> {
+        let mut record = self.store.get(id).map_err(failure)?;
         if self.operations.window_pending(id)? {
             return Err(uncertain());
         }
+        self.normalize_saved_proxy(&mut record)?;
         let connection = self.connection(&record.binding.connection_id, true)?;
         self.check_external(&connection, &record, false)?;
         let states = self.observe_states(&connection, std::slice::from_ref(&record))?;
@@ -1663,6 +2257,7 @@ impl WindowService {
                 })
             {
                 let _window_guard = self.hold(&existing.id)?;
+                self.require_active_profile(&existing.id)?;
                 if self.operations.window_pending(&existing.id)? {
                     return Err(uncertain());
                 }
@@ -1685,6 +2280,7 @@ impl WindowService {
                 binary_path: None,
                 kernel_version: profile.kernel_version.clone(),
                 proxy: None,
+                proxy_id: None,
                 proxy_plugin: None,
                 proxy_endpoint: None,
                 proxy_mode: ProxyMode::Provider,
@@ -1712,6 +2308,33 @@ impl WindowService {
         let _window_guard = self.hold(&op.window_id)?;
         self.reconcile_operation(&mut op)
     }
+
+    /// Reconcile an existing intent while retaining its automation reservation.
+    /// This only dispatches the existing read/reconciliation path.
+    pub(crate) fn reconcile_automation_operation(
+        &self,
+        connection_id: &str,
+        operation_id: &str,
+        owner: &str,
+    ) -> BrowserResult<Option<BrowserWindow>> {
+        let _operation_guard = self.hold(&format!("operation:{operation_id}"))?;
+        let mut operation = self
+            .operations
+            .get(operation_id)?
+            .ok_or_else(|| BrowserError::new("operation_missing", "待处理操作不存在"))?;
+        if operation.connection_id != connection_id {
+            return Err(BrowserError::new(
+                "scope_mismatch",
+                "待处理操作不属于此次自动化的 Workspace",
+            ));
+        }
+        let _binding_guard = (operation.kind == "create")
+            .then(|| self.hold(&format!("bindings:{connection_id}")))
+            .transpose()?;
+        let _profile_guard = self.hold_agent(&operation.window_id, Some(owner))?;
+        self.reconcile_operation(&mut operation)
+    }
+
     pub fn resolve_operation(
         &self,
         input: ResolveOperationInput,
@@ -1744,7 +2367,7 @@ impl WindowService {
         let saved_connection = self.connections.get(&op.connection_id)?;
         if matches!(&input, ResolveOperationInput::Abandon { .. })
             && op.kind == "create"
-            && saved_connection.provider_id != BrowserProviderId::CloakBrowser
+            && !saved_connection.provider_id.is_managed()
         {
             if self
                 .store
@@ -1834,14 +2457,14 @@ impl WindowService {
                 self.commit_create(&mut op, record).map(Some)
             }
             ResolveOperationInput::Abandon { .. } => {
-                if connection.provider_id == BrowserProviderId::CloakBrowser
+                if connection.provider_id.is_managed()
                     && !matches!(op.kind.as_str(), "start" | "stop")
                 {
                     return Err(BrowserError::unsupported(
                         "此本机操作需要通过重新核对完成恢复",
                     ));
                 }
-                let remote = if connection.provider_id != BrowserProviderId::CloakBrowser {
+                let remote = if !connection.provider_id.is_managed() {
                     let remote = provider
                         .list_profiles(&connection)?
                         .into_iter()
@@ -1899,6 +2522,7 @@ impl WindowService {
     fn inherit_provider_settings(record: &mut WindowRecord) {
         record.proxy_mode = ProxyMode::Provider;
         record.proxy = None;
+        record.proxy_id = None;
         record.proxy_plugin = None;
         record.proxy_endpoint = None;
         record.settings = WindowSettings {
@@ -1955,7 +2579,7 @@ impl WindowService {
             record.binding.profile_id = remote.id;
             record.kernel_version = remote.kernel_version;
             record.provider_config = remote.provider_config;
-            if connection.provider_id == BrowserProviderId::CloakBrowser {
+            if connection.provider_id.is_managed() {
                 record.binary_path = Some(PathBuf::from(
                     record
                         .provider_config
@@ -2021,7 +2645,7 @@ impl WindowService {
                 self.operations.phase(op, "confirmed", None)?;
             }
             self.store
-                .save(&record, op.payload["groupId"].as_str())
+                .save_confirmed(&record, op.payload["groupId"].as_str())
                 .map_err(failure)?;
             self.operations.phase(op, "committed", None)?;
             return self.summary(record, WindowState::Stopped).map(Some);
@@ -2043,7 +2667,7 @@ impl WindowService {
         if actual != desired {
             if op.phase == "prepared"
                 || (op.kind == "start"
-                    && connection.provider_id == BrowserProviderId::CloakBrowser
+                    && connection.provider_id.is_managed()
                     && actual == WindowState::Stopped)
             {
                 self.operations.phase(
@@ -2188,6 +2812,15 @@ impl WindowService {
         Ok(guard)
     }
 }
+
+fn random_fingerprint_seed() -> u32 {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    10_000 + u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) % 90_000
+}
+
+fn valid_cloak_seed(seed: u32) -> bool {
+    (10_000..=99_999).contains(&seed)
+}
 struct WindowGuard<'a> {
     service: &'a WindowService,
     id: String,
@@ -2280,7 +2913,7 @@ pub async fn browser_window_move_group(
         .map_err(|_| {
             BrowserError::new(
                 "task_interrupted",
-                "分组移动任务中断，请刷新窗口列表检查结果",
+                "文件夹移动任务中断，请刷新 Profile 列表检查结果",
             )
         })?
 }
@@ -2316,6 +2949,27 @@ pub async fn browser_window_stop(
         .map_err(|_| BrowserError::new("task_interrupted", "浏览器操作任务中断，请重新检查结果"))?
 }
 #[tauri::command]
+pub async fn browser_cloakbrowser_cleanup(
+    state: State<'_, Arc<WindowService>>,
+    id: String,
+) -> BrowserResult<()> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.cleanup_cloakbrowser_session(&id))
+        .await
+        .map_err(|_| {
+            BrowserError::new("task_interrupted", "会话清理任务中断，请重新检查 Profile")
+        })?
+}
+#[tauri::command]
+pub async fn browser_cloakbrowser_sessions(
+    state: State<'_, Arc<WindowService>>,
+) -> BrowserResult<Vec<LocalSession>> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.cloakbrowser_sessions())
+        .await
+        .map_err(|_| BrowserError::new("task_interrupted", "无法读取 CloakBrowser 本机会话"))?
+}
+#[tauri::command]
 pub async fn browser_connection_list(
     state: State<'_, Arc<WindowService>>,
 ) -> BrowserResult<Vec<ConnectionView>> {
@@ -2336,6 +2990,38 @@ pub async fn browser_connection_list(
     })
     .await
     .map_err(|_| BrowserError::new("task_interrupted", "浏览器操作任务中断，请重新检查结果"))?
+}
+#[tauri::command]
+pub async fn browser_managed_cloakbrowser_set(
+    state: State<'_, Arc<WindowService>>,
+    enabled: bool,
+) -> BrowserResult<ConnectionView> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.set_managed_cloakbrowser(enabled))
+        .await
+        .map_err(|_| BrowserError::new("task_interrupted", "浏览器接入操作中断，请重新检查状态"))?
+}
+#[tauri::command]
+pub async fn browser_managed_aliasmode_set(
+    state: State<'_, Arc<WindowService>>,
+    enabled: bool,
+) -> BrowserResult<ConnectionView> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.set_managed_aliasmode(enabled))
+        .await
+        .map_err(|_| {
+            BrowserError::new("task_interrupted", "AliasMode 接入操作中断，请重新检查状态")
+        })?
+}
+#[tauri::command]
+pub async fn browser_managed_shardbrowser_set(
+    state: State<'_, Arc<WindowService>>,
+    enabled: bool,
+) -> BrowserResult<ConnectionView> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.set_managed_shardbrowser(enabled))
+        .await
+        .map_err(|_| BrowserError::new("task_interrupted", "浏览器接入任务中断"))?
 }
 #[tauri::command]
 pub async fn browser_connection_save(
@@ -2364,6 +3050,16 @@ pub async fn browser_connection_probe(
     tauri::async_runtime::spawn_blocking(move || state.probe_connection(&id))
         .await
         .map_err(|_| BrowserError::new("task_interrupted", "浏览器操作任务中断，请重新检查结果"))?
+}
+
+#[tauri::command]
+pub async fn browser_bitbrowser_launch(
+    state: State<'_, Arc<WindowService>>,
+) -> BrowserResult<ProviderProbe> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.launch_bitbrowser())
+        .await
+        .map_err(|_| BrowserError::new("task_interrupted", "启动比特浏览器时任务中断"))?
 }
 
 #[tauri::command]
@@ -2427,6 +3123,22 @@ pub async fn browser_window_attach(
         .await
         .map_err(|_| BrowserError::new("task_interrupted", "浏览器操作任务中断，请重新检查结果"))?
 }
+#[tauri::command]
+pub async fn browser_operation_get(
+    state: State<'_, Arc<WindowService>>,
+    operation_id: String,
+) -> BrowserResult<Option<OperationView>> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .operations
+            .get(&operation_id)
+            .map(|operation| operation.map(OperationView::from))
+    })
+    .await
+    .map_err(|_| BrowserError::new("task_interrupted", "操作状态读取中断"))?
+}
+
 #[tauri::command]
 pub async fn browser_operation_list(
     state: State<'_, Arc<WindowService>>,

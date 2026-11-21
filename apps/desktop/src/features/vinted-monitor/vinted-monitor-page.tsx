@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Network } from 'lucide-react'
+import { Network } from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'

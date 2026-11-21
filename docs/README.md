@@ -1,9 +1,16 @@
 # Raccoon 文档索引
 
-Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代、克制的 B 端后台风格。
-桌面端通过统一窗口服务连接内置浏览器、AdsPower 和比特浏览器，首页使用提供方 Tabs，保留现有表格。
+> 0.2 重写进行中。Workspace 对应已配置的 connectionId，Profile 和 Folder 按连接隔离。
+> desktop-v2 的 ShardBrowser 原生命令接入已落地源码，并完成受控 IPC 前端验证。
+> Rust 编译、真实内核、代理、重启和双平台验收仍待完成。
+> 下文涉及 0.1 页面和旧契约的说明作为历史记录，最新边界以 AGENTS.md 和模块文档为准。
+
+Raccoon 是面向 macOS / Windows 的多环境管理桌面产品。0.2 重写中，
+AdsPower 和比特浏览器为默认接入，CloakBrowser 只在实验室显式启用，
+AliasMode Chromium / Firefox 的受管内核下载和窗口 Provider 已接入源码；浏览器提供方就是工作区，各自拥有独立分组。
 固定主页面为“窗口管理、分组管理、插件中心、应用设置”，插件二级目录由已启用插件动态生成。
-设置中的“实验室”可启用 AliasMode 实验性接入；Camoufox 仍为占位。AliasMode 的受限能力和验收边界见[浏览器接入](05-browser-integration.md)。
+设置中的“实验室”可启停 CloakBrowser、AliasMode 和 ShardBrowser，分别管理各自内核；AliasMode Firefox 不支持自动化。Camoufox
+仍为占位，旧 AliasMode 桌面 Local API 已移除，见[浏览器接入](05-browser-integration.md)。
 窗口、分组、接入、激活码和应用代理由 Rust 明文存入 SQLite；外观与工作区偏好存于 localStorage。
 插件保有各自的业务存储，业务关系使用 Raccoon UUID，配置和详情不代表平台账号已登录。
 内置窗口创建时固定完整内核版本、目录与种子；外部指纹和内核由对应官方应用管理。
@@ -35,7 +42,7 @@ Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代�
 | [16 · CloakBrowser 授权](16-cloakbrowser-license.md)                | 应用内激活码、SQLite 存储、最新内核与并发边界                  |
 | [17 · 插件宿主](17-plugin-host.md)                                  | 发现、安装、进程托管、权限检查与窗口启动阻断                   |
 | [18 · 插件发布与 CI/CD](18-plugin-release-and-cicd.md)              | 完整方案：加密打包已落地，服务端与收费部分暂缓                 |
-| [19 · 地址生成器插件](19-address-generator-plugin.md)               | 公开查询、地图选点、地址持久化与账号关联                       |
+| [19 · VInted helper 插件](19-address-generator-plugin.md)           | v2 地图资料、地址持久化与账号关联、矢量 A6 面单提取            |
 | [20 · 桌面发行与更新](20-desktop-release-and-updates.md)            | Node sidecar、发行工作流、签名与更新源边界                     |
 | [21 · 共享货源插件](21-shared-supply-plugin.md)                     | 仓库内 `studio.shared-supply` 的目录协议、收藏与限制           |
 | [22 · AI 生图插件](22-ai-image-plugin.md)                           | 生图改图、模型配置、队列与完整批次检索                         |
@@ -58,7 +65,7 @@ Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代�
 | [41 · 邮箱插件](41-email-plugin.md)                                 | 微软邮箱、已读同步、定时收信、token 轮换与账号联动             |
 | [42 · Ecom Agent 交互原型](42-sales-agent-demo.md)                  | 独立开发预览、运行前批量编辑、窗口分配与模拟执行               |
 | [43 · 商品管理插件](43-products-plugin.md)                          | 独立商品库、生图整组导入、发布状态与使用窗口历史               |
-| [44 · Ecom Agent 架构与执行](44-sales-agent-architecture.md)        | LangGraph、Playwright、Rust 任务协调、分配、结果核对与插件协作 |
+| [44 · Ecom Agent 架构与执行](44-sales-agent-architecture.md)        | v2 工作台、LangGraph、Rust 任务协调、分配、结果核对与插件协作 |
 | [45 · Ecom Agent 实施审计](45-sales-agent-implementation-audit.md)  | 实施计划逐项核对、独立审查问题、修复进度与验收边界             |
 | [46 · Ecom Agent 操作与恢复](46-sales-agent-operations.md)          | 草稿模板、运行前检查、人工接管、审查、用量、通知与历史保留     |
 | [47 · Vinted 业务流程方案](47-vinted-business-workflows.md)         | 执行前审核、页面分类优先、账号资料与确定性上架工具             |
@@ -72,9 +79,34 @@ Raccoon 是面向 macOS / Windows 的多环境管理桌面产品，采用现代�
 
 ## 多浏览器重构
 
+- [Raccoon 内部自动化与多 Browser Provider 实现方案](superpowers/specs/2026-11-18-raccoon-internal-automation-design.md)：
+  已确认并完成本轮源码接入，沿用 ShardBrowser 自动化界面、Rust runner、CDP 和 WASM 机制。
+  Provider 能力适配、Workspace 隔离及恢复逻辑的交付状态见
+  [实施记录](superpowers/plans/2026-11-18-raccoon-internal-automation.md)。
+  Rust 编译、真实 Provider、重启及双平台验收仍待完成。
+- [ShardBrowser 前端独立基线](../apps/desktop-v2/README.md)：
+  0.2 新前端目录与上游源码版本；当前构建不代表原生命令已接通。
+- [Raccoon 0.2 浏览器接入重构方案](superpowers/specs/2026-11-17-raccoon-02-provider-architecture-design.md)：
+  新分支重写工作台领域核心和页面；AdsPower / 比特浏览器为默认接入，两个
+  受管内核由实验室维护。0.2 不读取 0.1 数据，旧数据以后由独立脚本迁移。
+- [Raccoon 0.2 跨平台界面重构方案](superpowers/specs/2026-11-17-raccoon-02-native-interface-design.md)：
+  参考用户提供的 AliasMode 页面结构，定义窗口、设置、插件与 macOS/Windows
+  系统交互的设计方向；尚未实施。
+- [Provider 工作台重构草案](superpowers/specs/2026-11-17-provider-workbench-design.md)：
+  历史草案，0.1 数据兼容与旧 AliasMode Local API 保留建议已被 0.2 方案取代。
+- [AliasMode Chromium 直管内核技术细节](superpowers/specs/2026-11-17-aliasmode-managed-chromium-design.md)：
+  下载、启动与版本固定的技术参考；产品定位以 Raccoon 0.2 方案为准。
 - [多指纹浏览器接入重构](superpowers/specs/2026-11-10-multi-browser-provider-design.md)：
   统一接口、窗口 Tabs、作用域、持久化操作和验收边界；已获批准并实施。
 - [实施计划](superpowers/plans/2026-11-10-multi-browser-refactor.md)：任务清单、删除旧兼容路径的补充约束和真实验证记录。
+
+## 界面规范
+
+- [Raccoon 插件中心设计规范](superpowers/specs/2026-11-18-raccoon-plugin-center-design.md)：
+  定义 desktop-v2 插件目录、商店、授权、表格、弹窗和状态语言，并给出旧版
+  `plugins-page.tsx` 对齐 ShardBrowser 设计语言的迁移规则。
+- [插件自主声明导航图标方案](superpowers/specs/2026-11-19-plugin-navigation-icons-design.md)：
+  插件内部维护静态路径，宿主统一校验和侧栏渲染；当前为待确认方案，尚未更改图标契约。
 
 ## Vinted 业务工具重构方案
 

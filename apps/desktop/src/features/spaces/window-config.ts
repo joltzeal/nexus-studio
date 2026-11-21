@@ -8,6 +8,9 @@ export interface WindowConfig {
   locale: string
   viewport: 'default' | '1440x900' | '1920x1080'
   fingerprintSeed: number | null
+  aliasEngine: 'chromium' | 'firefox' | null
+  operatingSystem: 'host' | 'windows' | 'macos' | 'linux'
+  cpuCores: number | null
   startUrl: string
 }
 
@@ -18,6 +21,9 @@ export const DEFAULT_WINDOW_CONFIG: WindowConfig = {
   locale: '',
   viewport: 'default',
   fingerprintSeed: null,
+  aliasEngine: null,
+  operatingSystem: 'host',
+  cpuCores: null,
   startUrl: '',
 }
 
@@ -67,7 +73,7 @@ function optionalText(input: unknown, label: string, maxLength: number): string 
 export function parseWindowConfig(input: unknown): WindowConfig {
   const config = record(
     input,
-    ['proxy', 'geoip', 'timezone', 'locale', 'viewport', 'fingerprintSeed', 'startUrl'],
+    ['proxy', 'geoip', 'timezone', 'locale', 'viewport', 'fingerprintSeed', 'aliasEngine', 'operatingSystem', 'cpuCores', 'startUrl'],
     '窗口配置',
   )
   const proxy = record(config.proxy, ['protocol', 'server'], '代理配置')
@@ -125,6 +131,9 @@ export function parseWindowConfig(input: unknown): WindowConfig {
   if (viewport !== 'default' && viewport !== '1440x900' && viewport !== '1920x1080')
     invalid('窗口尺寸不受支持')
   const fingerprintSeed = config.fingerprintSeed
+  if (config.aliasEngine !== null && config.aliasEngine !== 'chromium' && config.aliasEngine !== 'firefox') invalid('浏览器类型不受支持')
+  if (!['host', 'windows', 'macos', 'linux'].includes(config.operatingSystem as string)) invalid('操作系统不受支持')
+  if (config.cpuCores !== null && (!Number.isInteger(config.cpuCores) || (config.cpuCores as number) < 1 || (config.cpuCores as number) > 64)) invalid('CPU 数量无效')
   if (
     fingerprintSeed !== null &&
     (typeof fingerprintSeed !== 'number' ||
@@ -156,6 +165,9 @@ export function parseWindowConfig(input: unknown): WindowConfig {
     locale,
     viewport,
     fingerprintSeed,
+    aliasEngine: config.aliasEngine as WindowConfig['aliasEngine'],
+    operatingSystem: config.operatingSystem as WindowConfig['operatingSystem'],
+    cpuCores: config.cpuCores as number | null,
     startUrl,
   }
 }
@@ -165,7 +177,7 @@ export function configOf(profile: BrowserWindow | null): WindowConfig {
   if (profile === null) {
     return createWindowConfig(randomFingerprintSeed())
   }
-  const { geoip, timezone, locale, viewport, fingerprintSeed, startUrl } =
+  const { geoip, timezone, locale, viewport, fingerprintSeed, aliasEngine, operatingSystem, cpuCores, startUrl } =
     profile.settings
   const proxy = profile.proxy
   return {
@@ -186,6 +198,9 @@ export function configOf(profile: BrowserWindow | null): WindowConfig {
     locale,
     viewport,
     fingerprintSeed,
+    aliasEngine,
+    operatingSystem,
+    cpuCores,
     startUrl,
   }
 }

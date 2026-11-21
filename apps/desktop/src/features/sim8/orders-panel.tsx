@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { KeyRound, RefreshCw, Repeat, Search, UserPlus } from 'lucide-react'
+import { KeyRound, RefreshCw, Repeat, Search, UserPlus } from '@/components/icons'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

@@ -1,5 +1,73 @@
 # 本地数据与存储边界
 
+> 0.2 重写分支进度：当前 Rust 初始化在应用数据目录下使用 `v2/raccoon.sqlite`，
+> 不打开、升级或删除 0.1 的 `nexus.sqlite`。数据库版本为 4；创建 Folder 时记录
+> `provider_id` 和 `connection_id`，Profile 与 Folder 的关系在数据库层限制为同一接入。
+> 连接表以 JSON 字符串保存 Provider，Folder 表使用普通文本。打开 schema 4 时会在事务中
+> 更新作用域触发器，按一致的格式比较两列。
+> schema 4 的 Folder 外观采用增量列 `color` 和 `icon`，在事务中补齐已有 0.2 表。
+> 已有 Folder 默认无颜色、使用 `folder` 图标；名称、颜色、图标在同一写事务保存。
+> 0.2 浏览器 schema 在辅助表之前初始化；对已中断的首次启动，仅允许预先存在
+> `network_proxy`、`cloakbrowser_license` 和 `plugin_entitlements` 三类辅助表，
+> 其他无版本结构继续拒绝，不回退到读取 0.1 库。
+> Workspace 以 `connectionId` 标识，同一提供方的不同接入分别拥有自己的 Folder。
+> 旧开发 schema 会被明确拒绝，文件保留供显式迁移；正常启动不自动升级。
+> CloakBrowser 连接不在新数据库初始化时创建，只在实验室显式启用后保存；
+> 禁用后保留该记录、Profile 和 Folder。
+> 0.2 外观偏好单独保存在 `raccoon.preferences.v2`；手动命名工作区已移除。
+> 下文关于 `nexus.sqlite`、自动升级和旧分组的描述属于 0.1 历史行为，
+> 不代表 0.2 已完成运行验证；独立迁移脚本仍待实现。
+
+## 内部自动化
+
+`core/automation/store.rs` 在同一个 v2 SQLite 中建立独立自动化表，保存按
+`connectionId` 隔离的项目、乐观修订、不可变运行快照、运行操作 ID、步骤
+意图、动作结果、资源归属、取消请求和模块授权。模块文件与每次运行固定的
+模块及授权快照位于 v2 的 `automation-modules` 目录。自动化的普通启动沿用
+0.2 数据边界。
+
+项目存储、运行变量和模块状态按当前项目约定明文保存。导出剔除秘密参数与
+凭据字段，跨 Workspace 导入要求显式重新绑定资源。日志进行敏感值过滤。
+运行请求以 `connectionId + operationId` 幂等，重启后的未完成运行标为中断，
+保留待核对步骤和资源记录。
+
+`automation_http_settings` 保存本机 API 的签名密钥与端口，密钥留在 Rust
+存储中，界面只取得派生访问令牌。启动时服务保持关闭，用户显式启用后监听。
+这些均为源码实现，Rust 编译、SQLite 实际恢复与原生运行验证见质量记录。
+
+## 全局浏览器代理库
+
+0.2 SQLite 的 `browser_proxy_library` 与 `browser_proxy_tests` 持久化全局代理
+和检测历史，表内没有 Workspace 或 connectionId 所有权。Profile 的可空
+`proxy_id` 引用全局条目，现有记录缺失该字段时按无库引用读取，原手动代理字段
+继续使用。新保存的库引用由数据库触发器校验，删除被任何 Profile 或待处理操作
+使用的代理会拒绝。代理条目与认证信息按本项目约定明文保存。
+
+## 0.2 Profile 标签
+
+Rust `workbench_tags` 在 `open_database` 中增量创建 `browser_tags`、
+`browser_profile_tags` 和独立的 `workbench_tag_schema` 标记表。
+注册表以 `(connection_id, id)` 标识标签，保存名称、原版八色调色板 ID 和顺序。
+未分配的标签也会保留。名称在同一连接内按小写键唯一，不同连接各自维护注册表。
+Profile 关联使用 Raccoon UUID，外键与触发器共同校验连接范围。
+
+`browser_tag_list/save/delete/assign` 显式携带 `connectionId`。
+列表返回 `{ tags, by_profile }`，保存返回 `{ id, name, color }`，删除和分配返回空值。
+批量分配在单个 `IMMEDIATE` 事务内执行，任何 Profile 或标签范围错误整体回滚。
+删除标签在同一事务内清理关联与 Profile 元数据，待核对操作仍引用的标签会拒绝删除。
+删除 Profile 通过外键级联清理其关联，注册表条目继续保留。
+
+ShardBrowser 表单保存前先等待标签写队列，并持久化新增标签。
+随后将 `settings.shardbrowser._meta.raccoon_tag_ids` 与 Profile 一起提交，
+SQLite 触发器在该 Profile 写入事务内校验标签并替换关联。
+新标签注册成功后即独立保留，即使之后 Profile 保存失败也可继续选用。
+首次安装标签表时，将当前 0.2 数据库里的 `raccoon_tags` 元数据一次性转为注册表和 ID 引用，
+整个初始化过程事务提交。原生标签加载跳过上游 localStorage handover。
+
+原版 TagPicker 和设置页的标签操作复用 `useTags` 显式原生适配。
+写失败显示错误并重新读取持久化状态，成功提示等待原生写入及读回完成。
+本次只进行了源码和静态检查，重启持久化、SQLite 事务执行及原生 UI 验收仍待验证。
+
 ## 当前数据所有者
 
 桌面窗口、分组、浏览器连接、操作记录与会话观察已由 Rust 管理并存入应用数据目录的
@@ -138,3 +206,33 @@ Unix 数据库权限限制为当前用户，Windows 仍依赖应用数据目录 
 不以源码存在推定这些检查通过。
 实际结果由主线填写[质量与验证](09-quality-and-testing.md)，
 分层见[系统架构](02-architecture.md)，连接与生命周期见[核心后端](12-core-backend.md)。
+
+## 2026-11-18 ShardBrowser 表单数据
+
+0.2 Profile 的 settings.shardbrowser 保存完整官方指纹编辑配置，属于
+Rust 管理的 Profile SQLite 记录。标签和颜色随配置元数据保存，Folder
+继续使用 connectionId 范围内的独立 UUID。原始冻结指纹与创建回执留在
+Profile 目录，编辑以保存配置生成有效启动快照，身份种子和内核绑定保持固定。
+指纹 JSON 导入写入 v2 应用数据下的 shardbrowser-fingerprints 目录。
+官方模板直接读取已安装内核的指纹库，读取列表不会触发下载。
+
+## 2026-11-18 Folder 外观
+
+`browser_folder_list` 和 `browser_folder_create` 返回 `color: string | null` 与
+`icon: string`。`browser_folder_create` / `browser_folder_update` 接收
+`connectionId`、`name`、可选 `note`、`color`、`icon`，更新另传 Folder UUID `id`。
+颜色限定为官方八色 palette ID，图标限定为官方十二个 Folder 图标 ID。
+编辑时前端同时发送 color 和 icon，`color: null` 明确清除颜色。
+沿用原 group 更新接口的调用保留已有外观。名称在连接范围内检查重复，写事务
+覆盖检查与保存，保持不同 Workspace 的 Folder 独立。
+
+原生页面复用官方 FolderDialog 的名称、ColorRadios 和图标键盘选择控件。
+SQLite 写入成功后更新界面投影，创建后移动 Profile 失败时保留已创建 Folder ID，
+再次提交更新同一 Folder 后重试移动。运行检查结果由主线记录。
+
+### Profile 活动与回收站
+
+profile_activity 记录本功能首次观察之后的启动次数和累计已观察运行时长。
+未知或断线状态保留最后一次确认的记录，历史未观察时段和流量不作推算。
+browser_profile_trash 保存逻辑删除标记，恢复保留原 UUID、Folder 与标签，
+永久删除继续经过 Rust 生命周期与操作恢复约束。

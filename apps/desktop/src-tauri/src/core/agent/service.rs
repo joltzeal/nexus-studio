@@ -1158,7 +1158,7 @@ pub(crate) fn parse_window(value: Value) -> AgentResult<WindowSnapshot> {
     text(&window.profile_id, 1, 200)?;
     if !matches!(
         window.provider_id.as_str(),
-        "cloakbrowser" | "adspower" | "bitbrowser"
+        "cloakbrowser" | "adspower" | "bitbrowser" | "aliasmode" | "shardbrowser"
     ) {
         return Err(invalid("Unsupported browser provider"));
     }
@@ -1181,7 +1181,10 @@ pub(crate) fn validate_account(value: &Value) -> AgentResult<(Value, String)> {
     let status = value["status"]
         .as_str()
         .ok_or_else(|| invalid("Account status is missing"))?;
-    if !matches!(status, "active" | "pending" | "limited" | "blocked") {
+    if !matches!(
+        status,
+        "unknown" | "active" | "pending" | "limited" | "blocked"
+    ) {
         return Err(invalid("Invalid account status"));
     }
     let identity = value["platformUserId"]

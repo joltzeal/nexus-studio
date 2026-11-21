@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { UserPlus } from 'lucide-react'
+import { UserPlus } from '@/components/icons'
 
 import { Button } from '@/components/ui/button'
 import {

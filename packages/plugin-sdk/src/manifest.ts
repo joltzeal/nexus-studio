@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { PluginUiDeclarationSchema } from './ui.js'
 
 const pluginIdPattern =
   /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+$/
@@ -33,15 +34,30 @@ export const PluginPermissionsSchema = z.strictObject({
   secrets: z.array(z.string().trim().min(1).max(128)),
 })
 
-export const PluginManifestSchema = z.strictObject({
-  apiVersion: z.literal(1),
-  id: z.string().max(253).regex(pluginIdPattern),
-  version: z.string().regex(semverPattern),
-  name: z.string().trim().min(1).max(80),
-  minCoreVersion: z.string().regex(semverPattern),
-  capabilities: z.array(PluginCapabilitySchema),
-  permissions: PluginPermissionsSchema,
-})
+export const PluginManifestSchema = z
+  .strictObject({
+    apiVersion: z.literal(1),
+    id: z.string().max(253).regex(pluginIdPattern),
+    version: z.string().regex(semverPattern),
+    name: z.string().trim().min(1).max(80),
+    minCoreVersion: z.string().regex(semverPattern),
+    capabilities: z.array(PluginCapabilitySchema),
+    permissions: PluginPermissionsSchema,
+    ui: PluginUiDeclarationSchema.optional(),
+  })
+  .superRefine((manifest, ctx) => {
+    const entry = manifest.ui?.profileTable
+    if (
+      entry &&
+      !manifest.capabilities.some((capability) => capability === entry.capability)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ui'],
+        message: 'UI capability must be declared',
+      })
+    }
+  })
 
 export type PluginCapability = z.infer<typeof PluginCapabilitySchema>
 export type PluginPermissions = z.infer<typeof PluginPermissionsSchema>

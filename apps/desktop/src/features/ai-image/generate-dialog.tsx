@@ -6,7 +6,7 @@ import {
   useState,
   type ChangeEvent,
 } from 'react'
-import { ImagePlus, Loader2, Sparkles, X } from 'lucide-react'
+import { ImagePlus, Loader2, Sparkles, X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,

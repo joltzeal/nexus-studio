@@ -22,6 +22,10 @@ function account(id: string, overrides: Partial<Account> = {}): Account {
 afterEach(() => vi.unstubAllEnvs())
 
 describe('account table filtering and pagination', () => {
+  it('uses unknown for a new account', () => {
+    expect(EMPTY_ACCOUNT.status).toBe('unknown')
+  })
+
   it('sorts newest first, keeps ties stable and does not mutate the source list', () => {
     const items = [
       account('old', { createdAt: '2026-10-20T08:00:00Z' }),

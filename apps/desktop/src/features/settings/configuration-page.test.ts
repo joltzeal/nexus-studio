@@ -86,10 +86,10 @@ it('exports persisted settings through a native save dialog and reports cancella
 
 it('previews imported settings and does not mutate them until the import button is clicked', async () => {
   const archive: ConfigurationArchive = {
-    format: 'nexus-configuration',
-    schemaVersion: 1,
+    format: 'raccoon-configuration',
+    schemaVersion: 2,
     exportedAt: '2026-11-11T00:00:00Z',
-    preferences: { ...DEFAULT_PREFERENCES, workspaceName: 'Imported studio' },
+    preferences: { ...DEFAULT_PREFERENCES, theme: 'dark' },
     networkProxy: null,
     plugins: [],
   }
@@ -110,8 +110,8 @@ it('previews imported settings and does not mutate them until the import button 
 
 it('retains the import file and reports a failed preference write without claiming success', async () => {
   const archive: ConfigurationArchive = {
-    format: 'nexus-configuration',
-    schemaVersion: 1,
+    format: 'raccoon-configuration',
+    schemaVersion: 2,
     exportedAt: '2026-11-11T00:00:00Z',
     preferences: { ...DEFAULT_PREFERENCES },
     networkProxy: null,

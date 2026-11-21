@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, RefreshCw } from 'lucide-react'
+import { Download, RefreshCw } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -7,7 +7,6 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -30,6 +29,7 @@ import {
 } from '@/components/ui/table'
 import {
   downloadKernel,
+  deleteKernel,
   checkLatestKernel,
   getKernelStatus,
   isKernelVersion,
@@ -41,6 +41,7 @@ import {
   type KernelRelease,
 } from '@/lib/platform/native-kernels'
 import { kernelAvailability } from './kernel-release-state'
+import { KernelDeleteButton } from './kernel-delete-button'
 
 const phaseLabels: Record<KernelPhase, string> = {
   idle: '暂无下载任务',
@@ -71,6 +72,7 @@ function failure(cause: unknown): KernelFailure {
 
 function useKernelSettings(native: boolean) {
   const [status, setStatus] = useState<KernelStatus | null>(null)
+  const [activationConfigured, setActivationConfigured] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(native)
   const [refreshing, setRefreshing] = useState(false)
   const [pending, setPending] = useState(false)
@@ -97,6 +99,8 @@ function useKernelSettings(native: boolean) {
     let checkingRelease = false
     let latest: KernelStatus | null = null
     let timer: ReturnType<typeof setTimeout> | undefined
+    let licenseEpoch = 0
+    let licenseActivation: boolean | null = null
 
     async function check() {
       if (!mounted || checkingRelease) return
@@ -126,14 +130,25 @@ function useKernelSettings(native: boolean) {
       }
       reading = true
       const readingOwnDownload = downloading
+      const readingLicenseEpoch = licenseEpoch
       void getKernelStatus(refresh)
         .then(
           (result) => {
             if (!mounted) return
-            latest = result
-            setStatus(result)
+            const current =
+              readingLicenseEpoch === licenseEpoch
+                ? result
+                : {
+                    ...result,
+                    activationConfigured:
+                      licenseActivation ??
+                      latest?.activationConfigured ??
+                      result.activationConfigured,
+                  }
+            latest = current
+            setStatus(current)
             setStatusError(null)
-            if (!readingOwnDownload && !downloading && isActive(result.download.phase)) {
+            if (!readingOwnDownload && !downloading && isActive(current.download.phase)) {
               // A job started elsewhere supersedes the previous local result.
               setDownloadError(null)
               setDownloadTarget(undefined)
@@ -167,10 +182,8 @@ function useKernelSettings(native: boolean) {
       if (
         !mounted ||
         downloading ||
-        checkingRelease ||
-        !latest ||
-        isActive(latest.download.phase) ||
-        !latest.activationConfigured
+        isActive(latest?.download.phase) ||
+        !(licenseActivation ?? latest?.activationConfigured)
       ) {
         return
       }
@@ -207,10 +220,25 @@ function useKernelSettings(native: boolean) {
       download: (version) => void download(version),
       check: () => void check(),
     }
+    const onLicenseChange = (event: Event) => {
+      if (event instanceof CustomEvent && typeof event.detail === 'boolean') {
+        licenseEpoch += 1
+        licenseActivation = event.detail
+        setActivationConfigured(event.detail)
+        setLoading(false)
+        if (latest) latest = { ...latest, activationConfigured: event.detail }
+        setStatus((current) =>
+          current ? { ...current, activationConfigured: event.detail } : current,
+        )
+      }
+      read()
+    }
+    window.addEventListener('raccoon:license-change', onLicenseChange)
     read()
     void check()
     return () => {
       mounted = false
+      window.removeEventListener('raccoon:license-change', onLicenseChange)
       clearTimeout(timer)
       actions.current = null
     }
@@ -218,6 +246,7 @@ function useKernelSettings(native: boolean) {
 
   return {
     status,
+    activationConfigured: activationConfigured ?? status?.activationConfigured ?? false,
     loading,
     refreshing,
     pending,
@@ -240,6 +269,7 @@ export function KernelSettingsPage() {
   const [targetVersion, setTargetVersion] = useState('')
   const [versionError, setVersionError] = useState<string | null>(null)
   const { status, pending } = view
+  const canDownload = view.activationConfigured
   const download = status?.download
   const busy = view.loading || view.refreshing || pending || isActive(download?.phase)
   const availability =
@@ -262,7 +292,7 @@ export function KernelSettingsPage() {
     download && !view.downloadError && (!pending || isActive(download.phase))
   const progress = showProgress
     ? [
-        download.percent !== null ? `${download.percent}%` : null,
+        download.phase === 'downloading' && download.percent !== null ? `${download.percent}%` : null,
         download.downloadedMb !== null && download.totalMb !== null
           ? `${download.downloadedMb} / ${download.totalMb} MB`
           : download.downloadedMb !== null
@@ -288,20 +318,19 @@ export function KernelSettingsPage() {
 
   return (
     <section
-      className="settings-page page-reveal min-w-0"
+      className="settings-page page-reveal flex min-w-0 flex-col gap-4"
       aria-labelledby="kernel-heading"
     >
       <h1 className="page-heading" id="kernel-heading">
         浏览器内核
       </h1>
-      <p className="page-description">下载内核保存在本机，已有窗口的内核保持不变。</p>
       {!native ? (
         <Alert>
           <AlertTitle>桌面应用专属</AlertTitle>
           <AlertDescription>请在桌面应用中管理和下载浏览器内核。</AlertDescription>
         </Alert>
       ) : (
-        <>
+        <div className="flex flex-col gap-4">
           {view.statusError ? (
             <Alert variant="destructive">
               <AlertTitle>无法读取内核状态</AlertTitle>
@@ -320,7 +349,6 @@ export function KernelSettingsPage() {
           <Card>
             <CardHeader>
               <CardTitle>内核更新</CardTitle>
-              <CardDescription>切换页面后，下载仍会在桌面应用后台继续。</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -349,11 +377,9 @@ export function KernelSettingsPage() {
                     id="latest-kernel-description"
                     className="m-0 text-xs text-muted-foreground"
                   >
-                    {status
-                      ? status.activationConfigured
-                        ? '使用已保存的激活码下载。'
-                        : '请先在「激活码」页保存激活码。'
-                      : '读取激活码状态后可下载。'}
+                    {canDownload
+                      ? '使用已保存的激活码下载。'
+                      : '请先在「激活码」页保存激活码。'}
                   </p>
                   <p className="m-0 text-xs text-muted-foreground">
                     {view.checking
@@ -374,7 +400,7 @@ export function KernelSettingsPage() {
                   </Button>
                   <Button
                     variant="outline"
-                    disabled={busy || view.checking || !status?.activationConfigured}
+                    disabled={busy || !canDownload}
                     aria-describedby="latest-kernel-description"
                     onClick={() => view.download()}
                   >
@@ -420,7 +446,7 @@ export function KernelSettingsPage() {
                       <Button
                         type="submit"
                         variant="outline"
-                        disabled={busy || view.checking || !status?.activationConfigured}
+                        disabled={busy || !canDownload}
                       >
                         <Download data-icon="inline-start" />
                         下载指定版本
@@ -454,6 +480,11 @@ export function KernelSettingsPage() {
                 {progress ? (
                   <p className="m-0 text-xs text-muted-foreground">{progress}</p>
                 ) : null}
+                {pending || isActive(download?.phase) ? (
+                  <progress aria-label="CloakBrowser 内核下载进度" max={100}
+                    value={showProgress && download.phase === 'downloading' ? download.percent ?? undefined : undefined}
+                    className="mt-2 h-1.5 w-full accent-primary" />
+                ) : null}
               </div>
               {failed ? (
                 <Alert variant="destructive">
@@ -465,7 +496,7 @@ export function KernelSettingsPage() {
                     {failed.retryable && retryTarget !== undefined ? (
                       <Button
                         variant="outline"
-                        disabled={busy || view.checking || !status?.activationConfigured}
+                        disabled={busy || !canDownload}
                         onClick={() => {
                           if (retryTarget !== null) {
                             setTargetVersion(retryTarget)
@@ -487,9 +518,6 @@ export function KernelSettingsPage() {
           <Card className="min-w-0">
             <CardHeader>
               <CardTitle>已安装内核</CardTitle>
-              <CardDescription>
-                {status ? `平台：${status.platform}` : '读取本机内核列表。'}
-              </CardDescription>
               <CardAction>
                 <Button
                   variant="outline"
@@ -513,17 +541,22 @@ export function KernelSettingsPage() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>版本</TableHead>
-                          <TableHead>路径</TableHead>
+                          <TableHead className="text-right">操作</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {status.installed.map((kernel) => (
                           <TableRow key={kernel.binaryPath}>
                             <TableCell>{kernel.version}</TableCell>
-                            <TableCell>
-                              <span className="block max-w-80 font-mono text-xs whitespace-normal break-all">
-                                {kernel.binaryPath}
-                              </span>
+                            <TableCell className="text-right">
+                              <KernelDeleteButton
+                                version={kernel.version}
+                                disabled={busy}
+                                onDelete={async () => {
+                                  await deleteKernel(kernel.version)
+                                  view.refresh()
+                                }}
+                              />
                             </TableCell>
                           </TableRow>
                         ))}
@@ -539,17 +572,11 @@ export function KernelSettingsPage() {
                       </EmptyHeader>
                     </Empty>
                   )}
-                  <dl className="m-0 flex flex-col gap-1">
-                    <dt className="text-xs text-muted-foreground">缓存目录</dt>
-                    <dd className="m-0 min-w-0 font-mono text-xs break-all">
-                      {status.cacheDir}
-                    </dd>
-                  </dl>
                 </>
               )}
             </CardContent>
           </Card>
-        </>
+        </div>
       )}
     </section>
   )

@@ -11,7 +11,7 @@ import {
   Settings2,
   Trash2,
   Upload,
-} from 'lucide-react'
+} from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

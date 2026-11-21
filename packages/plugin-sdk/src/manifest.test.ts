@@ -18,6 +18,36 @@ const manifest: PluginManifest = {
 }
 
 describe('plugin manifest', () => {
+  it('preserves a declared Profile table entry and rejects undeclared capabilities', () => {
+    const ui = {
+      protocolVersion: 1,
+      profileTable: {
+        title: 'Demo',
+        viewId: 'profile-demo',
+        capability: 'image.provider',
+        icon: { viewBox: '0 0 24 24', paths: ['M1 2h3v4z'] },
+      },
+    }
+    expect(definePluginManifest({ ...manifest, ui }).ui).toEqual({ ...ui, services: [] })
+    expect(
+      PluginManifestSchema.safeParse({
+        ...manifest,
+        ui: { ...ui, profileTable: { ...ui.profileTable, capability: 'account.pool' } },
+      }).success,
+    ).toBe(false)
+    expect(
+      PluginManifestSchema.safeParse({
+        ...manifest,
+        ui: {
+          ...ui,
+          profileTable: {
+            ...ui.profileTable,
+            icon: { viewBox: '0 0 24 24', paths: ['<script/>'] },
+          },
+        },
+      }).success,
+    ).toBe(false)
+  })
   it('accepts a product catalog without browser or network access', () => {
     const products = definePluginManifest({
       ...manifest,

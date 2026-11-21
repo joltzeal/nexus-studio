@@ -10,6 +10,9 @@ const CONFIG_KEYS = [
   'locale',
   'viewport',
   'fingerprintSeed',
+  'aliasEngine',
+  'operatingSystem',
+  'cpuCores',
   'startUrl',
 ]
 
@@ -31,6 +34,9 @@ function profile(overrides: Partial<BrowserWindow> = {}): BrowserWindow {
       locale: 'zh-CN',
       viewport: '1440x900',
       fingerprintSeed: 42,
+      aliasEngine: null,
+      operatingSystem: 'host',
+      cpuCores: null,
       startUrl: 'https://example.com',
     },
     createdAt: 0,

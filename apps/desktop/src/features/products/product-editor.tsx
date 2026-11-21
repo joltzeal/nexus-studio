@@ -6,7 +6,7 @@ import {
   type Product,
   type ProductImage,
 } from '@nexus/plugin-contracts/products'
-import { ArrowLeft, ArrowRight, Loader2, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Loader2, Trash2 } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

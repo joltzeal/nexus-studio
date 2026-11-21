@@ -1,6 +1,7 @@
 use super::connection_store::BrowserConnection;
 use super::provider::{
-    BrowserError, BrowserProviderId, BrowserResult, ProxyMode, RemoteProfile, WindowState,
+    BrowserCapabilities, BrowserError, BrowserProviderId, BrowserResult, ProxyMode, RemoteProfile,
+    WindowState,
 };
 use crate::core::window_store::WindowRecord;
 use reqwest::blocking::Client;
@@ -299,6 +300,12 @@ impl LocalApi {
         connection: &BrowserConnection,
         provider: BrowserProviderId,
     ) -> BrowserResult<Self> {
+        if !matches!(
+            provider,
+            BrowserProviderId::AdsPower | BrowserProviderId::BitBrowser
+        ) {
+            return Err(BrowserError::unsupported("此浏览器没有本机管理 API"));
+        }
         if connection.provider_id != provider || connection.id.is_empty() {
             return Err(BrowserError::new("invalid_config", "本地 API 接入配置无效"));
         }
@@ -464,12 +471,12 @@ impl LocalApi {
         let envelope: Value = serde_json::from_slice(&bytes)
             .map_err(|_| response_error(kind, "本地 API 返回的 JSON 无效"))?;
         let success = match self.provider {
-            BrowserProviderId::AdsPower | BrowserProviderId::AliasMode => envelope
+            BrowserProviderId::AdsPower => envelope
                 .get("code")
                 .and_then(Value::as_i64)
                 .map(|code| code == 0),
             BrowserProviderId::BitBrowser => envelope.get("success").and_then(Value::as_bool),
-            BrowserProviderId::CloakBrowser => None,
+            _ => return Err(BrowserError::unsupported("此浏览器没有本机管理 API")),
         }
         .ok_or_else(|| response_error(kind, "本地 API 响应缺少业务结果状态"))?;
         if !success {
@@ -543,20 +550,6 @@ fn classify_business_error(code: Option<&Value>, message: &str) -> &'static str 
         "unsupported"
     } else {
         "invalid_config"
-    }
-}
-
-#[cfg(test)]
-mod aliasmode_error_tests {
-    use super::classify_business_error;
-    use serde_json::json;
-
-    #[test]
-    fn aliasmode_missing_profile_is_not_a_configuration_error() {
-        assert_eq!(
-            classify_business_error(Some(&json!(-1)), "no such profile: missing"),
-            "profile_missing"
-        );
     }
 }
 
@@ -667,8 +660,10 @@ pub(crate) fn validate_update(
             "已有窗口的浏览器环境绑定不可修改",
         ));
     }
+    let owns_kernel =
+        BrowserCapabilities::for_provider(previous.binding.provider_id).kernel_selection;
     if previous.settings.fingerprint_seed != updated.settings.fingerprint_seed
-        || previous.kernel_version != updated.kernel_version
+        || (previous.kernel_version != updated.kernel_version && !owns_kernel)
         || previous.binary_path != updated.binary_path
     {
         return Err(BrowserError::unsupported(
@@ -715,8 +710,9 @@ pub(crate) fn validate_create(
             "新建外部浏览器环境的绑定无效",
         ));
     }
+    let owns_kernel = BrowserCapabilities::for_provider(provider).kernel_selection;
     if record.settings.fingerprint_seed.is_some()
-        || record.kernel_version.is_some()
+        || (record.kernel_version.is_some() && !owns_kernel)
         || record.binary_path.is_some()
     {
         return Err(BrowserError::unsupported(
@@ -758,6 +754,14 @@ pub(crate) fn validate_settings(record: &WindowRecord) -> BrowserResult<()> {
             || url.password().is_some()
         {
             return Err(BrowserError::new("invalid_config", "环境起始地址无效"));
+        }
+    }
+    if let Some(bit) = record.settings.bitbrowser.as_ref() {
+        if crate::core::window_store::validate_bit_fingerprint(bit).is_err() {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "比特浏览器指纹配置无效",
+            ));
         }
     }
     Ok(())
@@ -1231,6 +1235,7 @@ pub(crate) mod tests {
             binary_path: None,
             kernel_version: None,
             proxy: None,
+            proxy_id: None,
             proxy_plugin: None,
             proxy_endpoint: None,
             proxy_mode: ProxyMode::Direct,

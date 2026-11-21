@@ -129,12 +129,13 @@ impl BrowserProvider for BitBrowserProvider {
         operation_id: &str,
     ) -> BrowserResult<CreatedProfile> {
         validate_create(connection, record, self.id())?;
-        let body = create_payload(connection, record, operation_id)?;
         let api = LocalApi::connect(connection, self.id()).map_err(preflight_error)?;
         let _operation = api
             .lock_profile(&format!("create:{}", operation_marker(operation_id)?))
             .map_err(preflight_error)?;
-        let data = api.post("/browser/update", &body, RequestKind::Write)?;
+        let group_id = resolve_group(&api, connection)?;
+        let body = create_payload(record, operation_id, &group_id)?;
+        let data = api.post("/browser/add", &body, RequestKind::Write)?;
         let id = data["id"]
             .as_str()
             .filter(|id| valid_id(id).is_ok())
@@ -243,10 +244,17 @@ impl BrowserProvider for BitBrowserProvider {
         {
             return Ok(());
         }
-        let config_updated =
-            proxy_fields.is_some() || raw["randomFingerprint"].as_bool() != Some(false);
+        let random_fingerprint = record
+            .settings
+            .bitbrowser
+            .as_ref()
+            .and_then(|value| value.random_fingerprint)
+            .unwrap_or(false);
+        let config_updated = proxy_fields.is_some()
+            || raw["randomFingerprint"].as_bool() != Some(random_fingerprint);
         if config_updated {
             let mut body = partial_payload(&remote.id);
+            body["randomFingerprint"] = json!(random_fingerprint);
             if let Some(proxy_fields) = proxy_fields {
                 extend(&mut body, proxy_fields)?;
                 body["browserFingerPrint"] = fingerprint_payload(record, false)?;
@@ -472,21 +480,18 @@ fn require_stopped(api: &LocalApi, id: &str) -> BrowserResult<()> {
 }
 
 fn create_payload(
-    connection: &BrowserConnection,
     record: &WindowRecord,
     operation_id: &str,
+    group_id: &str,
 ) -> BrowserResult<Value> {
-    // Without a group the documented API can create a subaccount's profile under its parent.
-    let group_id = connection.default_group_id.as_deref().ok_or_else(|| {
-        BrowserError::new("invalid_config", "创建环境前请选择比特浏览器的目标分组")
-    })?;
     valid_id(group_id)?;
     let mut body = json!({
         "groupId": group_id, "name": record.name,
         "remark": create_remark(record, operation_id)?,
         "platform": "", "platformIcon": "", "url": encoded_start_url(record),
         "userName": "", "password": "",
-        "randomFingerprint": false,
+        "randomFingerprint": record.settings.bitbrowser.as_ref()
+            .and_then(|value| value.random_fingerprint).unwrap_or(false),
         "browserFingerPrint": fingerprint_payload(record, true)?
     });
     extend(
@@ -494,6 +499,37 @@ fn create_payload(
         proxy_payload(record.proxy_mode, record.proxy.as_deref())?,
     )?;
     Ok(body)
+}
+
+/// Resolve a target group once per create. The connection's saved group wins;
+/// otherwise an existing "Raccoon" group, then the first visible group, and
+/// finally a new "Raccoon" group. `/browser/add` itself requires a group id.
+fn resolve_group(api: &LocalApi, connection: &BrowserConnection) -> BrowserResult<String> {
+    if let Some(group_id) = connection.default_group_id.as_deref() {
+        valid_id(group_id)?;
+        return Ok(group_id.into());
+    }
+    let groups = paginated(api, "/group/list", "id")?;
+    if let Some(group) = groups
+        .iter()
+        .find(|group| group["groupName"].as_str() == Some("Raccoon"))
+        .or_else(|| groups.first())
+    {
+        return group["id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(invalid_response);
+    }
+    let data = api.post(
+        "/group/add",
+        &json!({"groupName": "Raccoon", "sortNum": 0}),
+        RequestKind::Write,
+    )?;
+    data["id"]
+        .as_str()
+        .filter(|id| valid_id(id).is_ok())
+        .map(str::to_string)
+        .ok_or_else(invalid_response)
 }
 
 fn proxy_payload(mode: ProxyMode, connection_url: Option<&str>) -> BrowserResult<Value> {
@@ -532,14 +568,114 @@ fn fingerprint_payload(record: &WindowRecord, include_size: bool) -> BrowserResu
         "webRTC": if automatic { "0" } else { "2" }
     });
     if !record.settings.timezone.is_empty() {
-        // The reference also requires an offset for custom zones; no timezone database is
-        // available here. Refuse rather than silently select an incorrect DST offset.
-        return Err(BrowserError::unsupported(
-            "比特浏览器自定义时区需要确认时差，请在官方应用中设置",
-        ));
+        fingerprint["isIpCreateTimeZone"] = json!(false);
+        fingerprint["timeZone"] = json!(record.settings.timezone);
+        let offset = record
+            .settings
+            .bitbrowser
+            .as_ref()
+            .and_then(|config| config.timezone_offset)
+            .ok_or_else(|| BrowserError::new("invalid_config", "比特浏览器自定义时区缺少时差"))?;
+        fingerprint["timeZoneOffset"] = json!(f64::from(offset) / 60.0);
     }
     if !record.settings.locale.is_empty() {
         fingerprint["languages"] = json!(record.settings.locale);
+    }
+    if let Some(version) = record.kernel_version.as_deref() {
+        fingerprint["coreVersion"] = json!(version);
+    }
+    if let Some(config) = record.settings.bitbrowser.as_ref() {
+        let text = [
+            ("coreProduct", config.core_product.as_deref()),
+            ("version", config.version.as_deref()),
+            ("userAgent", config.user_agent.as_deref()),
+            ("ostype", config.ostype.as_deref()),
+            ("os", config.os.as_deref()),
+            ("osVersion", config.os_version.as_deref()),
+            ("webGLManufacturer", config.webgl_manufacturer.as_deref()),
+            ("webGLRender", config.webgl_render.as_deref()),
+            ("canvas", config.canvas.as_deref()),
+            ("webGL", config.webgl.as_deref()),
+            ("audioContext", config.audio_context.as_deref()),
+            ("mediaDevice", config.media_device.as_deref()),
+            ("speechVoices", config.speech_voices.as_deref()),
+            ("webRTC", config.web_rtc.as_deref()),
+            ("position", config.position.as_deref()),
+            ("lat", config.lat.as_deref()),
+            ("lng", config.lng.as_deref()),
+            ("precisionData", config.precision_data.as_deref()),
+            ("displayLanguages", config.display_languages.as_deref()),
+            ("fontType", config.font_type.as_deref()),
+            ("doNotTrack", config.do_not_track.as_deref()),
+            ("portScanProtect", config.port_scan_protect.as_deref()),
+            ("portWhiteList", config.port_white_list.as_deref()),
+            ("computerName", config.computer_name.as_deref()),
+            ("macAddr", config.mac_addr.as_deref()),
+            ("hostIP", config.host_ip.as_deref()),
+            (
+                "disableSslCipherSuites",
+                config.disable_ssl_cipher_suites.as_deref(),
+            ),
+            ("plugins", config.plugins.as_deref()),
+            ("launchArgs", config.launch_args.as_deref()),
+        ];
+        for (key, value) in text {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                fingerprint[key] = json!(value);
+            }
+        }
+        for (key, value) in [
+            ("ignoreHttpsErrors", config.ignore_https_errors),
+            ("isIpCreatePosition", config.is_ip_create_position),
+            (
+                "isIpCreateDisplayLanguage",
+                config.is_ip_create_display_language,
+            ),
+            ("windowSizeLimit", config.window_size_limit),
+            ("clientRectNoiseEnabled", config.client_rect_noise_enabled),
+            ("deviceInfoEnabled", config.device_info_enabled),
+            (
+                "disableSslCipherSuitesFlag",
+                config.disable_ssl_cipher_suites_flag,
+            ),
+            ("enablePlugins", config.enable_plugins),
+        ] {
+            if let Some(value) = value {
+                fingerprint[key] = json!(value);
+            }
+        }
+        if let Some(value) = config.hardware_concurrency {
+            fingerprint["hardwareConcurrency"] = json!(value.to_string());
+        }
+        if let Some(value) = config.device_memory {
+            fingerprint["deviceMemory"] = json!(value.to_string());
+        }
+        if let Some(width) = config.resolution_width
+            && let Some(height) = config.resolution_height
+            && config.resolution_type.as_deref() != Some("0")
+        {
+            fingerprint["resolutionType"] = json!("1");
+            fingerprint["resolution"] = json!(format!("{width} x {height}"));
+        }
+        if let Some(value) = config.resolution_type.as_deref() {
+            fingerprint["resolutionType"] = json!(value);
+        }
+        if let Some(value) = config.device_pixel_ratio.as_deref()
+            && let Ok(value) = value.parse::<f32>()
+        {
+            fingerprint["devicePixelRatio"] = json!(value);
+        }
+        if config
+            .webgl_manufacturer
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+            || config
+                .webgl_render
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+        {
+            fingerprint["webGLMeta"] = json!(config.webgl_meta.as_deref().unwrap_or("0"));
+        }
     }
     if include_size {
         match record.settings.viewport.as_str() {
@@ -578,6 +714,14 @@ fn encoded_start_url(record: &WindowRecord) -> String {
 
 fn update_payload(previous: &WindowRecord, updated: &WindowRecord) -> BrowserResult<Option<Value>> {
     let mut body = partial_payload(&previous.binding.profile_id);
+    body["randomFingerprint"] = json!(
+        previous
+            .settings
+            .bitbrowser
+            .as_ref()
+            .and_then(|value| value.random_fingerprint)
+            .unwrap_or(false)
+    );
     let mut changed = false;
     if previous.name != updated.name {
         body["name"] = json!(updated.name);
@@ -587,6 +731,8 @@ fn update_payload(previous: &WindowRecord, updated: &WindowRecord) -> BrowserRes
         if previous.settings.geoip != updated.settings.geoip
             || previous.settings.timezone != updated.settings.timezone
             || previous.settings.locale != updated.settings.locale
+            || previous.settings.bitbrowser != updated.settings.bitbrowser
+            || previous.kernel_version != updated.kernel_version
         {
             return Err(BrowserError::unsupported(
                 "沿用浏览器代理设置时，保留其现有时区、语言和网络配置",
@@ -603,7 +749,9 @@ fn update_payload(previous: &WindowRecord, updated: &WindowRecord) -> BrowserRes
         }
         let settings_changed = previous.settings.geoip != updated.settings.geoip
             || previous.settings.timezone != updated.settings.timezone
-            || previous.settings.locale != updated.settings.locale;
+            || previous.settings.locale != updated.settings.locale
+            || previous.settings.bitbrowser != updated.settings.bitbrowser
+            || previous.kernel_version != updated.kernel_version;
         if settings_changed || proxy_changes {
             if !previous.settings.locale.is_empty()
                 && updated.settings.locale.is_empty()
@@ -628,6 +776,22 @@ fn update_payload(previous: &WindowRecord, updated: &WindowRecord) -> BrowserRes
             body["browserFingerPrint"] = Value::Object(fields);
             changed = true;
         }
+    }
+    let previous_random = previous
+        .settings
+        .bitbrowser
+        .as_ref()
+        .and_then(|value| value.random_fingerprint)
+        .unwrap_or(false);
+    let updated_random = updated
+        .settings
+        .bitbrowser
+        .as_ref()
+        .and_then(|value| value.random_fingerprint)
+        .unwrap_or(false);
+    if previous_random != updated_random {
+        body["randomFingerprint"] = json!(updated_random);
+        changed = true;
     }
     if previous.settings.viewport != updated.settings.viewport {
         if updated.settings.viewport == "default" {
@@ -656,8 +820,10 @@ fn update_payload(previous: &WindowRecord, updated: &WindowRecord) -> BrowserRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::browser::connection_store::BrowserConnection;
     use crate::core::browser::local_api::tests::{MockResponse, MockServer, record};
     use crate::core::browser::provider::WindowState;
+    use crate::core::window_store::BitBrowserFingerprintConfig;
     use serde_json::json;
 
     fn response(data: Value) -> MockResponse {
@@ -814,6 +980,42 @@ mod tests {
         window.proxy_mode = ProxyMode::Manual;
         window.proxy = Some("socks5://user%40test:p%3A%2F@proxy.test:1080".into());
         window.settings.locale = "en-GB".into();
+        window.settings.timezone = "Europe/London".into();
+        window.kernel_version = Some("128".into());
+        window.settings.bitbrowser = Some(BitBrowserFingerprintConfig {
+            timezone_offset: Some(60),
+            webgl_manufacturer: Some("Google Inc.".into()),
+            core_product: Some("chrome".into()),
+            version: Some("130.0.6723.58".into()),
+            user_agent: Some("Fixture Agent".into()),
+            web_rtc: Some("3".into()),
+            ignore_https_errors: Some(true),
+            position: Some("0".into()),
+            is_ip_create_position: Some(false),
+            lat: Some("51.5269".into()),
+            lng: Some("-0.0991".into()),
+            precision_data: Some("50".into()),
+            is_ip_create_display_language: Some(false),
+            display_languages: Some("en-GB".into()),
+            resolution_type: Some("1".into()),
+            resolution_width: Some(1920),
+            resolution_height: Some(1080),
+            window_size_limit: Some(true),
+            font_type: Some("2".into()),
+            do_not_track: Some("1".into()),
+            client_rect_noise_enabled: Some(true),
+            port_scan_protect: Some("1".into()),
+            port_white_list: Some("9222,3000".into()),
+            device_info_enabled: Some(true),
+            computer_name: Some("DESKTOP-1".into()),
+            mac_addr: Some("00:11:22:33:44:55".into()),
+            host_ip: Some("192.168.1.20".into()),
+            disable_ssl_cipher_suites_flag: Some(true),
+            disable_ssl_cipher_suites: Some("[]".into()),
+            enable_plugins: Some(true),
+            plugins: Some("[]".into()),
+            ..Default::default()
+        });
         window.provider_config = json!({"raw": {"remark": "memo"}});
         let result = BitBrowserProvider::new()
             .create_profile(&connection, &window, "op-1")
@@ -821,7 +1023,7 @@ mod tests {
         assert_eq!(result.profile_id, "remote-1");
         assert_eq!(result.provider_config["identity"]["ownerId"], "owner-1");
         let request = &server.requests()[0];
-        assert_eq!(request.target, "/browser/update");
+        assert_eq!(request.target, "/browser/add");
         assert!(request.body.get("id").is_none());
         assert_eq!(request.body["groupId"], "group-1");
         assert_eq!(request.body["randomFingerprint"], false);
@@ -832,10 +1034,42 @@ mod tests {
         assert_eq!(request.body["port"], 1080);
         assert_eq!(request.body["stopWhileNetError"], true);
         let fingerprint = &request.body["browserFingerPrint"];
-        assert_eq!(fingerprint["isIpCreateTimeZone"], true);
+        assert_eq!(fingerprint["isIpCreateTimeZone"], false);
+        assert_eq!(fingerprint["timeZone"], "Europe/London");
+        assert_eq!(fingerprint["timeZoneOffset"], 1.0);
+        assert_eq!(fingerprint["coreVersion"], "128");
         assert_eq!(fingerprint["isIpCreateLanguage"], false);
         assert_eq!(fingerprint["languages"], "en-GB");
-        assert_eq!(fingerprint["webRTC"], "0");
+        assert_eq!(fingerprint["webGLMeta"], "0");
+        assert_eq!(fingerprint["webGLManufacturer"], "Google Inc.");
+        assert_eq!(fingerprint["webRTC"], "3");
+        assert_eq!(fingerprint["coreProduct"], "chrome");
+        assert_eq!(fingerprint["version"], "130.0.6723.58");
+        assert_eq!(fingerprint["userAgent"], "Fixture Agent");
+        assert_eq!(fingerprint["ignoreHttpsErrors"], true);
+        assert_eq!(fingerprint["position"], "0");
+        assert_eq!(fingerprint["isIpCreatePosition"], false);
+        assert_eq!(fingerprint["lat"], "51.5269");
+        assert_eq!(fingerprint["lng"], "-0.0991");
+        assert_eq!(fingerprint["precisionData"], "50");
+        assert_eq!(fingerprint["isIpCreateDisplayLanguage"], false);
+        assert_eq!(fingerprint["displayLanguages"], "en-GB");
+        assert_eq!(fingerprint["resolutionType"], "1");
+        assert_eq!(fingerprint["resolution"], "1920 x 1080");
+        assert_eq!(fingerprint["windowSizeLimit"], true);
+        assert_eq!(fingerprint["fontType"], "2");
+        assert_eq!(fingerprint["doNotTrack"], "1");
+        assert_eq!(fingerprint["clientRectNoiseEnabled"], true);
+        assert_eq!(fingerprint["portScanProtect"], "1");
+        assert_eq!(fingerprint["portWhiteList"], "9222,3000");
+        assert_eq!(fingerprint["deviceInfoEnabled"], true);
+        assert_eq!(fingerprint["computerName"], "DESKTOP-1");
+        assert_eq!(fingerprint["macAddr"], "00:11:22:33:44:55");
+        assert_eq!(fingerprint["hostIP"], "192.168.1.20");
+        assert_eq!(fingerprint["disableSslCipherSuitesFlag"], true);
+        assert_eq!(fingerprint["disableSslCipherSuites"], "[]");
+        assert_eq!(fingerprint["enablePlugins"], true);
+        assert_eq!(fingerprint["plugins"], "[]");
         assert!(fingerprint.get("canvasValue").is_none());
     }
 
@@ -863,6 +1097,40 @@ mod tests {
         );
         assert!(request.body.get("remark").is_none());
         assert!(request.body.get("proxyType").is_none());
+    }
+
+    #[test]
+    fn kernel_and_explicit_timezone_patch_only_changed_fingerprint_fields() {
+        let connection = BrowserConnection {
+            id: "bit".into(),
+            provider_id: BrowserProviderId::BitBrowser,
+            name: "Bit".into(),
+            endpoint: "http://127.0.0.1:54345".into(),
+            api_key: None,
+            default_group_id: None,
+            scope_label: "本机".into(),
+            scope_id: None,
+            scope_confirmed: true,
+            enabled: true,
+            revision: 1,
+        };
+        let mut previous = record(&connection, "remote-1");
+        previous.settings.geoip = true;
+        previous.proxy_mode = ProxyMode::Manual;
+        previous.settings.bitbrowser = Some(BitBrowserFingerprintConfig::default());
+        let mut updated = previous.clone();
+        updated.kernel_version = Some("128".into());
+        updated.settings.timezone = "Europe/London".into();
+        updated.settings.bitbrowser = Some(BitBrowserFingerprintConfig {
+            timezone_offset: Some(60),
+            ..Default::default()
+        });
+        let body = update_payload(&previous, &updated).unwrap().unwrap();
+        assert_eq!(body["browserFingerPrint"]["coreVersion"], "128");
+        assert_eq!(body["browserFingerPrint"]["timeZone"], "Europe/London");
+        assert_eq!(body["browserFingerPrint"]["timeZoneOffset"], 1.0);
+        assert_eq!(body["browserFingerPrint"]["isIpCreateTimeZone"], false);
+        assert!(body.get("proxyType").is_none());
     }
 
     #[test]
@@ -981,19 +1249,11 @@ mod tests {
     }
 
     #[test]
-    fn refuses_missing_group_unsupported_auth_and_failed_proxy_before_creation() {
+    fn refuses_unsupported_auth_and_failed_proxy_before_creation() {
         let server = MockServer::new(vec![]);
         let mut connection = server.connection(BrowserProviderId::BitBrowser);
-        connection.default_group_id = None;
         let window = record(&connection, "");
         let provider = BitBrowserProvider::new();
-        assert_eq!(
-            provider
-                .create_profile(&connection, &window, "op-1")
-                .unwrap_err()
-                .code,
-            "invalid_config"
-        );
         connection.api_key = Some("not-a-documented-bit-key".into());
         assert_eq!(provider.probe(&connection).unwrap_err().code, "unsupported");
         connection.api_key = None;
@@ -1008,6 +1268,52 @@ mod tests {
             "invalid_config"
         );
         assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn missing_group_uses_raccoon_group_or_first_group_and_only_creates_one_when_empty() {
+        let group = json!({"id": "group-raccoon", "groupName": "Raccoon"});
+        for (responses, expected) in [
+            (
+                vec![
+                    response(json!({"list": [group]})),
+                    response(json!({"list": []})),
+                ],
+                "group-raccoon",
+            ),
+            (
+                vec![
+                    response(json!({"list": [{"id": "group-first", "groupName": "First"}]})),
+                    response(json!({"list": []})),
+                ],
+                "group-first",
+            ),
+            (
+                vec![
+                    response(json!({"list": []})),
+                    response(json!({"id": "group-new"})),
+                ],
+                "group-new",
+            ),
+        ] {
+            let mut responses = responses;
+            responses.push(response(json!({"id": "remote-1"})));
+            responses.push(response(remote("remote-1", "[nexus:operation:op-1]")));
+            let server = MockServer::new(responses);
+            let mut connection = server.connection(BrowserProviderId::BitBrowser);
+            connection.default_group_id = None;
+            let window = record(&connection, "");
+            let created = BitBrowserProvider::new()
+                .create_profile(&connection, &window, "op-1")
+                .unwrap();
+            assert_eq!(created.profile_id, "remote-1");
+            let create = server
+                .requests()
+                .into_iter()
+                .find(|request| request.target == "/browser/add")
+                .unwrap();
+            assert_eq!(create.body["groupId"], expected);
+        }
     }
 
     #[test]
@@ -1514,7 +1820,7 @@ mod tests {
             assert!(!error.retryable);
             let requests = server.requests();
             assert_eq!(requests.len(), if acknowledged { 2 } else { 1 });
-            assert_eq!(requests[0].target, "/browser/update");
+            assert_eq!(requests[0].target, "/browser/add");
             if acknowledged {
                 assert_eq!(requests[1].target, "/browser/detail");
             }

@@ -244,6 +244,16 @@ export async function downloadKernel(version?: string | null): Promise<string> {
   }
 }
 
+export async function deleteKernel(version: string): Promise<void> {
+  requireDesktop()
+  if (!isKernelVersion(version)) throw invalidResponse()
+  try {
+    await invoke('kernel_delete', { version })
+  } catch (cause) {
+    throw operationError(cause, '无法删除本机内核。')
+  }
+}
+
 export async function checkLatestKernel(): Promise<KernelRelease> {
   requireDesktop()
   try {

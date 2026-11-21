@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ProductImage } from '@nexus/plugin-contracts/products'
-import { ImageOff, RefreshCw } from 'lucide-react'
+import { ImageOff, RefreshCw } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'

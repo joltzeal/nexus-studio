@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { CheckCircle2, Loader2, RefreshCw, Settings2 } from 'lucide-react'
+import { CheckCircle2, Loader2, RefreshCw, Settings2 } from '@/components/icons'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {

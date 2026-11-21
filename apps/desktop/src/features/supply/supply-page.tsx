@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Camera, Copy, Download, Loader2, RefreshCw, Search, Store } from 'lucide-react'
+import { Camera, Copy, Download, Loader2, RefreshCw, Search, Store } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { FieldError } from '@/components/ui/field'
@@ -571,10 +571,6 @@ export function SupplyPage({
                   )}
                   {imageBusy ? '正在搜索…' : '上传图片搜索'}
                 </Button>
-                <p className="supply-hint">
-                  支持 JPEG、PNG、WebP，图片至少 100 × 100 像素，最大 5 MB；页面会先转成
-                  JPEG 再提交。
-                </p>
               </div>
               {imageRows === null ? (
                 <p className="supply-empty">选择一张图片开始以图搜图。</p>

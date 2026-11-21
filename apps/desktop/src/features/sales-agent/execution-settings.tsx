@@ -84,12 +84,12 @@ export function ExecutionSettings({
             max={600}
             onChange={(value) => set('modelRequestsPerMinute', value)}
           />
-          {(['cloakbrowser', 'adspower', 'bitbrowser'] as const).map((provider) => (
+          {(['cloakbrowser', 'adspower', 'bitbrowser', 'aliasmode', 'shardbrowser'] as const).map((provider) => (
             <NumberSetting
               key={provider}
               id={`agent-provider-${provider}`}
-              label={`${provider === 'cloakbrowser' ? '内置浏览器' : provider === 'adspower' ? 'AdsPower' : '比特浏览器'}同时执行窗口数`}
-              value={execution.providerConcurrency[provider]}
+              label={`${provider === 'cloakbrowser' ? 'CloakBrowser' : provider === 'adspower' ? 'AdsPower' : provider === 'bitbrowser' ? '比特浏览器' : provider === 'aliasmode' ? 'AliasMode' : 'ShardBrowser'}同时执行窗口数`}
+              value={(execution.providerConcurrency as Record<string, number>)[provider] ?? 3}
               min={1}
               max={10}
               onChange={(value) =>

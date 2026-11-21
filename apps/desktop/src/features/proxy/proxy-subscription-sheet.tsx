@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Download, Eye, Loader2, Plus, Trash2 } from 'lucide-react'
+import { Download, Eye, Loader2, Plus, Trash2 } from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

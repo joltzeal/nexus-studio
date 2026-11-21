@@ -4,7 +4,7 @@ import type {
   ProductPublication,
   ProductPublicationPage,
 } from '@nexus/plugin-contracts/products'
-import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ExternalLink, RefreshCw } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

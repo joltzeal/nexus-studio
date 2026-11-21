@@ -10,6 +10,8 @@ import {
 } from '@/lib/platform/windows'
 import { randomFingerprintSeed, randomWindowName } from '@/lib/random-name'
 import { isKernelVersion } from '@/lib/platform/native-kernels'
+import { isAliasVersion, isAliasFirefoxVersion } from '@/lib/platform/aliasmode-kernels'
+import { isShardVersion } from '@/lib/platform/shardbrowser-kernels'
 import type { WindowProxyRef } from './window-proxy'
 
 export const MAX_BATCH_WINDOWS = 100
@@ -103,7 +105,9 @@ export function planWindowBatch(
   }
   const prefix = config.namePrefix.trim()
   if (Array.from(prefix).length > 36) throw new Error('名称前缀最多 36 个字符。')
-  if (config.kernelVersion != null && !isKernelVersion(config.kernelVersion)) {
+  if (config.kernelVersion != null && !(config.connection.providerId === 'aliasmode'
+    ? (config.settings.aliasEngine === 'firefox' ? isAliasFirefoxVersion(config.kernelVersion) : isAliasVersion(config.kernelVersion))
+    : config.connection.providerId === 'shardbrowser' ? isShardVersion(config.kernelVersion) : isKernelVersion(config.kernelVersion))) {
     throw new Error('请选择有效的完整内核包版本。')
   }
   const names = new Set(existing.map((profile) => profile.name.trim().toLowerCase()))
@@ -115,7 +119,7 @@ export function planWindowBatch(
       : account?.label || randomWindowName([...names])
     let seed: number | null = null
     if (
-      config.connection.providerId === 'cloakbrowser' &&
+      (config.connection.providerId === 'cloakbrowser' || config.connection.providerId === 'aliasmode' || config.connection.providerId === 'shardbrowser') &&
       config.connection.capabilities.fingerprintSeed
     ) {
       seed = randomSeed()
@@ -249,7 +253,7 @@ export class WindowBatchJob {
             settings: { ...this.config.settings, fingerprintSeed: item.seed },
             groupId: this.config.groupId,
             kernelVersion:
-              this.config.connection.providerId === 'cloakbrowser'
+              (this.config.connection.providerId === 'cloakbrowser' || this.config.connection.providerId === 'aliasmode' || this.config.connection.providerId === 'shardbrowser')
                 ? this.resolvedKernelVersion
                 : null,
           }
@@ -271,9 +275,11 @@ export class WindowBatchJob {
         // Freeze only the package version reported by the bound profile. Chrome's
         // display version can omit a revision and must never be used for pinning.
         if (
-          this.config.connection.providerId === 'cloakbrowser' &&
+          (this.config.connection.providerId === 'cloakbrowser' || this.config.connection.providerId === 'aliasmode' || this.config.connection.providerId === 'shardbrowser') &&
           this.resolvedKernelVersion === null &&
-          isKernelVersion(profile.kernelVersion)
+          (this.config.connection.providerId === 'aliasmode'
+            ? (this.config.settings.aliasEngine === 'firefox' ? isAliasFirefoxVersion(profile.kernelVersion ?? '') : isAliasVersion(profile.kernelVersion ?? ''))
+            : this.config.connection.providerId === 'shardbrowser' ? isShardVersion(profile.kernelVersion ?? '') : isKernelVersion(profile.kernelVersion))
         ) {
           this.resolvedKernelVersion = profile.kernelVersion
         }

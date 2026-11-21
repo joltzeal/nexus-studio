@@ -130,6 +130,8 @@ pub struct CallInput {
     pub payload: Value,
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    #[serde(default)]
+    pub expected_identity: Option<String>,
 }
 
 #[tauri::command]
@@ -142,15 +144,24 @@ pub async fn plugin_call(
     let deadline = Duration::from_millis(input.deadline_ms.unwrap_or(30_000).clamp(1_000, 120_000));
     let state = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        state
-            .call(
+        match input.expected_identity.as_deref() {
+            Some(identity) => state.call_generation(
+                &input.id,
+                identity,
+                capability,
+                &input.method,
+                input.payload,
+                deadline,
+            ),
+            None => state.call(
                 &input.id,
                 capability,
                 &input.method,
                 input.payload,
                 deadline,
-            )
-            .map_err(call_failure)
+            ),
+        }
+        .map_err(call_failure)
     })
     .await
     .map_err(|_| PluginErrorPayload::new("UNAVAILABLE", "插件调用任务中断", true))?
@@ -158,11 +169,21 @@ pub async fn plugin_call(
 
 fn webview_capability(input: &CallInput) -> Result<Capability, String> {
     let capability = capability(&input.capability)?;
-    if input.method == "window.detach" {
+    webview_method_capability(capability, &input.method)
+}
+
+pub(crate) fn webview_method_capability(
+    capability: Capability,
+    method: &str,
+) -> Result<Capability, String> {
+    if method.starts_with("ui.") {
+        return Err("插件界面只能通过作用域入口调用".into());
+    }
+    if method == "window.detach" {
         return Err("窗口关联清理仅供原生窗口删除流程调用".into());
     }
     if matches!(
-        input.method.as_str(),
+        method,
         "salesAgent.jobs.step"
             | "salesAgent.notifications.send"
             | "products.publications.record"
@@ -172,7 +193,7 @@ fn webview_capability(input: &CallInput) -> Result<Capability, String> {
     }
     if capability == Capability::SalesAgent
         && !matches!(
-            input.method.as_str(),
+            method,
             "salesAgent.settings.get"
                 | "salesAgent.settings.save"
                 | "salesAgent.models.test"
@@ -183,16 +204,14 @@ fn webview_capability(input: &CallInput) -> Result<Capability, String> {
     {
         return Err("Ecom Agent method is not available through the WebView".into());
     }
-    if capability == Capability::ProxyProvider && input.method == "proxy.resolve" {
+    if capability == Capability::ProxyProvider && method == "proxy.resolve" {
         return Err("代理连接解析仅供原生窗口启动调用".into());
     }
     let configuration = matches!(
-        input.method.as_str(),
+        method,
         "configuration.export" | "configuration.validate" | "configuration.import"
     );
-    if input.method.starts_with("transfer.")
-        || (capability == Capability::WindowSync && !configuration)
-    {
+    if method.starts_with("transfer.") || (capability == Capability::WindowSync && !configuration) {
         return Err("窗口迁移与同步只能通过窗口管理调用".into());
     }
     Ok(capability)
@@ -201,8 +220,9 @@ fn webview_capability(input: &CallInput) -> Result<Capability, String> {
 /// Creates the host and the window service, sharing one plugin host so window
 /// launches are gated by the same process that the plugin page talks to.
 pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let app_data = app.path().app_data_dir()?;
+    let app_data = super::workspace_paths::workspace_root(&app.path().app_data_dir()?);
     std::fs::create_dir_all(&app_data)?;
+    let database = super::workspace_paths::database_path(&app_data);
     let instance_lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -213,25 +233,32 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         .try_lock()
         .map_err(|_| std::io::Error::other("此工作区已在另一个 Raccoon 实例中打开"))?;
     app.manage(WorkspaceLock(instance_lock));
+    // Initialize the 0.2 schema before ancillary stores create their own tables.
+    super::database::open_database(&database).map_err(std::io::Error::other)?;
     let runtime = RuntimePaths::for_app(app).map_err(std::io::Error::other)?;
     let root = app_data.join("plugins");
-    let network =
-        NetworkProxyStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
-    let host = Arc::new(
-        PluginHost::open_with_node(
-            root,
-            // A released build installs everything from the plugin store, so
-            // there is nothing to discover next to the binary.
-            if cfg!(debug_assertions) {
-                development_roots()
-            } else {
-                Vec::new()
-            },
-            runtime.node.clone(),
-        )
-        .map_err(|error| std::io::Error::other(error.message()))?
-        .with_network(network.clone(), runtime.network_preload.clone()),
-    );
+    let network = NetworkProxyStore::new(database.clone()).map_err(std::io::Error::other)?;
+    let host = PluginHost::open_with_node(
+        root,
+        // A released build installs everything from the plugin store, so
+        // there is nothing to discover next to the binary.
+        if cfg!(debug_assertions) {
+            development_roots()
+        } else {
+            Vec::new()
+        },
+        runtime.node.clone(),
+    )
+    .map_err(|error| std::io::Error::other(error.message()))?;
+    let host = if cfg!(debug_assertions) {
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins");
+        let source_loader =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/plugin-source-loader.mjs");
+        host.with_workspace_source(workspace_root, source_loader)
+    } else {
+        host
+    };
+    let host = Arc::new(host.with_network(network.clone(), runtime.network_preload.clone()));
     app.manage(network.clone());
     app.manage(Arc::clone(&host));
     // Plugins installed in an earlier session start on their own; the
@@ -243,9 +270,8 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     // Native recovery precedes window loading. Plugin receipts are retried
     // through the transfer status command after the UI can open.
     super::transfer_service::recover_pending(&app_data).map_err(std::io::Error::other)?;
-    let license_store =
-        LicenseStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
-    let groups = GroupStore::new(app_data.join("nexus.sqlite")).map_err(std::io::Error::other)?;
+    let license_store = LicenseStore::new(database.clone()).map_err(std::io::Error::other)?;
+    let groups = GroupStore::new(database.clone()).map_err(std::io::Error::other)?;
     app.manage(groups);
     let license_service = LicenseService::with_runtime(
         license_store.clone(),
@@ -263,7 +289,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     .with_network(network);
     let windows = Arc::new(windows);
     let agent = super::agent::AgentService::new(
-        app_data.join("nexus.sqlite"),
+        database,
         app_data.join("agent").join("artifacts"),
         &host,
         &windows,
@@ -278,6 +304,11 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         app_data.join("transfers"),
     )
     .map_err(std::io::Error::other)?;
+    app.manage(Arc::clone(&windows.alias.kernels));
+    app.manage(Arc::clone(&windows.shard.kernels));
+    app.manage(super::aliasmode_kernels::FirefoxKernelService(Arc::clone(
+        &windows.alias.firefox_kernels,
+    )));
     windows.watch_sessions();
     app.manage(windows);
     app.manage(Arc::new(transfer));
@@ -302,6 +333,7 @@ mod tests {
             method: method.into(),
             payload: json!({"windowId":"fixture-window"}),
             deadline_ms: None,
+            expected_identity: None,
         }
     }
 
@@ -326,6 +358,20 @@ mod tests {
             assert!(webview_capability(&input(method, "window.sync")).is_ok());
         }
         assert!(webview_capability(&input("configuration.sync.offer", "window.sync")).is_err());
+    }
+
+    #[test]
+    fn every_ui_method_requires_the_scoped_ui_gateway() {
+        for method in [
+            "ui.view.open",
+            "ui.tasks.poll",
+            "ui.tasks.cancel",
+            "ui.profile.status",
+            "ui.future.method",
+        ] {
+            assert!(webview_capability(&input(method, "account.pool")).is_err());
+            assert!(webview_method_capability(Capability::AccountPool, method).is_err());
+        }
     }
 
     #[test]

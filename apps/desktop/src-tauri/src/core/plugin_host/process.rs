@@ -292,11 +292,38 @@ impl PluginProcess {
         network: Option<(&NetworkProxy, &Path)>,
         gateway: HostGateway,
     ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
+        Self::spawn_with_gateway_and_loader(
+            entry,
+            storage_directory,
+            manifest,
+            node,
+            key,
+            network,
+            None,
+            gateway,
+        )
+    }
+
+    pub fn spawn_with_gateway_and_loader(
+        entry: &Path,
+        storage_directory: Option<&Path>,
+        manifest: PluginManifest,
+        node: &Path,
+        key: &str,
+        network: Option<(&NetworkProxy, &Path)>,
+        source_loader: Option<&Path>,
+        gateway: HostGateway,
+    ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
         let mut command = Command::new(node);
         if let Some((proxy, preload)) = network {
             proxy
                 .apply_to_node(&mut command, preload)
                 .map_err(ProcessError::Failed)?;
+        }
+        if let Some(loader) = source_loader {
+            command
+                .args(["--conditions=development", "--import"])
+                .arg(loader);
         }
         command
             .arg(entry)

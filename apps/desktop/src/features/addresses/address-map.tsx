@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, MapPin, RotateCcw } from 'lucide-react'
+import { Loader2, MapPin, RotateCcw } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { copyText } from '@/lib/clipboard'
 import { normalizeGoogleAddress } from './google-geocode'

@@ -101,6 +101,64 @@ pub struct PluginPermissions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginIcon {
+    pub view_box: String,
+    pub paths: Vec<String>,
+}
+
+impl PluginIcon {
+    fn valid(&self) -> bool {
+        self.view_box == "0 0 24 24"
+            && (1..=8).contains(&self.paths.len())
+            && self.paths.iter().all(|path| {
+                (1..=8192).contains(&path.len())
+                    && path.bytes().all(|byte| {
+                        byte.is_ascii_digit()
+                            || byte.is_ascii_whitespace()
+                            || b"MmZzLlHhVvCcSsQqTtAaEe.,+-\x0b".contains(&byte)
+                    })
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginNavigation {
+    pub icon: PluginIcon,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProfileTableEntry {
+    pub title: String,
+    pub view_id: String,
+    pub capability: Capability,
+    pub icon: PluginIcon,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginUiService {
+    pub id: String,
+    pub plugin_id: String,
+    pub capability: Capability,
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PluginUi {
+    pub protocol_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigation: Option<PluginNavigation>,
+    #[serde(default)]
+    pub services: Vec<PluginUiService>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_table: Option<ProfileTableEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PluginManifest {
     pub api_version: u32,
     pub id: String,
@@ -109,6 +167,8 @@ pub struct PluginManifest {
     pub min_core_version: String,
     pub capabilities: Vec<Capability>,
     pub permissions: PluginPermissions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<PluginUi>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +243,48 @@ impl PluginManifest {
     /// Structural rules from the integration guide. Runs on every load, not
     /// only on install, so a hand-edited manifest cannot widen its own scope.
     pub fn validate(&self) -> Result<(), ManifestError> {
+        if let Some(ui) = &self.ui {
+            if ui.protocol_version != 1
+                || (ui.navigation.is_none() && ui.profile_table.is_none())
+                || (ui.profile_table.is_none() && !ui.services.is_empty())
+                || ui
+                    .navigation
+                    .as_ref()
+                    .is_some_and(|entry| !entry.icon.valid())
+                || ui.profile_table.as_ref().is_some_and(|entry| {
+                    entry.title.trim().is_empty()
+                        || entry.title.chars().count() > 200
+                        || !valid_ui_id(&entry.view_id)
+                        || !self.capabilities.contains(&entry.capability)
+                        || !entry.icon.valid()
+                })
+                || ui.services.len() > 10
+                || has_duplicates(
+                    &ui.services
+                        .iter()
+                        .map(|service| service.id.clone())
+                        .collect::<Vec<_>>(),
+                )
+                || ui.services.iter().any(|service| {
+                    !valid_ui_id(&service.id)
+                        || !valid_plugin_id(&service.plugin_id)
+                        || service.plugin_id == self.id
+                        || service.methods.is_empty()
+                        || service.methods.len() > 20
+                        || has_duplicates(&service.methods)
+                        || service.methods.iter().any(|method| {
+                            !valid_ui_id(method)
+                                || super::super::plugin_service::webview_method_capability(
+                                    service.capability,
+                                    method,
+                                )
+                                .is_err()
+                        })
+                })
+            {
+                return Err(ManifestError::UnknownField);
+            }
+        }
         if self.api_version != PLUGIN_API_VERSION {
             return Err(ManifestError::UnsupportedApiVersion);
         }
@@ -272,6 +374,14 @@ fn has_duplicates(values: &[String]) -> bool {
     sorted.windows(2).any(|pair| pair[0] == pair[1])
 }
 
+pub(crate) fn valid_ui_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
 pub fn valid_plugin_id(id: &str) -> bool {
     if id.len() > 96 || !id.contains('.') {
         return false;
@@ -329,6 +439,102 @@ pub fn valid_domain(domain: &str) -> bool {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    fn ui_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion":1,"id":"example.panel","version":"1.0.0",
+            "name":"Panel","minCoreVersion":env!("CARGO_PKG_VERSION"),
+            "capabilities":["account.pool"],"permissions":{
+                "networkDomains":[],"wantsBrowserAccess":false,"storage":"private","secrets":[]
+            },"ui":{
+                "protocolVersion":1,"profileTable":{
+                    "title":"Details","viewId":"details","capability":"account.pool",
+                    "icon":{"viewBox":"0 0 24 24","paths":["M0 0 L1 1"]}
+                }
+            }
+        })
+    }
+
+    fn with_service(methods: serde_json::Value) -> serde_json::Value {
+        let mut manifest = ui_manifest();
+        manifest["ui"]["services"] = serde_json::json!([{
+            "id":"catalog","pluginId":"example.catalog","capability":"product.catalog","methods":methods
+        }]);
+        manifest
+    }
+
+    #[test]
+    fn navigation_alone_has_no_profile_entry_or_services() {
+        let mut manifest = ui_manifest();
+        manifest["ui"] = serde_json::json!({
+            "protocolVersion": 1,
+            "navigation": { "icon": { "viewBox": "0 0 24 24", "paths": ["M1 2h3z"] } }
+        });
+        let ui = PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap()
+            .ui
+            .unwrap();
+        assert!(ui.profile_table.is_none());
+        assert!(ui.services.is_empty());
+        assert_eq!(ui.navigation.unwrap().icon.paths, ["M1 2h3z"]);
+        manifest["ui"]["services"] =
+            with_service(serde_json::json!(["items.list"]))["ui"]["services"].clone();
+        assert!(PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap()).is_err());
+        manifest["ui"].as_object_mut().unwrap().remove("services");
+        manifest["ui"]["navigation"]["icon"]["paths"] = serde_json::json!(["<script>"]);
+        assert!(PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap()).is_err());
+    }
+
+    #[test]
+    fn ui_services_default_to_empty_and_require_explicit_safe_methods() {
+        let parsed = PluginManifest::parse(&serde_json::to_vec(&ui_manifest()).unwrap()).unwrap();
+        assert!(parsed.ui.unwrap().services.is_empty());
+        let manifest = with_service(serde_json::json!(["items.list"]));
+        let parsed = PluginManifest::parse(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(parsed.ui.unwrap().services[0].methods, ["items.list"]);
+        for method in [
+            "ui.tasks.poll",
+            "transfer.export",
+            "window.detach",
+            "products.publications.record",
+        ] {
+            let invalid = with_service(serde_json::json!([method]));
+            assert!(PluginManifest::parse(&serde_json::to_vec(&invalid).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn ui_services_reject_duplicate_ids_methods_self_targets_and_unknown_fields() {
+        let mut duplicate = with_service(serde_json::json!(["items.list"]));
+        let service = duplicate["ui"]["services"][0].clone();
+        duplicate["ui"]["services"]
+            .as_array_mut()
+            .unwrap()
+            .push(service);
+        assert!(PluginManifest::parse(&serde_json::to_vec(&duplicate).unwrap()).is_err());
+        let duplicate_methods = with_service(serde_json::json!(["items.list", "items.list"]));
+        assert!(PluginManifest::parse(&serde_json::to_vec(&duplicate_methods).unwrap()).is_err());
+        let mut self_target = with_service(serde_json::json!(["items.list"]));
+        self_target["ui"]["services"][0]["pluginId"] = serde_json::json!("example.panel");
+        assert!(PluginManifest::parse(&serde_json::to_vec(&self_target).unwrap()).is_err());
+        let mut unknown = with_service(serde_json::json!(["items.list"]));
+        unknown["ui"]["services"][0]["network"] = serde_json::json!(true);
+        assert!(PluginManifest::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
+    }
+
+    #[test]
+    fn ui_services_and_method_lists_are_bounded() {
+        let mut too_many_services = with_service(serde_json::json!(["items.list"]));
+        too_many_services["ui"]["services"] = serde_json::Value::Array((0..11).map(|index| {
+            serde_json::json!({"id":format!("catalog-{index}"),"pluginId":"example.catalog", "capability":"product.catalog","methods":["items.list"]})
+        }).collect());
+        assert!(PluginManifest::parse(&serde_json::to_vec(&too_many_services).unwrap()).is_err());
+        let methods: Vec<_> = (0..21).map(|index| format!("items.list{index}")).collect();
+        let too_many_methods = with_service(serde_json::json!(methods));
+        assert!(PluginManifest::parse(&serde_json::to_vec(&too_many_methods).unwrap()).is_err());
+        let invalid_method = with_service(serde_json::json!(["items list"]));
+        assert!(PluginManifest::parse(&serde_json::to_vec(&invalid_method).unwrap()).is_err());
+    }
 
     #[test]
     fn product_catalog_needs_neither_browser_nor_network_permissions() {

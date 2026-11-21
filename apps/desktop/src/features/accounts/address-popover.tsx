@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Copy, Loader2, MapPin, Unlink } from 'lucide-react'
+import { Copy, Loader2, MapPin, Unlink } from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   AlertDialog,

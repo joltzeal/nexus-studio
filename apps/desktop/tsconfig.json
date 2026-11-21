@@ -16,7 +16,8 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@nexus/contracts": ["../../packages/contracts/src/index.ts"]
     },
     "ignoreDeprecations": "6.0",
 

@@ -20,11 +20,13 @@ fn record() -> WindowRecord {
         )),
         kernel_version: Some("155.0.8059.39.2".into()),
         proxy: None,
+        proxy_id: None,
         proxy_plugin: None,
         proxy_endpoint: None,
         proxy_mode: ProxyMode::Direct,
         settings: WindowSettings {
             fingerprint_seed: Some(42),
+            cloakbrowser: None,
             ..WindowSettings::default()
         },
         origin: WindowOrigin::Created,
@@ -48,6 +50,22 @@ fn resolved(mode: ProxyMode, url: Option<&str>) -> ResolvedProxy {
         mode,
         connection_url: url.map(str::to_owned),
     }
+}
+
+#[test]
+fn runtime_payload_keeps_the_pinned_kernel_and_omits_the_proxy_library_id() {
+    let mut saved = record();
+    saved.proxy_mode = ProxyMode::Manual;
+    saved.proxy_id = Some("proxy-library-entry".into());
+    let url = "http://proxy.invalid:8080";
+    let launch = browser_launch_record(&saved, &resolved(ProxyMode::Manual, Some(url))).unwrap();
+    let payload: Value = serde_json::from_slice(&encode_runtime_window(&launch).unwrap()).unwrap();
+
+    assert_eq!(payload["kernel_version"], "155.0.8059.39.2");
+    assert_eq!(payload["proxy"], url);
+    assert!(payload.get("proxy_id").is_none());
+    assert_eq!(saved.proxy_id.as_deref(), Some("proxy-library-entry"));
+    assert!(saved.proxy.is_none());
 }
 
 #[test]
@@ -76,6 +94,27 @@ fn authenticated_proxy_only_changes_the_transient_launch_copy() {
             .unwrap()
             .contains("synthetic%40password")
     );
+}
+
+#[test]
+fn explicit_fingerprint_overrides_reach_the_launch_record() {
+    let mut record = record();
+    record.settings.cloakbrowser = Some(crate::core::window_store::CloakFingerprintConfig {
+        platform: Some("macos".into()),
+        gpu_vendor: Some("intel".into()),
+        screen_width: Some(2560),
+        screen_height: Some(1440),
+        webrtc_ip: Some("auto".into()),
+        noise: Some(false),
+        ..Default::default()
+    });
+    let launch = browser_launch_record(&record, &resolved(ProxyMode::Direct, None)).unwrap();
+    let settings = serde_json::to_value(&launch).unwrap()["settings"].clone();
+    assert_eq!(settings["cloakbrowser"]["platform"], "macos");
+    assert_eq!(settings["cloakbrowser"]["gpuVendor"], "intel");
+    assert_eq!(settings["cloakbrowser"]["screenWidth"], 2560);
+    assert_eq!(settings["cloakbrowser"]["noise"], false);
+    assert_eq!(settings["fingerprintSeed"], 42);
 }
 
 #[test]
@@ -244,6 +283,18 @@ fn runtime_errors_are_structured_without_echoing_runner_output() {
 }
 
 #[test]
+fn a_rejected_runtime_record_is_not_reported_as_a_kernel_mismatch() {
+    assert_eq!(
+        runtime_error("PROFILE_RECORD_INVALID").message,
+        "浏览器运行组件无法读取 Profile 配置"
+    );
+    assert_eq!(
+        runtime_error("PROFILE_ENGINE_MISMATCH").message,
+        "浏览器内核与窗口固定绑定不一致"
+    );
+}
+
+#[test]
 fn readiness_requires_a_complete_marker_and_handles_closed_output() {
     for bytes in [
         b"unrelated\nNEXUS_READY\n".to_vec(),
@@ -370,7 +421,7 @@ if (action === 'inventory') {
 "#,
     )
     .unwrap();
-    let licenses = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let licenses = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
     licenses
         .save_validated("cb_synthetic-license", "pro", None)
         .unwrap();
@@ -399,6 +450,13 @@ fn prepared_fixture() -> (tempfile::TempDir, CloakBrowserProvider, WindowRecord)
     record.kernel_version = created.kernel_version;
     record.provider_config = created.provider_config;
     (root, provider, record)
+}
+
+fn observed(provider: &CloakBrowserProvider, record: &WindowRecord) -> WindowState {
+    provider
+        .observe_profiles(&connection(), std::slice::from_ref(record))
+        .unwrap()
+        .states[&record.id]
 }
 
 #[test]
@@ -431,7 +489,7 @@ fn creation_pins_the_full_package_revision_without_writing_a_nexus_record() {
         serde_json::from_slice(&fs::read(root.path().join("preparation.json")).unwrap()).unwrap();
     assert!(preparation["requestedVersion"].is_null());
     assert_eq!(preparation["hasKey"], true);
-    let db = rusqlite::Connection::open(root.path().join("nexus.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(root.path().join("raccoon.sqlite")).unwrap();
     let tables: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='profile_records'",
@@ -1059,7 +1117,9 @@ fn launch_and_stop_use_the_child_state_and_preserve_the_record() {
                 .to_str()
                 .unwrap()
         );
-        assert_eq!(provider.observe(&record.id).unwrap(), WindowState::Running);
+        let receipt = provider.read_running_receipt(&record.id).unwrap().unwrap();
+        assert_eq!(capture["arguments"][4], receipt.token.simple().to_string());
+        assert_eq!(observed(&provider, &record), WindowState::Running);
         assert_eq!(
             provider
                 .reconcile_update(&connection(), &record, &record, &empty_update_evidence())
@@ -1089,7 +1149,8 @@ fn launch_and_stop_use_the_child_state_and_preserve_the_record() {
             "profile_busy"
         );
         provider.stop_profile(&connection(), &record).unwrap();
-        assert_eq!(provider.observe(&record.id).unwrap(), WindowState::Stopped);
+        assert_eq!(observed(&provider, &record), WindowState::Stopped);
+        assert!(provider.read_running_receipt(&record.id).unwrap().is_none());
         assert!(provider.session(&record.id).unwrap().is_none());
     }
     assert_eq!(serde_json::to_value(&record).unwrap(), saved);
@@ -1137,7 +1198,7 @@ fn assert_failed_start_cleanup(mode: &str) {
     assert!(!error.message.contains("synthetic-user"));
     assert!(!error.message.contains("synthetic-password"));
     assert!(!error.message.contains("cb_synthetic-license"));
-    assert_eq!(provider.observe(&record.id).unwrap(), WindowState::Stopped);
+    assert_eq!(observed(&provider, &record), WindowState::Stopped);
     assert!(provider.session(&record.id).unwrap().is_none());
     fs::write(root.path().join("mode"), "normal").unwrap();
     provider
@@ -1168,13 +1229,35 @@ fn observation_reaps_an_exited_child_instead_of_trusting_a_running_flag() {
     session.lock().unwrap().child.kill().unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        if provider.observe(&record.id).unwrap() == WindowState::Stopped {
+        if observed(&provider, &record) == WindowState::Stopped {
             break;
         }
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(provider.session(&record.id).unwrap().is_none());
+}
+
+#[test]
+fn reopened_provider_observes_the_logged_runner_and_can_end_it() {
+    let (_root, original, record) = prepared_fixture();
+    original
+        .start_profile(&connection(), &record, &resolved(ProxyMode::Direct, None))
+        .unwrap();
+    let reopened = CloakBrowserProvider::new(
+        original.root.clone(),
+        original.license_store.clone(),
+        original.runtime.clone(),
+        None,
+    );
+    let local = reopened
+        .local_diagnostics(&connection(), std::slice::from_ref(&record))
+        .unwrap();
+    assert_eq!(local.len(), 1);
+    assert!(local[0].residual);
+    assert_eq!(observed(&reopened, &record), WindowState::Unknown);
+    reopened.recover_session(&connection(), &record).unwrap();
+    assert_eq!(observed(&reopened, &record), WindowState::Stopped);
 }
 
 #[test]
@@ -1204,7 +1287,7 @@ fn separate_windows_can_run_the_same_pinned_kernel() {
     assert_eq!(states.get(&first.id), Some(&WindowState::Running));
     assert_eq!(states.get(&second.id), Some(&WindowState::Running));
     provider.stop_profile(&connection(), &first).unwrap();
-    assert_eq!(provider.observe(&second.id).unwrap(), WindowState::Running);
+    assert_eq!(observed(&provider, &second), WindowState::Running);
     provider.stop_profile(&connection(), &second).unwrap();
 }
 

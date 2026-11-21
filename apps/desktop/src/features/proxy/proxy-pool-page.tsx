@@ -16,7 +16,7 @@ import {
   Settings2,
   Star,
   Trash2,
-} from 'lucide-react'
+} from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -397,9 +397,6 @@ export function ProxyPoolPage({ plugin, hostAvailable }: ProxyPoolPageProps) {
           <h1 className="page-heading" id="proxy-heading">
             代理池
           </h1>
-          <p className="page-description">
-            库存、检测与订阅由插件进程提供；密码保存在插件私有目录。
-          </p>
         </div>
         <div className="proxy-toolbar">
           <Button

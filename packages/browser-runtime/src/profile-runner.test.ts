@@ -56,7 +56,7 @@ beforeEach(async () => {
       let closeTimer;
       let rejectNavigation;
       let pageUrl='about:blank';
-      const page={
+      const page=Object.assign(new EventEmitter(),{
         url:()=>pageUrl,
         isClosed:()=>false,
         async goto(url) {
@@ -73,7 +73,7 @@ beforeEach(async () => {
         async route(){},
         async unroute(){},
         async close(){}
-      };
+      });
       context.pages=()=>[page];
       context.newPage=async()=>page;
       context.route=async()=>{};

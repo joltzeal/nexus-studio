@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { LoaderCircle } from 'lucide-react'
+import { LoaderCircle } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -69,6 +69,7 @@ export function LicenseSettingsPage() {
       setStatus(next)
       setKey('')
       setSaved(true)
+      window.dispatchEvent(new CustomEvent('raccoon:license-change', { detail: true }))
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -84,6 +85,7 @@ export function LicenseSettingsPage() {
       await removeLicenseKey()
       setStatus({ configured: false, plan: null, expires: null })
       setKey('')
+      window.dispatchEvent(new CustomEvent('raccoon:license-change', { detail: false }))
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -96,7 +98,6 @@ export function LicenseSettingsPage() {
       <h1 className="page-heading" id="license-heading">
         激活码
       </h1>
-      <p className="page-description">保存激活码后即可下载内核、创建和打开窗口。</p>
       {!native ? (
         <Alert>
           <AlertTitle>桌面应用专属</AlertTitle>

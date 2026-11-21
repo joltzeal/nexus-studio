@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Check, SlidersHorizontal } from 'lucide-react'
+import { Check, SlidersHorizontal } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {

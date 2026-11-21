@@ -1,6 +1,6 @@
 {
   "name": "raccoon",
-  "version": "0.1.43",
+  "version": "0.2.0",
   "description": "Raccoon consumer desktop workspace foundation",
   "scripts": {
     "dev": "pnpm build:packages && pnpm --filter @nexus/desktop dev",
@@ -10,6 +10,7 @@
     "plugin:dev": "node scripts/dev-plugin.mjs",
     "public:check": "node scripts/check-public-boundary.mjs",
     "build": "pnpm build:packages && pnpm --filter @nexus/desktop build",
+    "build:v2": "pnpm build:packages && pnpm --filter @raccoon/desktop-v2 run build",
     "desktop:build": "pnpm build:packages && pnpm --filter @nexus/desktop tauri build",
     "runtime:stage": "node scripts/stage-desktop-runtime.mjs",
     "runtime:verify-packaged": "node scripts/verify-packaged-runtime.mjs",

@@ -20,8 +20,8 @@ Raccoon UUID 是插件关联的 `windowId`，不以厂商环境 ID 代替。
 AdsPower 插件代理在验证前不可用，不能因安装了代理池就开放。
 实际范围与限制见[代理池插件](15-proxy-plugin.md)。
 
-仓库内 `plugins/address-generator` 是第二个完整插件，按同一协议提供 `address.*` 方法，
-见[地址生成器插件](19-address-generator-plugin.md)。
+仓库内 `plugins/vinted-helper` 当前显示为 VInted helper，按同一协议提供 `address.*`
+和本地面单提取 `vinted.labels.*` 方法，见[VInted helper 插件](19-address-generator-plugin.md)。
 
 仓库内 `plugins/shared-supply` 是第三个完整插件，按同一协议提供 `supply.*` 方法，
 见[共享货源插件](21-shared-supply-plugin.md)。它同时是第一个需要声明上游域名、
@@ -100,7 +100,7 @@ plugin-root/
   安装后的依赖位于真实 `node_modules`，不能依赖 Node 直接加载其中的 TypeScript。
   本仓库无构建的 Vitest 通过测试配置解析生命周期源码，不能将测试别名作为发行入口。
 - 插件不得要求用户为 Raccoon 主程序配置 `.env`；插件需要的密码与密钥由插件自己保存在私有目录。
-- 插件 ID 一经发布不得修改；更名使用新的插件 ID，并提供显式迁移。
+- 插件 ID 一经发布不得修改。仅修改显示名称时保留 ID、授权与私有数据；确需更换安装身份时使用新 ID，并提供显式迁移。
 
 ## 5. Manifest 规范
 
@@ -141,6 +141,56 @@ export default definePluginManifest({
 | `permissions.secrets`            | 插件需要的密钥槽名称，不放入密钥值                           |
 
 ## 6. 能力规范
+
+### Profile 表格入口与通用插件面板
+
+2026-11-19 新增可选 UI 协议，定义于 `@nexus/plugin-sdk/ui`。
+`ui.protocolVersion` 为 `1`，`ui.profileTable` 声明 `title`、`viewId`、
+已声明的 `capability`，以及 `icon.viewBox` 与 `icon.paths`。
+图标使用 `0 0 24 24` 和经过校验的 SVG path，由宿主以 `currentColor` 渲染。
+字段省略时插件不进入 Profile 表格。该字段需要更新后的 SDK 和 Rust 宿主。
+同一声明也提供 Profile Peek 标题栏的插件图标入口，两处共用授权与会话切换逻辑。
+插件 Peek 的标题栏可返回当前 Profile 详情，未保存修改继续使用统一退出确认。
+
+宿主为每个 Profile 面板建立有界会话，核对 Profile UUID、connectionId、
+WebView、插件安装版本和进程代次，再调用 `ui.view.open/dispatch/close`。
+通用 `plugin_call` 拒绝这些保留方法。
+
+插件返回分区、属性、表单、按钮和确认描述。字段、文案、业务状态、
+动作合法性、影响范围及原子写入均由插件实现。`saved` 表示该动作已完成
+业务保存，`pendingChanges` 保留确认步骤中的未保存状态，视图切换不代表保存。
+宿主提供 ShardX 渲染、同尺寸 Peek、会话、通用退出保护、复制和外链入口。
+视图只接受协议组件和 HTTP(S) 外链，资源和 HTML 不作为可执行内容加载。
+分区内的 action 可声明 `placement: "header"`，在该分区标题旁显示紧凑操作。
+省略时默认为 `"body"`，保留内容区操作。视图级 `actions` 显示在固定底栏，
+表单和属性内容独立滚动。分区、字段顺序和操作位置继续由插件声明。
+
+本地 Vinted 示例已接入 SIM8 号码、邮箱关联、验证码等待及语音，衣柜快照直接内联展示。
+当前专用页面继续按第 10.1 节交付，完整页面迁移与面板协议分别维护。
+
+#### 声明式服务、后台任务与状态投影
+
+`ui.services` 声明服务 ID、目标 pluginId、capability 和精确方法清单。
+宿主仅在双方安装、授权、方法及进程身份均有效时调用。普通 `plugin_call` 拒绝所有 `ui.*` 方法。
+插件返回有界 `service-request`，原生网关解析并转发，随后把可信 `services` 与 `serviceResults`
+随原始操作重放。每批最多 8 项、最多 16 轮、累计 JSON 最多 1 MiB、总截止时间 120 秒。
+私有生命周期、转移与 Agent 方法继续受通用调用策略限制。操作始终固定到原插件进程，
+进程替换后不将写操作转发到新进程。
+
+插件在服务结果齐备后提交业务写入。重放和服务失败时恢复尚未完成的导航状态，
+避免翻页多次推进。服务结果不写入前端状态，业务数据校验及本地原子保存由插件实现。
+
+`tasks` 声明临时任务 ID、标签、轮询间隔、截止时间和超时提示。
+`ui.tasks.poll/cancel` 通过 `plugin_ui_task_command` 按 Profile 连接与插件身份调用。
+应用级运行时保留首次任务 scope，跳过重叠读取并隔离迟到结果，面板关闭不取消已开始任务。
+`action.cancelTasks` 在用户确认后、RPC 前撤销已知任务，`cancelledTasks` 同步服务端取消结果，
+共享账号从其他 Profile 停止时仍使用任务最初的 scope。
+
+`notices` 可提供常驻提示、复制内容和受限的 SMS/Email 数字语音描述。
+`announce` 在点击调用栈准备音频，语音失败保留验证码并另行提示。
+`refresh` 仅引用无表单视图已声明的非提交动作。
+可选 `ui.profile.status` 通过 `plugin_ui_profiles` 批量返回每个 Profile 的语义 tone 与 label，
+每批最多 200 个，宿主不解释业务状态。
 
 ### 6.1 代理 `proxy.provider`
 
@@ -194,14 +244,14 @@ WebView 的通用 `plugin_call` 不开放此原生启动方法。
 
 ### 6.2 地址生成 `address.generator`
 
-地址生成插件把公开地址查询与资料生成放在插件进程里，页面只负责展示与复制。
+地址生成插件在 desktop-v2 中只处理地图选点资料生成与本地保存，公开地址查询已移除。
 当前实现见[地址生成器插件](19-address-generator-plugin.md)，契约要点：
 
-- 城市必须来自插件自己的白名单，页面不能把任意坐标变成上游查询。
-- 上游失败按原因上报（`RATE_LIMITED` / `TIMEOUT` / `UNAVAILABLE`），不返回空列表冒充"该区域没有地址"。
-- 生成结果只存在于页面内存；插件不为它建表，也不写入私有目录。
-- 唯一被持久化的是地图 Key，保存在插件私有目录的 `secrets.json`（明文，0600），
-  因为页面必须把它交给 Google Maps SDK；它不是服务端凭据。
+- 城市目录用于地图定位；地图 SDK 解析建筑级完整地址，不猜门牌或邮编。
+- firstname、lastname、username 与地址各字段独立展示和复制。
+- 主程序通过 `VITE_GOOGLE_MAPS_API_KEY` 构建注入浏览器 Key，不由用户填写，也不通过 RPC 下发给插件。
+- 插件持有已保存地址，显式保存成功后才能显示已保存；账号关联使用保存返回的规范资料。
+- 缺少构建 Key 时仅地图不可用，地址列表与本地操作不伪造结果。
 
 ### 6.3 共享货源 `supply.catalog`
 
@@ -574,3 +624,28 @@ AdsPower 编辑和插件代理尚不可用；支持声明、源码映射和真�
 同步插件不直接读取浏览器目录，也不解释账号与代理字段。
 完整格式与恢复约束见[窗口加密迁移](28-window-transfer.md)，
 具体插件协议见[窗口同步插件](29-window-sync-plugin.md)。
+
+## desktop-v2 导航图标（2026-11-21）
+
+插件可在 manifest 中声明 `ui.navigation.icon`，与 Profile 表格入口分别授权：
+
+```ts
+ui: {
+  protocolVersion: 1,
+  navigation: {
+    icon: { viewBox: '0 0 24 24', paths: ['M3 6h18v12H3z M3 7l9 6 9-6'] },
+  },
+}
+```
+
+`navigation` 与 `profileTable` 都是可选字段，但 `ui` 至少提供其中一个。
+没有 `profileTable` 时不能声明非空 `services`；导航图标不授权 Profile 状态读取、面板或跨插件调用。
+原有 Profile 表格入口仍需在 capabilities 和 granted 中声明相应业务能力。
+路径固定使用 24 × 24 viewBox、1–8 条有界 SVG 路径，仅接受路径字符和 ASCII 空白；
+拒绝 HTML、SVG 文本、URL、事件代码、额外颜色与脚本字段。
+应用以统一线宽和 `currentColor` 绘制，复用 NavItem 的亮暗主题、焦点和折叠提示。
+侧栏与已安装插件列表读取同一份目录元数据；没有图标的包继续使用通用图形。
+
+第一方 11 个插件的图形维护在各自 `nexus.plugin.ts` 内，宿主不维护插件 ID 到图标的硬编码名单。
+更新顺序必须为支持新清单结构的宿主、再更新插件包；本轮未构建、安装或发布任何包。
+已有同版本发行包不能因源码被修改就宣称支持新字段，正式发行仍须分配实际版本并核对最低核心版本。

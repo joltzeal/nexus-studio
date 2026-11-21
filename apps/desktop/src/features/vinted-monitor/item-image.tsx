@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ImageOff, Loader2 } from 'lucide-react'
+import { ImageOff, Loader2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { vintedImageCache } from './image-cache'
 

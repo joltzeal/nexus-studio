@@ -4,6 +4,17 @@
 架构见[Ecom Agent 架构](44-sales-agent-architecture.md)，实施与验证证据见
 [实施审计](45-sales-agent-implementation-audit.md)及[质量记录](09-quality-and-testing.md)。
 
+2026-11-21：desktop-v2 已增加完整 Ecom Agent 页面源码，包含创建任务、运行记录和待处理与审查。
+模型、执行、预算、通知和保留设置从右上角进入，使用应用 UI Kit 和主题。
+分配区域左侧为商品、右侧为当前 Workspace 的 Profile；搜索和枚举筛选使用 Input、Select，
+分页和表格常规操作使用带说明的图标按钮。草稿、模板、冻结素材、未知提交核对和清理保护规则均保留。
+商品发布历史、账号观察和 Profile 详情可进入各自的 Agent 运行记录。
+新旧前端不混用；下面的旧版本号属于历史记录。本轮未执行构建、安装或真实平台操作。
+
+同一 Workspace 内可从预检或任务跳到商品、账号、Profile 处理资料，再返回继续原表单。
+未确认提交仍保留原 operationId，不能因页面跳转重新创建一个任务。
+切换 Workspace 会清空该页面临时分配与弹窗；Rust 中已保存的历史不会删除。
+
 本次页面配套主程序为 `0.1.31`，插件为 Ecom Agent `1.1.1`、
 商品管理 `1.1.0` 和 Vinted 账号池 `1.5.0`。
 插件展示名为 `Ecom Agent`，使用机器人图标；内部标识仍为 `studio.sales-agent`。

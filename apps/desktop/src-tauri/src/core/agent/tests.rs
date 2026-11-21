@@ -29,7 +29,7 @@ fn id() -> String {
 }
 fn fixture() -> (TempDir, AgentStore) {
     let temp = tempfile::tempdir().unwrap();
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     (temp, store)
 }
 
@@ -55,7 +55,7 @@ fn archived_publication_blocks_same_account_but_allows_other_account() {
     let mut original = snapshot();
     let product_id = id();
     original.products.push(json!({"id":product_id}));
-    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
     db.execute(
         "INSERT INTO agent_archived_publications(operation_id,product_id,result_json)
          VALUES(?1,?2,?3)",
@@ -174,7 +174,7 @@ fn batch_intent_is_durable_idempotent_and_private() {
     let snap = snapshot();
     let (batch, job, input) = create(&store, snap.clone(), Preset::InspectAccounts);
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     let repeated = reopened
         .create(
             &id(),
@@ -403,7 +403,7 @@ fn restart_restores_stable_owners_even_after_the_automation_actor_quiesces() {
     // Automation quiescence alone does not revoke the manual window guard.
     store.actor_stopped(&job, false).unwrap();
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     assert_eq!(
         reopened.retained_window_owners().unwrap(),
@@ -438,7 +438,7 @@ mod window_ownership {
             WindowService::with_runtime(
                 root.join("profiles"),
                 None,
-                LicenseStore::new(root.join("nexus.sqlite")).unwrap(),
+                LicenseStore::new(root.join("raccoon.sqlite")).unwrap(),
                 RuntimePaths::development(),
             )
             .unwrap(),
@@ -446,7 +446,7 @@ mod window_ownership {
     }
 
     fn connection(root: &Path, endpoint: &str) -> BrowserConnection {
-        ConnectionStore::new(root.join("nexus.sqlite"))
+        ConnectionStore::new(root.join("raccoon.sqlite"))
             .unwrap()
             .save(ConnectionInput {
                 id: None,
@@ -487,7 +487,7 @@ mod window_ownership {
     ) -> (Arc<PluginHost>, Arc<AgentService>) {
         let host = Arc::new(PluginHost::open(root.join("host"), vec![]).unwrap());
         let service = AgentService::new(
-            root.join("nexus.sqlite"),
+            root.join("raccoon.sqlite"),
             root.join("artifacts"),
             &host,
             windows,
@@ -510,6 +510,7 @@ mod window_ownership {
                     name: "Changed by manual operation".into(),
                     proxy_mode: record.proxy_mode,
                     proxy: record.proxy.clone(),
+                    proxy_id: record.proxy_id.clone(),
                     proxy_plugin: record.proxy_plugin.clone(),
                     proxy_endpoint: record.proxy_endpoint,
                     settings: record.settings.clone(),
@@ -617,7 +618,7 @@ mod window_ownership {
         let snapshot = window_snapshot(&previous, &connection, "42");
         let (batch, job, _) = create(&store, snapshot.clone(), Preset::InspectAccounts);
         claim(&store, &job);
-        let operations = OperationStore::new(temp.path().join("nexus.sqlite"));
+        let operations = OperationStore::new(temp.path().join("raccoon.sqlite"));
         let mut operation = operations
             .prepare(
                 &id(),
@@ -686,7 +687,7 @@ mod window_ownership {
             drop(previous);
             let restored_windows = windows(temp.path());
             let (host, service) = coordinator(temp.path(), &restored_windows);
-            let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+            let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
             db.execute_batch(trigger).unwrap();
 
             let requested_at = super::super::now_ms();
@@ -774,7 +775,7 @@ mod window_ownership {
             claim(&store, &job);
             claim(&store, &target_job);
             store.control_job(&job, ControlAction::Cancel).unwrap();
-            let operations = OperationStore::new(temp.path().join("nexus.sqlite"));
+            let operations = OperationStore::new(temp.path().join("raccoon.sqlite"));
             operations
                 .prepare(
                     &id(),
@@ -953,7 +954,7 @@ fn failed_products_without_external_intent_can_be_reassigned_after_isolation() {
     snap.products = vec![product()];
     let (_, job, _) = create(&store, snap.clone(), Preset::PostListing);
     claim(&store, &job);
-    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
     db.execute(
         "UPDATE agent_jobs SET state='failed',phase='preflight_failed' WHERE id=?1",
         [&job],
@@ -1081,7 +1082,7 @@ fn expiration_cannot_free_an_actor_or_reassign_its_resources() {
     let (_, job1, _) = create(&store, snap.clone(), Preset::InspectAccounts);
     let (_, job2, _) = create(&store, snap, Preset::InspectAccounts);
     let claimed = claim(&store, &job1);
-    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
     db.execute("UPDATE agent_jobs SET lease_until=0 WHERE id=?1", [&job1])
         .unwrap();
     assert!(
@@ -1145,7 +1146,7 @@ fn prepared_actions_are_single_submission_and_restart_keeps_unknown_locked() {
         "unknown"
     );
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     assert_eq!(reopened.job(&job).unwrap().state, "result_unknown");
     reopened
@@ -1669,7 +1670,7 @@ mod checkpoint_history {
             written_bytes += state.to_string().len();
         }
         assert!(written_bytes > 32 * 1024 * 1024);
-        let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+        let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
         let (checkpoints, checkpoint_bytes, pending, pending_bytes) = usage(&db, &job);
         assert_eq!((checkpoints, pending), (8, 8));
         assert!(checkpoint_bytes + pending_bytes < 2 * 1024 * 1024);
@@ -1704,7 +1705,7 @@ mod checkpoint_history {
             .unwrap();
         drop(db);
         drop(store);
-        let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+        let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
         store.recover().unwrap();
         store.actor_stopped(&job, false).unwrap();
         store
@@ -1772,7 +1773,7 @@ mod checkpoint_history {
             put(&store, &scope, step, &json!({"step":step}));
             writes(&store, &scope, step, &json!({"step":step}));
         }
-        let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+        let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
         assert_eq!(usage(&db, &job).0, 8);
         let saved: String = db
             .query_row(
@@ -1814,7 +1815,7 @@ mod checkpoint_history {
         assert_eq!(get(&store, &other_scope, None), other_tuple);
         drop(db);
         drop(store);
-        let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+        let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
         for (method, payload) in [
             (
                 "agent.checkpoint.put",
@@ -1860,7 +1861,7 @@ mod checkpoint_history {
             let (temp, store) = fixture();
             let (_, job, _) = create(&store, snapshot(), Preset::InspectAccounts);
             let scope = claim(&store, &job).scope.unwrap();
-            let mut db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+            let mut db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
             let large =
                 json!({"description":"d".repeat(6000),"profileEvidence":"e".repeat(90_000)});
             legacy_history(&mut db, &job, 350, &large);
@@ -1895,7 +1896,7 @@ mod checkpoint_history {
         let (temp, store) = fixture();
         let (_, job, _) = create(&store, snapshot(), Preset::InspectAccounts);
         let scope = claim(&store, &job).scope.unwrap();
-        let mut db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+        let mut db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
         legacy_history(&mut db, &job, 10, &json!({"baseline":["retained"]}));
         let value = json!("\u{754c}".repeat(32_760));
         let tx = db.transaction().unwrap();
@@ -1940,7 +1941,7 @@ mod checkpoint_history {
             let (temp, store) = fixture();
             let (_, job, _) = create(&store, snapshot(), Preset::InspectAccounts);
             let scope = claim(&store, &job).scope.unwrap();
-            let mut db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+            let mut db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
             legacy_history(&mut db, &job, 10, &json!({"baseline":["retained"]}));
             let before: Vec<Value> = (1..=10)
                 .map(|step| get(&store, &scope, Some(step)))
@@ -2304,7 +2305,7 @@ fn failed_sql_commit_does_not_create_a_confirmed_action_without_its_outbox() {
     store
         .action_submitting(scope, "fixture-generation", &operation)
         .unwrap();
-    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
     db.execute_batch("CREATE TRIGGER fixture_fail_outbox BEFORE INSERT ON agent_publication_outbox BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
     let result = listing_result(&job, 0);
     let publication = validate_confirmation(&job, &operation, &result)

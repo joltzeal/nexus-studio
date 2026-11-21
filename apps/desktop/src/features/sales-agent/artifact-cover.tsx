@@ -1,4 +1,4 @@
-import { ImageOff } from 'lucide-react'
+import { ImageOff } from '@/components/icons'
 import { Skeleton } from '@/components/ui/skeleton'
 import { previewAgentArtifact } from './api'
 import { useAgentQuery } from './use-query'

@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -21,14 +21,45 @@ const platforms = {
 }
 const platform = platforms[target]
 if (!platform) throw new Error(`Unsupported desktop target: ${target}`)
+const executable = join(
+  binaries,
+  `node-${target}${platform[0].startsWith('win-') ? '.exe' : ''}`,
+)
+const runtimePackage = join(runtime, 'browser-runtime/package.json')
+
+async function hasInterruptedStage() {
+  if (!existsSync(executable) || !existsSync(runtimePackage)) return false
+  try {
+    const [runtimeEntries, binaryEntries, packageJson] = await Promise.all([
+      readdir(runtime),
+      readdir(binaries),
+      readFile(runtimePackage, 'utf8'),
+    ])
+    return (
+      runtimeEntries.length === 1 &&
+      runtimeEntries[0] === 'browser-runtime' &&
+      binaryEntries.length === 1 &&
+      binaryEntries[0] === basename(executable) &&
+      JSON.parse(packageJson).name === '@nexus/browser-runtime'
+    )
+  } catch {
+    return false
+  }
+}
+
 if (
   (await readFile(new URL('../.node-version', import.meta.url), 'utf8')).trim() !==
   '24.18.0'
 ) {
   throw new Error('Review the bundled Node version before changing .node-version')
 }
-if ((existsSync(runtime) || existsSync(binaries)) && !existsSync(marker)) {
+const interruptedStage = await hasInterruptedStage()
+if ((existsSync(runtime) || existsSync(binaries)) && !existsSync(marker) && !interruptedStage) {
   throw new Error('Refusing to replace runtime files not created by this script')
+}
+if (interruptedStage) {
+  await rm(runtime, { recursive: true, force: true })
+  await rm(binaries, { recursive: true, force: true })
 }
 
 const version = '24.18.0'
@@ -69,10 +100,6 @@ try {
     await rm(binaries, { recursive: true, force: true })
   }
   await mkdir(binaries, { recursive: true })
-  const executable = join(
-    binaries,
-    `node-${target}${platform[0].startsWith('win-') ? '.exe' : ''}`,
-  )
   await copyFile(source, executable)
   if (!platform[0].startsWith('win-')) await chmod(executable, 0o755)
   await mkdir(runtime, { recursive: true })

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ProductSummary } from '@nexus/plugin-contracts/products'
-import { Loader2 } from 'lucide-react'
+import { Loader2 } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   AlertDialog,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Check, ChevronsUpDown, Search } from 'lucide-react'
+import { Check, ChevronsUpDown, Search } from '@/components/icons'
 import { cn } from 'cn'
 
 import { Button } from '@/components/ui/button'

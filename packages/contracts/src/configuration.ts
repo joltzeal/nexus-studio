@@ -36,8 +36,8 @@ const networkProxySchema = z
   })
 export const ConfigurationArchiveSchema = z
   .strictObject({
-    format: z.literal('nexus-configuration'),
-    schemaVersion: z.literal(1),
+    format: z.literal('raccoon-configuration'),
+    schemaVersion: z.literal(2),
     exportedAt: z.iso.datetime(),
     preferences: PreferencesSchema.nullable(),
     networkProxy: networkProxySchema.nullable(),

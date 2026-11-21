@@ -14,6 +14,9 @@ export function browserSettings(overrides: Partial<WindowSettings> = {}): Window
     locale: '',
     viewport: 'default',
     fingerprintSeed: 42,
+    aliasEngine: null,
+    operatingSystem: 'host',
+    cpuCores: null,
     startUrl: '',
     ...overrides,
   }

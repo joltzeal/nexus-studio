@@ -1,4 +1,4 @@
-import { Clock3, Loader2, RefreshCw, X } from 'lucide-react'
+import { Clock3, Loader2, RefreshCw, X } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { canonicalPhone } from './accounts-bridge'

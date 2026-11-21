@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AgentBatchCreateSchema,
+  AgentAccountSnapshotSchema,
   AgentJobStateSchema,
   AgentScopeSchema,
   AgentSettingsSchema,
@@ -11,6 +12,18 @@ const uuid = (index: number) =>
   `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
 
 describe('sales Agent boundaries', () => {
+  it('preserves unknown account status in the immutable Agent snapshot', () => {
+    const account = {
+      accountId: uuid(1),
+      bindingRevision: uuid(2),
+      account: 'fixture@example.invalid',
+      status: 'unknown',
+      homepageUrl: '',
+      platformUserId: '123',
+    }
+    expect(AgentAccountSnapshotSchema.parse(account).status).toBe('unknown')
+  })
+
   const modelSettings = {
     decision: {
       baseUrl: 'https://decision.example.invalid',

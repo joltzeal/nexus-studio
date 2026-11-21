@@ -40,7 +40,7 @@ export function MailboxImportDialog({
     phone: '',
     emailOtpUrl: '',
     smsOtpUrl: '',
-    status: 'active',
+    status: 'unknown',
     homepageUrl: '',
     note: '',
   })

@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react'
+import { Trash2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   Field,

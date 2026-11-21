@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { LayoutGrid, List, Loader2 } from 'lucide-react'
+import { LayoutGrid, List, Loader2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { publishedText, type Product } from './types'
 import { SupplyImage } from './supply-image'

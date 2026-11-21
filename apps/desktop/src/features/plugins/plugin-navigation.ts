@@ -24,12 +24,26 @@ export const initialPluginNavigation: PluginNavigationState = {
   catalogError: false,
 }
 
+export const placeholderPages = {
+  search: '搜索',
+  proxy: '代理',
+  fingerprints: '指纹',
+  extensions: '扩展',
+  bookmarks: '书签',
+  automation: '自动化',
+  proxyshard: 'ProxyShard',
+  running: '运行中',
+  direct: '无代理',
+  recent: '最近使用',
+  recycle: '回收站',
+} as const
+
 export function pluginPageValue(id: string): string {
   return `plugin:${id}`
 }
 
 function accessiblePage(page: string, plugins: PluginView[]): string {
-  if (['spaces', 'groups', 'plugins', 'settings'].includes(page)) return page
+  if (['spaces', 'groups', 'plugins', 'settings'].includes(page) || page in placeholderPages) return page
   return plugins.some((plugin) => pluginPageValue(plugin.id) === page) ? page : 'plugins'
 }
 

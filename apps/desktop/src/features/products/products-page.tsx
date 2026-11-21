@@ -17,14 +17,13 @@ import {
   RefreshCw,
   Trash2,
   Upload,
-} from 'lucide-react'
+} from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -205,7 +204,6 @@ export function ProductsWorkspace() {
             <CardTitle>
               <h1 id="products-heading">商品</h1>
             </CardTitle>
-            <CardDescription>管理商品资料和图片，供后续工作流选用。</CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" disabled={loading} onClick={refresh}>

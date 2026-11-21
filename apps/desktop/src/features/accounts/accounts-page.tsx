@@ -16,7 +16,7 @@ import {
   Trash2,
   Unlink,
   Upload,
-} from 'lucide-react'
+} from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

@@ -166,7 +166,7 @@ fn message_upgrade_extracts_exact_pending_evidence_and_preserves_journals_once()
     upgrade_on_next_open(&store);
     drop(store);
 
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     let scope = job.scope.as_ref().unwrap();
     let receipt = store.action_get(scope, &unknown).unwrap();
     assert_eq!(receipt["state"], "unknown");
@@ -228,7 +228,7 @@ fn message_upgrade_extracts_exact_pending_evidence_and_preserves_journals_once()
         )
         .unwrap();
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert_eq!(store.action_get(scope, &unknown).unwrap(), receipt);
     let after: String = store
         .open()
@@ -265,7 +265,7 @@ fn message_upgrade_never_invents_missing_or_mismatched_recovery_evidence() {
         }
         upgrade_on_next_open(&store);
         drop(store);
-        let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+        let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
         let receipt = store
             .action_get(job.scope.as_ref().unwrap(), &operation)
             .unwrap();
@@ -331,7 +331,7 @@ fn upgrade_resets_unjournaled_message_and_inspection_graphs_under_existing_contr
                 .unwrap();
             upgrade_on_next_open(&store);
             drop(store);
-            let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+            let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
             let migrated = store.job(&job.id).unwrap();
             assert_eq!(migrated.state, "paused");
             assert_eq!(migrated.steps, 0);
@@ -381,8 +381,8 @@ fn message_migration_failure_rolls_back_evidence_graph_deletion_pins_and_marker(
         )
         .unwrap();
     drop(store);
-    assert!(AgentStore::new(temp.path().join("nexus.sqlite")).is_err());
-    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    assert!(AgentStore::new(temp.path().join("raccoon.sqlite")).is_err());
+    let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
     let counts: (u32, u32, u32, bool, bool) = db
         .query_row(
             "SELECT (SELECT COUNT(*) FROM agent_checkpoints WHERE job_id=?1),
@@ -414,7 +414,7 @@ fn message_migration_failure_rolls_back_evidence_graph_deletion_pins_and_marker(
     db.execute_batch("DROP TRIGGER reject_message_migration;")
         .unwrap();
     drop(db);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     let mut expected = journal_before;
     expected[0]["state"] = json!("unknown");
     assert_eq!(journal(&store, &job.id), expected);
@@ -429,7 +429,7 @@ fn permanent_message_reconciliation_can_scan_after_last_confirmation_until_termi
     checkpoint(&store, &job, &old_state(1, "124"));
     upgrade_on_next_open(&store);
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     store.recover().unwrap();
     store.actor_stopped(&job.id, false).unwrap();
     store
@@ -554,7 +554,7 @@ fn startup_graph_reset_preserves_terminal_states_and_listing_outbox() {
     let listing_journal = journal(&store, &listing.id);
     upgrade_on_next_open(&store);
     drop(store);
-    let store = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let store = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert_eq!(store.job(&job.id).unwrap().state, "completed");
     assert!(store.job(&job.id).unwrap().reconcile_only);
     assert_eq!(
@@ -604,7 +604,7 @@ fn message_recovery_bounds_preserve_last_index_and_reject_unrepresentable_frozen
         }
         upgrade_on_next_open(&store);
         drop(store);
-        let reopened = AgentStore::new(temp.path().join("nexus.sqlite"));
+        let reopened = AgentStore::new(temp.path().join("raccoon.sqlite"));
         if valid {
             let store = reopened.unwrap();
             let receipt = store
@@ -615,7 +615,7 @@ fn message_recovery_bounds_preserve_last_index_and_reject_unrepresentable_frozen
             assert_eq!(receipt["messageRecovery"]["text"], "x".repeat(4000));
         } else {
             assert!(reopened.is_err());
-            let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+            let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
             let count: u32 = db
                 .query_row(
                     "SELECT COUNT(*) FROM agent_checkpoints WHERE job_id=?1",

@@ -8,7 +8,7 @@ import {
   Repeat,
   Trash2,
   UserPlus,
-} from 'lucide-react'
+} from '@/components/icons'
 
 import {
   AlertDialog,

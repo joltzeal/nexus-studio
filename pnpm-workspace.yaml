@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - apps/desktop-v2/ui-kit
   - packages/*
   - plugins/*
 
@@ -10,6 +11,7 @@ ignoredOptionalDependencies:
   - socks-proxy-agent
 
 allowBuilds:
+  '@parcel/watcher': true
   esbuild: true
   workerd: true
 

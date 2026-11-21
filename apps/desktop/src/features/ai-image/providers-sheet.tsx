@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { CheckCircle2, Loader2, Plus, Trash2, XCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, Plus, Trash2, XCircle } from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

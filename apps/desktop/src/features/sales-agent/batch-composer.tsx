@@ -6,7 +6,7 @@ import {
   type SetStateAction,
 } from 'react'
 import type { AgentBatchView } from '@nexus/plugin-sdk/agent'
-import { ChevronLeft, ChevronRight, GripVertical, Plus, RefreshCw, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, GripVertical, Plus, RefreshCw, X } from '@/components/icons'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   AlertDialog,
@@ -69,8 +69,11 @@ const PROVIDERS: Record<string, string> = {
   cloakbrowser: '内置浏览器',
   adspower: 'AdsPower',
   bitbrowser: '比特浏览器',
+  aliasmode: 'AliasMode',
+  shardbrowser: 'ShardBrowser',
 }
 const ACCOUNT_STATES: Record<NonNullable<AgentTarget['account']>['status'], string> = {
+  unknown: '未知',
   active: '正常',
   pending: '待验证',
   limited: '受限',

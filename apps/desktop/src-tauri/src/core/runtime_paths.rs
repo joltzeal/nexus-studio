@@ -41,10 +41,10 @@ impl RuntimePaths {
         };
         let browser_script = resources.join("runtime/browser-runtime/dist/profile-runner.js");
         let network_preload = resources.join("runtime/browser-runtime/dist/network-preload.js");
-        // Plugins are installed from the store, so the bundle only has to carry
-        // the Node binary and the browser adapter.
-        if !node.is_file() || !browser_script.is_file() || !network_preload.is_file() {
-            return Err("安装包缺少浏览器运行时，请重新安装 Raccoon".into());
+        // The experimental browser runner is checked by its provider when used;
+        // missing it must not prevent external providers and plugins from starting.
+        if !node.is_file() || !network_preload.is_file() {
+            return Err("安装包缺少通用运行时，请重新安装 Raccoon".into());
         }
         Ok(Self {
             node,
@@ -60,7 +60,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn bundled_runtime_requires_node_and_browser_runner() {
+    fn bundled_runtime_requires_node_and_network_preload_only() {
         let root = tempfile::tempdir().unwrap();
         let contents = root.path().join("Raccoon.app/Contents");
         let resources = if cfg!(windows) {
@@ -93,8 +93,11 @@ mod tests {
         fs::remove_file(&node).unwrap();
         assert!(RuntimePaths::bundled(&resources, &executable).is_err());
         fs::write(&node, b"node").unwrap();
+        fs::remove_file(&runner).unwrap();
         let resolved = RuntimePaths::bundled(&resources, &executable).unwrap();
         assert_eq!(resolved.node, node);
         assert_eq!(resolved.browser_script, runner);
+        fs::remove_file(&resolved.network_preload).unwrap();
+        assert!(RuntimePaths::bundled(&resources, &executable).is_err());
     }
 }

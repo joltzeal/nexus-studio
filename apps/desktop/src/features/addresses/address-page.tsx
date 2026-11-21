@@ -7,7 +7,7 @@ import {
   RefreshCw,
   Settings2,
   Trash2,
-} from 'lucide-react'
+} from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
@@ -262,10 +262,6 @@ export function AddressPage({ plugin, hostAvailable }: AddressPageProps) {
           <h1 className="page-heading" id="addresses-heading">
             地址生成器
           </h1>
-          <p className="page-description">
-            从 OpenStreetMap 公开地址生成收货资料，或在 Google 地图上选点。
-            选定的地址可保存，并关联到账号池中的账号。
-          </p>
         </div>
         <div className="section-actions">
           <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
@@ -575,9 +571,6 @@ function PageHeader({ children }: { children: ReactNode }) {
           <h1 className="page-heading" id="addresses-heading">
             地址生成器
           </h1>
-          <p className="page-description">
-            从 OpenStreetMap 公开地址生成收货资料，或在 Google 地图上选点。
-          </p>
         </div>
       </div>
       {children}

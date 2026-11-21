@@ -7,7 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -90,9 +90,6 @@ export function NetworkProxyPage() {
       <h1 className="page-heading" id="network-proxy-heading">
         应用代理
       </h1>
-      <p className="page-description">
-        用于应用请求和插件的常规网络请求。单个窗口的浏览器代理在窗口配置中设置。
-      </p>
       <Card>
         <CardHeader>
           <CardTitle>连接方式</CardTitle>
@@ -141,9 +138,6 @@ export function NetworkProxyPage() {
                         setError(null)
                       }}
                     />
-                    <FieldDescription>
-                      支持 http、https 和 socks5，填写主机及端口。
-                    </FieldDescription>
                   </>
                 ) : null}
                 {error ? <FieldError role="alert">{error}</FieldError> : null}

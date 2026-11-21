@@ -4,7 +4,8 @@ import { Toaster } from '@/components/ui/toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { startAppUpdateNotifications } from '@/lib/platform/app-update-notifications'
 import { startAgentDeepLinks } from '@/lib/platform/agent-deep-links'
-import './App.css'
+import './legacy-pages.css'
+import './theme.css'
 
 const salesAgentDemo =
   import.meta.env.DEV && window.location.pathname === '/__demo/sales-agent'

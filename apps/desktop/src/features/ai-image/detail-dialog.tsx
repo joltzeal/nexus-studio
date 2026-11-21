@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { Copy, Download, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Download, Loader2, RefreshCw, Trash2 } from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

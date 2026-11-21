@@ -937,7 +937,7 @@ fn restart_recovers_preparation_and_transition_drains_without_retained_windows()
                 .unwrap();
         }
         drop(store);
-        let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+        let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
         reopened.recover().unwrap();
         assert!(reopened.retained_window_owners().unwrap().is_empty());
         assert_eq!(reopened.job(&id).unwrap().state, "queued");
@@ -1192,7 +1192,7 @@ fn failed_strong_record_keeps_durable_halt_without_fabricating_saved_account_sta
         "No successful account write was claimed"
     );
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert!(reopened.require_dispatch_writes(&id).is_err());
     assert!(!reopened.job_needs_login(&id).unwrap());
 }
@@ -1243,7 +1243,7 @@ fn migration_normalizes_facts_once_and_pauses_an_old_unsubmitted_browser_owner()
            json_set(snapshot_json,'$.account.observation',json('{\"bankAccounts\":{\"records\":[]}}')),
            '$.products[0].platformFacts');").unwrap();
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     let migrated = reopened.job(&id).unwrap();
     assert_eq!(migrated.mode, AgentMode::ContentPreparation);
@@ -1264,7 +1264,7 @@ fn migration_normalizes_facts_once_and_pauses_an_old_unsubmitted_browser_owner()
     assert!(!reopened.has_browser_ownership(&id).unwrap());
     reopened.control_job(&id, ControlAction::Resume).unwrap();
     drop(reopened);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert_eq!(reopened.job(&id).unwrap().state, "queued");
 }
 
@@ -1337,7 +1337,7 @@ fn migration_pauses_unsubmitted_and_preserves_submitted_and_confirmed_journals()
     .unwrap();
     drop(db);
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     assert_eq!(reopened.job(&unsubmitted).unwrap().state, "paused");
     assert_eq!(

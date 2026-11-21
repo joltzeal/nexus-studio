@@ -126,7 +126,7 @@ fn migration_extracts_pending_recovery_once_and_keeps_journals_and_authority() {
     make_legacy(&store);
     drop(store);
 
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     let scope = job.scope.as_ref().unwrap();
     let unknown = reopened.action_get(scope, &unknown_operation).unwrap();
@@ -227,7 +227,7 @@ fn migration_extracts_pending_recovery_once_and_keeps_journals_and_authority() {
         )
         .unwrap();
     drop(reopened);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     assert_eq!(
         reopened.action_get(scope, &unknown_operation).unwrap(),
         unknown
@@ -251,7 +251,7 @@ fn migration_uses_checkpoint_amendments_without_inventing_missing_baselines() {
     checkpoint(&store, &job, LATEST_CHECKPOINT, &state);
     make_legacy(&store);
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     let reply = reopened
         .action_get(job.scope.as_ref().unwrap(), &operation)
         .unwrap();
@@ -295,7 +295,7 @@ fn migration_extracts_orphan_pending_writes_without_choosing_conflicting_values(
         }
         make_legacy(&store);
         drop(store);
-        let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+        let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
         let reply = reopened
             .action_get(job.scope.as_ref().unwrap(), &operation)
             .unwrap();
@@ -340,7 +340,7 @@ fn already_migrated_missing_evidence_stays_unknown_and_new_actions_have_no_recov
         )
         .unwrap();
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     let reply = reopened
         .action_get(job.scope.as_ref().unwrap(), &operation)
         .unwrap();
@@ -373,8 +373,8 @@ fn recovery_extraction_failure_rolls_back_checkpoint_deletion_and_migration_mark
         )
         .unwrap();
     drop(store);
-    assert!(AgentStore::new(temp.path().join("nexus.sqlite")).is_err());
-    let db = open_database(&temp.path().join("nexus.sqlite")).unwrap();
+    assert!(AgentStore::new(temp.path().join("raccoon.sqlite")).is_err());
+    let db = open_database(&temp.path().join("raccoon.sqlite")).unwrap();
     let checkpoints: u32 = db
         .query_row("SELECT COUNT(*) FROM agent_checkpoints", [], |r| r.get(0))
         .unwrap();
@@ -526,7 +526,7 @@ fn migrated_reconcile_only_job_cannot_reenter_preparation_after_confirmation() {
         .unwrap();
     make_legacy(&store);
     drop(store);
-    let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+    let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
     reopened.recover().unwrap();
     reopened.actor_stopped(&job.id, false).unwrap();
     reopened
@@ -691,7 +691,7 @@ fn accepted_strong_observation_halts_durably_even_when_account_storage_fails() {
         );
         assert!(!service.store.job_needs_login(&scope.job_id).unwrap());
         assert!(!service.storage_halted.load(Ordering::Acquire));
-        let reopened = AgentStore::new(temp.path().join("nexus.sqlite")).unwrap();
+        let reopened = AgentStore::new(temp.path().join("raccoon.sqlite")).unwrap();
         assert!(reopened.require_dispatch_writes(&scope.job_id).is_err());
     }
 }

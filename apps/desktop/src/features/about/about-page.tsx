@@ -1,14 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle } from '@/components/icons'
 import { getAppInfo, type AppInfo } from '@/lib/platform/app-info'
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
@@ -45,11 +38,9 @@ export function AboutPage() {
       <h1 className="page-heading" id="about-heading">
         关于 Raccoon
       </h1>
-      <p className="page-description">多账户浏览器环境管理工作区。</p>
       <Card>
         <CardHeader>
           <CardTitle>Raccoon</CardTitle>
-          <CardDescription>多账户窗口管理应用。</CardDescription>
         </CardHeader>
         <CardContent>
           {failed ? (
@@ -75,29 +66,11 @@ export function AboutPage() {
                   />
                 </>
               ) : null}
-              <Separator />
-              <div className="about-row">
-                <dt>运行方式</dt>
-                <dd>桌面端原生窗口 / 网页预览</dd>
-              </div>
-              <div className="about-row">
-                <dt>偏好存储</dt>
-                <dd>当前 WebView / 浏览器</dd>
-              </div>
-              <div className="about-row">
-                <dt>窗口数据</dt>
-                <dd>桌面端保存为独立窗口；网页预览不可创建</dd>
-              </div>
             </dl>
           ) : (
             <Skeleton className="h-40 w-full" aria-label="正在读取应用信息" />
           )}
         </CardContent>
-        <CardFooter>
-          <p className="m-0 text-sm text-muted-foreground">
-            激活码和窗口配置保存在本机数据库；受信任插件由独立进程运行。
-          </p>
-        </CardFooter>
       </Card>
     </section>
   )

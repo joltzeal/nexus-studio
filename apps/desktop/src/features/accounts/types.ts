@@ -5,7 +5,7 @@ export const ACCOUNTS_PLUGIN_ID = 'studio.vinted-accounts'
 export const ACCOUNTS_CAPABILITY = 'account.pool'
 
 export type LoginMethod = 'email' | 'google' | 'apple' | 'facebook'
-export type AccountStatus = 'active' | 'pending' | 'limited' | 'blocked'
+export type AccountStatus = 'unknown' | 'active' | 'pending' | 'limited' | 'blocked'
 
 export interface AssignedAccountAddress extends Profile {
   linkedAt: string
@@ -196,6 +196,7 @@ export const LOGIN_METHODS: readonly LoginMethod[] = [
 ]
 
 export const ACCOUNT_STATUSES: readonly AccountStatus[] = [
+  'unknown',
   'active',
   'pending',
   'limited',
@@ -210,6 +211,7 @@ export const LOGIN_METHOD_LABELS: Record<LoginMethod, string> = {
 }
 
 export const STATUS_LABELS: Record<AccountStatus, string> = {
+  unknown: '未知',
   active: '正常',
   pending: '待验证',
   limited: '受限',
@@ -224,7 +226,7 @@ export const EMPTY_ACCOUNT: Omit<AccountInput, 'id'> = {
   emailOtpUrl: '',
   smsOtpUrl: '',
   note: '',
-  status: 'active',
+  status: 'unknown',
   homepageUrl: '',
 }
 

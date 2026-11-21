@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 fn service_with_cached_license(root: &Path, fetch: &str) -> (LicenseService, LicenseStore) {
-    let store = LicenseStore::new(root.join("nexus.sqlite")).unwrap();
+    let store = LicenseStore::new(root.join("raccoon.sqlite")).unwrap();
     store
         .save_validated("cb_fixture_previous", "free", None)
         .unwrap();
@@ -106,7 +106,7 @@ fn successful_online_validation_saves_the_key_and_cleans_temporary_cache() {
 #[test]
 fn invalid_license_does_not_replace_the_current_database_value() {
     let root = tempfile::tempdir().unwrap();
-    let store = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let store = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
     store
         .save_validated("cb_previous_key", "free", None)
         .unwrap();
@@ -131,7 +131,7 @@ fn invalid_license_does_not_replace_the_current_database_value() {
 #[test]
 fn valid_license_persists_only_after_validation_result_is_valid() {
     let root = tempfile::tempdir().unwrap();
-    let store = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let store = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
 
     persist_validated_license(
         &store,

@@ -1,0 +1,30 @@
+{
+  "productName": "Raccoon Preview",
+  "version": "0.2.0-preview.1",
+  "identifier": "com.raccoon.preview",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Raccoon Preview",
+        "width": 1360,
+        "height": 940,
+        "minWidth": 960,
+        "minHeight": 700
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["raccoon-preview"]
+      }
+    }
+  }
+}

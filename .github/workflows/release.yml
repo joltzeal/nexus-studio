@@ -1,4 +1,4 @@
-name: Desktop release
+name: Desktop release (0.2)
 
 on:
   push:
@@ -17,18 +17,19 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
-            tauriArgs: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.release.macos.conf.json
+            tauriArgs: --config src-tauri/tauri.v2.conf.json --config src-tauri/tauri.release.v2.conf.json --config src-tauri/tauri.release.macos.conf.json
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            tauriArgs: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.release.macos.conf.json
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            tauriArgs: --config src-tauri/tauri.release.conf.json
+            tauriArgs: --config src-tauri/tauri.v2.conf.json --config src-tauri/tauri.release.v2.conf.json --config src-tauri/tauri.release.macos.conf.json
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Check public source boundary
         run: node scripts/check-public-boundary.mjs
+      - name: Verify release tag
+        run: |
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.v2.conf.json').version")
+          test "$GITHUB_REF_NAME" = "v$version"
       - uses: pnpm/action-setup@v4
         with:
           version: 11.17.0
@@ -39,7 +40,9 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - run: pnpm build:v2
+        env:
+          VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
       - run: pnpm runtime:stage
       - name: Run native regression tests
         run: pnpm rust:test
@@ -66,11 +69,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Raccoon v__VERSION__'
           releaseBody: |
-            - 实验室可启用 AliasMode 接入，窗口管理支持创建、启动、停止及删除 AliasMode 浏览器环境。当前仅支持默认指纹和直连，需在本机运行 AliasMode。
-            - 商品库简化动态表单属性，Ecom Agent 上架预检允许选填分类、成色、品牌和尺码；修复已归档商品的账号范围预检。
-            - 插件包独立发布至 R2，应用安装包不内置插件；在插件中心检查更新。
+            - Raccoon 0.2 工作台：比特浏览器官网接入常开，实验室接入需手动开启。
+            - 应用启动后静默检查并下载更新，下载完成后在侧边栏显示升级按钮。
+            - 插件包独立发布至 R2，应用安装包不内置插件。
 
-            macOS 安装包未公证，Windows 安装包未配置系统代码签名；更新包继续使用固定签名公钥校验。
+            当前工作流只构建 macOS，安装包未公证；更新包继续使用固定签名公钥校验。
+            0.2 使用独立数据目录，0.1 数据迁移尚待后续工具。共存安装时请将两个 Raccoon.app 放在不同目录。
           releaseDraft: true
           includeUpdaterJson: true
           args: ${{ matrix.tauriArgs }}
@@ -88,4 +92,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+        run: |
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          mkdir -p "$RUNNER_TEMP/v2-update-channel"
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/v2-update-channel"
+          if ! gh release view raccoon-v2 >/dev/null 2>&1; then
+            gh release create raccoon-v2 \
+              --title 'Raccoon v2 updater channel' \
+              --notes 'Stable updater manifest for Raccoon 0.2 releases.' \
+              --prerelease \
+              --latest=false
+          fi
+          gh release upload raccoon-v2 "$RUNNER_TEMP/v2-update-channel/latest.json" --clobber

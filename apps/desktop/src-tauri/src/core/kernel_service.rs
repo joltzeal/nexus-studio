@@ -3,6 +3,7 @@ use super::network_proxy::NetworkProxyStore;
 use super::runtime_paths::RuntimePaths;
 use super::window_store::PreparedBinary;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -333,6 +334,30 @@ impl KernelService {
         self.run_prepare("download", version)
     }
 
+    pub fn remove(&self, version: &str) -> Result<(), String> {
+        validate_kernel_version(version)?;
+        let _guard = self
+            .operation
+            .try_lock()
+            .map_err(|_| "内核正在准备，请稍后重试")?;
+        let root = self.license_store.browser_cache_dir();
+        let target = root.join(format!("chromium-{version}-pro"));
+        let metadata = fs::symlink_metadata(&target).map_err(|_| "本机没有该内核版本")?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || target
+                .canonicalize()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+                != root.canonicalize().ok()
+        {
+            return Err("内核目录无效，已阻止删除".into());
+        }
+        fs::remove_dir_all(&target).map_err(|_| "无法删除内核文件，请检查文件是否被占用")?;
+        *self.inventory.lock().map_err(|_| "内核状态不可用")? = None;
+        Ok(())
+    }
+
     fn run_prepare(&self, action: &str, version: Option<&str>) -> Result<PreparedBinary, String> {
         if let Some(version) = version {
             validate_kernel_version(version)?;
@@ -591,6 +616,23 @@ pub async fn kernel_download(
     .map_err(|_| KernelFailure::operation("内核下载任务中断"))?
 }
 
+#[tauri::command]
+pub async fn kernel_delete(
+    state: State<'_, Arc<super::window_service::WindowService>>,
+    version: String,
+) -> Result<(), super::browser::provider::BrowserError> {
+    let service = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        service.remove_managed_kernel(
+            super::browser::provider::BrowserProviderId::CloakBrowser,
+            &version,
+            super::aliasmode_kernels::AliasEngine::Chromium,
+        )
+    })
+    .await
+    .map_err(|_| super::browser::provider::BrowserError::new("task_interrupted", "内核删除中断"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,7 +714,7 @@ process.stdout.write(JSON.stringify({cacheDir: process.env.CLOAKBROWSER_CACHE_DI
         )
         .unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "node".into(),
                 browser_script: script,
@@ -708,7 +750,7 @@ if(action==='latest') {
         )
         .unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "node".into(),
                 browser_script: script,
@@ -742,7 +784,7 @@ process.exitCode=1;"#,
         )
         .unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "node".into(),
                 browser_script: script,
@@ -768,7 +810,7 @@ process.exitCode=1;"#,
         )
         .unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "node".into(),
                 browser_script: script,
@@ -790,7 +832,7 @@ process.exitCode=1;"#,
     fn invalid_version_is_rejected_before_starting_the_adapter() {
         let root = tempfile::tempdir().unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "missing-node".into(),
                 browser_script: root.path().join("missing.cjs"),
@@ -817,7 +859,7 @@ process.exitCode=1;"#,
     fn package_metadata_uses_only_a_managed_versioned_directory() {
         let root = tempfile::tempdir().unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "node".into(),
                 browser_script: root.path().join("unused.cjs"),
@@ -863,7 +905,7 @@ process.exitCode = 1;"#,
         )
         .unwrap();
         let service = KernelService::new(
-            LicenseStore::new(root.path().join("nexus.sqlite")).unwrap(),
+            LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap(),
             RuntimePaths {
                 node: "node".into(),
                 browser_script: script,

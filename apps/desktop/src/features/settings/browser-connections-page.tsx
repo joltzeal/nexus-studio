@@ -47,14 +47,12 @@ import {
   browserConnectionDefaults,
   connectBrowser,
 } from '@/lib/platform/browser-connection-setup'
-import { useAliasModeEnabled } from './lab-preferences'
 
 export function BrowserConnectionsPage() {
-  const aliasModeEnabled = useAliasModeEnabled()
   const native = browserWindowsAvailable()
   const [connections, setConnections] = useState<BrowserConnection[]>([])
   const [editing, setEditing] = useState<
-    BrowserConnection | 'adspower' | 'bitbrowser' | 'aliasmode' | null
+    BrowserConnection | 'adspower' | 'bitbrowser' | null
   >(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
@@ -92,15 +90,13 @@ export function BrowserConnectionsPage() {
       saved,
     ])
     setEditing(null)
+    window.dispatchEvent(new Event('raccoon:connections-change'))
   }
   return (
     <section className="collection-page" aria-label="浏览器接入设置">
       <div className="section-intro">
         <div>
           <h2 className="page-heading">浏览器接入</h2>
-          <p className="page-description">
-            内置浏览器可直接使用，也可连接本机已登录的其他浏览器。
-          </p>
         </div>
         <div className="section-actions">
           <Button
@@ -111,17 +107,13 @@ export function BrowserConnectionsPage() {
             刷新
           </Button>
           {BROWSER_PROVIDERS.filter(
-            (provider) =>
-              provider.id !== 'cloakbrowser' &&
-              (provider.id !== 'aliasmode' || aliasModeEnabled),
+            (provider) => provider.id === 'adspower' || provider.id === 'bitbrowser',
           ).map((provider) => (
             <Button
               key={provider.id}
               variant="outline"
               disabled={!native}
-              onClick={() =>
-                setEditing(provider.id as 'adspower' | 'bitbrowser' | 'aliasmode')
-              }
+              onClick={() => setEditing(provider.id as 'adspower' | 'bitbrowser')}
             >
               连接 {provider.name}
             </Button>
@@ -140,37 +132,42 @@ export function BrowserConnectionsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {connections.map((connection) => (
-            <TableRow key={connection.id}>
-              <TableCell>
-                {BROWSER_PROVIDERS.find((row) => row.id === connection.providerId)?.name}
-              </TableCell>
-              <TableCell>
-                {connection.name}
-                <small className="block text-muted-foreground">
-                  {connection.endpoint || '随 Raccoon 提供'}
-                </small>
-              </TableCell>
-              <TableCell>
-                <Badge variant={connection.enabled ? 'default' : 'secondary'}>
-                  {connection.providerId === 'cloakbrowser'
-                    ? '已内置'
-                    : !connection.scopeConfirmed
+          {connections
+            .filter(
+              (connection) =>
+                connection.providerId === 'adspower' ||
+                connection.providerId === 'bitbrowser',
+            )
+            .map((connection) => (
+              <TableRow key={connection.id}>
+                <TableCell>
+                  {
+                    BROWSER_PROVIDERS.find((row) => row.id === connection.providerId)
+                      ?.name
+                  }
+                </TableCell>
+                <TableCell>
+                  {connection.name}
+                  <small className="block text-muted-foreground">
+                    {connection.endpoint}
+                  </small>
+                </TableCell>
+                <TableCell>
+                  <Badge variant={connection.enabled ? 'default' : 'secondary'}>
+                    {!connection.scopeConfirmed
                       ? '待连接'
                       : connection.enabled
                         ? '已连接'
                         : '未启用'}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-right">
-                {connection.providerId !== 'cloakbrowser' ? (
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right">
                   <Button variant="outline" onClick={() => setEditing(connection)}>
                     {connection.scopeConfirmed && connection.enabled ? '设置' : '连接'}
                   </Button>
-                ) : null}
-              </TableCell>
-            </TableRow>
-          ))}
+                </TableCell>
+              </TableRow>
+            ))}
         </TableBody>
       </Table>
       <Dialog
@@ -208,11 +205,10 @@ export function BrowserConnectionEditor({
   onClose,
 }: {
   connection: BrowserConnection | null
-  initialProvider?: Exclude<BrowserProviderId, 'cloakbrowser'>
+  initialProvider?: Extract<BrowserProviderId, 'adspower' | 'bitbrowser'>
   onUpdated: (connection: BrowserConnection) => void
   onClose: () => void
 }) {
-  const aliasModeEnabled = useAliasModeEnabled()
   const [input, setInput] = useState<SaveBrowserConnectionInput>(() =>
     connection
       ? {
@@ -326,11 +322,7 @@ export function BrowserConnectionEditor({
               value={input.providerId}
               disabled={pending || !!input.id}
               onValueChange={(value) => {
-                if (
-                  value === 'adspower' ||
-                  value === 'bitbrowser' ||
-                  value === 'aliasmode'
-                ) {
+                if (value === 'adspower' || value === 'bitbrowser') {
                   setInput(browserConnectionDefaults(value))
                   setGroups([])
                   setGroupError(null)
@@ -343,11 +335,7 @@ export function BrowserConnectionEditor({
               </SelectTrigger>
               <SelectContent>
                 {BROWSER_PROVIDERS.filter(
-                  (row) =>
-                    row.id !== 'cloakbrowser' &&
-                    (row.id !== 'aliasmode' ||
-                      aliasModeEnabled ||
-                      input.providerId === 'aliasmode'),
+                  (row) => row.id === 'adspower' || row.id === 'bitbrowser',
                 ).map((row) => (
                   <SelectItem key={row.id} value={row.id}>
                     {row.name}

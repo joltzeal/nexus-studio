@@ -1,8 +1,42 @@
 # 原生窗口创建与运行
 
+## 0.2 ShardBrowser Profile Cookie 与运行窗口操作
+
+`browser_window_set_pin({ connectionId, id, pinned })` 返回保存后的布尔值，
+在 SQLite 即时事务中修改 `settings.shardbrowser._meta.pinned`。支持运行中的
+ShardBrowser Profile，仍受生命周期占用、Agent 租约和待确认操作检查约束。
+旧的 0.2 开发记录没有完整指纹设置时，从该 Profile 固定快照补齐后保存。
+
+`shardbrowser_cookies_import({ connectionId, profileId, cookies })` 将 Cookie
+写入该连接中 Raccoon UUID 对应的 Chromium SQLite 数据库，返回已提交条数。
+导入要求已停止且没有待确认操作，并使用与 SDK 启动相同的 OS Profile 锁。
+整批校验和写入位于一次 SQLite 事务，已有其他 Cookie 保留。
+支持官方 JSON 字段及 `httpOnly`、`sameSite`、`expirationDate` 别名。
+
+`shardbrowser_cookies_export_to_file({ connectionId, profileId, path })` 支持
+已停止或经核对运行中的 Profile，从只读事务导出一致快照，并原子保存为 JSON。
+未创建 Cookie 数据库的 Profile 导出空数组。无法解密的记录使导出返回错误。
+保存对话框使用已初始化的 dialog 插件和 `dialog:allow-save` 权限。
+用户选择的导出文件位于应用数据目录之外，防止覆盖受管数据库或 Profile 收据。
+
+数据库和 v10 加密格式沿用 ShardBrowser 官方 `space/local/cookies.rs`。
+macOS 使用 mock-password CBC，Linux 使用 basic-store CBC，SDK 启动显式传入
+相应参数。Windows 使用 Local State 中经 DPAPI 包装的 AES-GCM 密钥。
+已有其他密钥或格式的 Cookie 解密失败时返回结构化错误。此处不提供旧密钥迁移。
+这些格式用于浏览器兼容，不能作为应用凭据安全存储的承诺。
+
+`shardbrowser_profile_cdp({ connectionId, profileId })` 返回实际运行窗口的
+`port`、`http_url` 和 `web_socket_debugger_url`，先核对进程身份和 loopback
+端点。`shardbrowser_profile_focus` 使用同样参数，通过 CDP 恢复窗口并激活页面。
+操作与生命周期、Agent 占用和待确认操作互斥。前端使用显式原生 API 适配。
+
+以上为源码接入，Rust 编译、数据库与真实浏览器运行、Windows DPAPI 和跨平台
+窗口聚焦均待验证。本轮只执行格式与无产物 TypeScript 检查，不执行测试或内核启动。
+
 ## 数据边界
 
-窗口管理页通过 Rust 的统一 `WindowService` 管理内置 CloakBrowser、AdsPower 和比特浏览器。
+窗口管理页通过 Rust 的统一 `WindowService` 管理内置 CloakBrowser、AdsPower 和比特浏览器；
+其中比特浏览器连接 `builtin-bitbrowser` 随数据库初始化建立并保持启用，是默认 Workspace。
 `WindowStore` 将 `WindowRecord` schema 2 写入应用数据目录的 `nexus.sqlite`，
 前端不直接读写 SQLite，也不使用 localStorage 保存窗口。
 
@@ -79,6 +113,8 @@ Raccoon 备注等本地元数据不受该配置编辑能力开关限制。
 创建命令返回已保存窗口；网页预览无法调用原生后端。
 
 内置窗口创建前需要在内置浏览器设置中保存并验证 CloakBrowser 激活码。
+随机指纹种子生成在官方 README 的 `10000–99999` 区间；手填种子也按同一区间校验，
+创建后不可修改。可选的单项指纹覆写保存在 `settings.cloakbrowser`，空项不下发。
 `browser_window_create` 的 `input.kernelVersion` 省略或为 `null` 时准备最新稳定包，
 显式选择时只复用或获取指定完整包，版本或修订不符即失败。
 `WindowRecord.kernel_version` 保存包含 SDK 包修订的完整版本，

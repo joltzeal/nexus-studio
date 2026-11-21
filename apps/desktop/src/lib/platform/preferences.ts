@@ -4,7 +4,7 @@ import {
   type Preferences,
 } from '@nexus/contracts'
 
-const PREVIEW_STORAGE_KEY = 'nexus.preview.preferences.v1'
+const PREVIEW_STORAGE_KEY = 'raccoon.preferences.v2'
 
 export interface PreferenceRepository {
   load(): Promise<Preferences>
@@ -28,7 +28,6 @@ export function createPreviewRepository(storage: Storage): PreferenceRepository 
 }
 
 export function getPreferenceRepository(): PreferenceRepository {
-  // The desktop shell uses the same demo adapter until native storage is implemented.
   return createPreviewRepository(window.localStorage)
 }
 

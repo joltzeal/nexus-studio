@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react'
-import { Check, Minus, TriangleAlert } from 'lucide-react'
+import { Check, Minus, TriangleAlert } from '@/components/icons'
 import { Badge } from '@/components/ui/badge'
 import {
   Popover,

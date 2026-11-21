@@ -272,7 +272,7 @@ export const AccountAgentSnapshotResultSchema = z.strictObject({
   account: z.strictObject({
     accountId: z.uuid(),
     account: z.string().min(1).max(190),
-    status,
+    status: status.or(z.literal('unknown')),
     homepageUrl: z.string().max(2048),
     platformUserId: platformUserId.nullable(),
     observation: AccountAgentObservationSchema.nullable(),

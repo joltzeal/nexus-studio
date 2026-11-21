@@ -28,8 +28,8 @@ const target = (
 const archive = (
   plugins: ConfigurationArchive['plugins'] = [],
 ): ConfigurationArchive => ({
-  format: 'nexus-configuration',
-  schemaVersion: 1,
+  format: 'raccoon-configuration',
+  schemaVersion: 2,
   exportedAt: '2026-11-11T00:00:00.000Z',
   preferences: { ...DEFAULT_PREFERENCES },
   networkProxy: { mode: 'direct', url: null },
@@ -44,7 +44,8 @@ const pluginEntry = (id: string) => ({
 
 it('rejects unknown file versions, duplicate plugins, and invalid top-level settings', () => {
   for (const value of [
-    { ...archive(), schemaVersion: 2 },
+    { ...archive(), schemaVersion: 1 },
+    { ...archive(), format: 'nexus-configuration', schemaVersion: 1, preferences: null },
     archive([pluginEntry('studio.ai-image'), pluginEntry('studio.ai-image')]),
     { ...archive(), preferences: { theme: 'invalid' } },
     { ...archive(), networkProxy: { mode: 'manual', url: 'invalid' } },

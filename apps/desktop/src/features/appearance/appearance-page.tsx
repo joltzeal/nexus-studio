@@ -1,4 +1,4 @@
-import { Check, Monitor, Moon, RotateCcw, Sun } from 'lucide-react'
+import { Check, Monitor, Moon, RotateCcw, Sun } from '@/components/icons'
 import {
   AccentColorSchema,
   DEFAULT_PREFERENCES,
@@ -13,12 +13,10 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from '@/components/ui/card'
 import {
   Field,
   FieldContent,
-  FieldDescription,
   FieldGroup,
   FieldLabel,
   FieldTitle,
@@ -62,14 +60,12 @@ export function AppearancePage() {
         <h1 className="page-heading" id="appearance-heading">
           外观设置
         </h1>
-        <p className="page-description">调整主题、强调色和界面密度。</p>
       </section>
 
       <section className="preferences-column" aria-label="主题偏好">
         <Card className="preference-panel">
           <CardHeader>
             <CardTitle>界面偏好</CardTitle>
-            <CardDescription>设置会自动保存在当前浏览器。</CardDescription>
           </CardHeader>
           <CardContent>
             <FieldGroup className="preference-fields">
@@ -151,7 +147,6 @@ export function AppearancePage() {
               <Field orientation="horizontal">
                 <FieldContent>
                   <FieldLabel htmlFor="reduced-motion">减少动态效果</FieldLabel>
-                  <FieldDescription>关闭非必要的界面动画</FieldDescription>
                 </FieldContent>
                 <Switch
                   id="reduced-motion"
@@ -177,19 +172,12 @@ export function AppearancePage() {
             <AlertDialogHeader>
               <AlertDialogTitle>恢复默认外观？</AlertDialogTitle>
               <AlertDialogDescription>
-                将恢复浅色、钴蓝与标准密度，工作区名称会保留。
+                将恢复浅色、钴蓝与标准密度。
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() =>
-                  void update({
-                    ...DEFAULT_PREFERENCES,
-                    workspaceName: preferences.workspaceName,
-                  })
-                }
-              >
+              <AlertDialogAction onClick={() => void update({ ...DEFAULT_PREFERENCES })}>
                 恢复外观
               </AlertDialogAction>
             </AlertDialogFooter>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, RefreshCw, Upload } from 'lucide-react'
+import { Download, RefreshCw, Upload } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { FieldError } from '@/components/ui/field'
@@ -189,8 +189,8 @@ export function ConfigurationPage() {
           ? [
               {
                 id: 'preferences',
-                name: '外观与工作区',
-                detail: '主题、密度、工作区名称',
+                name: '外观偏好',
+                detail: '主题、密度和动态效果',
                 available: true,
               },
             ]
@@ -217,8 +217,8 @@ export function ConfigurationPage() {
     : [
         {
           id: 'preferences',
-          name: '外观与工作区',
-          detail: '主题、密度、工作区名称',
+          name: '外观偏好',
+          detail: '主题、密度和动态效果',
           available: true,
         },
         {
@@ -249,7 +249,6 @@ export function ConfigurationPage() {
       <div className="section-intro">
         <div>
           <h2 className="page-heading">配置导入导出</h2>
-          <p className="page-description">保存应用与插件配置，在另一台设备上导入。</p>
         </div>
         <div className="section-actions">
           <Button

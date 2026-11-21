@@ -70,6 +70,9 @@ const settings: WindowSettings = {
   locale: '',
   viewport: 'default',
   fingerprintSeed: null,
+  aliasEngine: null,
+  operatingSystem: 'host',
+  cpuCores: null,
   startUrl: '',
 }
 let hooks: KernelHookHarness

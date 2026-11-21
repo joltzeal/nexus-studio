@@ -1,5 +1,5 @@
 import { useMemo, useState, type DragEvent } from 'react'
-import { ArrowLeftRight, ArrowRight, GripVertical, Monitor, Undo2, X } from 'lucide-react'
+import { ArrowLeftRight, ArrowRight, GripVertical, Monitor, Undo2, X } from '@/components/icons'
 import { cn } from 'cn'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

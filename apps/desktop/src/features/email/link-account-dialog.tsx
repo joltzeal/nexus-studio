@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Link2, Loader2, Unlink } from 'lucide-react'
+import { Link2, Loader2, Unlink } from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

@@ -22,14 +22,25 @@ export type {
 } from '@nexus/contracts/browser'
 
 export const BROWSER_PROVIDERS: { id: BrowserProviderId; name: string }[] = [
-  { id: 'cloakbrowser', name: '内置浏览器' },
   { id: 'adspower', name: 'AdsPower' },
   { id: 'bitbrowser', name: '比特浏览器' },
+  { id: 'cloakbrowser', name: 'CloakBrowser' },
   { id: 'aliasmode', name: 'AliasMode' },
+  { id: 'shardbrowser', name: 'ShardBrowser' },
 ]
 
 export function listBrowserConnections() {
   return readBrowser(BrowserConnectionSchema.array(), 'browser_connection_list')
+}
+
+export function setManagedCloakBrowser(enabled: boolean) {
+  return readBrowser(BrowserConnectionSchema, 'browser_managed_cloakbrowser_set', { enabled })
+}
+export function setManagedAliasMode(enabled: boolean) {
+  return readBrowser(BrowserConnectionSchema, 'browser_managed_aliasmode_set', { enabled })
+}
+export function setManagedShardBrowser(enabled: boolean) {
+  return readBrowser(BrowserConnectionSchema, 'browser_managed_shardbrowser_set', { enabled })
 }
 
 export function saveBrowserConnection(input: SaveBrowserConnectionInput) {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, PackagePlus } from 'lucide-react'
+import { Loader2, PackagePlus } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toast'
 import { importGenerationProduct, type AiProductImportProgress } from './ai-import'

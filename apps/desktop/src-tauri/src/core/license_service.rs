@@ -2,7 +2,7 @@ use super::kernel_service::run_preparation;
 use super::license_store::{LicenseStatus, LicenseStore};
 use super::network_proxy::NetworkProxyStore;
 use super::runtime_paths::RuntimePaths;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -13,6 +13,13 @@ pub struct ValidatedLicense {
     pub valid: bool,
     pub plan: String,
     pub expires: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LicenseSeats {
+    active: Option<u32>,
+    limit: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -54,6 +61,36 @@ impl LicenseService {
         let license = self.validate_with_official_sdk(key)?;
         persist_validated_license(&self.store, key, &license)?;
         self.store.status()
+    }
+
+    fn seats(&self) -> Result<LicenseSeats, String> {
+        let key = self
+            .store
+            .license_key()?
+            .ok_or("请先保存 CloakBrowser 激活码")?;
+        let mut command = Command::new(&self.runtime.node);
+        if let Some(network) = &self.network {
+            network
+                .get()?
+                .apply_to_node(&mut command, &self.runtime.network_preload)?;
+        }
+        command
+            .arg(&self.runtime.browser_script)
+            .arg("license-seats")
+            .env("CLOAKBROWSER_LICENSE_KEY", key)
+            .env("CLOAKBROWSER_CACHE_DIR", &self.cache_dir)
+            .env("CLOAKBROWSER_AUTO_UPDATE", "false")
+            .env_remove("CLOAKBROWSER_VERSION")
+            .env_remove("CLOAKBROWSER_BINARY_PATH")
+            .env_remove("CLOAKBROWSER_DOWNLOAD_URL")
+            .env_remove("CLOAKBROWSER_RELEASE_CHANNEL");
+        let unavailable = "无法查询 CloakBrowser 授权席位，请检查应用网络后重试";
+        let output = run_preparation(&mut command, Duration::from_secs(15), None)
+            .map_err(|_| unavailable)?;
+        if !output.status.success() {
+            return Err(unavailable.into());
+        }
+        serde_json::from_slice(&output.stdout).map_err(|_| unavailable.into())
     }
 
     fn validate_with_official_sdk(&self, key: &str) -> Result<ValidatedLicense, String> {
@@ -129,6 +166,16 @@ pub fn license_status(
     state: tauri::State<'_, Arc<LicenseService>>,
 ) -> Result<LicenseStatus, String> {
     state.status()
+}
+
+#[tauri::command]
+pub async fn license_seats(
+    state: tauri::State<'_, Arc<LicenseService>>,
+) -> Result<LicenseSeats, String> {
+    let state = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || state.seats())
+        .await
+        .map_err(|_| "授权席位查询中断".to_string())?
 }
 
 #[tauri::command]

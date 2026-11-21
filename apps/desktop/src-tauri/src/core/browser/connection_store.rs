@@ -1,4 +1,7 @@
-use super::provider::{BUILTIN_CONNECTION_ID, BrowserError, BrowserProviderId, BrowserResult};
+use super::provider::{
+    ALIASMODE_CONNECTION_ID, BITBROWSER_CONNECTION_ID, BITBROWSER_ENDPOINT, BUILTIN_CONNECTION_ID,
+    BrowserError, BrowserProviderId, BrowserResult,
+};
 use crate::core::database::open_database;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -45,29 +48,125 @@ fn conflict() -> BrowserError {
 impl ConnectionStore {
     pub fn new(path: PathBuf) -> BrowserResult<Self> {
         let store = Self { path };
-        match store.get(BUILTIN_CONNECTION_ID) {
-            Ok(_) => {}
-            Err(error) if error.code == "connection_missing" => {
-                store.write(
-                    &BrowserConnection {
-                        id: BUILTIN_CONNECTION_ID.into(),
-                        provider_id: BrowserProviderId::CloakBrowser,
-                        name: "内置浏览器".into(),
-                        endpoint: String::new(),
-                        api_key: None,
-                        default_group_id: None,
-                        scope_label: "本机".into(),
-                        scope_id: Some(BUILTIN_CONNECTION_ID.into()),
-                        scope_confirmed: true,
-                        enabled: true,
-                        revision: 1,
-                    },
-                    None,
-                )?;
-            }
-            Err(error) => return Err(error),
-        }
+        store.list()?;
+        store.ensure_bitbrowser()?;
         Ok(store)
+    }
+    /// BitBrowser is the default provider: its built-in connection exists on a
+    /// blank install and cannot be switched off. Other providers stay opt-in.
+    fn ensure_bitbrowser(&self) -> BrowserResult<BrowserConnection> {
+        match self.get(BITBROWSER_CONNECTION_ID) {
+            Ok(current) if current.provider_id == BrowserProviderId::BitBrowser => {
+                let mut updated = current.clone();
+                if updated.endpoint.is_empty() {
+                    updated.endpoint = BITBROWSER_ENDPOINT.into();
+                }
+                if updated.scope_label.trim().is_empty() {
+                    updated.scope_label = "本机".into();
+                }
+                if updated.scope_id.is_none() {
+                    updated.scope_id = Some(BITBROWSER_CONNECTION_ID.into());
+                }
+                if !updated.enabled || !updated.scope_confirmed || updated != current {
+                    updated.enabled = true;
+                    updated.scope_confirmed = true;
+                    updated.revision = updated
+                        .revision
+                        .checked_add(1)
+                        .filter(|revision| i64::try_from(*revision).is_ok())
+                        .ok_or_else(|| storage("revision exhausted"))?;
+                    self.write(&updated, Some(&current))?;
+                }
+                Ok(updated)
+            }
+            Err(error) if error.code == "connection_missing" => {
+                let connection = BrowserConnection {
+                    id: BITBROWSER_CONNECTION_ID.into(),
+                    provider_id: BrowserProviderId::BitBrowser,
+                    name: "比特浏览器".into(),
+                    endpoint: BITBROWSER_ENDPOINT.into(),
+                    api_key: None,
+                    default_group_id: None,
+                    scope_label: "本机".into(),
+                    scope_id: Some(BITBROWSER_CONNECTION_ID.into()),
+                    scope_confirmed: true,
+                    enabled: true,
+                    revision: 1,
+                };
+                self.write(&connection, None)?;
+                Ok(connection)
+            }
+            Ok(_) => Err(BrowserError::new("scope_mismatch", "浏览器接入类型不匹配")),
+            Err(error) => Err(error),
+        }
+    }
+    pub fn set_managed_cloakbrowser(&self, enabled: bool) -> BrowserResult<BrowserConnection> {
+        self.set_managed(
+            BUILTIN_CONNECTION_ID,
+            BrowserProviderId::CloakBrowser,
+            "CloakBrowser",
+            enabled,
+        )
+    }
+    pub fn set_managed_aliasmode(&self, enabled: bool) -> BrowserResult<BrowserConnection> {
+        self.set_managed(
+            ALIASMODE_CONNECTION_ID,
+            BrowserProviderId::AliasMode,
+            "AliasMode Chromium",
+            enabled,
+        )
+    }
+    pub fn set_managed_shardbrowser(&self, enabled: bool) -> BrowserResult<BrowserConnection> {
+        self.set_managed(
+            super::provider::SHARDBROWSER_CONNECTION_ID,
+            BrowserProviderId::ShardBrowser,
+            "ShardBrowser",
+            enabled,
+        )
+    }
+    fn set_managed(
+        &self,
+        id: &str,
+        provider: BrowserProviderId,
+        name: &str,
+        enabled: bool,
+    ) -> BrowserResult<BrowserConnection> {
+        match self.get(id) {
+            Ok(current) if current.provider_id == provider => {
+                if current.enabled == enabled {
+                    return Ok(current);
+                }
+                let mut updated = current.clone();
+                updated.enabled = enabled;
+                updated.revision = updated
+                    .revision
+                    .checked_add(1)
+                    .filter(|revision| i64::try_from(*revision).is_ok())
+                    .ok_or_else(|| storage("revision exhausted"))?;
+                self.write(&updated, Some(&current))?;
+                Ok(updated)
+            }
+            Err(error) if error.code == "connection_missing" && enabled => {
+                let connection = BrowserConnection {
+                    id: id.into(),
+                    provider_id: provider,
+                    name: name.into(),
+                    endpoint: String::new(),
+                    api_key: None,
+                    default_group_id: None,
+                    scope_label: "本机".into(),
+                    scope_id: Some(id.into()),
+                    scope_confirmed: true,
+                    enabled: true,
+                    revision: 1,
+                };
+                self.write(&connection, None)?;
+                Ok(connection)
+            }
+            Err(error) if error.code == "connection_missing" => Err(error),
+            Ok(_) => Err(BrowserError::new("scope_mismatch", "浏览器接入类型不匹配")),
+            Err(error) => Err(error),
+        }
     }
     fn write(
         &self,
@@ -162,8 +261,13 @@ impl ConnectionStore {
             .collect()
     }
     pub fn save(&self, input: ConnectionInput) -> BrowserResult<BrowserConnection> {
-        if input.provider_id == BrowserProviderId::CloakBrowser {
-            return Err(BrowserError::new("invalid_config", "内置接入由应用管理"));
+        if matches!(
+            input.provider_id,
+            BrowserProviderId::CloakBrowser
+                | BrowserProviderId::AliasMode
+                | BrowserProviderId::ShardBrowser
+        ) {
+            return Err(BrowserError::unsupported("此实验接入由实验室管理"));
         }
         if input.name.trim().is_empty()
             || input.name.chars().count() > 80
@@ -253,7 +357,7 @@ impl ConnectionStore {
             default_group_id: input.default_group_id.filter(|id| !id.is_empty()),
             scope_label: input.scope_label.trim().into(),
             scope_id: previous.as_ref().and_then(|p| p.scope_id.clone()),
-            scope_confirmed: false,
+            scope_confirmed: input.provider_id == BrowserProviderId::BitBrowser,
             enabled,
             revision,
         };
@@ -302,11 +406,14 @@ impl ConnectionStore {
             .execute(
                 "UPDATE browser_connections
                  SET record_json=json_set(record_json,'$.scopeConfirmed',json('false'))
-                 WHERE id=?1 AND json_extract(record_json,'$.revision')=?2 AND provider<>?3",
+                 WHERE id=?1 AND json_extract(record_json,'$.revision')=?2 AND provider<>?3 AND provider<>?4 AND provider<>?5 AND provider<>?6",
                 params![
                     id,
                     revision,
-                    serde_json::to_string(&BrowserProviderId::CloakBrowser).map_err(storage)?
+                    serde_json::to_string(&BrowserProviderId::CloakBrowser).map_err(storage)?,
+                    serde_json::to_string(&BrowserProviderId::AliasMode).map_err(storage)?,
+                    serde_json::to_string(&BrowserProviderId::ShardBrowser).map_err(storage)?,
+                    serde_json::to_string(&BrowserProviderId::BitBrowser).map_err(storage)?
                 ],
             )
             .map_err(storage)?;
@@ -320,6 +427,14 @@ impl ConnectionStore {
     }
     pub fn activate(&self, id: &str) -> BrowserResult<BrowserConnection> {
         let record = self.get(id)?;
+        if matches!(
+            record.provider_id,
+            BrowserProviderId::CloakBrowser
+                | BrowserProviderId::AliasMode
+                | BrowserProviderId::ShardBrowser
+        ) {
+            return Err(BrowserError::unsupported("此实验接入由实验室管理"));
+        }
         let mut db = open_database(&self.path).map_err(storage)?;
         let tx = db.transaction().map_err(storage)?;
         let kind = serde_json::to_string(&record.provider_id).map_err(storage)?;
@@ -348,6 +463,65 @@ mod tests {
     }
 
     #[test]
+    fn fresh_workspace_starts_with_one_enabled_bitbrowser_connection() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
+        let connections = store.list().unwrap();
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].provider_id, BrowserProviderId::BitBrowser);
+        assert_eq!(connections[0].endpoint, BITBROWSER_ENDPOINT);
+        assert!(connections[0].enabled);
+        assert!(connections[0].scope_confirmed);
+        assert_eq!(store.get(BITBROWSER_CONNECTION_ID).unwrap(), connections[0]);
+        assert_eq!(
+            store.get(BUILTIN_CONNECTION_ID).unwrap_err().code,
+            "connection_missing"
+        );
+
+        let enabled = store.set_managed_cloakbrowser(true).unwrap();
+        assert!(enabled.enabled);
+        assert!(enabled.scope_confirmed);
+        assert_eq!(store.list().unwrap().len(), 2);
+        let disabled = store.set_managed_cloakbrowser(false).unwrap();
+        assert!(!disabled.enabled);
+        assert!(disabled.scope_confirmed);
+        assert_eq!(store.list().unwrap().len(), 2);
+        assert!(store.set_managed_cloakbrowser(true).unwrap().enabled);
+        assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn builtin_bitbrowser_is_reenabled_and_keeps_its_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("raccoon.sqlite");
+        let store = ConnectionStore::new(path.clone()).unwrap();
+        let mut input = input("本机");
+        input.id = Some(BITBROWSER_CONNECTION_ID.into());
+        input.provider_id = BrowserProviderId::BitBrowser;
+        input.name = "BitBrowser".into();
+        input.endpoint = "http://127.0.0.1:54346".into();
+        input.default_group_id = Some("group-1".into());
+        let saved = store.save(input).unwrap();
+        assert!(saved.scope_confirmed);
+        open_database(&path)
+            .unwrap()
+            .execute(
+                "UPDATE browser_connections SET enabled=0,record_json=json_set(record_json,'$.enabled',json('false')) WHERE id=?1",
+                [BITBROWSER_CONNECTION_ID],
+            )
+            .unwrap();
+
+        let reopened = ConnectionStore::new(path)
+            .unwrap()
+            .get(BITBROWSER_CONNECTION_ID)
+            .unwrap();
+        assert!(reopened.enabled);
+        assert!(reopened.scope_confirmed);
+        assert_eq!(reopened.endpoint, "http://127.0.0.1:54346");
+        assert_eq!(reopened.default_group_id.as_deref(), Some("group-1"));
+    }
+
+    #[test]
     fn initialization_propagates_corrupt_database_and_storage_errors() {
         let root = tempfile::tempdir().unwrap();
         let corrupt = root.path().join("corrupt.sqlite");
@@ -368,8 +542,11 @@ mod tests {
     #[test]
     fn initialization_rejects_corrupt_builtin_record_without_replacing_it() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
-        ConnectionStore::new(path.clone()).unwrap();
+        let path = root.path().join("raccoon.sqlite");
+        ConnectionStore::new(path.clone())
+            .unwrap()
+            .set_managed_cloakbrowser(true)
+            .unwrap();
         let db = open_database(&path).unwrap();
         db.execute(
             "UPDATE browser_connections SET record_json='{' WHERE id=?1",
@@ -394,7 +571,7 @@ mod tests {
     #[test]
     fn known_scope_label_cannot_be_changed_or_cleared_by_save_or_confirmation() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
         let store = ConnectionStore::new(path.clone()).unwrap();
         let saved = store.save(input("Account A")).unwrap();
         for label in ["Account B", ""] {
@@ -427,7 +604,7 @@ mod tests {
     #[test]
     fn first_confirmation_can_set_an_empty_label_and_preserves_known_scope_evidence() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
         let store = ConnectionStore::new(path.clone()).unwrap();
         let saved = store.save(input("")).unwrap();
         let confirmed = store
@@ -482,7 +659,7 @@ mod tests {
         use std::sync::{Arc, Barrier};
 
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
         let store = ConnectionStore::new(path.clone()).unwrap();
         let saved = store.save(input("")).unwrap();
         let barrier = Arc::new(Barrier::new(2));
@@ -523,7 +700,7 @@ mod tests {
     #[test]
     fn stale_invalidation_preserves_newer_connection_configuration_and_confirmation() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
         let store = ConnectionStore::new(path.clone()).unwrap();
         let mut original = input("Account A");
         original.api_key = Some("fixture-old-key".into());
@@ -570,7 +747,7 @@ mod tests {
     #[test]
     fn full_record_writes_reject_stale_save_and_confirmation_snapshots() {
         let root = tempfile::tempdir().unwrap();
-        let store = ConnectionStore::new(root.path().join("nexus.sqlite")).unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
         let observed = store.save(input("Account A")).unwrap();
         let mut delayed_save = observed.clone();
         delayed_save.name = "Delayed save".into();
@@ -599,7 +776,7 @@ mod tests {
     #[test]
     fn full_record_writes_cannot_restore_stale_enabled_state_at_the_same_revision() {
         let root = tempfile::tempdir().unwrap();
-        let store = ConnectionStore::new(root.path().join("nexus.sqlite")).unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
         let observed = store.save(input("Account A")).unwrap();
         let other = store.save(input("Account B")).unwrap();
         let mut delayed_save = observed.clone();
@@ -625,7 +802,7 @@ mod tests {
     #[test]
     fn confirmation_cannot_approve_a_configuration_revision_that_was_never_probed() {
         let root = tempfile::tempdir().unwrap();
-        let store = ConnectionStore::new(root.path().join("nexus.sqlite")).unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
         let probed = store.save(input("Account A")).unwrap();
         let mut changed = input("Account A");
         changed.id = Some(probed.id.clone());
@@ -651,7 +828,8 @@ mod tests {
     #[test]
     fn confirmation_reset_preserves_configuration_and_builtin_confirmation() {
         let root = tempfile::tempdir().unwrap();
-        let store = ConnectionStore::new(root.path().join("nexus.sqlite")).unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
+        store.set_managed_cloakbrowser(true).unwrap();
         let saved = store.save(input("Account A")).unwrap();
         let mut expected = store
             .confirm(&saved.id, "Account A", None, saved.revision)
@@ -670,7 +848,7 @@ mod tests {
     #[test]
     fn sqlite_revision_limit_preserves_exact_confirmation_and_invalidation() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("nexus.sqlite");
+        let path = root.path().join("raccoon.sqlite");
         let store = ConnectionStore::new(path.clone()).unwrap();
         let saved = store.save(input("Account A")).unwrap();
         open_database(&path)
@@ -708,7 +886,7 @@ mod tests {
     #[test]
     fn save_accepts_only_loopback_ip_addresses_or_localhost() {
         let root = tempfile::tempdir().unwrap();
-        let store = ConnectionStore::new(root.path().join("nexus.sqlite")).unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
         for endpoint in [
             "http://127.0.0.1:50325",
             "http://127.0.0.2:50325",
@@ -751,7 +929,7 @@ mod tests {
     #[test]
     fn confirmation_requires_a_bounded_nonempty_label() {
         let root = tempfile::tempdir().unwrap();
-        let store = ConnectionStore::new(root.path().join("nexus.sqlite")).unwrap();
+        let store = ConnectionStore::new(root.path().join("raccoon.sqlite")).unwrap();
         let saved = store.save(input("")).unwrap();
         for label in [" ".into(), "a".repeat(121)] {
             assert_eq!(

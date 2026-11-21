@@ -11,11 +11,11 @@ fn validate_content(content: &str) -> Result<(), String> {
     }
     let value: serde_json::Value =
         serde_json::from_str(content).map_err(|_| "配置文件不是有效 JSON")?;
-    if value.get("format").and_then(serde_json::Value::as_str) != Some("nexus-configuration")
+    if value.get("format").and_then(serde_json::Value::as_str) != Some("raccoon-configuration")
         || value
             .get("schemaVersion")
             .and_then(serde_json::Value::as_u64)
-            != Some(1)
+            != Some(2)
     {
         return Err("配置文件格式或版本不受支持".into());
     }
@@ -111,7 +111,7 @@ pub async fn configuration_file_import(
 mod tests {
     use super::*;
 
-    const VALID: &str = r#"{"format":"nexus-configuration","schemaVersion":1}"#;
+    const VALID: &str = r#"{"format":"raccoon-configuration","schemaVersion":2}"#;
 
     #[test]
     fn roundtrip_and_failed_validation_keep_existing_file() {
@@ -121,6 +121,8 @@ mod tests {
         assert_eq!(read_file(&path).unwrap(), VALID);
         for invalid in [
             "invalid",
+            r#"{"format":"raccoon-configuration","schemaVersion":1}"#,
+            r#"{"format":"nexus-configuration","schemaVersion":1}"#,
             r#"{"format":"nexus-configuration","schemaVersion":2}"#,
         ] {
             assert!(write_file(&path, invalid).is_err());

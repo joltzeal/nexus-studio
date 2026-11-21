@@ -1,15 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { RefreshCw, Save, Trash2 } from 'lucide-react'
+import { RefreshCw, Save, Trash2 } from '@/components/icons'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
@@ -85,7 +79,6 @@ export function SettingsPanel({
       <Card>
         <CardHeader>
           <CardTitle>账号状态</CardTitle>
-          <CardDescription>余额来自 SIM8 的 profile/info 接口。</CardDescription>
           <Button
             variant="ghost"
             size="sm"

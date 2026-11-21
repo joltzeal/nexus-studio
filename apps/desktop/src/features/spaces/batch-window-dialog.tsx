@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Loader2 } from 'lucide-react'
+import { Loader2 } from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -124,7 +124,7 @@ export function BatchWindowDialog({
     void withDeadline(
       Promise.all([
         listBrowserWindows(),
-        listGroups(),
+        Promise.all(BROWSER_PROVIDERS.map((provider) => listGroups(provider.id))),
         getLicenseStatus().catch(() => null),
         listBrowserConnections(),
         accountBindings(accounts),
@@ -134,7 +134,7 @@ export function BatchWindowDialog({
     ).then(
       ([profiles, groups, license, connections, boundAccountIds]) => {
         if (active) {
-          setContext({ profiles, groups, license, connections, boundAccountIds })
+          setContext({ profiles, groups: groups.flat(), license, connections, boundAccountIds })
           setConnectionId(
             (current) =>
               fixedConnectionId ??
@@ -440,7 +440,7 @@ export function BatchWindowDialog({
           key={selectedConnection.id}
           connection={selectedConnection}
           window={null}
-          groups={context.groups}
+          groups={context.groups.filter((group) => group.providerId === selectedConnection.providerId)}
           takenNames={context.profiles.map((profile) => profile.name)}
           licenseStatus={context.license}
           batch={{

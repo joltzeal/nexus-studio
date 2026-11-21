@@ -18,7 +18,7 @@ import {
   Store,
   Trash2,
   Users,
-} from 'lucide-react'
+} from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -390,9 +390,9 @@ export function PluginsPage() {
   }
 
   return (
-    <section className="collection-page page-reveal" aria-labelledby="plugins-heading">
-      <div className="section-intro">
-        <h1 className="page-heading" id="plugins-heading">
+    <section className="collection-page flex min-w-0 flex-col gap-3" aria-labelledby="plugins-heading">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-lg font-semibold leading-tight" id="plugins-heading">
           插件中心
         </h1>
         <div className="section-actions">

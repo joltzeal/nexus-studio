@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Check, Loader2, Pencil, X } from 'lucide-react'
+import { Check, Loader2, Pencil, X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FieldError } from '@/components/ui/field'

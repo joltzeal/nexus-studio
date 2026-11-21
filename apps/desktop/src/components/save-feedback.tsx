@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, LoaderCircle } from 'lucide-react'
+import { AlertCircle, CheckCircle2, LoaderCircle } from '@/components/icons'
 import { usePreferences } from '@/hooks/use-preferences'
 import { cn } from '@/lib/utils'
 

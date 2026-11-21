@@ -1,4 +1,4 @@
-import { Bookmark, Check, Copy, Link2, Trash2 } from 'lucide-react'
+import { Bookmark, Check, Copy, Link2, Trash2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { addressText, profileText, sourceLabel, streetLine, type Profile } from './types'
 

@@ -27,10 +27,11 @@ pub struct ProxyReference {
     pub config_handle: String,
     pub secret_ref: Option<String>,
 }
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -59,6 +60,7 @@ pub enum HostError {
     Process(ProcessError),
     Market(MarketError),
     License(LicenseError),
+    WorkspaceSource,
     NotFound,
 }
 
@@ -73,6 +75,7 @@ impl HostError {
             HostError::Process(error) => error.code(),
             HostError::Market(error) => error.code(),
             HostError::License(LicenseError::Unavailable | LicenseError::Storage) => "UNAVAILABLE",
+            HostError::WorkspaceSource => "INVALID_REQUEST",
             HostError::License(_) => "PERMISSION_DENIED",
         }
     }
@@ -88,6 +91,7 @@ impl HostError {
             HostError::Process(error) => error.message(),
             HostError::Market(error) => error.message(),
             HostError::License(error) => error.message().into(),
+            HostError::WorkspaceSource => "工作区源码插件由开发宿主直接加载".into(),
         }
     }
 
@@ -174,6 +178,9 @@ pub struct PluginView {
     /// installed yet, or the development copy an installed one is refreshed
     /// from. `None` when nothing on disk can supply it.
     pub source_directory: Option<String>,
+    pub ui: Option<manifest::PluginUi>,
+    pub installation: String,
+    pub runtime_generation: Option<String>,
 }
 
 /// One row of the configured store. `state` is derived by comparing the
@@ -225,6 +232,30 @@ pub struct PluginHost {
     market_watch: Mutex<Option<Supervisor>>,
     network: Option<(crate::core::network_proxy::NetworkProxyStore, PathBuf)>,
     license: PluginLicenseStore,
+    workspace_plugins: Mutex<HashMap<String, InstalledPlugin>>,
+    source_loader: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceManifestInventory {
+    plugins: Vec<WorkspaceManifestEntry>,
+    problems: Vec<WorkspaceManifestProblem>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceManifestEntry {
+    directory: PathBuf,
+    entry: PathBuf,
+    manifest: PluginManifest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceManifestProblem {
+    directory: PathBuf,
+    message: String,
 }
 
 /// Start/retry bookkeeping for one plugin.
@@ -262,7 +293,8 @@ impl PluginHost {
         dev_roots: Vec<(PathBuf, CandidateSource)>,
         node: PathBuf,
     ) -> Result<Self, HostError> {
-        let license_path = root.parent().unwrap_or(&root).join("nexus.sqlite");
+        let license_path =
+            crate::core::workspace_paths::database_path(root.parent().unwrap_or(&root));
         let license = PluginLicenseStore::new(license_path).map_err(HostError::License)?;
         let store = RegistryStore::new(root.join("registry.json"));
         let document = store.load().map_err(|error| match error {
@@ -287,8 +319,100 @@ impl PluginHost {
             attempts: Mutex::new(HashMap::new()),
             supervisor: Mutex::new(None),
             dev_roots,
+            workspace_plugins: Mutex::new(HashMap::new()),
+            source_loader: None,
         };
         Ok(host)
+    }
+
+    /// Adds unbuilt TypeScript workspace plugins to this debug host. The
+    /// source records stay in memory and never enter the installed registry.
+    pub fn with_workspace_source(mut self, plugin_root: PathBuf, source_loader: PathBuf) -> Self {
+        if !cfg!(debug_assertions) || !plugin_root.is_dir() {
+            return self;
+        }
+        let plugin_root = plugin_root.canonicalize().unwrap_or(plugin_root);
+
+        let manifest_loader =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/plugin-source-manifests.mjs");
+        let output = match Command::new(&self.node)
+            .args(["--conditions=development", "--import"])
+            .arg(&source_loader)
+            .arg(&manifest_loader)
+            .arg(&plugin_root)
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("Could not start workspace plugin discovery: {error}");
+                return self;
+            }
+        };
+        if !output.status.success() {
+            eprintln!(
+                "Could not inspect workspace plugin sources: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            return self;
+        }
+        let inventory: WorkspaceManifestInventory = match serde_json::from_slice(&output.stdout) {
+            Ok(inventory) => inventory,
+            Err(_) => {
+                eprintln!("Workspace plugin discovery returned an invalid response");
+                return self;
+            }
+        };
+        let mut plugins = HashMap::new();
+        for problem in inventory.problems {
+            eprintln!(
+                "Could not load workspace plugin at {}: {}",
+                problem.directory.display(),
+                problem.message
+            );
+        }
+        for entry in inventory.plugins {
+            let Ok(relative_entry) = entry.entry.strip_prefix(&entry.directory) else {
+                eprintln!("Workspace plugin entry escaped its package directory");
+                continue;
+            };
+            if !entry.directory.starts_with(&plugin_root)
+                || relative_entry
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                || !entry.entry.is_file()
+                || entry.manifest.validate().is_err()
+            {
+                eprintln!(
+                    "Skipped invalid workspace plugin source at {}",
+                    entry.directory.display()
+                );
+                continue;
+            }
+            let Ok(manifest_bytes) = serde_json::to_vec(&entry.manifest) else {
+                continue;
+            };
+            let id = entry.manifest.id.clone();
+            let plugin = InstalledPlugin {
+                id: id.clone(),
+                version: entry.manifest.version.clone(),
+                granted_capabilities: entry.manifest.capabilities.clone(),
+                granted_domains: entry.manifest.permissions.network_domains.clone(),
+                manifest: entry.manifest,
+                directory: entry.directory,
+                entry: relative_entry.to_string_lossy().into_owned(),
+                manifest_digest: registry::digest(&manifest_bytes),
+                enabled: true,
+                installed_at: "workspace-source".into(),
+            };
+            if plugins.contains_key(&id) {
+                eprintln!("Skipped duplicate workspace plugin id {id}");
+                continue;
+            }
+            plugins.insert(id, plugin);
+        }
+        self.workspace_plugins = Mutex::new(plugins);
+        self.source_loader = Some(source_loader);
+        self
     }
 
     pub fn with_network(
@@ -351,7 +475,7 @@ impl PluginHost {
     }
 
     fn require_license(&self, id: &str) -> Result<(), HostError> {
-        if FIRST_PARTY_PLUGIN_IDS.contains(&id) {
+        if self.workspace_plugin(id).is_none() && FIRST_PARTY_PLUGIN_IDS.contains(&id) {
             self.license
                 .require_for(id, self.network.as_ref().map(|(store, _)| store))
                 .map_err(HostError::License)?;
@@ -433,11 +557,36 @@ impl PluginHost {
     }
 
     fn find(&self, id: &str) -> Result<InstalledPlugin, HostError> {
+        if let Some(plugin) = self.workspace_plugin(id) {
+            return Ok(plugin);
+        }
         self.snapshot()?
             .plugins
             .into_iter()
             .find(|plugin| plugin.id == id)
             .ok_or(HostError::NotInstalled)
+    }
+
+    fn workspace_plugin(&self, id: &str) -> Option<InstalledPlugin> {
+        self.workspace_plugins
+            .lock()
+            .ok()
+            .and_then(|plugins| plugins.get(id).cloned())
+    }
+
+    fn workspace_snapshot(&self) -> HashMap<String, InstalledPlugin> {
+        self.workspace_plugins
+            .lock()
+            .map(|plugins| plugins.clone())
+            .unwrap_or_default()
+    }
+
+    fn all_plugins(&self) -> Result<Vec<InstalledPlugin>, HostError> {
+        let workspace = self.workspace_snapshot();
+        let mut plugins = self.snapshot()?.plugins;
+        plugins.retain(|plugin| !workspace.contains_key(&plugin.id));
+        plugins.extend(workspace.into_values());
+        Ok(plugins)
     }
 
     pub fn discover(&self) -> DiscoveryReport {
@@ -456,8 +605,12 @@ impl PluginHost {
         } else {
             Vec::new()
         };
+        let workspace = self.workspace_snapshot();
         let mut views: Vec<PluginView> = Vec::new();
         for plugin in &document.plugins {
+            if workspace.contains_key(&plugin.id) {
+                continue;
+            }
             let mut view = self.view(plugin);
             view.source_directory = candidates
                 .iter()
@@ -465,14 +618,18 @@ impl PluginHost {
                 .map(|candidate| candidate.directory.to_string_lossy().into_owned());
             views.push(view);
         }
+        for plugin in workspace.values() {
+            views.push(self.view(plugin));
+        }
         // A shipped build starts with an empty plugin list: what is installed
         // plus what the store offers. Listing packages that merely sit next to
         // the binary made the app look like it came with plugins.
         for candidate in candidates {
-            if document
-                .plugins
-                .iter()
-                .any(|plugin| plugin.id == candidate.manifest.id)
+            if workspace.contains_key(&candidate.manifest.id)
+                || document
+                    .plugins
+                    .iter()
+                    .any(|plugin| plugin.id == candidate.manifest.id)
             {
                 continue;
             }
@@ -494,6 +651,9 @@ impl PluginHost {
                 storage_durable: false,
                 secret_slots: Vec::new(),
                 source_directory: Some(candidate.directory.to_string_lossy().into_owned()),
+                ui: candidate.manifest.ui.clone(),
+                installation: candidate.digest.clone(),
+                runtime_generation: None,
             });
         }
         views.sort_by(|left, right| left.id.cmp(&right.id));
@@ -514,16 +674,18 @@ impl PluginHost {
     }
 
     fn view(&self, plugin: &InstalledPlugin) -> PluginView {
-        let license_error = if FIRST_PARTY_PLUGIN_IDS.contains(&plugin.id.as_str()) {
-            self.license
-                .status(&plugin.id)
-                .ok()
-                .filter(|status| status.state == "active")
-                .is_none()
-                .then_some("插件尚未激活或需要联网核验".to_string())
-        } else {
-            None
-        };
+        let workspace_source = self.workspace_plugin(&plugin.id).is_some();
+        let license_error =
+            if !workspace_source && FIRST_PARTY_PLUGIN_IDS.contains(&plugin.id.as_str()) {
+                self.license
+                    .status(&plugin.id)
+                    .ok()
+                    .filter(|status| status.state == "active")
+                    .is_none()
+                    .then_some("插件尚未激活或需要联网核验".to_string())
+            } else {
+                None
+            };
         let process = self
             .processes
             .lock()
@@ -572,7 +734,11 @@ impl PluginHost {
                 .map(|capability| capability.as_str().to_string())
                 .collect(),
             permissions: plugin.manifest.permissions.clone(),
-            source: "installed".into(),
+            source: if workspace_source {
+                "workspace".into()
+            } else {
+                "installed".into()
+            },
             state: state.into(),
             enabled: plugin.enabled,
             methods: ready
@@ -583,7 +749,13 @@ impl PluginHost {
             last_error,
             storage_durable: plugin.manifest.permissions.storage == StorageScope::Private,
             secret_slots: plugin.manifest.permissions.secrets.clone(),
-            source_directory: None,
+            source_directory: workspace_source
+                .then(|| plugin.directory.to_string_lossy().into_owned()),
+            ui: plugin.manifest.ui.clone(),
+            installation: installation_generation(plugin),
+            runtime_generation: process
+                .as_ref()
+                .map(|process| process.caller().generation.clone()),
         }
     }
 
@@ -593,6 +765,9 @@ impl PluginHost {
             .ok()
             .flatten()
             .ok_or(HostError::NotFound)?;
+        if self.workspace_plugin(&candidate.manifest.id).is_some() {
+            return Err(HostError::WorkspaceSource);
+        }
         self.require_license(&candidate.manifest.id)?;
         let existing = self
             .snapshot()?
@@ -653,6 +828,9 @@ impl PluginHost {
 
     pub fn uninstall(&self, id: &str) -> Result<(), HostError> {
         let _installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
+        if self.workspace_plugin(id).is_some() {
+            return Err(HostError::WorkspaceSource);
+        }
         let plugin = self.find(id)?;
         self.stop(id);
         self.forget_attempt(id);
@@ -674,6 +852,9 @@ impl PluginHost {
         let contents = package::parse(bytes)
             .map_err(|error| HostError::Install(InstallError::Package(error)))?;
         let manifest = contents.manifest.clone();
+        if self.workspace_plugin(&manifest.id).is_some() {
+            return Err(HostError::WorkspaceSource);
+        }
         self.require_license(&manifest.id)?;
         let existing = self
             .snapshot()?
@@ -736,14 +917,17 @@ impl PluginHost {
             .map(|catalog| catalog.clone())
             .unwrap_or_default();
         let document = self.snapshot()?;
+        let workspace = self.workspace_snapshot();
         let mut entries: Vec<MarketEntryView> = catalog
             .entries
             .iter()
             .map(|entry| {
-                let installed = document
-                    .plugins
-                    .iter()
-                    .find(|plugin| plugin.id == entry.manifest.id);
+                let installed = workspace.get(&entry.manifest.id).or_else(|| {
+                    document
+                        .plugins
+                        .iter()
+                        .find(|plugin| plugin.id == entry.manifest.id)
+                });
                 let state = match installed {
                     None => "install",
                     Some(plugin) => {
@@ -842,6 +1026,9 @@ impl PluginHost {
     }
 
     pub fn install_from_market(&self, id: &str) -> Result<PluginView, HostError> {
+        if self.workspace_plugin(id).is_some() {
+            return Err(HostError::WorkspaceSource);
+        }
         self.require_license(id)?;
         let mut entry = self
             .market
@@ -942,10 +1129,10 @@ impl PluginHost {
 
     /// One supervision pass. Exposed so tests can drive it deterministically.
     pub fn supervise_once(&self) {
-        let Ok(document) = self.snapshot() else {
+        let Ok(plugins) = self.all_plugins() else {
             return;
         };
-        for plugin in document.plugins.iter().filter(|plugin| plugin.enabled) {
+        for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
             if self.require_license(&plugin.id).is_err() {
                 self.stop(&plugin.id);
                 continue;
@@ -1066,7 +1253,12 @@ impl PluginHost {
             .map(|(store, _)| store.get())
             .transpose()
             .map_err(|error| HostError::Process(ProcessError::Failed(error)))?;
-        let (process, ready) = PluginProcess::spawn_with_gateway(
+        let source_loader = if self.workspace_plugin(&plugin.id).is_some() {
+            self.source_loader.as_deref()
+        } else {
+            None
+        };
+        let (process, ready) = PluginProcess::spawn_with_gateway_and_loader(
             &plugin.entry_path(),
             storage.as_deref(),
             plugin.manifest.clone(),
@@ -1077,6 +1269,7 @@ impl PluginHost {
             proxy
                 .as_ref()
                 .zip(self.network.as_ref().map(|(_, path)| path.as_path())),
+            source_loader,
             HostGateway {
                 installation: installation_generation(&plugin),
                 host_handler: Arc::clone(&self.host_handler),
@@ -1137,12 +1330,95 @@ impl PluginHost {
             .map_err(HostError::Process)
     }
 
+    fn process_for_generation(
+        &self,
+        id: &str,
+        installation: &str,
+        generation: &str,
+        capability: Capability,
+        method: &str,
+    ) -> Result<Arc<PluginProcess>, HostError> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ProcessError::Cancelled.into());
+        }
+        // A scoped UI request requires an already usable local lease. Renewal
+        // stays with the supervisor and cannot extend this request's deadline.
+        if self.workspace_plugin(id).is_none() && FIRST_PARTY_PLUGIN_IDS.contains(&id) {
+            let status = self.license.status(id).map_err(HostError::License)?;
+            if status.state != "active" {
+                return Err(HostError::License(LicenseError::NotActivated));
+            }
+        }
+        let workspace = self
+            .workspace_plugins
+            .lock()
+            .map_err(|_| HostError::Registry)?;
+        let registry = self.registry.lock().map_err(|_| HostError::Registry)?;
+        let plugin = workspace
+            .get(id)
+            .or_else(|| registry.plugins.iter().find(|plugin| plugin.id == id))
+            .ok_or(HostError::NotInstalled)?;
+        let processes = self.processes.lock().map_err(|_| HostError::Registry)?;
+        let process = processes.get(id).ok_or(PermissionError::StaleGeneration)?;
+        let caller = process.caller();
+        if installation_generation(plugin) != installation
+            || caller.plugin_id != id
+            || caller.installation != installation
+            || caller.generation != generation
+            || process.failure().is_some()
+            || !process.is_alive()
+        {
+            return Err(PermissionError::StaleGeneration.into());
+        }
+        let ready = process.ready().ok_or(ProcessError::NotReady)?;
+        permissions::check_call(plugin, &ready, capability, method)?;
+        Ok(Arc::clone(process))
+    }
+
+    /// Calls only the exact installed process selected by a scoped UI request.
+    /// Process restarts never cause an operation to run on a replacement.
+    pub(crate) fn call_generation(
+        &self,
+        id: &str,
+        identity: &str,
+        capability: Capability,
+        method: &str,
+        payload: Value,
+        deadline: Duration,
+    ) -> Result<Value, HostError> {
+        let started = Instant::now();
+        let (installation, generation) = identity
+            .rsplit_once(':')
+            .filter(|(installation, generation)| {
+                identity.len() <= 512 && !installation.is_empty() && !generation.is_empty()
+            })
+            .ok_or(PermissionError::StaleGeneration)?;
+        let process =
+            self.process_for_generation(id, installation, generation, capability, method)?;
+        let remaining = deadline
+            .checked_sub(started.elapsed())
+            .and_then(|remaining| remaining.checked_sub(process::DEADLINE_GRACE))
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(ProcessError::Timeout)?;
+        let result = process
+            .call(capability, method, payload, remaining)
+            .map_err(HostError::Process);
+        let current =
+            self.process_for_generation(id, installation, generation, capability, method)?;
+        if !Arc::ptr_eq(&process, &current) {
+            return Err(PermissionError::StaleGeneration.into());
+        }
+        if started.elapsed() >= deadline {
+            return Err(ProcessError::Timeout.into());
+        }
+        result
+    }
+
     /// Persist these installed account-pool IDs before remotely deleting a window.
     /// Disabled, stopped and unavailable plugins remain cleanup targets.
     pub fn window_binding_plugins(&self) -> Result<Vec<String>, HostError> {
         let mut ids: Vec<String> = self
-            .snapshot()?
-            .plugins
+            .all_plugins()?
             .into_iter()
             .filter(|plugin| plugin.manifest.declares(Capability::AccountPool))
             .map(|plugin| plugin.id)
@@ -1398,4 +1674,58 @@ fn installation_generation(plugin: &InstalledPlugin) -> String {
         "{}:{}:{}",
         plugin.version, plugin.installed_at, plugin.manifest_digest
     )
+}
+
+#[cfg(test)]
+mod ui_generation_tests {
+    use super::*;
+
+    #[test]
+    fn generation_calls_do_not_start_a_stopped_plugin() {
+        let temporary = tempfile::tempdir().unwrap();
+        let host = PluginHost::open_with_node(
+            temporary.path().join("plugins"),
+            Vec::new(),
+            temporary.path().join("runtime-must-not-start"),
+        )
+        .unwrap();
+        let manifest = PluginManifest::parse(
+            &serde_json::to_vec(&json!({
+                "apiVersion":1,"id":"example.catalog","version":"1.0.0",
+                "name":"Catalog","minCoreVersion":env!("CARGO_PKG_VERSION"),
+                "capabilities":["product.catalog"],"permissions":{
+                    "networkDomains":[],"wantsBrowserAccess":false,"storage":"private","secrets":[]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let plugin = InstalledPlugin {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            manifest,
+            directory: temporary.path().join("unused-plugin"),
+            entry: "index.js".into(),
+            manifest_digest: "fixture-digest".into(),
+            enabled: true,
+            granted_capabilities: vec![Capability::ProductCatalog],
+            granted_domains: Vec::new(),
+            installed_at: "fixture-installation".into(),
+        };
+        let identity = format!("{}:missing-runtime", installation_generation(&plugin));
+        host.registry.lock().unwrap().plugins.push(plugin);
+        let result = host.call_generation(
+            "example.catalog",
+            &identity,
+            Capability::ProductCatalog,
+            "items.list",
+            json!({}),
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            result,
+            Err(HostError::Permission(PermissionError::StaleGeneration))
+        );
+        assert!(host.processes.lock().unwrap().is_empty());
+    }
 }

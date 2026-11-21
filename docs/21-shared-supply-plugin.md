@@ -3,10 +3,26 @@
 本文说明仓库内共享货源插件的实际范围。插件规则见[插件对接开发规范](14-plugin-integration-guide.md)，
 产品侧插件边界见[插件系统](06-plugin-system.md)，页面交互见[页面交互](11-demo-pages.md)。
 
+## desktop-v2 页面
+
+`apps/desktop-v2/src/pages/plugins/shared-supply` 随宿主懒加载，以 ShardX UI Kit 提供
+分类与商户浏览、关键词和图片搜索、商品详情、收藏及 CSV 复制。分类和商户是带标签的
+Select，关键词是 Input，分页和操作独立显示。不复用 0.1 的页面或适配器。
+分类浏览采用一张 Card 内的左右分栏：左侧为可滚动商户列表及分页，右侧为当前商户的货源网格及分页；切换分类、商户或页码时清空旧的右侧结果并显示加载状态，避免把过期数据当成新商户结果。
+商户列表按 `uid` 识别商户，不以可为空的 `id` 查重。头像校验与插件返回契约一致，允许供货方 `/person/`、`/upload-file/` 和微信 `/mmopen/` 的 HTTPS 图片，仍通过插件读取。
+
+页面仅向已运行并获授权的 `supply.catalog` 调用现有 RPC。图片传输和收藏各有独立方法
+门禁；展示图通过插件分块读取，按可见区加载，离开或刷新时释放会话资源，不让 WebView
+直连 CDN。以图搜索在本地校正方向并转为 JPEG，将 Base64 限制在 700 KiB 以内，再由
+插件提交上游。收藏不持久化时显示“仅本次运行”。v2 暂不提供供货商品到 AI 生图的交接。
+
+此次只更新宿主页面和适配器，不改插件协议、存储或版本。检查记录见[质量记录](09-quality-and-testing.md)。
+
 ## 当前事实
 
 插件包位于 `plugins/shared-supply`，实现 `supply.catalog` 能力的 12 个方法、
-私有存储与逐行 JSON RPC 服务端。页面位于 `apps/desktop/src/features/supply`。
+私有存储与逐行 JSON RPC 服务端。旧版页面位于 `apps/desktop/src/features/supply`，
+不参与 v2 运行。
 
 - 商户、商品、关键词搜索、以图搜索与展示图片下载都由插件进程发起，页面不直接访问上游。
 - 收藏保存在插件私有目录的 `shared-supply.json`，是本插件唯一持久化的数据。

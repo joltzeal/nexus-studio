@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toast'
 import {

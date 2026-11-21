@@ -11,30 +11,22 @@ describe('preferences contract', () => {
     expect(Object.isFrozen(DEFAULT_PREFERENCES)).toBe(true)
   })
 
-  it('trims names and accepts both length boundaries', () => {
+  it('does not store a manually named workspace in 0.2', () => {
+    expect(DEFAULT_PREFERENCES.schemaVersion).toBe(2)
     expect(
-      parsePreferences({ ...DEFAULT_PREFERENCES, workspaceName: '  我的工作室  ' })
-        .workspaceName,
-    ).toBe('我的工作室')
-    for (const workspaceName of ['a', 'a'.repeat(60)]) {
-      expect(
-        parsePreferences({ ...DEFAULT_PREFERENCES, workspaceName }).workspaceName,
-      ).toBe(workspaceName)
-    }
+      PreferencesSchema.safeParse({ ...DEFAULT_PREFERENCES, workspaceName: 'Old studio' }).success,
+    ).toBe(false)
   })
 
   it.each([
     { unexpected: true },
-    { schemaVersion: 2 },
+    { schemaVersion: 1 },
     { schemaVersion: '1' },
     { theme: 'auto' },
     { accent: 'blue' },
     { density: 'dense' },
     { reducedMotion: 'false' },
-    { workspaceName: '' },
-    { workspaceName: ' \t\n ' },
-    { workspaceName: 'a'.repeat(61) },
-    { workspaceName: null },
+    { workspaceName: 'Old studio' },
   ])('rejects invalid or unknown preferences: %j', (overrides) => {
     expect(
       PreferencesSchema.safeParse({ ...DEFAULT_PREFERENCES, ...overrides }).success,

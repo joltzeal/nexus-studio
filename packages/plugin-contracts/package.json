@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./proxy-pool": {
+      "development": "./src/proxy-pool.ts",
+      "types": "./dist/proxy-pool.d.ts",
+      "import": "./dist/proxy-pool.js"
+    },
+    "./vinted-helper": {
+      "development": "./src/vinted-helper.ts",
+      "types": "./dist/vinted-helper.d.ts",
+      "import": "./dist/vinted-helper.js"
+    },
     "./products": {
       "types": "./dist/products.d.ts",
       "import": "./dist/products.js"

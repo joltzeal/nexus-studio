@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { cn } from 'cn'
 import { Dialog as SheetPrimitive } from 'radix-ui'
-import { XIcon } from 'lucide-react'
+import { XIcon } from '@/components/icons'
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />

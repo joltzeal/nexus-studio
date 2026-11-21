@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::window_store::BitBrowserFingerprintConfig;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -20,6 +21,7 @@ struct FakeProvider {
     update_confirmed: AtomicBool,
     marker_ambiguous: AtomicBool,
     offline: AtomicBool,
+    probe_offline: AtomicBool,
     observation_pause: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 impl FakeProvider {
@@ -41,6 +43,9 @@ impl BrowserProvider for FakeProvider {
         self.provider_id.unwrap_or(BrowserProviderId::AdsPower)
     }
     fn probe(&self, _: &BrowserConnection) -> BrowserResult<ProviderProbe> {
+        if self.probe_offline.load(Ordering::SeqCst) {
+            return Err(BrowserError::new("unavailable", "offline"));
+        }
         Ok(ProviderProbe {
             connected: true,
             message: "ok".into(),
@@ -66,7 +71,7 @@ impl BrowserProvider for FakeProvider {
     fn create_profile(
         &self,
         _: &BrowserConnection,
-        _: &WindowRecord,
+        record: &WindowRecord,
         operation: &str,
     ) -> BrowserResult<CreatedProfile> {
         let count = self.creates.fetch_add(1, Ordering::SeqCst);
@@ -87,7 +92,7 @@ impl BrowserProvider for FakeProvider {
         }
         Ok(CreatedProfile {
             profile_id: id.clone(),
-            kernel_version: None,
+            kernel_version: record.kernel_version.clone(),
             binary_path: None,
             provider_config: self.remote(&id).provider_config,
         })
@@ -215,7 +220,7 @@ impl BrowserProvider for FakeProvider {
 }
 fn fixture() -> (tempfile::TempDir, WindowService, Arc<FakeProvider>, String) {
     let root = tempfile::tempdir().unwrap();
-    let license = LicenseStore::new(root.path().join("nexus.sqlite")).unwrap();
+    let license = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
     let mut service = WindowService::with_runtime(
         root.path().join("profiles"),
         None,
@@ -223,6 +228,7 @@ fn fixture() -> (tempfile::TempDir, WindowService, Arc<FakeProvider>, String) {
         RuntimePaths::development(),
     )
     .unwrap();
+    service.connections.set_managed_cloakbrowser(true).unwrap();
     let provider = Arc::new(FakeProvider::default());
     service.registry.register(provider.clone());
     let connection = service
@@ -250,12 +256,96 @@ fn input(connection: &str) -> CreateWindowInput {
         name: "External".into(),
         proxy_mode: ProxyMode::Direct,
         proxy: None,
+        proxy_id: None,
         proxy_plugin: None,
         proxy_endpoint: None,
         settings: WindowSettings::default(),
         group_id: None,
         kernel_version: None,
     }
+}
+
+#[test]
+fn stopped_bitbrowser_probe_is_a_guided_disconnected_state() {
+    let root = tempfile::tempdir().unwrap();
+    let license = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
+    let mut service = WindowService::with_runtime(
+        root.path().join("profiles"),
+        None,
+        license,
+        RuntimePaths::development(),
+    )
+    .unwrap();
+    let provider = Arc::new(FakeProvider {
+        provider_id: Some(BrowserProviderId::BitBrowser),
+        probe_offline: AtomicBool::new(true),
+        ..Default::default()
+    });
+    service.registry.register(provider);
+    let probe = service.probe_connection(BITBROWSER_CONNECTION_ID).unwrap();
+    assert!(!probe.connected);
+    assert!(probe.capabilities.create);
+    assert!(probe.capabilities.kernel_selection);
+}
+
+#[test]
+fn bitbrowser_create_accepts_kernel_and_fingerprint_without_a_seed() {
+    let root = tempfile::tempdir().unwrap();
+    let license = LicenseStore::new(root.path().join("raccoon.sqlite")).unwrap();
+    let mut service = WindowService::with_runtime(
+        root.path().join("profiles"),
+        None,
+        license,
+        RuntimePaths::development(),
+    )
+    .unwrap();
+    let provider = Arc::new(FakeProvider {
+        provider_id: Some(BrowserProviderId::BitBrowser),
+        ..Default::default()
+    });
+    service.registry.register(provider);
+    let mut create = input(BITBROWSER_CONNECTION_ID);
+    create.kernel_version = Some("130".into());
+    create.settings.bitbrowser = Some(BitBrowserFingerprintConfig {
+        ostype: Some("PC".into()),
+        ..Default::default()
+    });
+    let record = service.create(create).unwrap();
+    assert_eq!(record.kernel_version.as_deref(), Some("130"));
+    assert!(record.settings.fingerprint_seed.is_none());
+}
+
+#[test]
+fn internal_automation_lifecycle_preserves_shared_lease_and_connection_scope() {
+    let (_root, service, provider, connection) = fixture();
+    let record = service.create(input(&connection)).unwrap();
+    let owner = "automation:test:worker:1";
+    service.acquire_agent_window(&record.id, owner).unwrap();
+    assert_eq!(
+        service
+            .stop_automation_window("other-connection", &record.id, owner)
+            .unwrap_err()
+            .code,
+        "scope_mismatch"
+    );
+    assert_eq!(
+        service
+            .stop_automation_window(&connection, &record.id, "other-owner")
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+    service.start_agent_window(&record.id, owner).unwrap();
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(service.stop(&record.id).unwrap_err().code, "profile_busy");
+    service
+        .stop_automation_window(&connection, &record.id, owner)
+        .unwrap();
+    service
+        .delete_automation_window(&connection, &record.id, owner, true)
+        .unwrap();
+    service.release_agent_window(&record.id, owner).unwrap();
+    assert!(service.store.get(&record.id).is_err());
 }
 
 #[test]
@@ -521,6 +611,7 @@ fn native_fixture() -> (
         binary_path: Some(root.path().join("chromium-155.0.8059.39.5-pro/browser")),
         kernel_version: Some("155.0.8059.39.5".into()),
         proxy: None,
+        proxy_id: None,
         proxy_plugin: None,
         proxy_endpoint: None,
         proxy_mode: ProxyMode::Direct,
@@ -544,6 +635,50 @@ fn native_fixture() -> (
 }
 
 #[test]
+fn disabling_managed_connection_requires_stopped_and_observable_windows() {
+    let (_root, service, provider, record) = native_fixture();
+    provider
+        .profiles
+        .lock()
+        .unwrap()
+        .insert(record.binding.profile_id.clone(), WindowState::Running);
+    assert_eq!(
+        service.set_managed_cloakbrowser(false).unwrap_err().code,
+        "profile_busy"
+    );
+    assert!(
+        service
+            .connections
+            .get(BUILTIN_CONNECTION_ID)
+            .unwrap()
+            .enabled
+    );
+
+    provider.offline.store(true, Ordering::SeqCst);
+    assert_eq!(
+        service.set_managed_cloakbrowser(false).unwrap_err().code,
+        "unavailable"
+    );
+    assert!(
+        service
+            .connections
+            .get(BUILTIN_CONNECTION_ID)
+            .unwrap()
+            .enabled
+    );
+
+    provider.offline.store(false, Ordering::SeqCst);
+    provider
+        .profiles
+        .lock()
+        .unwrap()
+        .insert(record.binding.profile_id.clone(), WindowState::Stopped);
+    let disabled = service.set_managed_cloakbrowser(false).unwrap();
+    assert!(!disabled.connection.enabled);
+    assert!(service.store.get(&record.id).is_ok());
+}
+
+#[test]
 fn batch_group_moves_are_local_even_when_an_external_browser_is_running_or_offline() {
     let (_root, service, provider, connection) = fixture();
     let a = service.create(input(&connection)).unwrap();
@@ -555,7 +690,9 @@ fn batch_group_moves_are_local_even_when_an_external_browser_is_running_or_offli
         .insert(a.provider_profile_id.clone(), WindowState::Running);
     provider.offline.store(true, Ordering::SeqCst);
     let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
-    let group = groups.create("Moved", "").unwrap();
+    let group = groups
+        .create(BrowserProviderId::AdsPower, "Moved", "")
+        .unwrap();
     let before = service.store.get(&a.id).unwrap();
     let request = MoveWindowsGroupInput {
         connection_id: connection,
@@ -566,10 +703,86 @@ fn batch_group_moves_are_local_even_when_an_external_browser_is_running_or_offli
     assert_eq!(receipt.ids, request.ids);
     assert_eq!(receipt.connection_id, request.connection_id);
     assert_eq!(receipt.group_id, request.group_id);
-    assert_eq!(groups.list().unwrap()[0].window_count, 2);
+    assert_eq!(
+        groups.list(BrowserProviderId::AdsPower).unwrap()[0].window_count,
+        2
+    );
     assert_eq!(service.store.get(&a.id).unwrap(), before);
     assert_eq!(provider.updates.load(Ordering::SeqCst), 0);
     assert_eq!(provider.starts.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn create_update_and_move_reject_another_connection_folder_before_provider_writes() {
+    let (_root, service, provider, connection) = fixture();
+    let other = service
+        .connections
+        .save(ConnectionInput {
+            id: None,
+            provider_id: BrowserProviderId::AdsPower,
+            name: "Other AdsPower".into(),
+            endpoint: "http://127.0.0.1:50325".into(),
+            api_key: None,
+            default_group_id: None,
+            scope_label: "Other account".into(),
+        })
+        .unwrap();
+    let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
+    let local = groups
+        .create_for_connection(&connection, "Local", "")
+        .unwrap();
+    let foreign = groups
+        .create_for_connection(&other.id, "Foreign", "")
+        .unwrap();
+    let mut request = input(&connection);
+    request.group_id = Some(foreign.id.clone());
+    assert_eq!(service.create(request).unwrap_err().code, "invalid_config");
+    assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
+    assert!(
+        service
+            .operations
+            .list(Some(&connection))
+            .unwrap()
+            .is_empty()
+    );
+    let mut request = input(&connection);
+    request.group_id = Some(local.id.clone());
+    let window = service.create(request).unwrap();
+    let original = service.store.get(&window.id).unwrap();
+    for name in [original.name.clone(), "Remote rename".into()] {
+        let update = UpdateWindowInput {
+            id: window.id.clone(),
+            name,
+            proxy: original.proxy.clone(),
+            proxy_id: original.proxy_id.clone(),
+            proxy_plugin: original.proxy_plugin.clone(),
+            proxy_endpoint: original.proxy_endpoint,
+            proxy_mode: original.proxy_mode,
+            settings: original.settings.clone(),
+            group_id: Some(foreign.id.clone()),
+        };
+        assert_eq!(service.update(update).unwrap_err().code, "invalid_config");
+        assert_eq!(service.store.get(&window.id).unwrap(), original);
+    }
+    assert!(
+        service
+            .move_group(MoveWindowsGroupInput {
+                connection_id: connection.clone(),
+                ids: vec![window.id.clone()],
+                group_id: Some(foreign.id),
+            })
+            .is_err()
+    );
+    assert_eq!(service.store.group_id(&window.id).unwrap(), Some(local.id));
+    assert_eq!(provider.updates.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.creates.load(Ordering::SeqCst), 1);
+    assert!(
+        service
+            .operations
+            .list(Some(&connection))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -578,7 +791,9 @@ fn batch_group_moves_reject_cross_connection_busy_and_pending_windows_before_wri
     let a = service.create(input(&connection)).unwrap();
     let b = service.create(input(&connection)).unwrap();
     let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
-    let group = groups.create("Target", "").unwrap();
+    let group = groups
+        .create(BrowserProviderId::AdsPower, "Target", "")
+        .unwrap();
     let request = MoveWindowsGroupInput {
         connection_id: connection.clone(),
         ids: vec![a.id.clone(), b.id.clone()],
@@ -617,14 +832,20 @@ fn batch_group_moves_reject_cross_connection_busy_and_pending_windows_before_wri
         "operation_uncertain"
     );
     assert_eq!(service.store.group_id(&a.id).unwrap(), None);
-    assert_eq!(groups.list().unwrap()[0].window_count, 0);
+    assert_eq!(
+        groups.list(BrowserProviderId::AdsPower).unwrap()[0].window_count,
+        0
+    );
     let mut operation = operation;
     service
         .operations
         .phase(&mut operation, "failed", None)
         .unwrap();
     service.move_group(request).unwrap();
-    assert_eq!(groups.list().unwrap()[0].window_count, 2);
+    assert_eq!(
+        groups.list(BrowserProviderId::AdsPower).unwrap()[0].window_count,
+        2
+    );
 }
 
 #[test]
@@ -794,6 +1015,58 @@ fn a_definitively_rejected_start_releases_the_slot_for_retry() {
 }
 
 #[test]
+fn automation_reconciles_its_lost_update_without_releasing_lease_or_repeating_write() {
+    let (_root, service, provider, connection) = fixture();
+    let window = service.create(input(&connection)).unwrap();
+    let owner = "automation:reconcile:worker:1";
+    service.acquire_agent_window(&window.id, owner).unwrap();
+    provider.update_timeout.store(true, Ordering::SeqCst);
+    assert!(
+        service
+            .update_automation_window(
+                &connection,
+                owner,
+                UpdateWindowInput {
+                    id: window.id.clone(),
+                    name: "Confirmed update".into(),
+                    proxy_mode: ProxyMode::Direct,
+                    proxy: None,
+                    proxy_id: None,
+                    proxy_plugin: None,
+                    proxy_endpoint: None,
+                    settings: window.settings,
+                    group_id: None,
+                }
+            )
+            .is_err()
+    );
+    let operation = service
+        .operations
+        .list(Some(&connection))
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        service.reconcile(&operation.id).unwrap_err().code,
+        "profile_busy"
+    );
+    assert_eq!(
+        service
+            .reconcile_automation_operation("other", &operation.id, owner)
+            .unwrap_err()
+            .code,
+        "scope_mismatch"
+    );
+    let confirmed = service
+        .reconcile_automation_operation(&connection, &operation.id, owner)
+        .unwrap()
+        .unwrap();
+    assert_eq!(confirmed.name, "Confirmed update");
+    assert_eq!(provider.updates.load(Ordering::SeqCst), 1);
+    assert_eq!(service.stop(&window.id).unwrap_err().code, "profile_busy");
+    service.release_agent_window(&window.id, owner).unwrap();
+}
+
+#[test]
 fn update_response_loss_is_read_back_without_repeating_the_write() {
     let (_root, service, provider, connection) = fixture();
     let window = service.create(input(&connection)).unwrap();
@@ -807,6 +1080,7 @@ fn update_response_loss_is_read_back_without_repeating_the_write() {
                 name: "Updated".into(),
                 proxy_mode: ProxyMode::Direct,
                 proxy: None,
+                proxy_id: None,
                 proxy_plugin: None,
                 proxy_endpoint: None,
                 settings,
@@ -875,6 +1149,7 @@ fn local_business_fields_can_be_saved_without_changing_a_running_vendor_profile(
             name: window.name,
             proxy_mode: window.proxy_mode,
             proxy: window.proxy,
+            proxy_id: window.proxy_id,
             proxy_plugin: window.proxy_plugin,
             proxy_endpoint: window.proxy_endpoint,
             settings,
@@ -1119,7 +1394,9 @@ fn verified_remote_metadata_refresh_preserves_local_window_identity_and_relation
     let (_root, service, provider, connection) = fixture();
     let window = service.create(input(&connection)).unwrap();
     let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
-    let group = groups.create("Business group", "").unwrap();
+    let group = groups
+        .create(BrowserProviderId::AdsPower, "Business group", "")
+        .unwrap();
     let mut saved = service.store.get(&window.id).unwrap();
     saved.settings.note = "Local business note".into();
     saved.settings.platform = "Poshmark".into();
@@ -1311,7 +1588,9 @@ fn committed_and_uncertain_create_retries_survive_deletion_of_the_original_group
         let (_root, service, provider, connection) = fixture();
         let groups =
             super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
-        let group = groups.create("Temporary", "").unwrap();
+        let group = groups
+            .create(BrowserProviderId::AdsPower, "Temporary", "")
+            .unwrap();
         let mut request = input(&connection);
         request.group_id = Some(group.id.clone());
         provider.create_timeout.store(timeout, Ordering::SeqCst);
@@ -1321,12 +1600,63 @@ fn committed_and_uncertain_create_retries_survive_deletion_of_the_original_group
             .get(&request.operation_id)
             .unwrap()
             .unwrap();
-        groups.delete(&group.id).unwrap();
+        groups
+            .delete(BrowserProviderId::AdsPower, &group.id)
+            .unwrap();
         let window = service.create(request).unwrap();
         assert_eq!(window.id, operation.window_id);
         assert_eq!(window.group_id, None);
         assert_eq!(provider.creates.load(Ordering::SeqCst), 1);
     }
+}
+
+#[test]
+fn uncertain_update_commits_after_folder_deletion_without_repeating_provider_write() {
+    let (_root, service, provider, connection) = fixture();
+    let groups = super::super::group_store::GroupStore::new(service.store.database_path()).unwrap();
+    let folder = groups
+        .create_for_connection(&connection, "Temporary", "")
+        .unwrap();
+    let window = service.create(input(&connection)).unwrap();
+    let original = service.store.get(&window.id).unwrap();
+    provider.update_timeout.store(true, Ordering::SeqCst);
+    assert_eq!(
+        service
+            .update(UpdateWindowInput {
+                id: window.id.clone(),
+                name: "Updated".into(),
+                proxy: original.proxy,
+                proxy_id: original.proxy_id,
+                proxy_plugin: original.proxy_plugin,
+                proxy_endpoint: original.proxy_endpoint,
+                proxy_mode: original.proxy_mode,
+                settings: original.settings,
+                group_id: Some(folder.id.clone()),
+            })
+            .unwrap_err()
+            .code,
+        "operation_uncertain"
+    );
+    let operation = service
+        .operations
+        .list(Some(&connection))
+        .unwrap()
+        .remove(0);
+    groups
+        .delete_for_connection(&connection, &folder.id)
+        .unwrap();
+    let recovered = service.reconcile(&operation.id).unwrap().unwrap();
+    assert_eq!(recovered.id, window.id);
+    assert_eq!(recovered.name, "Updated");
+    assert_eq!(recovered.group_id, None);
+    assert_eq!(provider.updates.load(Ordering::SeqCst), 1);
+    assert!(
+        service
+            .operations
+            .list(Some(&connection))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1386,6 +1716,7 @@ fn renaming_a_window_does_not_require_resolving_its_unchanged_plugin_proxy() {
             name: "Rename without changing proxy".into(),
             proxy_mode: record.proxy_mode,
             proxy: record.proxy.clone(),
+            proxy_id: record.proxy_id.clone(),
             proxy_plugin: record.proxy_plugin.clone(),
             proxy_endpoint: record.proxy_endpoint,
             settings: record.settings.clone(),
@@ -1567,4 +1898,15 @@ fn an_external_start_that_remains_stopped_can_be_explicitly_ended_without_replay
     assert!(service.operations.list(None).unwrap().is_empty());
     service.start_window(&window.id).unwrap();
     assert_eq!(provider.starts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn generated_fingerprint_seeds_stay_in_the_documented_five_digit_range() {
+    for _ in 0..1_000 {
+        assert!((10_000..=99_999).contains(&random_fingerprint_seed()));
+    }
+    assert!(!valid_cloak_seed(9_999));
+    assert!(valid_cloak_seed(10_000));
+    assert!(valid_cloak_seed(99_999));
+    assert!(!valid_cloak_seed(100_000));
 }

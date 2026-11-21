@@ -1,3 +1,12 @@
+> 0.2 重写进行中。发行启动仅要求通用 Node 与网络预加载资源；浏览器
+> runner 由受管浏览器功能及外部 CDP 自动化在调用时分别检查。普通连接激活仅允许外部提供方，实验接入
+> 经实验室显式启用。下文关于 `builtin` 字段和 SQLite 升级的描述为 0.1 历史
+> 实现，尚不是 0.2 目标架构。
+
+> 外部 Agent CDP 附着现由 `WindowService` 持有的通用自动化运行时启动，
+> 不再通过实验 Provider 取得 Node 路径；加密浏览器转移仍依赖受管实现，
+> 其余按 Provider 能力分派的重构尚未完成。
+
 # 核心后端：统一窗口与 Provider 边界
 
 ## 范围与资源归属
@@ -33,12 +42,14 @@
 `origin` 区分 `created` 与 `attached`。
 普通更新不允许改变 Provider、连接、环境、内置内核或指纹身份。
 
-内置连接 `builtin-cloakbrowser` 自动建立。外部连接只接受 loopback HTTP(S) 根地址；
+常开的默认连接 `builtin-bitbrowser` 在数据库初始化时自动建立并在启动时恢复启用；
+`builtin-cloakbrowser` 等实验室接入仍只在显式开启后建立。外部连接只接受 loopback HTTP(S) 根地址；
 请求层固定 loopback 解析结果、拒绝重定向，绕过应用/系统代理，
 并禁用自动请求重放。连接节流、有界队列和单环境锁约束并发。
 AdsPower 可配置 Bearer API Key；当前比特浏览器适配器拒绝不支持的 API Key 配置。
 
-探测成功只表示 API 可达。当前两个外部 Provider 都不能返回稳定账户范围 ID，
+探测成功只表示 API 可达。比特浏览器未运行时探测返回不可达状态，前端据此显示启动引导；
+当前两个外部 Provider 都不能返回稳定账户范围 ID，
 用户必须人工确认账户或工作区。保存连接、启动应用或外部观察失败后重新确认；
 确认前不执行外部写操作。不同账户使用不同连接，不按 endpoint 或环境名称重绑旧窗口。
 每个 Provider 同时只启用一个连接，停用历史连接不删除其窗口记录。
@@ -81,6 +92,36 @@ AdsPower 可配置 Bearer API Key；当前比特浏览器适配器拒绝不支�
 前端不能把部分结果或其他接入的回执当作保存成功。
 
 ## 写操作与结果不明
+
+### 0.2 回收站源码接入
+
+`core::workbench_trash` 提供连接隔离的软删除标记表
+`browser_profile_trash(profile_id, connection_id, deleted_at)`。标记引用
+`profile_records` 并随最终记录删除级联清理。移入与恢复只变更标记，
+保存的 Profile、Provider 绑定及 Folder、标签和插件业务关系继续保留。
+Folder 若随后被明确删除，原有外键行为会将 Profile 留为未分组。
+
+命令使用 `browser_trash_list({ connectionId })`、
+`browser_profile_trash({ connectionId, ids })`、
+`browser_trash_restore({ connectionId, id })`、
+`browser_trash_purge({ connectionId, id })` 和
+`browser_trash_empty({ connectionId, ids })`。清空限定为用户确认的 ID 快照。
+批量移入先复用服务的独占预留与最新停止检查，并在 SQLite 事务内重新检查
+连接范围和待处理操作。恢复与永久删除共用 Profile 操作锁。
+永久删除通过 `WindowService::delete_trashed_profile` 持锁检查标记并进入已有
+删除意图、Provider 执行、插件清理及结果核对流程。删除失败时标记继续保留。
+
+原版 `TrashPage` 通过 `raccoon/trash-api.ts` 和 `trash-adapter.ts` 接入。
+`expires_at`、`size_bytes` 在原生数据中为 `null`，界面显示手动清理及未统计大小。
+该实现没有到期自动删除任务。Workspace 切换清空选择、搜索和读缓存，
+迟到响应按连接及代次丢弃。
+
+此模块已在源码接入命令注册与数据库初始化。正常 Profile 列表在完成状态观察后
+过滤 Trash 标记，Folder 计数同步排除这些记录。启动、编辑、备注、Folder 移动、
+已有环境接入、Agent 预留及一般 Profile 访问入口会在持锁范围检查标记。
+停止和操作恢复仍可处理 Trash 记录。前端页面挂载与 MoveToTrash 入口由主线接入。
+本次仅执行局部 ESLint 与 rustfmt，Rust 编译、应用运行、持久化重启与真实
+浏览器集成验证待后续执行。
 
 创建输入的 `operationId` 是稳定 UUID。后端先保存请求散列、连接、预留窗口 ID 与阶段，
 再调用 Provider；同一 ID 使用不同内容会返回冲突。

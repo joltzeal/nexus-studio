@@ -138,9 +138,6 @@ export function ModelRequestHistory({ id, revision }: { id: string; revision: nu
           刷新请求明细
         </Button>
       </div>
-      <p className="sales-agent-control-help">
-        每条请求仅展示执行摘要。回执或用量未知不等于零费用；状态以最新任务记录为准。
-      </p>
       {result.error ? (
         <Alert variant="destructive">
           <AlertDescription>{result.error}</AlertDescription>

@@ -170,6 +170,8 @@ export const AgentExecutionSettingsSchema = z.strictObject({
       cloakbrowser: z.number().int().min(1).max(10).default(3),
       adspower: z.number().int().min(1).max(10).default(3),
       bitbrowser: z.number().int().min(1).max(10).default(3),
+      aliasmode: z.number().int().min(1).max(10).default(3),
+      shardbrowser: z.number().int().min(1).max(10).default(3),
     })
     .prefault({}),
   maxReadRetries: z.number().int().min(0).max(5).default(2),
@@ -344,14 +346,20 @@ export const AgentAccountSnapshotSchema = z.object({
   accountId: uuid,
   bindingRevision: uuid,
   account: z.string().max(320),
-  status: z.enum(['active', 'pending', 'limited', 'blocked']),
+  status: z.enum(['unknown', 'active', 'pending', 'limited', 'blocked']),
   homepageUrl: z.string().max(2048),
   platformUserId: z.string().regex(/^\d{1,32}$/),
 })
 export const AgentJobSnapshotSchema = z.object({
   windowId: uuid,
   windowName: z.string().max(200),
-  providerId: z.enum(['cloakbrowser', 'adspower', 'bitbrowser']),
+  providerId: z.enum([
+    'cloakbrowser',
+    'adspower',
+    'bitbrowser',
+    'aliasmode',
+    'shardbrowser',
+  ]),
   connectionId: z.string().min(1).max(200),
   profileId: z.string().min(1).max(200),
   platformOrigin: origin,

@@ -28,7 +28,6 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Tabs } from '@/components/ui/tabs'
 import { TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import {
@@ -76,6 +75,7 @@ import { flushPromises, text } from '@/features/settings/kernel-test-support'
 import { checkWindowProxy, type ProxyCheckOutcome } from './window-proxy'
 
 const state = vi.hoisted(() => ({
+  activeSpace: 'cloakbrowser' as 'adspower' | 'bitbrowser' | 'cloakbrowser' | 'aliasmode',
   hooks: null as HookHarness | null,
   native: false,
   plugin: null as PluginView | null,
@@ -225,6 +225,12 @@ vi.mock('@/lib/platform/browser-connections', async (importOriginal) => ({
 }))
 vi.mock('@/features/settings/lab-preferences', () => ({
   useAliasModeEnabled: () => state.aliasModeEnabled,
+}))
+vi.mock('@/lib/active-browser-space', () => ({
+  useActiveBrowserSpace: () => state.activeSpace,
+  setActiveBrowserSpace: (providerId: typeof state.activeSpace) => {
+    state.activeSpace = providerId
+  },
 }))
 vi.mock('@/lib/platform/native-groups', () => ({ listGroups: async () => state.groups }))
 vi.mock('@/lib/platform/native-license', () => ({
@@ -419,6 +425,7 @@ function checkedProxy(): ProxyCheckOutcome {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  state.activeSpace = 'cloakbrowser'
   nextSortOrder = 10_000
   state.native = false
   state.aliasModeEnabled = false
@@ -497,7 +504,11 @@ async function mountedPage(waitForAccounts = true) {
     expect(visibleWindowNames(tree)).toHaveLength(
       Math.min(
         20,
-        state.windows.filter((window) => window.connectionId === 'builtin').length,
+        state.windows.filter((window) =>
+          state.connections.some((connection) =>
+            connection.enabled && connection.providerId === state.activeSpace && connection.id === window.connectionId,
+          ),
+        ).length,
       ),
     )
     if (
@@ -520,19 +531,15 @@ function visibleWindowNames(tree: ReactNode) {
   })
 }
 
-it('shows AliasMode as a window provider only when the lab switch is enabled', async () => {
+it('keeps provider selection outside the windows page', async () => {
   state.connections = [browserConnection()]
   const page = await mountedPage(false)
-  expect(
-    components(page.render(), TabsTrigger).map((node) => node.props.value),
-  ).not.toContain('aliasmode')
+  expect(components(page.render(), TabsTrigger)).toHaveLength(0)
   state.aliasModeEnabled = true
-  expect(
-    components(page.render(), TabsTrigger).map((node) => node.props.value),
-  ).toContain('aliasmode')
+  expect(components(page.render(), TabsTrigger)).toHaveLength(0)
 })
 
-it('keeps existing AliasMode windows reachable after hiding new lab entries', async () => {
+it('keeps existing AliasMode windows reachable in their own space', async () => {
   state.connections = [
     browserConnection(),
     browserConnection({
@@ -542,10 +549,10 @@ it('keeps existing AliasMode windows reachable after hiding new lab entries', as
       scopeConfirmed: true,
     }),
   ]
+  state.activeSpace = 'aliasmode'
+  state.windows = [browserWindow({ id: 'alias-window', name: 'alias-window', providerId: 'aliasmode', connectionId: 'alias' })]
   const page = await mountedPage(false)
-  expect(
-    components(page.render(), TabsTrigger).map((node) => node.props.value),
-  ).toContain('aliasmode')
+  expect(visibleWindowNames(page.render())).toContain('alias-window')
 })
 
 function windowRow(tree: ReactNode, name: string) {
@@ -768,10 +775,8 @@ describe('window management', () => {
     'forwards authenticated manual %s from the external form to create',
     async (protocol) => {
       state.connections.push(browserConnection({ id: 'ads', providerId: 'adspower' }))
+      state.activeSpace = 'adspower'
       const page = await mountedPage()
-      components(page.render(), Tabs)
-        .find((node) => node.props.value === 'cloakbrowser')!
-        .props.onValueChange?.('adspower')
       const editor = createEditor(page)
       editor.select('window-proxy-source', 'manual')
       editor.select('window-protocol', protocol)
@@ -1127,16 +1132,14 @@ describe('window list pagination', () => {
     const page = await mountedPage()
     pageSelection(page.render()).props.onCheckedChange?.(true)
     clickPage(page, '末页')
-    components(page.render(), Tabs)
-      .find((node) => node.props.value === 'cloakbrowser')!
-      .props.onValueChange?.('adspower')
+    state.activeSpace = 'adspower'
+    page.render()
     expect(visibleWindowNames(page.render())[0]).toBe('ads-0')
     expect(visibleWindowNames(page.render())).toHaveLength(20)
     expect(selectedWindowNames(page.render())).toEqual([])
     clickPage(page, '下一页')
-    components(page.render(), Tabs)
-      .find((node) => node.props.value === 'adspower')!
-      .props.onValueChange?.('cloakbrowser')
+    state.activeSpace = 'cloakbrowser'
+    page.render()
     expect(visibleWindowNames(page.render())[0]).toBe('window-01')
   })
 
@@ -1183,8 +1186,8 @@ describe('batch window grouping', () => {
 
   beforeEach(() => {
     state.groups = [
-      { id: 'group-1', name: '常用', note: '', windowCount: 2 },
-      { id: 'group-2', name: '备用', note: '', windowCount: 0 },
+      { id: 'group-1', providerId: 'cloakbrowser', name: '常用', note: '', windowCount: 2 },
+      { id: 'group-2', providerId: 'cloakbrowser', name: '备用', note: '', windowCount: 0 },
     ]
     state.windows = state.windows.map((window) => ({ ...window, groupId: 'group-1' }))
   })
@@ -1304,9 +1307,8 @@ describe('batch window grouping', () => {
     button(page.render(), '移动分组').props.onClick?.({} as never)
     filterControl(page.render(), '目标分组').props.onValueChange?.('group-2')
     const pending = submit(page.render())
-    components(page.render(), Tabs)
-      .find((node) => node.props.value === 'cloakbrowser')!
-      .props.onValueChange?.('adspower')
+    state.activeSpace = 'adspower'
+    page.render()
     select(page.render(), 'ads-window')
     resolve(vi.mocked(moveBrowserWindowsGroup).mock.calls[0]![0])
     await pending
@@ -1315,9 +1317,8 @@ describe('batch window grouping', () => {
     ).toEqual(['ads-window'])
     expect(visibleWindowNames(page.render())).toEqual(['ads-window'])
     expect(toast.success).not.toHaveBeenCalled()
-    components(page.render(), Tabs)
-      .find((node) => node.props.value === 'adspower')!
-      .props.onValueChange?.('cloakbrowser')
+    state.activeSpace = 'cloakbrowser'
+    page.render()
     filterControl(page.render(), '筛选分组').props.onValueChange?.('group-2')
     expect(visibleWindowNames(page.render())).toEqual(['first'])
   })
@@ -1646,12 +1647,10 @@ describe('account binding view guards', () => {
     change: string,
   ) {
     if (change === 'provider') {
-      const tabs = () =>
-        components(page.render(), Tabs).find((node) =>
-          ['cloakbrowser', 'adspower'].includes(String(node.props.value)),
-        )!
-      tabs().props.onValueChange?.('adspower')
-      tabs().props.onValueChange?.('cloakbrowser')
+      state.activeSpace = 'adspower'
+      page.render()
+      state.activeSpace = 'cloakbrowser'
+      page.render()
     } else if (change === 'connection') {
       state.connections = [
         { ...state.connections[0]!, revision: state.connections[0]!.revision + 1 },
@@ -1791,18 +1790,14 @@ describe('browser connections and global associations', () => {
     })
     return page
   }
-  function selectProvider(tree: ReactNode, provider: string) {
-    components(tree, Tabs)
-      .find(
-        (node) => node.props.value === 'cloakbrowser' || node.props.value === 'adspower',
-      )!
-      .props.onValueChange?.(provider)
+  function selectProvider(provider: typeof state.activeSpace) {
+    state.activeSpace = provider
   }
 
   it('filters only the display while SIM8 and duplicate names retain all windows', async () => {
     const page = await externalPage()
     expect(visibleWindowNames(page.render())).toEqual(['first', 'second', 'third'])
-    selectProvider(page.render(), 'adspower')
+    selectProvider('adspower')
     expect(visibleWindowNames(page.render())).toEqual(['Ads shop'])
     expect(
       components(page.render(), Sim8ExpiryNotice)[0]!.props.windows.map(
@@ -1830,13 +1825,14 @@ describe('browser connections and global associations', () => {
       .find((node) => node.props['aria-label'] === '编辑 first')!
       .props.onClick?.({} as never)
     expect(components(page.render(), WindowEditor)).toHaveLength(1)
-    selectProvider(page.render(), 'adspower')
+    selectProvider('adspower')
+    page.render()
     expect(components(page.render(), WindowEditor)).toHaveLength(0)
     expect(components(page.render(), Checkbox).every((node) => !node.props.checked)).toBe(
       true,
     )
     expect(visibleWindowNames(page.render())).toEqual(['Ads shop'])
-    selectProvider(page.render(), 'cloakbrowser')
+    selectProvider('cloakbrowser')
     expect(visibleWindowNames(page.render())).toEqual(['first'])
   })
 
@@ -1846,7 +1842,7 @@ describe('browser connections and global associations', () => {
     state.windows = state.windows.map((window) =>
       window.id === 'ads-shop' ? { ...window, state: 'unknown' as const } : window,
     )
-    selectProvider(page.render(), 'adspower')
+    selectProvider('adspower')
     components(page.render(), Button)
       .find((node) => Children.toArray(node.props.children).includes('刷新'))!
       .props.onClick?.({} as never)
@@ -1882,7 +1878,7 @@ describe('browser connections and global associations', () => {
     const check = deferred<ProxyCheckOutcome>()
     vi.mocked(checkWindowProxy).mockReturnValueOnce(check.promise)
     windowAction(page.render(), 'first', '打开').props.onClick?.({} as never)
-    selectProvider(page.render(), 'adspower')
+    selectProvider('adspower')
     page.render()
     check.resolve(checkedProxy())
     await Promise.resolve()
@@ -1922,7 +1918,7 @@ describe('browser connections and global associations', () => {
 
   it('describes an attached window proxy as provider-managed in its details', async () => {
     const page = await externalPage()
-    selectProvider(page.render(), 'adspower')
+    selectProvider('adspower')
     components(page.render(), Button)
       .find((node) => node.props['aria-label'] === '查看 Ads shop 详情')!
       .props.onClick?.({} as never)
@@ -1980,7 +1976,7 @@ describe('browser connections and global associations', () => {
     const old = deferred<BrowserWindow[]>()
     vi.mocked(listBrowserWindows).mockReturnValueOnce(old.promise)
     refreshButton(page.render()).props.onClick?.({} as never)
-    selectProvider(page.render(), 'adspower')
+    selectProvider('adspower')
     old.reject(new Error('Previous Tab read failed'))
     await vi.waitFor(() =>
       expect(Children.toArray(refreshButton(page.render()).props.children)).toContain(
@@ -2340,9 +2336,8 @@ describe('window table presentation', () => {
       }),
     )
     const page = await mountedPage()
-    components(page.render(), Tabs)
-      .find((node) => node.props.value === 'cloakbrowser')!
-      .props.onValueChange?.('adspower')
+    state.activeSpace = 'adspower'
+    page.render()
     expect(
       components(windowRow(page.render(), 'external'), DropdownMenuTrigger),
     ).toHaveLength(1)
@@ -2352,7 +2347,7 @@ describe('window table presentation', () => {
 describe('window account status filtering', () => {
   it('offers grouped status options and combines account, group and search filters in newest order', async () => {
     state.accounts[0] = account({ status: 'blocked' })
-    state.groups = [{ id: 'work', name: '工作组', note: '', windowCount: 4 }]
+    state.groups = [{ id: 'work', providerId: 'cloakbrowser', name: '工作组', note: '', windowCount: 4 }]
     state.windows = [
       { ...profile('first'), createdAt: 100, groupId: 'work' },
       { ...profile('second', 'running'), createdAt: 300, groupId: 'work' },

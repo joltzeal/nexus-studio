@@ -1,6 +1,6 @@
 [package]
 name = "nexus-desktop"
-version = "0.1.43"
+version = "0.2.0"
 description = "Raccoon consumer desktop workspace"
 authors = ["Raccoon"]
 rust-version = "1.93"
@@ -32,11 +32,31 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 tauri-plugin-process = "2"
 ring = "0.17.14"
+quick-xml = "0.39"
 tar = "0.4.46"
 flate2 = "1.1.10"
 tempfile = "3.27.0"
+zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tauri-plugin-dialog = "2"
 base64 = "0.22.1"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+shardx = { path = "../../../packages/shardx-sdk", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "process", "sync", "net", "io-util", "fs", "macros"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", features = ["sink"] }
+# Internal automation follows ShardBrowser 99e780e2. These versions preserve
+# the repository's Rust 1.93 toolchain.
+anyhow = "1"
+regex = "1"
+wasmtime = "=41.0.4"
+wreq = { version = "=0.15.3", features = ["cookies", "gzip", "brotli", "deflate", "zstd"] }
+wreq-util = { version = "=0.1.0", features = ["emulation", "emulation-serde"] }
+postgres = "=0.19.14"
+mysql = { version = "=28.0.4", default-features = false, features = ["minimal-rust", "rustls"] }
+mongodb = { version = "=3.10.1", features = ["sync"] }
+axum = "0.7"
+jsonwebtoken = "9"
 tauri-plugin-deep-link = "2"
 
 
@@ -51,3 +71,12 @@ strip = true
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

@@ -21,6 +21,10 @@ pub enum AutomationSession {
 pub struct CdpEndpoint(String);
 
 impl CdpEndpoint {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn websocket(raw: &str) -> BrowserResult<Self> {
         let invalid = || BrowserError::new("invalid_config", "Invalid local browser endpoint");
         if raw.len() > 2048
@@ -98,6 +102,10 @@ impl CdpEndpoint {
             return Err(failure());
         }
         Ok(endpoint)
+    }
+
+    pub fn matches_debugger_path(&self, path: &str) -> bool {
+        Url::parse(&self.0).is_ok_and(|url| url.path() == path)
     }
 }
 
@@ -527,6 +535,12 @@ pub struct CdpActor {
 
 impl CdpActor {
     pub fn attach(runtime: &RuntimePaths, endpoint: CdpEndpoint) -> BrowserResult<Self> {
+        if !runtime.browser_script.is_file() {
+            return Err(BrowserError::new(
+                "unavailable",
+                "浏览器自动化组件缺失，请重新安装 Raccoon",
+            ));
+        }
         let child = Command::new(&runtime.node)
             .arg(&runtime.browser_script)
             .arg("automation-cdp")

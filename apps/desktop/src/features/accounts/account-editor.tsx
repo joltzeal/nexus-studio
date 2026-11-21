@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff } from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

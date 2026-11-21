@@ -1,14 +1,13 @@
 import type { Dispatch, SetStateAction } from 'react'
 import {
-  BROWSER_PROVIDERS,
   listBrowserConnections,
   type BrowserConnection,
-  type BrowserProviderId,
 } from '@/lib/platform/browser-connections'
 import { BrowserConnectionsPage } from '@/features/settings/browser-connections-page'
-import { useAliasModeEnabled } from '@/features/settings/lab-preferences'
+import { setActiveBrowserSpace, useActiveBrowserSpace } from '@/lib/active-browser-space'
 import { BrowserOperationRecovery } from './browser-operation-recovery'
 import type { CreateBrowserWindowInput } from '@nexus/contracts/browser'
+import type { BrowserProviderId } from '@nexus/contracts/browser'
 import { AttachWindowDialog } from './attach-window-dialog'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { navigateDetail, useDetailNavigation } from '@/lib/detail-navigation'
@@ -16,6 +15,7 @@ import {
   ArrowUpRight,
   Check,
   ClipboardList,
+  MoreVertical,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -23,8 +23,8 @@ import {
   Columns3,
   Ellipsis,
   FolderInput,
+  Globe2,
   Loader2,
-  PanelsTopLeft,
   Pencil,
   Play,
   Plus,
@@ -34,7 +34,7 @@ import {
   Trash2,
   Unlink,
   UserRound,
-} from 'lucide-react'
+} from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -221,7 +221,7 @@ function message(error: unknown): string {
 }
 
 export function SpacesPage() {
-  const aliasModeEnabled = useAliasModeEnabled()
+  const providerId = useActiveBrowserSpace()
   const [expiryRefreshKey, setExpiryRefreshKey] = useState(0)
   const native = browserWindowsAvailable()
   const [windows, setWindows] = useState<BrowserWindow[]>([])
@@ -257,7 +257,6 @@ export function SpacesPage() {
     }
   }, [native, proxyRefs, proxyScope])
   const [connections, setConnections] = useState<BrowserConnection[]>([])
-  const [providerId, setProviderId] = useState<BrowserProviderId>('cloakbrowser')
   const [attaching, setAttaching] = useState(false)
   const [managingConnections, setManagingConnections] = useState(false)
   const connection =
@@ -282,7 +281,15 @@ export function SpacesPage() {
     [],
   )
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
-  const [groups, setGroups] = useState<WindowGroup[]>([])
+  const [groupsByProvider, setGroupsByProvider] = useState<
+    Partial<Record<BrowserProviderId, WindowGroup[]>>
+  >({})
+  const groups = groupsByProvider[providerId] ?? []
+  const setGroups = useCallback(
+    (provider: BrowserProviderId, items: WindowGroup[]) =>
+      setGroupsByProvider((current) => ({ ...current, [provider]: items })),
+    [],
+  )
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof WINDOW_PAGE_SIZES)[number]>(20)
   const [hiddenColumns, setHiddenColumns] = useState<WindowColumn[]>([])
@@ -346,7 +353,7 @@ export function SpacesPage() {
         return
       }
       if (providerId !== target.providerId) {
-        setProviderId(target.providerId)
+        setActiveBrowserSpace(target.providerId)
         return
       }
       if (connection?.id !== target.connectionId) {
@@ -509,16 +516,14 @@ export function SpacesPage() {
     closeGate,
   } = useWindowLaunch(load, setError, connectionId, connection?.revision ?? 0)
 
-  function changeProvider(value: string) {
-    if (
-      !BROWSER_PROVIDERS.some((provider) => provider.id === value) ||
-      value === providerId
-    )
-      return
+  const previousProvider = useRef(providerId)
+  useEffect(() => {
+    if (previousProvider.current === providerId) return
+    previousProvider.current = providerId
     viewEpoch.current += 1
     selectionScope.current =
-      connections.find((entry) => entry.providerId === value && entry.enabled)?.id ?? null
-    setProviderId(value as BrowserProviderId)
+      connections.find((entry) => entry.providerId === providerId && entry.enabled)?.id ??
+      null
     setPage(1)
     setSelectedIds(new Set())
     setGroupMove(null)
@@ -532,7 +537,7 @@ export function SpacesPage() {
     setEditingAccount(null)
     setError(null)
     closeGate()
-  }
+  }, [providerId])
 
   useEffect(() => {
     selectionScope.current = connectionId
@@ -549,7 +554,7 @@ export function SpacesPage() {
       const [, currentGroups, license] = await withDeadline(
         Promise.all([
           load(),
-          listGroups(),
+          listGroups(providerId),
           getLicenseStatus().catch(() => null),
           loadConnections(),
         ]),
@@ -557,7 +562,7 @@ export function SpacesPage() {
         '刷新窗口和分组超时，请重试。',
       )
       if (epoch !== viewEpoch.current) return
-      setGroups(currentGroups)
+      setGroups(providerId, currentGroups)
       setLicenseStatus(license)
       await refreshBindings()
       if (epoch === viewEpoch.current) setError(null)
@@ -571,9 +576,9 @@ export function SpacesPage() {
   useEffect(() => {
     if (!native) return
     let active = true
-    void listGroups().then(
+    void listGroups(providerId).then(
       (items) => {
-        if (active) setGroups(items)
+        if (active) setGroups(providerId, items)
       },
       (cause: unknown) => {
         if (active) setError(message(cause))
@@ -582,7 +587,7 @@ export function SpacesPage() {
     return () => {
       active = false
     }
-  }, [native])
+  }, [native, providerId, setGroups])
 
   useEffect(() => {
     const reads = windowReads.current
@@ -597,6 +602,18 @@ export function SpacesPage() {
       reads.request += 1
       connectionRequest.current += 1
     }
+  }, [native, load, loadConnections])
+
+  useEffect(() => {
+    if (!native) return
+    const refreshConnections = () => {
+      void Promise.all([load(), loadConnections()]).catch((cause: unknown) =>
+        setError(message(cause)),
+      )
+    }
+    window.addEventListener('raccoon:connections-change', refreshConnections)
+    return () =>
+      window.removeEventListener('raccoon:connections-change', refreshConnections)
   }, [native, load, loadConnections])
 
   useEffect(() => {
@@ -845,12 +862,12 @@ export function SpacesPage() {
   async function refreshAfterImport() {
     const epoch = viewEpoch.current
     const [, currentGroups] = await withDeadline(
-      Promise.all([load(), listGroups()]),
+      Promise.all([load(), listGroups(providerId)]),
       10_000,
       '刷新窗口和分组超时',
     )
     if (epoch !== viewEpoch.current) return
-    setGroups(currentGroups)
+    setGroups(providerId, currentGroups)
     setPage(1)
     setSelectedIds(new Set())
     await withDeadline(refreshBindings(), 10_000, '刷新账号关联超时')
@@ -1095,51 +1112,32 @@ export function SpacesPage() {
   const selectedPageCount = selectableIds.filter((id) => selectedIds.has(id)).length
   const target = connectionWindows.find((window) => window.id === deleting)
   const running = connectionWindows.filter((window) => window.state === 'running').length
-  const proxied = connectionWindows.filter((window) => hasProxy(window)).length
-  const bound = accountsInstalled
-    ? connectionWindows.filter((window) => bindingOf(window.id) !== null).length
-    : 0
+  const freshInstall = connectionWindows.length === 0 && query === '' && groupFilter === 'all' && accountFilter === 'all'
+  const createAvailable = !!connection?.scopeConfirmed && !!connection.capabilities.create
 
   return (
-    <section className="collection-page page-reveal" aria-labelledby="spaces-heading">
-      <div className="section-intro">
-        <div>
-          <h1 className="page-heading" id="spaces-heading">
-            窗口管理
-          </h1>
-          <p className="page-description">管理窗口配置与运行状态。</p>
+    <section
+      className="collection-page shard-profiles flex h-full min-h-0 min-w-0 flex-col"
+      aria-labelledby="spaces-heading"
+    >
+      <header className="flex h-[52px] shrink-0 items-center gap-3 px-5">
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-medium leading-tight" id="spaces-heading">全部配置</h1>
+          {!freshInstall && <span className="text-xs tabular-nums text-muted-foreground">{visible.length === connectionWindows.length ? visible.length : `${visible.length} / ${connectionWindows.length}`}</span>}
         </div>
-        <div className="section-actions">
-          <Button
-            variant="outline"
-            disabled={!native || refreshing}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw
-              data-icon="inline-start"
-              className={refreshing ? 'animate-spin' : undefined}
-            />
-            {refreshing ? '刷新中…' : '刷新'}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={
-              !native || !connection?.scopeConfirmed || !connection.capabilities.create
-            }
-            onClick={() => setBatchCreating(true)}
-          >
-            <PanelsTopLeft data-icon="inline-start" />
-            批量创建
-          </Button>
-          {connection?.capabilities.attach ? (
-            <Button
-              variant="outline"
-              disabled={!native || !connection.scopeConfirmed}
-              onClick={() => setAttaching(true)}
-            >
-              接入已有窗口
-            </Button>
-          ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {!freshInstall && <div className="search-field !w-52 max-w-full">
+            <Search aria-hidden="true" />
+            <Input aria-label="搜索窗口" placeholder="搜索配置" value={query} onChange={(event) => setQuery(event.target.value)} />
+          </div>}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button variant="outline" size="icon-sm" aria-label="更多窗口操作"><MoreVertical /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={!native || refreshing} onSelect={() => void refresh()}>刷新</DropdownMenuItem>
+              <DropdownMenuItem disabled={!native || !createAvailable} onSelect={() => setBatchCreating(true)}>批量创建</DropdownMenuItem>
+              {connection?.capabilities.attach && <DropdownMenuItem disabled={!connection.scopeConfirmed} onSelect={() => setAttaching(true)}>接入已有窗口</DropdownMenuItem>}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             disabled={
               !native || !connection?.scopeConfirmed || !connection.capabilities.create
@@ -1151,40 +1149,23 @@ export function SpacesPage() {
             }}
           >
             <Plus data-icon="inline-start" />
-            创建窗口
+            新建配置
           </Button>
         </div>
-      </div>
-      <Tabs value={providerId} onValueChange={changeProvider}>
-        <TabsList aria-label="浏览器提供方">
-          {BROWSER_PROVIDERS.filter(
-            (provider) =>
-              provider.id !== 'aliasmode' ||
-              aliasModeEnabled ||
-              connections.some((entry) => entry.providerId === 'aliasmode'),
-          ).map((provider) => (
-            <TabsTrigger key={provider.id} value={provider.id}>
-              {provider.name}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-      {native ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>
-            {connection ? `当前接入：${connection.name}` : '此浏览器尚未启用接入'}
-          </span>
-          <Button size="sm" variant="link" onClick={() => setManagingConnections(true)}>
-            配置浏览器接入
-          </Button>
+      </header>
+      {!freshInstall && native && !connection ? (
+        <div className="windows-connection-prompt">
+          <span>{providerId === 'aliasmode' || providerId === 'cloakbrowser' || providerId === 'shardbrowser'
+            ? '请在应用设置的实验室启用接入并准备内核'
+            : '此浏览器尚未连接'}</span>
+          {providerId !== 'aliasmode' && providerId !== 'cloakbrowser' && providerId !== 'shardbrowser' ? (
+            <Button size="sm" variant="outline" onClick={() => setManagingConnections(true)}>
+              配置浏览器接入
+            </Button>
+          ) : null}
         </div>
       ) : null}
-      {!native ? (
-        <p className="browser-windows-hint" role="status">
-          请在 Raccoon 桌面应用中创建和打开窗口；网页预览无法访问本机浏览器。
-        </p>
-      ) : null}
-      <div className="window-notices">
+      <div className="window-notices px-5">
         {error ? <FieldError role="alert">{error}</FieldError> : null}
         <Sim8ExpiryNotice
           refreshKey={expiryRefreshKey}
@@ -1219,689 +1200,687 @@ export function SpacesPage() {
         />
       </div>
 
-      {native ? (
-        <div className="space-stats" aria-label="窗口概览">
-          <div className="space-stat">
-            <span>窗口</span>
-            <strong>{connectionWindows.length}</strong>
-          </div>
-          <div className="space-stat" data-tone="success">
-            <span>运行中</span>
-            <strong>{running}</strong>
-          </div>
-          <div className="space-stat" data-tone="info">
-            <span>已配代理</span>
-            <strong>{proxied}</strong>
-          </div>
-          {accountsInstalled ? (
-            <div className="space-stat" data-tone="warning">
-              <span>已关联账号</span>
-              <strong>{accountsReady ? bound : '—'}</strong>
+      {freshInstall ? (
+        <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto px-5 pb-5">
+          <div className="flex flex-col items-center gap-2 px-5 py-12 text-center">
+            <div className="grid size-12 place-items-center rounded-lg bg-muted text-muted-foreground"><Globe2 className="size-5" /></div>
+            <h2 className="text-sm font-medium">还没有配置</h2>
+            <p className="max-w-[420px] text-[13px] text-muted-foreground">{connection?.scopeConfirmed ? '为当前工作区创建第一个浏览器配置' : '连接浏览器后即可创建配置'}</p>
+            <div className="mt-2 flex items-center gap-2">
+              {createAvailable ? <Button size="sm" onClick={() => { setError(null); createIntent.current = null; setEditing('new') }}><Plus data-icon="inline-start" />新建配置</Button> : <Button size="sm" disabled={!native} onClick={() => setManagingConnections(true)}>连接浏览器</Button>}
+              {connection?.capabilities.attach ? <Button variant="outline" size="sm" onClick={() => setAttaching(true)}>接入已有窗口</Button> : null}
             </div>
-          ) : null}
+          </div>
         </div>
-      ) : null}
-
-      <div className="window-list-toolbar">
-        <div className="window-list-filters" role="group" aria-label="筛选窗口">
-          <div className="search-field">
-            <Search aria-hidden="true" />
-            <Input
-              aria-label="搜索窗口"
-              placeholder="搜索名称、平台或备注"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
+      ) : <div className="flex min-h-0 min-w-0 flex-1 flex-col px-5 pb-5">
+        <div className="flex min-h-11 flex-wrap items-center gap-2 pb-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="筛选窗口">
+            {native ? (
+              <>
+                <Select value={groupFilter} onValueChange={setGroupFilter}>
+                  <SelectTrigger aria-label="筛选分组" className="w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部分组</SelectItem>
+                      <SelectItem value="ungrouped">未分组</SelectItem>
+                      {groups.map((group) => (
+                        <SelectItem key={group.id} value={group.id}>
+                          {group.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={accountsReady ? accountFilter : 'all'}
+                  onValueChange={setAccountFilter}
+                  disabled={!accountsReady}
+                >
+                  <SelectTrigger
+                    aria-label="筛选账号状态"
+                    className="w-36"
+                    title={
+                      accountsReady
+                        ? undefined
+                        : accountsRunning
+                          ? '账号资料暂不可用，请刷新后筛选'
+                          : '账号插件不可用，暂不筛选账号状态'
+                    }
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部账号状态</SelectItem>
+                      {ACCOUNT_STATUSES.map((status) => (
+                        <SelectItem key={status} value={status}>
+                          {STATUS_LABELS[status]}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="unbound">未关联账号</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </>
+            ) : null}
+          </div>
+          <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="窗口批量操作">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Columns3 data-icon="inline-start" />
+                  显示列
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>窗口表格列</DropdownMenuLabel>
+                {WINDOW_COLUMNS.filter(
+                  (column) => column.id !== 'account' || accountsInstalled,
+                ).map((column) => (
+                  <DropdownMenuCheckboxItem
+                    key={column.id}
+                    checked={showColumn(column.id)}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={(checked) =>
+                      setHiddenColumns((current) =>
+                        checked
+                          ? current.filter((id) => id !== column.id)
+                          : [...current, column.id],
+                      )
+                    }
+                  >
+                    {column.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {selectedWindows.length ? (
+              <Button
+                variant="outline"
+                disabled={
+                  !native ||
+                  !connectionId ||
+                  selectedWindows.length === 0 ||
+                  selectionBusy ||
+                  groupMovePending
+                }
+                onClick={() => {
+                  if (
+                    !connectionId ||
+                    selectedWindows.length === 0 ||
+                    selectionBusy ||
+                    groupMoveRequest.current
+                  )
+                    return
+                  setGroupMoveError(null)
+                  setGroupMove({
+                    connectionId,
+                    ids: selectedWindows.map((window) => window.id),
+                    epoch: viewEpoch.current,
+                    destination: 'ungrouped',
+                  })
+                }}
+              >
+                <FolderInput data-icon="inline-start" />
+                移动分组
+              </Button>
+            ) : null}
+            <TransferToolbar
+              key={`${filterKey}:${connection?.revision ?? 0}`}
+              native={native}
+              connection={connection}
+              windows={selectedWindows}
+              operating={operatingWindows}
+              onImported={refreshAfterImport}
             />
           </div>
-          {native ? (
-            <>
-              <Select value={groupFilter} onValueChange={setGroupFilter}>
-                <SelectTrigger aria-label="筛选分组" className="w-36">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部分组</SelectItem>
-                    <SelectItem value="ungrouped">未分组</SelectItem>
-                    {groups.map((group) => (
-                      <SelectItem key={group.id} value={group.id}>
-                        {group.name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Select
-                value={accountsReady ? accountFilter : 'all'}
-                onValueChange={setAccountFilter}
-                disabled={!accountsReady}
-              >
-                <SelectTrigger
-                  aria-label="筛选账号状态"
-                  className="w-36"
-                  title={
-                    accountsReady
-                      ? undefined
-                      : accountsRunning
-                        ? '账号资料暂不可用，请刷新后筛选'
-                        : '账号插件不可用，暂不筛选账号状态'
-                  }
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部账号状态</SelectItem>
-                    {ACCOUNT_STATUSES.map((status) => (
-                      <SelectItem key={status} value={status}>
-                        {STATUS_LABELS[status]}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value="unbound">未关联账号</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </>
-          ) : null}
-          <span className="result-count">{visible.length} 个窗口</span>
         </div>
-        <div className="window-list-actions" role="group" aria-label="窗口批量操作">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
-                <Columns3 data-icon="inline-start" />
-                显示列
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>窗口表格列</DropdownMenuLabel>
-              {WINDOW_COLUMNS.filter(
-                (column) => column.id !== 'account' || accountsInstalled,
-              ).map((column) => (
-                <DropdownMenuCheckboxItem
-                  key={column.id}
-                  checked={showColumn(column.id)}
-                  onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={(checked) =>
-                    setHiddenColumns((current) =>
-                      checked
-                        ? current.filter((id) => id !== column.id)
-                        : [...current, column.id],
-                    )
-                  }
-                >
-                  {column.label}
-                </DropdownMenuCheckboxItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <span className="result-count" aria-live="polite">
-            已选 {selectedWindows.length}
-          </span>
-          {selectedWindows.length ? (
-            <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
-              清除选择
-            </Button>
-          ) : null}
-          <Button
-            variant="outline"
-            disabled={
-              !native ||
-              !connectionId ||
-              selectedWindows.length === 0 ||
-              selectionBusy ||
-              groupMovePending
-            }
-            onClick={() => {
-              if (
-                !connectionId ||
-                selectedWindows.length === 0 ||
-                selectionBusy ||
-                groupMoveRequest.current
-              )
-                return
-              setGroupMoveError(null)
-              setGroupMove({
-                connectionId,
-                ids: selectedWindows.map((window) => window.id),
-                epoch: viewEpoch.current,
-                destination: 'ungrouped',
-              })
-            }}
-          >
-            <FolderInput data-icon="inline-start" />
-            移动分组
-          </Button>
-          <TransferToolbar
-            key={`${filterKey}:${connection?.revision ?? 0}`}
-            native={native}
-            connection={connection}
-            windows={selectedWindows}
-            operating={operatingWindows}
-            onImported={refreshAfterImport}
-          />
-        </div>
-      </div>
 
-      <div className="space-table-panel">
-        <div className="panel-heading">
-          <h2>全部窗口</h2>
-          <Badge variant="secondary">{connectionWindows.length}</Badge>
-        </div>
-        <Table aria-label="窗口列表" containerLabel="窗口表格，可左右滚动">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10">
-                <Checkbox
-                  aria-label="全选本页窗口"
-                  disabled={!native || selectableIds.length === 0}
-                  checked={
-                    selectedPageCount === 0
-                      ? false
-                      : selectedPageCount === selectableIds.length
-                        ? true
-                        : 'indeterminate'
-                  }
-                  onCheckedChange={(checked) =>
-                    selectionScope.current === connectionId &&
-                    setSelectedIds((current) =>
-                      toggleSelection(current, selectableIds, checked === true),
-                    )
-                  }
-                />
-              </TableHead>
-              <TableHead className="space-name-column">窗口名称</TableHead>
-              {showColumn('platform') ? (
-                <TableHead className="w-24">平台</TableHead>
-              ) : null}
-              {accountsInstalled && showColumn('account') ? (
-                <TableHead className="w-64">Vinted 账号</TableHead>
-              ) : null}
-              {showColumn('group') ? <TableHead className="w-24">分组</TableHead> : null}
-              {showColumn('kernel') ? <TableHead className="w-16">内核</TableHead> : null}
-              {showColumn('proxy') ? <TableHead className="w-36">代理</TableHead> : null}
-              {showColumn('created') ? (
-                <TableHead className="w-28">创建时间</TableHead>
-              ) : null}
-              {showColumn('opened') ? (
-                <TableHead className="w-28">上次打开</TableHead>
-              ) : null}
-              <TableHead className="w-28">状态</TableHead>
-              <TableHead className="space-actions-column text-right">操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {pageWindows.map((window) => {
-              const account = bindingOf(window.id)
-              const linked =
-                account === null
-                  ? null
-                  : (accounts.find((item) => item.id === account.accountId) ?? null)
-              const summary = accountSummaryOf(account)
-              const accountNameClass =
-                summary?.status === 'blocked' ? 'text-destructive' : undefined
-              const phoneUnlinkPending = linked !== null && unlinkingPhones.has(linked.id)
-              const starting =
-                window.state === 'starting' ||
-                (window.state !== 'running' && startingWindows.has(window.id))
-              const checkingProxy =
-                gate?.window.id === window.id && gate.stage.stage === 'checking'
-              const busy = isWindowBusy(window)
-              const unconfirmed =
-                unconfirmedWindows.has(window.id) ||
-                window.state === 'unknown' ||
-                window.state === 'missing'
-              return (
-                <TableRow
-                  key={window.id}
-                  className={starting ? 'space-row-starting' : undefined}
-                  aria-busy={starting || undefined}
-                  data-running={window.state === 'running' ? 'true' : undefined}
-                  data-state={selectedIds.has(window.id) ? 'selected' : undefined}
-                >
-                  <TableCell>
-                    <Checkbox
-                      aria-label={`选择窗口 ${window.name}`}
-                      checked={selectedIds.has(window.id)}
-                      disabled={!native || busy}
-                      onCheckedChange={(checked) =>
-                        selectionScope.current === window.connectionId &&
-                        setSelectedIds((current) =>
-                          toggleSelection(current, [window.id], checked === true),
-                        )
-                      }
-                    />
-                  </TableCell>
-                  <TableCell className="space-name-column">
-                    <div className="space-name-cell">
-                      <span
-                        className="space-avatar"
-                        data-tone={window.state === 'running' ? 'blue' : undefined}
-                        aria-hidden="true"
-                      >
-                        {window.name.slice(0, 1).toUpperCase()}
-                      </span>
-                      <div>
-                        <strong>{window.name}</strong>
-                        <WindowNote
-                          id={window.id}
-                          name={window.name}
-                          note={window.settings.note}
-                          onSaved={(note) =>
-                            applyWindows((current) =>
-                              current.map((item) =>
-                                item.id === window.id
-                                  ? { ...item, settings: { ...item.settings, note } }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                      </div>
-                    </div>
-                  </TableCell>
-                  {showColumn('platform') ? (
+        {selectedWindows.length > 0 ? <div className="flex min-h-9 items-center gap-2 px-2 text-xs text-muted-foreground">
+            <span className="windows-selection-actions">
+              已选择 {selectedWindows.length} 个
+              <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
+                清除选择
+              </Button>
+            </span>
+        </div> : null}
+        <div
+          className="shard-list-tile min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain rounded-xl bg-card [&_[data-slot=empty]]:min-h-20"
+          role="region"
+          aria-label="窗口表格，可左右滚动"
+          tabIndex={0}
+        >
+          <Table aria-label="窗口列表" className="shard-window-table">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    aria-label="全选本页窗口"
+                    disabled={!native || selectableIds.length === 0}
+                    checked={
+                      selectedPageCount === 0
+                        ? false
+                        : selectedPageCount === selectableIds.length
+                          ? true
+                          : 'indeterminate'
+                    }
+                    onCheckedChange={(checked) =>
+                      selectionScope.current === connectionId &&
+                      setSelectedIds((current) =>
+                        toggleSelection(current, selectableIds, checked === true),
+                      )
+                    }
+                  />
+                </TableHead>
+                <TableHead className="space-name-column">窗口名称</TableHead>
+                {showColumn('platform') ? (
+                  <TableHead className="w-24">平台</TableHead>
+                ) : null}
+                {accountsInstalled && showColumn('account') ? (
+                  <TableHead className="w-64">Vinted 账号</TableHead>
+                ) : null}
+                {showColumn('group') ? (
+                  <TableHead className="w-24">分组</TableHead>
+                ) : null}
+                {showColumn('kernel') ? (
+                  <TableHead className="w-16">内核</TableHead>
+                ) : null}
+                {showColumn('proxy') ? (
+                  <TableHead className="w-36">代理</TableHead>
+                ) : null}
+                {showColumn('created') ? (
+                  <TableHead className="w-28">创建时间</TableHead>
+                ) : null}
+                {showColumn('opened') ? (
+                  <TableHead className="w-28">上次打开</TableHead>
+                ) : null}
+                <TableHead className="w-28">状态</TableHead>
+                <TableHead className="space-actions-column text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {pageWindows.map((window) => {
+                const account = bindingOf(window.id)
+                const linked =
+                  account === null
+                    ? null
+                    : (accounts.find((item) => item.id === account.accountId) ?? null)
+                const summary = accountSummaryOf(account)
+                const accountNameClass =
+                  summary?.status === 'blocked' ? 'text-destructive' : undefined
+                const phoneUnlinkPending =
+                  linked !== null && unlinkingPhones.has(linked.id)
+                const starting =
+                  window.state === 'starting' ||
+                  (window.state !== 'running' && startingWindows.has(window.id))
+                const checkingProxy =
+                  gate?.window.id === window.id && gate.stage.stage === 'checking'
+                const busy = isWindowBusy(window)
+                const unconfirmed =
+                  unconfirmedWindows.has(window.id) ||
+                  window.state === 'unknown' ||
+                  window.state === 'missing'
+                return (
+                  <TableRow
+                    key={window.id}
+                    className={starting ? 'space-row-starting' : undefined}
+                    aria-busy={starting || undefined}
+                    data-running={window.state === 'running' ? 'true' : undefined}
+                    data-state={selectedIds.has(window.id) ? 'selected' : undefined}
+                  >
                     <TableCell>
-                      <Badge variant="outline">{window.settings.platform}</Badge>
-                    </TableCell>
-                  ) : null}
-                  {accountsInstalled && showColumn('account') ? (
-                    <TableCell>
-                      {!accountsReady ? (
-                        <span className="table-muted">账号资料暂不可用</span>
-                      ) : account === null ? (
-                        <AccountQuickAdd
-                          window={window}
-                          ready={accountsReady}
-                          accounts={accounts}
-                          onSaved={refreshAfterBinding}
-                          assertUnbound={async () => {
-                            const snapshot = relationSnapshot(window)
-                            if (snapshot.previous) throw new WindowRelationChangedError()
-                            const latest = await listBindings()
-                            assertWindowRelation(snapshot, latest.items)
-                          }}
-                        />
-                      ) : (
-                        <span className="account-cell-row">
-                          <span className="account-cell">
-                            {linked === null ? (
-                              <strong className={accountNameClass}>
-                                {summary?.account ?? '账号已删除'}
-                              </strong>
-                            ) : (
-                              <Button
-                                type="button"
-                                variant="link"
-                                size="xs"
-                                className="h-auto max-w-full justify-start p-0 text-left"
-                                aria-label={`编辑 ${linked.account} 的账号资料`}
-                                title="编辑账号资料"
-                                disabled={!accountsReady || phoneUnlinkPending}
-                                onClick={() => setEditingAccount(linked)}
-                              >
-                                <strong className={accountNameClass}>
-                                  {linked.account}
-                                </strong>
-                                <Pencil data-icon="inline-end" />
-                              </Button>
-                            )}
-                            <span className="account-cell-meta">
-                              {summary === null ? null : (
-                                <Badge variant={statusVariant(summary.status)}>
-                                  {STATUS_LABELS[summary.status]}
-                                </Badge>
-                              )}
-                              {linked === null ? null : (
-                                <AccountPhoneCopy account={linked} />
-                              )}
-                              {linked === null ? null : (
-                                <AccountSmsWaitButton
-                                  account={linked}
-                                  windowId={window.id}
-                                  windowName={window.name}
-                                  ready={accountsReady && !phoneUnlinkPending}
-                                  emailReady={
-                                    emailPlugin?.state === 'running' &&
-                                    emailPlugin.methods.includes('email.messages.get')
-                                  }
-                                />
-                              )}
-                              {linked === null || linked.phone.trim() === '' ? null : (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon-xs"
-                                  className="size-[22px]"
-                                  aria-label={`解绑 ${linked.account} 的手机号`}
-                                  aria-busy={phoneUnlinkPending}
-                                  title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
-                                  disabled={!accountsReady || phoneUnlinkPending}
-                                  onClick={() => requestPhoneUnlink(window, linked)}
-                                >
-                                  {phoneUnlinkPending ? (
-                                    <Loader2
-                                      className="animate-spin"
-                                      aria-hidden="true"
-                                    />
-                                  ) : (
-                                    <Unlink aria-hidden="true" />
-                                  )}
-                                </Button>
-                              )}
-                            </span>
-                          </span>
-                          {linked === null ? null : (
-                            <>
-                              <AccountSmsPopover
-                                key={`sms-${linked.id}`}
-                                account={linked}
-                                ready={accountsReady && !phoneUnlinkPending}
-                                onSaved={applySavedAccount}
-                              />
-                              {accountPlugin?.state === 'running' &&
-                              accountPlugin.methods?.includes(
-                                'vinted.accounts.orders.items',
-                              ) ? (
-                                <AccountWardrobePopover
-                                  key={`wardrobe-${linked.id}`}
-                                  account={linked}
-                                  ready={accountsReady}
-                                />
-                              ) : null}
-                            </>
-                          )}
-                        </span>
-                      )}
-                    </TableCell>
-                  ) : null}
-                  {showColumn('group') ? (
-                    <TableCell>
-                      <span className="table-group">
-                        {groups.find((group) => group.id === window.groupId)?.name ??
-                          '未分组'}
-                      </span>
-                    </TableCell>
-                  ) : null}
-                  {showColumn('kernel') ? (
-                    <TableCell>
-                      <span className="kernel-version" title={window.version}>
-                        {majorVersion(window.version)}
-                      </span>
-                    </TableCell>
-                  ) : null}
-                  {showColumn('proxy') ? (
-                    <TableCell>
-                      <ProxyCell
-                        window={window}
-                        catalog={proxyCatalog?.scope === proxyScope ? proxyCatalog : null}
+                      <Checkbox
+                        aria-label={`选择窗口 ${window.name}`}
+                        checked={selectedIds.has(window.id)}
+                        disabled={!native || busy}
+                        onCheckedChange={(checked) =>
+                          selectionScope.current === window.connectionId &&
+                          setSelectedIds((current) =>
+                            toggleSelection(current, [window.id], checked === true),
+                          )
+                        }
                       />
                     </TableCell>
-                  ) : null}
-                  {showColumn('created') ? (
-                    <TableCell>
-                      <TimeCell at={window.createdAt} now={now} fallback="—" />
+                    <TableCell className="space-name-column">
+                      <div className="space-name-cell">
+                        <div>
+                          <strong title={window.name}>{window.name}</strong>
+                          <WindowNote
+                            id={window.id}
+                            name={window.name}
+                            note={window.settings.note}
+                            onSaved={(note) =>
+                              applyWindows((current) =>
+                                current.map((item) =>
+                                  item.id === window.id
+                                    ? { ...item, settings: { ...item.settings, note } }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </div>
+                      </div>
                     </TableCell>
-                  ) : null}
-                  {showColumn('opened') ? (
-                    <TableCell>
-                      <TimeCell at={window.lastOpenedAt} now={now} fallback="从未打开" />
-                    </TableCell>
-                  ) : null}
-                  <TableCell>
-                    <span
-                      className="status-badge min-w-24 justify-center"
-                      data-state={
-                        unconfirmed || starting
-                          ? 'pending'
-                          : window.state === 'running'
-                            ? 'running'
-                            : 'stopped'
-                      }
-                    >
-                      <span className="status-dot" aria-hidden="true" />
-                      {unconfirmed
-                        ? window.state === 'missing'
-                          ? '环境不可见'
-                          : '状态待确认'
-                        : checkingProxy
-                          ? '检测代理中'
-                          : starting
-                            ? '启动中'
-                            : busy
-                              ? '操作中'
-                              : window.state === 'running'
-                                ? '运行中'
-                                : window.state === 'missing'
-                                  ? '环境不可见'
-                                  : window.state === 'unknown'
-                                    ? '状态待确认'
-                                    : '已停止'}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <div className="table-actions">
-                      <Button
-                        variant={window.state === 'running' ? 'outline' : 'default'}
-                        size="sm"
-                        className="w-28"
-                        disabled={busy && !unconfirmed}
-                        onClick={() =>
-                          void (unconfirmed
-                            ? refreshGate(window)
-                            : window.state === 'running'
-                              ? stop(window)
-                              : open(window))
-                        }
-                      >
-                        {unconfirmed ? (
-                          <RefreshCw data-icon="inline-start" />
-                        ) : busy ? (
-                          <Loader2 data-icon="inline-start" className="animate-spin" />
-                        ) : window.state === 'running' ? (
-                          <Square data-icon="inline-start" />
+                    {showColumn('platform') ? (
+                      <TableCell>
+                        <Badge variant="outline">{window.settings.platform}</Badge>
+                      </TableCell>
+                    ) : null}
+                    {accountsInstalled && showColumn('account') ? (
+                      <TableCell>
+                        {!accountsReady ? (
+                          <span className="table-muted">账号资料暂不可用</span>
+                        ) : account === null ? (
+                          <AccountQuickAdd
+                            window={window}
+                            ready={accountsReady}
+                            accounts={accounts}
+                            onSaved={refreshAfterBinding}
+                            assertUnbound={async () => {
+                              const snapshot = relationSnapshot(window)
+                              if (snapshot.previous)
+                                throw new WindowRelationChangedError()
+                              const latest = await listBindings()
+                              assertWindowRelation(snapshot, latest.items)
+                            }}
+                          />
                         ) : (
-                          <Play data-icon="inline-start" />
-                        )}
-                        {unconfirmed
-                          ? '确认状态'
-                          : checkingProxy
-                            ? '正在检测…'
-                            : busy
-                              ? startingWindows.has(window.id)
-                                ? '正在打开…'
-                                : '正在停止…'
-                              : window.state === 'running'
-                                ? '停止'
-                                : '打开'}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`编辑 ${window.name}`}
-                        disabled={busy}
-                        onClick={() => setEditing(window.id)}
-                      >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`查看 ${window.name} 详情`}
-                        onClick={() => setViewing(window.id)}
-                      >
-                        <ArrowUpRight />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`查看 ${window.name} 的执行记录`}
-                        title="执行记录"
-                        onClick={() =>
-                          navigateDetail({
-                            kind: 'agent',
-                            id: window.id,
-                            related: 'window',
-                          })
-                        }
-                      >
-                        <ClipboardList />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Raccoon' : '删除'} ${window.name}`}
-                        disabled={
-                          busy ||
-                          (window.providerId !== 'cloakbrowser' &&
-                          window.origin === 'attached'
-                            ? unconfirmed
-                            : window.state !== 'stopped') ||
-                          (window.origin === 'created' &&
-                            !connection?.capabilities.deleteEnvironment)
-                        }
-                        onClick={() => {
-                          setDeleteEnvironment(
-                            window.providerId === 'cloakbrowser' ||
-                              window.origin === 'created',
-                          )
-                          setDeleting(window.id)
-                        }}
-                      >
-                        <Trash2 />
-                      </Button>
-                      {accountsInstalled || window.providerId !== 'cloakbrowser' ? (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`更多操作 ${window.name}`}
-                              disabled={
-                                window.providerId === 'cloakbrowser' && !accountsReady
-                              }
-                            >
-                              <Ellipsis />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {window.providerId !== 'cloakbrowser' ? (
+                          <span className="account-cell-row">
+                            <span className="account-cell">
+                              {linked === null ? (
+                                <strong className={accountNameClass}>
+                                  {summary?.account ?? '账号已删除'}
+                                </strong>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  variant="link"
+                                  size="xs"
+                                  className="h-auto max-w-full justify-start p-0 text-left"
+                                  aria-label={`编辑 ${linked.account} 的账号资料`}
+                                  title="编辑账号资料"
+                                  disabled={!accountsReady || phoneUnlinkPending}
+                                  onClick={() => setEditingAccount(linked)}
+                                >
+                                  <strong className={accountNameClass}>
+                                    {linked.account}
+                                  </strong>
+                                  <Pencil data-icon="inline-end" />
+                                </Button>
+                              )}
+                              <span className="account-cell-meta">
+                                {summary === null ? null : (
+                                  <Badge variant={statusVariant(summary.status)}>
+                                    {STATUS_LABELS[summary.status]}
+                                  </Badge>
+                                )}
+                                {linked === null ? null : (
+                                  <AccountPhoneCopy account={linked} />
+                                )}
+                                {linked === null ? null : (
+                                  <AccountSmsWaitButton
+                                    account={linked}
+                                    windowId={window.id}
+                                    windowName={window.name}
+                                    ready={accountsReady && !phoneUnlinkPending}
+                                    emailReady={
+                                      emailPlugin?.state === 'running' &&
+                                      emailPlugin.methods.includes('email.messages.get')
+                                    }
+                                  />
+                                )}
+                                {linked === null || linked.phone.trim() === '' ? null : (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    className="size-[22px]"
+                                    aria-label={`解绑 ${linked.account} 的手机号`}
+                                    aria-busy={phoneUnlinkPending}
+                                    title="清空此账号的手机号和短信接码链接，同步所有关联窗口；保留 SIM8 号码池"
+                                    disabled={!accountsReady || phoneUnlinkPending}
+                                    onClick={() => requestPhoneUnlink(window, linked)}
+                                  >
+                                    {phoneUnlinkPending ? (
+                                      <Loader2
+                                        className="animate-spin"
+                                        aria-hidden="true"
+                                      />
+                                    ) : (
+                                      <Unlink aria-hidden="true" />
+                                    )}
+                                  </Button>
+                                )}
+                              </span>
+                            </span>
+                            {linked === null ? null : (
                               <>
-                                <DropdownMenuItem
-                                  disabled={busy || unconfirmed}
-                                  onSelect={() => {
-                                    setDeleteEnvironment(false)
-                                    setDeleting(window.id)
-                                  }}
-                                >
-                                  移出 Raccoon
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  disabled={
-                                    busy ||
-                                    window.state !== 'stopped' ||
-                                    !connection?.capabilities.deleteEnvironment
-                                  }
-                                  onSelect={() => {
-                                    setDeleteEnvironment(true)
-                                    setDeleting(window.id)
-                                  }}
-                                >
-                                  删除浏览器环境
-                                </DropdownMenuItem>
-                              </>
-                            ) : null}
-                            {accountsInstalled && window.providerId !== 'cloakbrowser' ? (
-                              <DropdownMenuSeparator />
-                            ) : null}
-                            {accountsInstalled ? (
-                              <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
-                            ) : null}
-                            {accountsInstalled && linked !== null ? (
-                              <DropdownMenuItem
-                                disabled={!accountsReady || phoneUnlinkPending}
-                                onSelect={() => setEditingAccount(linked)}
-                              >
-                                <Pencil />
-                                编辑账号资料
-                              </DropdownMenuItem>
-                            ) : null}
-                            {accountsInstalled ? (
-                              <DropdownMenuItem
-                                disabled={!accountsReady || bindingPending}
-                                onSelect={() => {
-                                  if (!accountsReady || !accountSync.current.ready) return
-                                  dismissBinding()
-                                  setBinding({
-                                    ...relationSnapshot(window),
-                                    session: bindingSession.current,
-                                  })
-                                }}
-                              >
-                                <UserRound />
-                                {account === null ? '关联账号' : '更换账号'}
-                              </DropdownMenuItem>
-                            ) : null}
-                            {!accountsInstalled || account === null ? null : (
-                              <>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  disabled={!accountsReady || bindingPending}
-                                  onSelect={() => {
-                                    dismissBinding()
-                                    requestBinding(
-                                      {
-                                        ...relationSnapshot(window),
-                                        session: bindingSession.current,
-                                      },
-                                      null,
-                                    )
-                                  }}
-                                >
-                                  <Unlink />
-                                  解除关联
-                                </DropdownMenuItem>
+                                <AccountSmsPopover
+                                  key={`sms-${linked.id}`}
+                                  account={linked}
+                                  ready={accountsReady && !phoneUnlinkPending}
+                                  onSaved={applySavedAccount}
+                                />
+                                {accountPlugin?.state === 'running' &&
+                                accountPlugin.methods?.includes(
+                                  'vinted.accounts.orders.items',
+                                ) ? (
+                                  <AccountWardrobePopover
+                                    key={`wardrobe-${linked.id}`}
+                                    account={linked}
+                                    ready={accountsReady}
+                                  />
+                                ) : null}
                               </>
                             )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-        {visible.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>
-                {connectionWindows.length
-                  ? '没有找到窗口'
-                  : connection
-                    ? '还没有窗口'
-                    : '尚未启用浏览器接入'}
-              </EmptyTitle>
-              <EmptyDescription>
-                {connectionWindows.length
-                  ? '调整搜索条件。'
-                  : connection
-                    ? '创建窗口或选择官方已有环境接入。'
-                    : '请在浏览器接入设置中保存、检测并确认账户作用域，再启用接入。'}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : null}
-        <nav className="window-pagination" aria-label="窗口列表分页">
-          <span className="result-count" role="status" aria-live="polite">
-            共 {visible.length} 个窗口
-            {visible.length > 0
-              ? ` · 第 ${pageOffset + 1}–${pageOffset + pageWindows.length} 条`
-              : null}
-          </span>
+                          </span>
+                        )}
+                      </TableCell>
+                    ) : null}
+                    {showColumn('group') ? (
+                      <TableCell>
+                        <span className="table-group">
+                          {groups.find((group) => group.id === window.groupId)?.name ??
+                            '未分组'}
+                        </span>
+                      </TableCell>
+                    ) : null}
+                    {showColumn('kernel') ? (
+                      <TableCell>
+                        <span className="kernel-version" title={window.version}>
+                          {majorVersion(window.version)}
+                        </span>
+                      </TableCell>
+                    ) : null}
+                    {showColumn('proxy') ? (
+                      <TableCell>
+                        <ProxyCell
+                          window={window}
+                          catalog={
+                            proxyCatalog?.scope === proxyScope ? proxyCatalog : null
+                          }
+                        />
+                      </TableCell>
+                    ) : null}
+                    {showColumn('created') ? (
+                      <TableCell>
+                        <TimeCell at={window.createdAt} now={now} fallback="—" />
+                      </TableCell>
+                    ) : null}
+                    {showColumn('opened') ? (
+                      <TableCell>
+                        <TimeCell
+                          at={window.lastOpenedAt}
+                          now={now}
+                          fallback="从未打开"
+                        />
+                      </TableCell>
+                    ) : null}
+                    <TableCell>
+                      <span
+                        className="status-badge min-w-24 justify-center"
+                        data-state={
+                          unconfirmed || starting
+                            ? 'pending'
+                            : window.state === 'running'
+                              ? 'running'
+                              : 'stopped'
+                        }
+                      >
+                        <span className="status-dot" aria-hidden="true" />
+                        {unconfirmed
+                          ? window.state === 'missing'
+                            ? '环境不可见'
+                            : '状态待确认'
+                          : checkingProxy
+                            ? '检测代理中'
+                            : starting
+                              ? '启动中'
+                              : busy
+                                ? '操作中'
+                                : window.state === 'running'
+                                  ? '运行中'
+                                  : window.state === 'missing'
+                                    ? '环境不可见'
+                                    : window.state === 'unknown'
+                                      ? '状态待确认'
+                                      : '已停止'}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="table-actions">
+                        <Button
+                          variant={window.state === 'running' ? 'outline' : 'default'}
+                          size="sm"
+                          className="w-28"
+                          disabled={busy && !unconfirmed}
+                          onClick={() =>
+                            void (unconfirmed
+                              ? refreshGate(window)
+                              : window.state === 'running'
+                                ? stop(window)
+                                : open(window))
+                          }
+                        >
+                          {unconfirmed ? (
+                            <RefreshCw data-icon="inline-start" />
+                          ) : busy ? (
+                            <Loader2 data-icon="inline-start" className="animate-spin" />
+                          ) : window.state === 'running' ? (
+                            <Square data-icon="inline-start" />
+                          ) : (
+                            <Play data-icon="inline-start" />
+                          )}
+                          {unconfirmed
+                            ? '确认状态'
+                            : checkingProxy
+                              ? '正在检测…'
+                              : busy
+                                ? startingWindows.has(window.id)
+                                  ? '正在打开…'
+                                  : '正在停止…'
+                                : window.state === 'running'
+                                  ? '停止'
+                                  : '打开'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`编辑 ${window.name}`}
+                          disabled={busy}
+                          onClick={() => setEditing(window.id)}
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`查看 ${window.name} 详情`}
+                          onClick={() => setViewing(window.id)}
+                        >
+                          <ArrowUpRight />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`查看 ${window.name} 的执行记录`}
+                          title="执行记录"
+                          onClick={() =>
+                            navigateDetail({
+                              kind: 'agent',
+                              id: window.id,
+                              related: 'window',
+                            })
+                          }
+                        >
+                          <ClipboardList />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`${window.providerId !== 'cloakbrowser' && window.origin === 'attached' ? '移出 Raccoon' : '删除'} ${window.name}`}
+                          disabled={
+                            busy ||
+                            (window.providerId !== 'cloakbrowser' &&
+                            window.origin === 'attached'
+                              ? unconfirmed
+                              : window.state !== 'stopped') ||
+                            (window.origin === 'created' &&
+                              !connection?.capabilities.deleteEnvironment)
+                          }
+                          onClick={() => {
+                            setDeleteEnvironment(
+                              window.providerId === 'cloakbrowser' ||
+                                window.origin === 'created',
+                            )
+                            setDeleting(window.id)
+                          }}
+                        >
+                          <Trash2 />
+                        </Button>
+                        {accountsInstalled || window.providerId !== 'cloakbrowser' ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label={`更多操作 ${window.name}`}
+                                disabled={
+                                  window.providerId === 'cloakbrowser' && !accountsReady
+                                }
+                              >
+                                <Ellipsis />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {window.providerId !== 'cloakbrowser' ? (
+                                <>
+                                  <DropdownMenuItem
+                                    disabled={busy || unconfirmed}
+                                    onSelect={() => {
+                                      setDeleteEnvironment(false)
+                                      setDeleting(window.id)
+                                    }}
+                                  >
+                                    移出 Raccoon
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    disabled={
+                                      busy ||
+                                      window.state !== 'stopped' ||
+                                      !connection?.capabilities.deleteEnvironment
+                                    }
+                                    onSelect={() => {
+                                      setDeleteEnvironment(true)
+                                      setDeleting(window.id)
+                                    }}
+                                  >
+                                    删除浏览器环境
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
+                              {accountsInstalled &&
+                              window.providerId !== 'cloakbrowser' ? (
+                                <DropdownMenuSeparator />
+                              ) : null}
+                              {accountsInstalled ? (
+                                <DropdownMenuLabel>Vinted 账号</DropdownMenuLabel>
+                              ) : null}
+                              {accountsInstalled && linked !== null ? (
+                                <DropdownMenuItem
+                                  disabled={!accountsReady || phoneUnlinkPending}
+                                  onSelect={() => setEditingAccount(linked)}
+                                >
+                                  <Pencil />
+                                  编辑账号资料
+                                </DropdownMenuItem>
+                              ) : null}
+                              {accountsInstalled ? (
+                                <DropdownMenuItem
+                                  disabled={!accountsReady || bindingPending}
+                                  onSelect={() => {
+                                    if (!accountsReady || !accountSync.current.ready)
+                                      return
+                                    dismissBinding()
+                                    setBinding({
+                                      ...relationSnapshot(window),
+                                      session: bindingSession.current,
+                                    })
+                                  }}
+                                >
+                                  <UserRound />
+                                  {account === null ? '关联账号' : '更换账号'}
+                                </DropdownMenuItem>
+                              ) : null}
+                              {!accountsInstalled || account === null ? null : (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    disabled={!accountsReady || bindingPending}
+                                    onSelect={() => {
+                                      dismissBinding()
+                                      requestBinding(
+                                        {
+                                          ...relationSnapshot(window),
+                                          session: bindingSession.current,
+                                        },
+                                        null,
+                                      )
+                                    }}
+                                  >
+                                    <Unlink />
+                                    解除关联
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+          {visible.length === 0 ? (
+            <Empty>
+              <EmptyHeader>
+                <EmptyTitle>
+                  {connectionWindows.length
+                    ? '没有找到窗口'
+                    : connection
+                      ? '还没有窗口'
+                      : '尚未启用浏览器接入'}
+                </EmptyTitle>
+                {!connection && native ? (
+                  <EmptyDescription>{providerId === 'aliasmode' || providerId === 'cloakbrowser' || providerId === 'shardbrowser'
+                    ? '请到应用设置的实验室启用接入'
+                    : '请到应用设置连接浏览器'}</EmptyDescription>
+                ) : null}
+              </EmptyHeader>
+            </Empty>
+          ) : null}
+        </div>
+        <nav className="window-pagination shrink-0" aria-label="窗口列表分页">
+          <div className="window-pagination-summary" role="status" aria-live="polite">
+            <span>
+              窗口 <strong>{connectionWindows.length}</strong>
+            </span>
+            <span>
+              运行中 <strong>{running}</strong>
+            </span>
+            <span className="window-page-range">
+              {visible.length > 0
+                ? `显示 ${pageOffset + 1}–${pageOffset + pageWindows.length} / ${visible.length}`
+                : '没有匹配的窗口'}
+            </span>
+          </div>
           <div className="window-pagination-controls">
             <Select
               value={String(pageSize)}
@@ -1970,7 +1949,7 @@ export function SpacesPage() {
             </Button>
           </div>
         </nav>
-      </div>
+      </div>}
 
       <Dialog
         open={groupMove !== null}

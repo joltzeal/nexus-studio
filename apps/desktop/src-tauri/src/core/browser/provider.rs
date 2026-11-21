@@ -10,6 +10,10 @@ use std::path::PathBuf;
 pub mod automation;
 
 pub const BUILTIN_CONNECTION_ID: &str = "builtin-cloakbrowser";
+pub const ALIASMODE_CONNECTION_ID: &str = "builtin-aliasmode-chromium";
+pub const SHARDBROWSER_CONNECTION_ID: &str = "builtin-shardbrowser";
+pub const BITBROWSER_CONNECTION_ID: &str = "builtin-bitbrowser";
+pub const BITBROWSER_ENDPOINT: &str = "http://127.0.0.1:54345";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -18,6 +22,25 @@ pub enum BrowserProviderId {
     AdsPower,
     BitBrowser,
     AliasMode,
+    ShardBrowser,
+}
+
+impl BrowserProviderId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CloakBrowser => "cloakbrowser",
+            Self::AdsPower => "adspower",
+            Self::BitBrowser => "bitbrowser",
+            Self::AliasMode => "aliasmode",
+            Self::ShardBrowser => "shardbrowser",
+        }
+    }
+    pub const fn is_managed(self) -> bool {
+        matches!(
+            self,
+            Self::CloakBrowser | Self::AliasMode | Self::ShardBrowser
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -73,17 +96,16 @@ pub struct BrowserCapabilities {
 impl BrowserCapabilities {
     pub fn for_provider(provider: BrowserProviderId) -> Self {
         let builtin = provider == BrowserProviderId::CloakBrowser;
-        let aliasmode = provider == BrowserProviderId::AliasMode;
         Self {
             create: true,
-            update: !aliasmode,
+            update: true,
             delete_environment: true,
-            attach: !builtin,
-            manual_proxy: !aliasmode,
-            proxy_plugin: !aliasmode,
-            geoip: !aliasmode,
-            fingerprint_seed: builtin,
-            kernel_selection: builtin,
+            attach: !provider.is_managed(),
+            manual_proxy: true,
+            proxy_plugin: true,
+            geoip: true,
+            fingerprint_seed: provider.is_managed(),
+            kernel_selection: provider.is_managed() || provider == BrowserProviderId::BitBrowser,
             transfer: builtin,
         }
     }
@@ -280,6 +302,21 @@ pub trait BrowserProvider: Send + Sync {
         Err(BrowserError::unsupported(
             "Browser automation is unavailable",
         ))
+    }
+
+    /// Resolves a running instance for the Rust automation runner without
+    /// starting or reconfiguring the browser.
+    fn automation_cdp(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+    ) -> BrowserResult<automation::CdpEndpoint> {
+        match self.automation_session(connection, record)? {
+            automation::AutomationSession::Cdp(endpoint) => Ok(endpoint),
+            automation::AutomationSession::Managed(_) => Err(BrowserError::unsupported(
+                "此浏览器尚未提供 Rust 自动化所需的 CDP 会话",
+            )),
+        }
     }
 
     fn probe(&self, connection: &BrowserConnection) -> BrowserResult<ProviderProbe>;

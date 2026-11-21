@@ -18,6 +18,9 @@ const settings = {
   locale: '',
   viewport: 'default',
   fingerprintSeed: null,
+  aliasEngine: null,
+  operatingSystem: 'host',
+  cpuCores: null,
   startUrl: '',
 }
 const window = {
@@ -54,6 +57,74 @@ const input = {
 }
 
 describe('browser boundary contracts', () => {
+  it('accepts bounded CloakBrowser fingerprint overrides and rejects foreign keys', () => {
+    const cloak = {
+      platform: 'macos',
+      gpuVendor: 'nvidia',
+      screenWidth: 2560,
+      screenHeight: 1440,
+      webrtcIp: 'auto',
+      noise: false,
+    }
+    expect(
+      BrowserWindowSchema.parse({
+        ...window,
+        settings: { ...settings, cloakbrowser: cloak },
+      }).settings.cloakbrowser,
+    ).toEqual(cloak)
+    expect(
+      BrowserWindowSchema.safeParse({
+        ...window,
+        settings: { ...settings, cloakbrowser: { ...cloak, brand: 'Acme' } },
+      }).success,
+    ).toBe(false)
+    expect(
+      BrowserWindowSchema.safeParse({
+        ...window,
+        settings: { ...settings, cloakbrowser: { ...cloak, screenWidth: 799 } },
+      }).success,
+    ).toBe(false)
+  })
+
+  it('accepts bounded BitBrowser fingerprint overrides and rejects invalid values', () => {
+    const bitbrowser = {
+      os: 'Win32',
+      osVersion: '11,10',
+      webglRender: 'ANGLE (NVIDIA)',
+      hardwareConcurrency: 16,
+      deviceMemory: 8,
+      resolutionWidth: 2560,
+      resolutionHeight: 1440,
+      devicePixelRatio: '1.5',
+      canvas: '0',
+      webGL: '0',
+      webGLMeta: '0',
+      timezoneOffset: 480,
+      randomFingerprint: true,
+    }
+    expect(
+      BrowserWindowSchema.parse({
+        ...window,
+        settings: { ...settings, bitbrowser },
+      }).settings.bitbrowser,
+    ).toEqual(bitbrowser)
+    expect(
+      BrowserWindowSchema.safeParse({
+        ...window,
+        settings: { ...settings, bitbrowser: { ...bitbrowser, deviceMemory: 12 } },
+      }).success,
+    ).toBe(false)
+    expect(
+      BrowserWindowSchema.safeParse({
+        ...window,
+        settings: {
+          ...settings,
+          bitbrowser: { ...bitbrowser, devicePixelRatio: '1.25' },
+        },
+      }).success,
+    ).toBe(false)
+  })
+
   it('requires a scoped, nonempty and unique batch of window UUIDs for moving groups', () => {
     const move = {
       connectionId: 'ads-1',

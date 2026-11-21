@@ -1,7 +1,30 @@
 # 配置导入导出
 
-主程序从 `0.1.21` 提供此入口，配套 AI 生图 `1.4.4`、Vinted 监控 `1.1.3`、
-SIM8 `1.0.3`、代理池 `1.0.3` 和地址生成器 `1.0.1`。
+## desktop-v2 插件配置
+
+插件中心右上角提供「插件配置」按钮，使用现有 ShardX Modal 与主题控件，分为导出和导入。
+默认勾选可用插件，支持单项或全选；选择导入文件只预览，必须点击「导入所选」才写入。
+原生保存或打开对话框取消时不反馈成功，也不清空已经打开的文件预览。
+
+此入口只迁移插件设置。导出归档的 `preferences` 与 `networkProxy` 固定为 `null`；
+导入文件即使包含这两个字段也不会写入应用设置，弹窗会说明处理范围。
+插件账号库存、邮件、商品、浏览器 Cookies 和站点资料不属于本入口，完整环境传输另见
+[设备传输设计](superpowers/specs/2026-11-21-device-transfer-p2p-design.md)，该设计不代表已经实现。
+
+未安装、未授权、未运行或不支持配置接口的插件显示具体原因并禁选；不会自动安装或静默报告导入成功。
+用户可保留原 JSON 文件，在安装或更新插件后重新选择。导入先验证所有选中项，再逐项写入并展示结果；
+成功项在当前预览中禁选，失败项保持选中以便重试。文件含实际密钥与 Token，界面明确提示为明文，
+不展示配置原文，也不将其保存到 localStorage。
+
+v2 适配器位于 `apps/desktop-v2/src/raccoon/plugins/configuration.ts`，不依赖 v1 的页面或偏好存储。
+配置 RPC 携带 `expectedIdentity`，由原生宿主使用既有 `call_generation` 绑定安装代次及进程代次；
+插件卸载、升级或重启后不能把已预检的数据交给替代进程执行。普通插件调用不传该字段时保持既有路径。
+
+## v1 参考入口
+
+v1 主程序从 `0.1.21` 提供设置页入口，历史配套 AI 生图 `1.4.4`、Vinted 监控 `1.1.3`、
+SIM8 `1.0.3`、代理池 `1.0.3` 和地址生成器 `1.0.1`。本轮参考其配置方法与预校验流程，
+不为 desktop-v2 增加旧版归档或偏好数据的运行时兼容。
 
 ## 使用方式
 
@@ -47,9 +70,11 @@ SIM8 `1.0.3`、代理池 `1.0.3` 和地址生成器 `1.0.1`。
 
 ## 文件与接口
 
-归档 `format: "nexus-configuration"`、`schemaVersion: 1`，包含 `exportedAt`、
+当前归档 `format: "raccoon-configuration"`、`schemaVersion: 2`，包含 `exportedAt`、
 可空 `preferences`、可空 `networkProxy` 以及 `plugins` 数组。
 插件条目为 `{ id, name, version, configuration: { schemaVersion: 1, data } }`。
+外层归档版本与插件自己的配置版本分别验证，原生文件服务与前端公共契约使用同一外层格式；
+旧 `nexus-configuration` / schemaVersion 1 以及其他未知版本拒绝读取，不做隐式转换。
 空值表示未导出该项，导入不因此重置目标设备。
 插件自己的 `data` 必须完整表达可迁移配置，密钥引用须解引用为实际值。
 
@@ -70,5 +95,9 @@ SDK 的 `@nexus/plugin-sdk/configuration` 只对外导出编译后的 JS 与声�
 
 单元测试覆盖跨空存储恢复、配置与业务记录分离、无效版本/引用拒绝、
 密钥失败回滚、整批预校验、逐项写入结果和文件选择后的显式导入。
+desktop-v2 新增适配器与实际 UI Kit DOM 交互测试，覆盖原生对话框取消、缺失插件禁选、
+逐项失败重试、成功项不重复导入、处理中重复点击/关闭保护及页面卸载后的迟到结果隔离。
+定向入口为 `pnpm exec vitest run --config apps/desktop-v2/src/pages/plugins/configuration.vitest.config.ts`；
+该命令直接测试源码，不触发插件或应用构建。原生格式与代次分派的 Rust 测试/编译本地不执行。
 未运行本地构建、打包或 Rust 编译。原生文件对话框、双平台写入替换和真实服务请求
 需由桌面验收与 CI 确认，不以 TypeScript 测试代替。

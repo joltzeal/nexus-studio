@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Copy } from 'lucide-react'
+import { Copy } from '@/components/icons'
 
 import { Button } from '@/components/ui/button'
 import {

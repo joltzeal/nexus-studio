@@ -20,6 +20,7 @@ it('provides immediately usable local endpoints and names without an account lab
     scopeLabel: 'AdsPower',
   })
   expect(browserConnectionDefaults('bitbrowser').endpoint).toBe('http://127.0.0.1:54345')
+  expect(browserConnectionDefaults('bitbrowser').name).toBe('比特浏览器')
 })
 
 it('saves, probes through confirmation, and activates in order with a single action', async () => {

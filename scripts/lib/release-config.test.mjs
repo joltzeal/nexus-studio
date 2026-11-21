@@ -5,6 +5,19 @@ import { describe, expect, it } from 'vitest'
 const root = resolve(import.meta.dirname, '../..')
 
 describe('desktop release configuration', () => {
+  it('keeps the v2 app, Rust host, and updater channel on the same release version', () => {
+    const appConfig = JSON.parse(
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.v2.conf.json'), 'utf8'),
+    )
+    const cargoManifest = readFileSync(
+      resolve(root, 'apps/desktop/src-tauri/Cargo.toml'),
+      'utf8',
+    )
+    const cargoVersion = cargoManifest.match(/^version = "([^"]+)"$/m)?.[1]
+
+    expect(cargoVersion).toBe(appConfig.version)
+  })
+
   it('keeps installed application and MSI upgrade identities when the display name changes', () => {
     const config = JSON.parse(
       readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
@@ -31,15 +44,18 @@ describe('desktop release configuration', () => {
   })
 
   it('uses the public repository that actually publishes the updater manifest', () => {
-    const releaseConfig = JSON.parse(
-      readFileSync(
-        resolve(root, 'apps/desktop/src-tauri/tauri.release.conf.json'),
-        'utf8',
-      ),
+    const legacyConfig = JSON.parse(
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    )
+    const v2Config = JSON.parse(
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.v2.conf.json'), 'utf8'),
     )
 
-    expect(releaseConfig.plugins.updater.endpoints).toEqual([
+    expect(legacyConfig.plugins.updater.endpoints).toEqual([
       'https://github.com/joltzeal/nexus-studio/releases/latest/download/latest.json',
+    ])
+    expect(v2Config.plugins.updater.endpoints).toEqual([
+      'https://github.com/joltzeal/nexus-studio/releases/download/raccoon-v2/latest.json',
     ])
   })
 

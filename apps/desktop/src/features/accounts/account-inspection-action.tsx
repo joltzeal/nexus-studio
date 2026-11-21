@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ScanSearch } from 'lucide-react'
+import { ScanSearch } from '@/components/icons'
 import type { AgentBatchCreate } from '@nexus/plugin-sdk/agent'
 import { Button } from '@/components/ui/button'
 import {

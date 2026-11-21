@@ -846,6 +846,80 @@ fn first_party_plugins_cannot_be_installed_or_called_without_a_signed_entitlemen
     }
 }
 
+#[test]
+fn workspace_source_plugins_start_without_license_install_or_registry_writes() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let plugin_root = temporary.path().join("plugins");
+    let source = plugin_root.join("products");
+    fs::create_dir_all(source.join("src")).unwrap();
+    fs::write(source.join("package.json"), r#"{"type":"module"}"#).unwrap();
+    fs::write(
+        source.join("nexus.plugin.ts"),
+        r#"
+import { definePluginManifest } from '@nexus/plugin-sdk'
+
+export default definePluginManifest({
+  apiVersion: 1,
+  id: 'studio.products',
+  version: '1.0.0',
+  name: 'Workspace Products',
+  minCoreVersion: '0.1.0',
+  capabilities: ['product.catalog'],
+  permissions: { networkDomains: [], wantsBrowserAccess: false, storage: 'private', secrets: [] },
+})
+"#,
+    )
+    .unwrap();
+    fs::write(
+        source.join("src/index.ts"),
+        r#"
+import { createInterface } from 'node:readline'
+const pluginId = 'studio.products'
+const version = '1.0.0'
+const capabilities = ['product.catalog']
+const send = (message: unknown) => process.stdout.write(JSON.stringify(message) + '\n')
+send({ type: 'hello', protocolVersion: 1, pluginId, version, apiVersion: 1, capabilities })
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.type === 'handshake') {
+    send({ type: 'ready', protocolVersion: 1, pluginId, version, capabilities, methods: ['products.test'], status: {} })
+  } else {
+    send({ protocolVersion: 1, requestId: request.requestId, ok: true, result: { source: true } })
+  }
+})
+"#,
+    )
+    .unwrap();
+
+    let loader = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/plugin-source-loader.mjs");
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new())
+        .unwrap()
+        .with_workspace_source(plugin_root, loader);
+
+    let view = wait_for_running(&host, "studio.products");
+    assert_eq!(view.source, "workspace");
+    assert!(view.enabled);
+    assert!(view.storage_durable);
+    assert_eq!(
+        view.source_directory.as_deref(),
+        Some(source.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        host.call(
+            "studio.products",
+            Capability::ProductCatalog,
+            "products.test",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .unwrap(),
+        serde_json::json!({ "source": true })
+    );
+    assert!(!host.root().join("registry.json").exists());
+    host.shutdown();
+}
+
 /// Node starts in milliseconds on an idle machine and in seconds while the rest
 /// of the suite is running, so a state that needs a finished handshake is
 /// polled instead of asserted on the first read.
@@ -2102,10 +2176,7 @@ fn sales_agent_reverse_gateway_requires_exact_identity_grant_and_browser_permiss
 fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
     let _slot = NodeSlot::acquire();
     let plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins");
-    if !plugins
-        .join("address-generator/dist/src/index.js")
-        .is_file()
-    {
+    if !plugins.join("vinted-helper/dist/src/index.js").is_file() {
         return;
     }
     let temporary = tempfile::tempdir().unwrap();
@@ -2116,7 +2187,7 @@ fn workspace_address_plugin_installs_enables_and_serves_its_catalog() {
     .unwrap();
 
     host.seed_test_license("studio.address-generator");
-    let installed = host.install(&plugins.join("address-generator")).unwrap();
+    let installed = host.install(&plugins.join("vinted-helper")).unwrap();
     assert_eq!(installed.id, "studio.address-generator");
     assert_eq!(
         installed.state, "running",

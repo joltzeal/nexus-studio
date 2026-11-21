@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeBuildCommand": ""
+  },
+  "bundle": {
+    "externalBin": ["binaries/node"],
+    "resources": ["runtime"],
+    "createUpdaterArtifacts": true
+  }
+}

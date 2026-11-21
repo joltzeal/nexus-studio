@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link2 } from 'lucide-react'
+import { Link2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { LinkMailboxAccountDialog } from './link-account-dialog'
 import type { MailboxView } from './types'

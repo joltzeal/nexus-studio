@@ -90,6 +90,16 @@ plugins/
 发布构建的插件列表只有两种来源：已安装的插件与商店清单，因此全新安装的应用默认没有任何插件。
 发布构建也不再向安装包内放置插件目录，插件统一从商店安装，见[插件商店与在线更新](25-plugin-market.md)。
 
+开发构建还会直接读取仓库 `plugins/<name>/nexus.plugin.ts` 和 `src/index.ts`，以 Node.js
+TypeScript loader 运行源码。它们在本次宿主进程内视作已加载插件，按 manifest 授予声明能力，
+遵循 `ready.methods` 检查；不复制到 `installed/`、不写入 `registry.json`，也不经过第一方卡密门禁。
+插件私有数据仍放在应用数据目录的 `plugins/data/<id>`。插件中心显示“源码调试”，不提供激活、
+安装、重装和卸载入口。发布构建仍只使用登记的安装插件与商店插件。
+
+源码运行直接从工作区依赖解析包，`@nexus/plugin-sdk` 与 `@nexus/plugin-contracts` 也使用源码导出。
+因此修改插件代码无需生成 `dist/` 或复制安装，重启应用后会从最新源码启动。单纯编辑正在运行的
+进程不会热替换已加载模块，需重新启动应用才能加载变更。
+
 ## 4. 安装与卸载
 
 安装有两条来源，写入磁盘的方式相同：先写 `.staging/<uuid>`，再整体 `rename` 到
@@ -318,7 +328,7 @@ Raccoon 备注等本地元数据仍可编辑。
   删除或停用指定项后即使另有可用默认项也失败；
 - 宿主启动解析只发一次 RPC，旧插件缺少 `connectionUrl` 时提示更新，
   无效协议、端口、路径、查询、片段与空白被拒绝，错误与调试输出不回显连接凭据；
-- 仓库内 `plugins/address-generator` 从 `dist` 安装即启动并调用
+- 仓库内 `plugins/vinted-helper` 从 `dist` 安装即启动并调用
   `address.catalog`，同一次会话里用 `proxy.provider` 调用同一方法被 `PERMISSION_DENIED` 拒绝；
 - 仓库内 `plugins/shared-supply` 从 `dist` 安装即启动，
   `supply.catalog` 返回 10 个分类、`supply.favorites.list` 总数为 0，

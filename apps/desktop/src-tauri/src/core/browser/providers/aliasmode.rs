@@ -1,644 +1,1217 @@
+use crate::core::aliasmode_kernels::{AliasEngine, AliasModeKernelService};
 use crate::core::browser::connection_store::BrowserConnection;
-use crate::core::browser::local_api::{
-    LocalApi, MAX_PAGES, PAGE_SIZE, RequestKind, account_page_bytes, invalid_response,
-    observed_states, operation_marker, preflight_error, profile_config, require_scope, uncertain,
-    valid_id, validate_binding, validate_create, validate_update, verify_identity,
-    verify_observed_identities,
-};
 use crate::core::browser::provider::automation::{AutomationSession, CdpEndpoint};
 use crate::core::browser::provider::{
-    BrowserCapabilities, BrowserError, BrowserProvider, BrowserProviderId, BrowserResult,
-    CreatedProfile, ObservedProfiles, ProviderGroup, ProviderProbe, ProxyMode, RemoteProfile,
-    ResolvedProxy, UpdateEvidence, WindowState,
+    ALIASMODE_CONNECTION_ID, BrowserCapabilities, BrowserError, BrowserProvider, BrowserProviderId,
+    BrowserResult, CreatedProfile, ObservedProfiles, ProviderGroup, ProviderProbe, ProxyMode,
+    RemoteProfile, ResolvedProxy, UpdateEvidence, WindowState,
 };
+use crate::core::browser::providers::aliasmode_proxy::ProxyRelay;
 use crate::core::window_store::WindowRecord;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-pub struct AliasModeProvider;
+const START_TIMEOUT: Duration = Duration::from_secs(75);
+const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn api(connection: &BrowserConnection) -> BrowserResult<LocalApi> {
-    if connection.api_key.is_some() {
-        return Err(BrowserError::unsupported(
-            "AliasMode 本机接口不支持 API Key",
-        ));
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateWitness {
+    operation_id: String,
+    window_id: String,
+    name: String,
+    version: String,
+    binary_path: PathBuf,
+    engine: String,
+    created_at: i64,
+    provider_config: Value,
+}
+impl CreateWitness {
+    fn profile(&self) -> RemoteProfile {
+        RemoteProfile {
+            id: self.window_id.clone(),
+            name: self.name.clone(),
+            kernel_version: Some(self.version.clone()),
+            created_at: Some(self.created_at),
+            provider_config: self.provider_config.clone(),
+        }
     }
-    LocalApi::connect(connection, BrowserProviderId::AliasMode)
 }
 
-fn profile(row: Value) -> BrowserResult<RemoteProfile> {
-    let id = row["user_id"].as_str().ok_or_else(invalid_response)?;
-    valid_id(id)?;
-    let name = row["name"].as_str().ok_or_else(invalid_response)?;
-    let created = row["created_time"]
-        .as_i64()
-        .filter(|value| *value >= 0)
-        .ok_or_else(invalid_response)?;
-    let config = profile_config(&row, id, &[("createdAt", "created_time")]);
-    Ok(RemoteProfile {
-        id: id.into(),
-        name: name.into(),
-        kernel_version: None,
-        created_at: (created > 0).then_some(created),
-        provider_config: config,
-    })
+struct Session {
+    child: Child,
+    port: u16,
+    state: WindowState,
+    _relay: Option<ProxyRelay>,
 }
 
-fn profiles(api: &LocalApi) -> BrowserResult<Vec<RemoteProfile>> {
-    let mut result = Vec::new();
-    let mut ids = HashSet::new();
-    let mut bytes = 0;
-    for page in 1..=MAX_PAGES {
-        let page_text = page.to_string();
-        let size = PAGE_SIZE.to_string();
-        let data = api.get(
-            "/api/v1/user/list",
-            &[("page", &page_text), ("page_size", &size)],
-            RequestKind::Read,
-        )?;
-        account_page_bytes(&mut bytes, &data)?;
-        if data["page"].as_u64() != Some(page as u64) {
-            return Err(invalid_response());
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionReceipt {
+    pid: u32,
+    profile_id: String,
+    port: u16,
+    engine: String,
+}
+
+pub struct AliasModeProvider {
+    root: PathBuf,
+    pub kernels: Arc<AliasModeKernelService>,
+    pub firefox_kernels: Arc<AliasModeKernelService>,
+    sessions: Mutex<HashMap<String, Session>>,
+    operations: Mutex<()>,
+}
+
+impl AliasModeProvider {
+    pub fn new(
+        root: PathBuf,
+        kernels: Arc<AliasModeKernelService>,
+        firefox_kernels: Arc<AliasModeKernelService>,
+    ) -> Self {
+        Self {
+            root,
+            kernels,
+            firefox_kernels,
+            sessions: Mutex::new(HashMap::new()),
+            operations: Mutex::new(()),
         }
-        let rows = data["list"].as_array().ok_or_else(invalid_response)?;
-        if rows.is_empty() {
-            return Ok(result);
+    }
+
+    pub fn kernel(&self, engine: AliasEngine) -> &Arc<AliasModeKernelService> {
+        if engine == AliasEngine::Firefox {
+            &self.firefox_kernels
+        } else {
+            &self.kernels
         }
-        if rows.len() > PAGE_SIZE {
-            return Err(invalid_response());
+    }
+
+    fn engine(record: &WindowRecord) -> BrowserResult<AliasEngine> {
+        AliasEngine::parse(record.settings.alias_engine.as_deref().unwrap_or(""))
+            .map_err(|e| BrowserError::new("invalid_config", e))
+    }
+
+    fn connection(connection: &BrowserConnection) -> BrowserResult<()> {
+        if connection.provider_id != BrowserProviderId::AliasMode
+            || connection.id != ALIASMODE_CONNECTION_ID
+        {
+            return Err(BrowserError::new(
+                "scope_mismatch",
+                "AliasMode 接入绑定不一致",
+            ));
         }
-        for row in rows {
-            let remote = profile(row.clone())?;
-            if !ids.insert(remote.id.clone()) {
-                return Err(invalid_response());
+        Ok(())
+    }
+
+    fn profile(&self, id: &str) -> BrowserResult<PathBuf> {
+        uuid::Uuid::parse_str(id)
+            .map_err(|_| BrowserError::new("invalid_config", "窗口标识无效"))?;
+        Ok(self.root.join(id))
+    }
+
+    fn witness(&self, operation_id: &str) -> BrowserResult<PathBuf> {
+        uuid::Uuid::parse_str(operation_id)
+            .map_err(|_| BrowserError::new("invalid_config", "操作标识无效"))?;
+        Ok(self
+            .root
+            .join(".operations")
+            .join(format!("{operation_id}.json")))
+    }
+
+    fn read_witness(&self, operation_id: &str) -> BrowserResult<Option<CreateWitness>> {
+        let path = self.witness(operation_id)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let meta = fs::symlink_metadata(&path).map_err(|_| uncertain())?;
+        if !meta.is_file() || meta.len() > 4096 {
+            return Err(uncertain());
+        }
+        let witness: CreateWitness =
+            serde_json::from_slice(&fs::read(path).map_err(|_| uncertain())?)
+                .map_err(|_| uncertain())?;
+        if witness.operation_id != operation_id
+            || uuid::Uuid::parse_str(&witness.window_id).is_err()
+            || AliasEngine::parse(&witness.engine).is_err()
+            || witness.provider_config
+                != json!({"engine":witness.engine,"binaryPath":witness.binary_path})
+            || self
+                .kernel(AliasEngine::parse(&witness.engine).map_err(|_| uncertain())?)
+                .exact_binary(&witness.version)
+                .ok()
+                .is_none_or(|binary| binary.binary_path != witness.binary_path)
+        {
+            return Err(uncertain());
+        }
+        Ok(Some(witness))
+    }
+
+    fn finish_create(&self, witness: &CreateWitness) -> BrowserResult<()> {
+        let target = self.profile(&witness.window_id)?;
+        let staging = self.root.join(".creating").join(&witness.operation_id);
+        if target.exists() {
+            if fs::symlink_metadata(&target)
+                .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+                && target.join("user-data").is_dir()
+            {
+                return Ok(());
             }
-            result.push(remote);
+            return Err(uncertain());
+        }
+        if fs::symlink_metadata(&staging).is_err() {
+            return Err(uncertain());
+        }
+        fs::rename(staging, target).map_err(|_| uncertain())
+    }
+
+    fn record(
+        &self,
+        connection: &BrowserConnection,
+        record: &WindowRecord,
+        verify_binary: bool,
+    ) -> BrowserResult<PathBuf> {
+        Self::connection(connection)?;
+        if record.binding.provider_id != BrowserProviderId::AliasMode
+            || record.binding.connection_id != connection.id
+            || record.binding.profile_id != record.id
+            || record.settings.fingerprint_seed.is_none()
+        {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "AliasMode 窗口绑定不完整",
+            ));
+        }
+        let version = record
+            .kernel_version
+            .as_deref()
+            .ok_or_else(|| BrowserError::new("invalid_config", "窗口缺少固定内核版本"))?;
+        let engine = Self::engine(record)?;
+        if record.provider_config["engine"] != record.settings.alias_engine.as_deref().unwrap_or("")
+        {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "窗口浏览器类型绑定不一致",
+            ));
+        }
+        let expected = self
+            .kernel(engine)
+            .binding_path(version)
+            .map_err(|e| BrowserError::new("invalid_config", e))?;
+        if record.binary_path.as_ref() != Some(&expected) {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "内核文件与窗口固定绑定不一致",
+            ));
+        }
+        if verify_binary {
+            self.kernel(engine)
+                .exact_binary(version)
+                .map_err(|e| BrowserError::new("invalid_config", e))?;
+        }
+        let profile = self.profile(&record.id)?;
+        if fs::symlink_metadata(&profile)
+            .is_ok_and(|meta| !meta.is_dir() || meta.file_type().is_symlink())
+        {
+            return Err(BrowserError::new("invalid_config", "环境目录无效"));
+        }
+        Ok(profile)
+    }
+
+    fn observe(&self, id: &str) -> BrowserResult<WindowState> {
+        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
+        if let Some(session) = sessions.get_mut(id) {
+            match session.child.try_wait() {
+                Ok(None) => return Ok(session.state),
+                Err(_) => {
+                    session.state = WindowState::Unknown;
+                    return Ok(WindowState::Unknown);
+                }
+                Ok(Some(_)) => {
+                    sessions.remove(id);
+                }
+            }
+        }
+        drop(sessions);
+        let profile = self.profile(id)?;
+        let data = profile.join("user-data");
+        let receipt_path = profile.join(".raccoon-session.json");
+        if fs::symlink_metadata(&receipt_path).is_ok() {
+            let receipt: SessionReceipt =
+                serde_json::from_slice(&fs::read(&receipt_path).map_err(|_| uncertain())?)
+                    .map_err(|_| uncertain())?;
+            let engine = AliasEngine::parse(&receipt.engine).map_err(|_| uncertain())?;
+            if receipt.profile_id != id
+                || receipt.pid == 0
+                || (engine == AliasEngine::Chromium && receipt.port == 0)
+            {
+                return Ok(WindowState::Unknown);
+            }
+            match process_identity(receipt.pid, &data, engine) {
+                Some(true) => {
+                    if engine == AliasEngine::Firefox {
+                        return Ok(WindowState::Running);
+                    }
+                    let port_file = fs::read_to_string(data.join("DevToolsActivePort"))
+                        .map_err(|_| uncertain())?;
+                    let mut lines = port_file.lines();
+                    let path = lines.next();
+                    let debugger = lines.next().unwrap_or("").trim_end();
+                    if path.and_then(|raw| raw.parse::<u16>().ok()) != Some(receipt.port)
+                        || !CdpEndpoint::from_port(receipt.port)
+                            .is_ok_and(|endpoint| endpoint.matches_debugger_path(debugger))
+                    {
+                        return Ok(WindowState::Unknown);
+                    }
+                    return Ok(WindowState::Running);
+                }
+                None => return Ok(WindowState::Unknown),
+                Some(false) if pid_alive(receipt.pid) != Some(false) => {
+                    return Ok(WindowState::Unknown);
+                }
+                Some(false) => {}
+            }
+            if engine == AliasEngine::Chromium
+                && let Ok(contents) = fs::read_to_string(data.join("DevToolsActivePort"))
+                && let Some(port) = contents.lines().next().and_then(|s| s.parse::<u16>().ok())
+                && CdpEndpoint::from_port(port).is_ok()
+            {
+                return Ok(WindowState::Unknown);
+            }
+            // The child has exited. Keep ambiguous locks until we can prove
+            // they belong to the recorded child and cannot affect another app.
+            #[cfg(unix)]
+            if engine == AliasEngine::Chromium
+                && let Ok(link) = fs::read_link(data.join("SingletonLock"))
+                && !link
+                    .to_string_lossy()
+                    .ends_with(&format!("-{}", receipt.pid))
+            {
+                return Ok(WindowState::Unknown);
+            }
+            #[cfg(windows)]
+            if engine == AliasEngine::Chromium
+                && fs::symlink_metadata(data.join("SingletonLock")).is_ok()
+            {
+                return Ok(WindowState::Unknown);
+            }
+            for name in if engine == AliasEngine::Chromium {
+                &["SingletonLock", "DevToolsActivePort"][..]
+            } else {
+                &[][..]
+            } {
+                let path = data.join(name);
+                if fs::symlink_metadata(&path).is_ok() {
+                    fs::remove_file(path).map_err(|_| uncertain())?;
+                }
+            }
+            fs::remove_file(receipt_path).map_err(|_| uncertain())?;
+        }
+        if fs::symlink_metadata(data.join("parent.lock")).is_ok()
+            || fs::symlink_metadata(data.join(".parentlock")).is_ok()
+            || fs::symlink_metadata(data.join("SingletonLock")).is_ok()
+            || data.join("DevToolsActivePort").exists()
+        {
+            return Ok(WindowState::Unknown);
+        }
+        Ok(WindowState::Stopped)
+    }
+
+    fn require_stopped(&self, id: &str) -> BrowserResult<()> {
+        match self.observe(id)? {
+            WindowState::Stopped => Ok(()),
+            WindowState::Unknown => Err(uncertain()),
+            _ => Err(BrowserError::new("profile_busy", "窗口正在运行")),
         }
     }
-    Err(invalid_response())
+
+    fn resolved_proxy(
+        record: &WindowRecord,
+        resolved: &ResolvedProxy,
+    ) -> BrowserResult<Option<String>> {
+        if resolved.mode != record.proxy_mode || resolved.mode == ProxyMode::Provider {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "代理模式与窗口绑定不一致",
+            ));
+        }
+        match resolved.mode {
+            ProxyMode::Direct if resolved.connection_url.is_none() => Ok(None),
+            ProxyMode::Manual | ProxyMode::Plugin => {
+                let raw = resolved
+                    .connection_url
+                    .as_deref()
+                    .ok_or_else(missing_proxy)?;
+                let url = url::Url::parse(raw).map_err(|_| missing_proxy())?;
+                if !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h")
+                    || url.host().is_none()
+                    || url.port().is_none()
+                    || !matches!(url.path(), "" | "/")
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                    || (url.scheme() == "socks5h"
+                        && (!url.username().is_empty() || url.password().is_some()))
+                {
+                    return Err(missing_proxy());
+                }
+                Ok(Some(raw.to_string()))
+            }
+            _ => Err(missing_proxy()),
+        }
+    }
+
+    fn proxy_location(raw: &str) -> BrowserResult<(String, String)> {
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .proxy(reqwest::Proxy::all(raw).map_err(|_| missing_proxy())?)
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|_| missing_proxy())?;
+        let response = client
+            .get("https://ipwho.is/")
+            .send()
+            .map_err(|_| BrowserError::new("unavailable", "无法通过窗口代理查询出口 IP"))?;
+        if !response.status().is_success() {
+            return Err(BrowserError::new("unavailable", "代理出口查询失败"));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| unavailable())?;
+        if bytes.len() > 16 * 1024 {
+            return Err(unavailable());
+        }
+        let body: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+        let ip = body["ip"]
+            .as_str()
+            .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+            .ok_or_else(unavailable)?;
+        let zone = body["timezone"]["id"]
+            .as_str()
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() < 128
+                    && value.bytes().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, b'/' | b'_' | b'-' | b'+')
+                    })
+            })
+            .ok_or_else(unavailable)?;
+        Ok((ip.into(), zone.into()))
+    }
+
+    fn launch(&self, record: &WindowRecord, proxy: &ResolvedProxy) -> BrowserResult<()> {
+        if Self::engine(record)? == AliasEngine::Firefox {
+            return self.launch_firefox(record, proxy);
+        }
+        let profile = self.profile(&record.id)?;
+        let executable = record.binary_path.as_ref().ok_or_else(unavailable)?;
+        let user_data = profile.join("user-data");
+        if !user_data.is_dir() {
+            return Err(BrowserError::new("invalid_config", "窗口环境目录不存在"));
+        }
+        let proxy = Self::resolved_proxy(record, proxy)?;
+        let geo = if record.settings.geoip {
+            proxy.as_deref().map(Self::proxy_location).transpose()?
+        } else {
+            None
+        };
+        let mut command = Command::new(executable);
+        command.env("GOOGLE_API_KEY", "no");
+        command.env("GOOGLE_DEFAULT_CLIENT_ID", "no");
+        command.env("GOOGLE_DEFAULT_CLIENT_SECRET", "no");
+        command
+            .arg(format!("--user-data-dir={}", user_data.display()))
+            .arg(format!(
+                "--fingerprint={}",
+                record.settings.fingerprint_seed.ok_or_else(unavailable)?
+            ))
+            .arg("--remote-debugging-address=127.0.0.1")
+            .arg("--remote-debugging-port=0")
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--fingerprint-noise")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "macos")]
+        command.arg("--use-mock-keychain");
+        let mut relay = None;
+        if let Some(proxy) = proxy {
+            let url = url::Url::parse(&proxy).map_err(|_| missing_proxy())?;
+            let browser_proxy = if matches!(url.scheme(), "socks5" | "socks5h")
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                let started = ProxyRelay::start(&url)
+                    .map_err(|message| BrowserError::new("invalid_config", message))?;
+                let address = started.address();
+                relay = Some(started);
+                address
+            } else {
+                let scheme = if url.scheme() == "socks5h" {
+                    "socks5"
+                } else {
+                    url.scheme()
+                };
+                let host = url.host_str().ok_or_else(missing_proxy)?;
+                let host = if host.contains(':') && !host.starts_with('[') {
+                    format!("[{host}]")
+                } else {
+                    host.to_string()
+                };
+                format!(
+                    "{scheme}://{host}:{}",
+                    url.port().ok_or_else(missing_proxy)?
+                )
+            };
+            command
+                .arg(format!("--proxy-server={browser_proxy}"))
+                .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+        }
+        if let Some((ip, zone)) = &geo {
+            command.arg(format!("--fingerprint-webrtc-ip={ip}"));
+            command.arg(format!("--fingerprint-timezone={zone}"));
+        } else if !record.settings.timezone.is_empty() {
+            command.arg(format!(
+                "--fingerprint-timezone={}",
+                record.settings.timezone
+            ));
+        }
+        if !record.settings.locale.is_empty() {
+            command.arg(format!("--fingerprint-locale={}", record.settings.locale));
+        }
+        if let Some(os) = effective_os(&record.settings.operating_system) {
+            command.arg(format!("--fingerprint-platform={os}"));
+        }
+        if let Some(cores) = record.settings.cpu_cores {
+            command.arg(format!(
+                "--fingerprint-hardware-concurrency={}",
+                cores.min(host_cores())
+            ));
+        }
+        if let Some((width, height)) = screen_size(&record.settings.viewport) {
+            command.arg(format!("--fingerprint-screen-width={width}"));
+            command.arg(format!("--fingerprint-screen-height={height}"));
+        }
+        match record.settings.viewport.as_str() {
+            "1440x900" => {
+                command.arg("--window-size=1440,900");
+            }
+            "1920x1080" => {
+                command.arg("--window-size=1920,1080");
+            }
+            _ => {}
+        }
+        if !record.settings.start_url.is_empty() {
+            command.arg(&record.settings.start_url);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|_| BrowserError::new("unavailable", "无法启动 AliasMode Chromium 内核"))?;
+        let started = Instant::now();
+        let port = loop {
+            if let Ok(contents) = fs::read_to_string(user_data.join("DevToolsActivePort"))
+                && let Some((raw_port, debugger)) = contents.split_once('\n')
+                && let Ok(port) = raw_port.parse::<u16>()
+                && CdpEndpoint::from_port(port)
+                    .is_ok_and(|endpoint| endpoint.matches_debugger_path(debugger.trim()))
+            {
+                break port;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(BrowserError::new(
+                        "unavailable",
+                        format!(
+                            "AliasMode Chromium 启动失败（退出码 {}）",
+                            status
+                                .code()
+                                .map_or_else(|| "未知".into(), |code| code.to_string())
+                        ),
+                    ));
+                }
+                Err(_) => return Err(uncertain()),
+                _ => {}
+            }
+            if started.elapsed() >= START_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(BrowserError::new("unavailable", "浏览器启动超时"));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        let receipt = SessionReceipt {
+            pid: child.id(),
+            profile_id: record.id.clone(),
+            port,
+            engine: "chromium".into(),
+        };
+        let pending = profile.join(format!(".raccoon-session-{}.tmp", child.id()));
+        let persist = (|| -> BrowserResult<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&pending)
+                .map_err(|_| unavailable())?;
+            serde_json::to_writer(&mut file, &receipt).map_err(|_| unavailable())?;
+            file.sync_all().map_err(|_| unavailable())?;
+            fs::rename(&pending, profile.join(".raccoon-session.json")).map_err(|_| unavailable())
+        })();
+        if let Err(error) = persist {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(pending);
+            return Err(error);
+        }
+        self.sessions.lock().map_err(|_| unavailable())?.insert(
+            record.id.clone(),
+            Session {
+                child,
+                port,
+                state: WindowState::Running,
+                _relay: relay,
+            },
+        );
+        Ok(())
+    }
+
+    fn launch_firefox(&self, record: &WindowRecord, resolved: &ResolvedProxy) -> BrowserResult<()> {
+        let profile = self.profile(&record.id)?;
+        let data = profile.join("user-data");
+        if !data.is_dir() {
+            return Err(BrowserError::new("invalid_config", "窗口环境目录不存在"));
+        }
+        let proxy = Self::resolved_proxy(record, resolved)?;
+        let geo = if record.settings.geoip {
+            proxy.as_deref().map(Self::proxy_location).transpose()?
+        } else {
+            None
+        };
+        let seed = record.settings.fingerprint_seed.ok_or_else(unavailable)?;
+        let (width, height) = screen_size(&record.settings.viewport).unwrap_or((1440, 900));
+        let os = effective_os(&record.settings.operating_system).ok_or_else(unavailable)?;
+        let mut config = json!({
+            "screen.width": width, "screen.height": height,
+            "screen.availLeft": 0,
+            "screen.availTop": if os == "macos" { 25 } else { 0 },
+            "screen.availWidth": width,
+            "screen.availHeight": height - if os == "macos" { 76 } else if os == "windows" { 48 } else { 0 },
+            "window.outerWidth": width.min(1280), "window.outerHeight": height.min(800),
+            "aliasmode:canvasSeed": seed, "aliasmode:textSeed": seed.wrapping_mul(2654435761),
+            "navigator.hardwareConcurrency": record.settings.cpu_cores.unwrap_or(4).min(host_cores()),
+        });
+        if let Some((ip, zone)) = &geo {
+            config["timezone"] = json!(zone);
+            config[if ip.contains(':') {
+                "webrtc:ipv6"
+            } else {
+                "webrtc:ipv4"
+            }] = json!(ip);
+        } else if !record.settings.timezone.is_empty() {
+            config["timezone"] = json!(record.settings.timezone);
+        }
+        if !record.settings.locale.is_empty() {
+            config["locale:all"] = json!(record.settings.locale);
+        }
+        let mut relay = None;
+        let mut prefs = json!({"media.peerconnection.ice.default_address_only": true});
+        if let Some(raw) = proxy {
+            let url = url::Url::parse(&raw).map_err(|_| missing_proxy())?;
+            let started = ProxyRelay::start(&url)
+                .map_err(|message| BrowserError::new("invalid_config", message))?;
+            let port = started.port();
+            prefs["network.proxy.type"] = json!(1);
+            prefs["network.proxy.http"] = json!("127.0.0.1");
+            prefs["network.proxy.http_port"] = json!(port);
+            prefs["network.proxy.ssl"] = json!("127.0.0.1");
+            prefs["network.proxy.ssl_port"] = json!(port);
+            prefs["network.proxy.no_proxies_on"] = json!("");
+            prefs["media.peerconnection.ice.proxy_only"] = json!(true);
+            relay = Some(started);
+        } else {
+            prefs["network.proxy.type"] = json!(0);
+        }
+        let mut command = Command::new(record.binary_path.as_ref().ok_or_else(unavailable)?);
+        for (index, chunk) in ascii_json(&config).as_bytes().chunks(2047).enumerate() {
+            command.env(
+                format!("CAMOU_CONFIG_{}", index + 1),
+                String::from_utf8_lossy(chunk).as_ref(),
+            );
+        }
+        for (index, chunk) in ascii_json(&prefs).as_bytes().chunks(2047).enumerate() {
+            command.env(
+                format!("CAMOU_PREFS_{}", index + 1),
+                String::from_utf8_lossy(chunk).as_ref(),
+            );
+        }
+        command
+            .arg("-no-remote")
+            .arg("-new-instance")
+            .arg("-profile")
+            .arg(&data)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if !record.settings.start_url.is_empty() {
+            command.arg(&record.settings.start_url);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|_| BrowserError::new("unavailable", "无法启动 AliasMode Firefox 内核"))?;
+        let started = Instant::now();
+        loop {
+            if child.try_wait().map_err(|_| uncertain())?.is_some() {
+                return Err(BrowserError::new(
+                    "unavailable",
+                    "AliasMode Firefox 进程提前退出",
+                ));
+            }
+            if process_identity(child.id(), &data, AliasEngine::Firefox) == Some(true)
+                && (data.join("parent.lock").exists() || data.join(".parentlock").exists())
+            {
+                break;
+            }
+            if started.elapsed() >= START_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(BrowserError::new("unavailable", "Firefox 启动超时"));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let receipt = SessionReceipt {
+            pid: child.id(),
+            profile_id: record.id.clone(),
+            port: 0,
+            engine: "firefox".into(),
+        };
+        let pending = profile.join(format!(".raccoon-session-{}.tmp", child.id()));
+        let persist = (|| -> BrowserResult<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&pending)
+                .map_err(|_| unavailable())?;
+            serde_json::to_writer(&mut file, &receipt).map_err(|_| unavailable())?;
+            file.sync_all().map_err(|_| unavailable())?;
+            fs::rename(&pending, profile.join(".raccoon-session.json")).map_err(|_| unavailable())
+        })();
+        if let Err(error) = persist {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(pending);
+            return Err(error);
+        }
+        self.sessions.lock().map_err(|_| unavailable())?.insert(
+            record.id.clone(),
+            Session {
+                child,
+                port: 0,
+                state: WindowState::Running,
+                _relay: relay,
+            },
+        );
+        Ok(())
+    }
 }
 
-fn active(api: &LocalApi, id: &str) -> BrowserResult<(WindowState, Value)> {
-    let data = api.get(
-        "/api/v1/browser/active",
-        &[("user_id", id)],
-        RequestKind::Read,
-    )?;
-    let state = match (data["status"].as_str(), data["lifecycle"].as_str()) {
-        (Some("Inactive"), None) => WindowState::Stopped,
-        (Some("Active"), Some("running")) => WindowState::Running,
-        (Some("Active"), Some("starting")) => WindowState::Starting,
-        (Some("Active"), Some("stopping")) => WindowState::Stopping,
-        (Some("Active"), Some("uncertain")) => WindowState::Unknown,
-        (Some("Active"), None) => WindowState::Unknown,
-        _ => return Err(invalid_response()),
-    };
-    Ok((state, data))
+fn effective_os(value: &str) -> Option<&str> {
+    if value != "host" {
+        return Some(value);
+    }
+    if cfg!(target_os = "macos") {
+        Some("macos")
+    } else if cfg!(target_os = "windows") {
+        Some("windows")
+    } else if cfg!(target_os = "linux") {
+        Some("linux")
+    } else {
+        None
+    }
+}
+fn host_cores() -> u8 {
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(64) as u8)
+        .unwrap_or(4)
+}
+fn screen_size(value: &str) -> Option<(u32, u32)> {
+    match value {
+        "1440x900" => Some((1440, 900)),
+        "1920x1080" => Some((1920, 1080)),
+        _ => None,
+    }
+}
+fn ascii_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 impl BrowserProvider for AliasModeProvider {
     fn id(&self) -> BrowserProviderId {
         BrowserProviderId::AliasMode
     }
-
     fn capabilities(&self) -> BrowserCapabilities {
-        let mut capabilities = BrowserCapabilities::for_provider(self.id());
-        capabilities.attach = false;
-        capabilities
+        BrowserCapabilities {
+            create: true,
+            update: true,
+            delete_environment: true,
+            attach: false,
+            manual_proxy: true,
+            proxy_plugin: true,
+            geoip: true,
+            fingerprint_seed: true,
+            kernel_selection: true,
+            transfer: false,
+        }
     }
-
     fn probe(&self, connection: &BrowserConnection) -> BrowserResult<ProviderProbe> {
-        let api = api(connection)?;
-        api.get("/status", &[], RequestKind::Probe)?;
-        profiles(&api)?;
+        Self::connection(connection)?;
+        let installed = [AliasEngine::Chromium, AliasEngine::Firefox]
+            .into_iter()
+            .map(|engine| {
+                self.kernel(engine)
+                    .status()
+                    .map(|status| status.installed.len())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BrowserError::new("unavailable", e))?;
         Ok(ProviderProbe {
-            connected: true,
-            message: "AliasMode 本机接口已连接".into(),
-            scope_id: None,
+            connected: installed.iter().any(|count| *count > 0),
+            message: if installed.iter().all(|count| *count == 0) {
+                "请先在实验室下载 AliasMode 内核"
+            } else {
+                "内核已就绪"
+            }
+            .into(),
+            scope_id: Some(ALIASMODE_CONNECTION_ID.into()),
             capabilities: self.capabilities(),
         })
     }
-
     fn list_profiles(&self, connection: &BrowserConnection) -> BrowserResult<Vec<RemoteProfile>> {
-        profiles(&api(connection)?)
+        Self::connection(connection)?;
+        Ok(Vec::new())
     }
-
     fn list_groups(&self, connection: &BrowserConnection) -> BrowserResult<Vec<ProviderGroup>> {
-        let api = api(connection)?;
-        let mut result = Vec::new();
-        let mut ids = HashSet::new();
-        for page in 1..=MAX_PAGES {
-            let page_text = page.to_string();
-            let size = PAGE_SIZE.to_string();
-            let data = api.get(
-                "/api/v1/group/list",
-                &[("page", &page_text), ("page_size", &size)],
-                RequestKind::Read,
-            )?;
-            let rows = data["list"].as_array().ok_or_else(invalid_response)?;
-            if rows.is_empty() {
-                return Ok(result);
-            }
-            if rows.len() > PAGE_SIZE {
-                return Err(invalid_response());
-            }
-            for row in rows {
-                let id = row["group_id"].as_str().ok_or_else(invalid_response)?;
-                let name = row["group_name"].as_str().ok_or_else(invalid_response)?;
-                valid_id(id)?;
-                if !ids.insert(id.to_owned()) {
-                    return Err(invalid_response());
-                }
-                result.push(ProviderGroup {
-                    id: id.into(),
-                    name: name.into(),
-                });
-            }
-        }
-        Err(invalid_response())
+        Self::connection(connection)?;
+        Ok(Vec::new())
     }
-
     fn create_profile(
         &self,
         connection: &BrowserConnection,
         record: &WindowRecord,
         operation_id: &str,
     ) -> BrowserResult<CreatedProfile> {
-        validate_create(connection, record, self.id())?;
-        if record.proxy_mode != ProxyMode::Direct
-            || record.settings.geoip
-            || !record.settings.timezone.is_empty()
-            || !record.settings.locale.is_empty()
-            || record.settings.viewport != "default"
-            || !record.settings.start_url.is_empty()
+        Self::connection(connection)?;
+        let _lock = self
+            .operations
+            .try_lock()
+            .map_err(|_| BrowserError::new("profile_busy", "另一个环境操作正在进行"))?;
+        let witness_path = self.witness(operation_id)?;
+        if let Some(witness) = self.read_witness(operation_id)? {
+            if witness.window_id != record.id
+                || witness.name != record.name
+                || witness.engine != record.settings.alias_engine.as_deref().unwrap_or("")
+                || record
+                    .kernel_version
+                    .as_deref()
+                    .is_some_and(|v| v != witness.version)
+            {
+                return Err(BrowserError::new(
+                    "operation_conflict",
+                    "该创建操作已用于另一个窗口",
+                ));
+            }
+            self.finish_create(&witness)?;
+            return Ok(CreatedProfile {
+                profile_id: witness.window_id,
+                kernel_version: Some(witness.version),
+                binary_path: Some(witness.binary_path),
+                provider_config: witness.provider_config,
+            });
+        }
+        if record.binding.connection_id != connection.id
+            || record.binding.provider_id != self.id()
+            || record.binding.profile_id != record.id
+            || record.settings.fingerprint_seed.is_none()
         {
-            return Err(BrowserError::unsupported(
-                "AliasMode 接入目前仅支持默认指纹与直连；请清空自定义地域、窗口尺寸和起始地址",
+            return Err(BrowserError::new(
+                "invalid_config",
+                "AliasMode 窗口配置无效",
             ));
         }
-        let marker = operation_marker(operation_id)?;
-        let name = format!("{marker} {}", record.name);
-        let api = api(connection).map_err(preflight_error)?;
-        let _lock = api
-            .lock_profile(&format!("create:{marker}"))
-            .map_err(preflight_error)?;
-        let data = api.post(
-            "/api/v1/user/create",
-            &json!({"name":name,"engine":"chromium"}),
-            RequestKind::Write,
-        )?;
-        let id = data["id"]
-            .as_str()
-            .filter(|id| valid_id(id).is_ok())
-            .ok_or_else(|| uncertain("AliasMode 创建已提交但未返回环境标识，请核对结果"))?;
-        let remote = profiles(&api)
-            .map_err(|_| uncertain("AliasMode 创建后无法核对环境身份，请核对结果"))?
-            .into_iter()
-            .find(|row| row.id == id)
-            .ok_or_else(|| uncertain("AliasMode 新环境暂不可见，请核对结果"))?;
-        if remote.name != name {
-            return Err(uncertain("AliasMode 创建结果的名称不匹配，请核对结果"));
+        let engine = Self::engine(record)?;
+        let kernels = self.kernel(engine);
+        let version = if let Some(version) = &record.kernel_version {
+            version.clone()
+        } else {
+            kernels
+                .status()
+                .map_err(|e| BrowserError::new("unavailable", e))?
+                .installed
+                .first()
+                .ok_or_else(|| {
+                    BrowserError::new("invalid_config", "请先在实验室下载所选浏览器内核")
+                })?
+                .version
+                .clone()
+        };
+        let binary = kernels
+            .exact_binary(&version)
+            .map_err(|e| BrowserError::new("invalid_config", e))?;
+        let profile = self.profile(&record.id)?;
+        if profile.exists() {
+            return Err(uncertain());
         }
-        if remote.created_at.is_none() {
-            return Err(uncertain("AliasMode 未返回稳定创建时间，无法确认环境身份"));
-        }
+        fs::create_dir_all(self.root.join(".creating")).map_err(|_| unavailable())?;
+        fs::create_dir_all(self.root.join(".operations")).map_err(|_| unavailable())?;
+        let staging = self.root.join(".creating").join(operation_id);
+        fs::create_dir(&staging).map_err(|_| uncertain())?;
+        fs::create_dir(staging.join("user-data")).map_err(|_| uncertain())?;
+        let witness = CreateWitness {
+            operation_id: operation_id.into(),
+            window_id: record.id.clone(),
+            name: record.name.clone(),
+            version,
+            binary_path: binary.binary_path.clone(),
+            engine: record
+                .settings
+                .alias_engine
+                .clone()
+                .ok_or_else(unavailable)?,
+            created_at: record.created_at,
+            provider_config: json!({"engine":record.settings.alias_engine,"binaryPath":binary.binary_path}),
+        };
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(witness_path)
+            .map_err(|_| uncertain())?;
+        serde_json::to_writer(&mut file, &witness).map_err(|_| uncertain())?;
+        file.sync_all().map_err(|_| uncertain())?;
+        self.finish_create(&witness)?;
         Ok(CreatedProfile {
-            profile_id: remote.id,
-            kernel_version: None,
-            binary_path: None,
-            provider_config: remote.provider_config,
+            profile_id: record.id.clone(),
+            kernel_version: Some(witness.version),
+            binary_path: Some(witness.binary_path),
+            provider_config: witness.provider_config,
         })
     }
-
-    fn prepare_update_evidence(
-        &self,
-        previous: &WindowRecord,
-        updated: &WindowRecord,
-    ) -> BrowserResult<UpdateEvidence> {
-        validate_update(previous, updated)?;
-        if previous.name != updated.name
-            || previous.proxy_mode != updated.proxy_mode
-            || previous.proxy != updated.proxy
-            || previous.proxy_plugin != updated.proxy_plugin
-            || previous.proxy_endpoint != updated.proxy_endpoint
-            || previous.settings != updated.settings
-        {
-            return Err(BrowserError::unsupported(
-                "AliasMode 配置修改暂不可安全核对，请在 AliasMode 中修改",
-            ));
-        }
-        UpdateEvidence::from_fields(self.id(), &json!({}))
-    }
-
     fn update_profile(
         &self,
         connection: &BrowserConnection,
-        previous: &WindowRecord,
+        old: &WindowRecord,
         updated: &WindowRecord,
     ) -> BrowserResult<()> {
-        validate_binding(connection, previous, self.id())?;
-        self.prepare_update_evidence(previous, updated)?;
-        Ok(())
-    }
-
-    fn reconcile_update(
-        &self,
-        connection: &BrowserConnection,
-        previous: &WindowRecord,
-        updated: &WindowRecord,
-        evidence: &UpdateEvidence,
-    ) -> BrowserResult<bool> {
-        validate_binding(connection, previous, self.id())?;
-        self.prepare_update_evidence(previous, updated)?;
-        evidence.validate(self.id())?;
-        Ok(self.list_profiles(connection)?.into_iter().any(|row| {
-            row.id == previous.binding.profile_id && verify_identity(previous, &row).is_ok()
-        }))
-    }
-
-    fn reconcile_create(
-        &self,
-        connection: &BrowserConnection,
-        operation_id: &str,
-    ) -> BrowserResult<Option<RemoteProfile>> {
-        let marker = operation_marker(operation_id)?;
-        let mut matches = self
-            .list_profiles(connection)?
-            .into_iter()
-            .filter(|row| row.name.starts_with(&format!("{marker} ")));
-        let first = matches.next();
-        if matches.next().is_some() {
-            return Err(uncertain("AliasMode 存在重复创建标记，请人工核对"));
+        self.record(connection, old, false)?;
+        self.record(connection, updated, false)?;
+        if old.binding != updated.binding
+            || old.binary_path != updated.binary_path
+            || old.kernel_version != updated.kernel_version
+            || old.settings.fingerprint_seed != updated.settings.fingerprint_seed
+            || old.settings.alias_engine != updated.settings.alias_engine
+            || old.settings.operating_system != updated.settings.operating_system
+            || old.settings.cpu_cores != updated.settings.cpu_cores
+        {
+            return Err(BrowserError::new(
+                "invalid_config",
+                "内核和浏览器身份创建后不可修改",
+            ));
         }
-        if first.as_ref().is_some_and(|row| row.created_at.is_none()) {
-            return Err(uncertain("AliasMode 未返回稳定创建时间，无法确认环境身份"));
-        }
-        Ok(first)
+        self.require_stopped(&old.id)
     }
-
+    fn prepare_update_evidence(
+        &self,
+        _: &WindowRecord,
+        _: &WindowRecord,
+    ) -> BrowserResult<UpdateEvidence> {
+        UpdateEvidence::from_fields(self.id(), &json!({}))
+    }
     fn delete_profile(
         &self,
         connection: &BrowserConnection,
         record: &WindowRecord,
     ) -> BrowserResult<()> {
-        validate_binding(connection, record, self.id())?;
-        require_scope(connection)?;
-        let api = api(connection).map_err(preflight_error)?;
-        let _lock = api
-            .lock_profile(&record.binding.profile_id)
-            .map_err(preflight_error)?;
-        let remote = profiles(&api)?
-            .into_iter()
-            .find(|row| row.id == record.binding.profile_id)
-            .ok_or_else(|| BrowserError::new("profile_missing", "AliasMode 环境不可见"))?;
-        verify_identity(record, &remote)?;
-        if active(&api, &remote.id)?.0 != WindowState::Stopped {
-            return Err(BrowserError::new(
-                "profile_busy",
-                "请先确认 AliasMode 环境已停止",
-            ));
+        let profile = self.record(connection, record, false)?;
+        self.require_stopped(&record.id)?;
+        match fs::symlink_metadata(&profile) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+                fs::remove_dir_all(profile).map_err(|_| unavailable())
+            }
+            _ => Err(uncertain()),
         }
-        let data = api.post(
-            "/api/v1/user/delete",
-            &json!({"user_ids":[remote.id]}),
-            RequestKind::Write,
-        )?;
-        if data["deleted"].as_u64() != Some(1)
-            || data["locked"]
-                .as_array()
-                .is_none_or(|locked| !locked.is_empty())
-        {
-            return Err(uncertain("AliasMode 未确认环境删除，请核对结果"));
-        }
-        if profiles(&api)
-            .map_err(|_| uncertain("AliasMode 删除后无法核对环境列表，请核对结果"))?
-            .iter()
-            .any(|row| row.id == record.binding.profile_id)
-        {
-            return Err(uncertain("AliasMode 环境删除后仍可见，请核对结果"));
-        }
-        Ok(())
     }
-
     fn start_profile(
         &self,
         connection: &BrowserConnection,
         record: &WindowRecord,
         proxy: &ResolvedProxy,
     ) -> BrowserResult<()> {
-        validate_binding(connection, record, self.id())?;
-        require_scope(connection)?;
-        if proxy.mode != ProxyMode::Direct
-            || proxy.connection_url.is_some()
-            || record.proxy_mode != ProxyMode::Direct
-        {
-            return Err(BrowserError::unsupported(
-                "AliasMode 代理配置无法核验，已阻止启动",
-            ));
-        }
-        let api = api(connection).map_err(preflight_error)?;
-        let _lock = api
-            .lock_profile(&record.binding.profile_id)
-            .map_err(preflight_error)?;
-        let remote = profiles(&api)?
-            .into_iter()
-            .find(|row| row.id == record.binding.profile_id)
-            .ok_or_else(|| BrowserError::new("profile_missing", "AliasMode 环境不可见"))?;
-        verify_identity(record, &remote)?;
-        match active(&api, &remote.id)?.0 {
-            WindowState::Running => return Ok(()),
-            WindowState::Stopped => (),
-            _ => {
-                return Err(BrowserError::new(
-                    "not_submitted",
-                    "AliasMode 环境状态未确定，尚未启动",
-                ));
-            }
-        }
-        api.get(
-            "/api/v1/browser/start",
-            &[("user_id", &remote.id)],
-            RequestKind::Start,
-        )?;
-        Ok(())
+        self.record(connection, record, true)?;
+        self.require_stopped(&record.id)?;
+        self.launch(record, proxy)
     }
-
     fn stop_profile(
         &self,
         connection: &BrowserConnection,
         record: &WindowRecord,
     ) -> BrowserResult<()> {
-        validate_binding(connection, record, self.id())?;
-        require_scope(connection)?;
-        let api = api(connection).map_err(preflight_error)?;
-        let _lock = api
-            .lock_profile(&record.binding.profile_id)
-            .map_err(preflight_error)?;
-        let remote = profiles(&api)?
-            .into_iter()
-            .find(|row| row.id == record.binding.profile_id)
-            .ok_or_else(|| BrowserError::new("profile_missing", "AliasMode 环境不可见"))?;
-        verify_identity(record, &remote)?;
-        if active(&api, &remote.id)?.0 == WindowState::Stopped {
-            return Ok(());
+        self.record(connection, record, false)?;
+        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
+        let Some(session) = sessions.get_mut(&record.id) else {
+            drop(sessions);
+            match self.observe(&record.id)? {
+                WindowState::Stopped => return Ok(()),
+                WindowState::Running => {
+                    let profile = self.profile(&record.id)?;
+                    let receipt: SessionReceipt = serde_json::from_slice(
+                        &fs::read(profile.join(".raccoon-session.json"))
+                            .map_err(|_| uncertain())?,
+                    )
+                    .map_err(|_| uncertain())?;
+                    let data = profile.join("user-data");
+                    if receipt.profile_id != record.id
+                        || process_identity(receipt.pid, &data, Self::engine(record)?) != Some(true)
+                    {
+                        return Err(uncertain());
+                    }
+                    stop_process(receipt.pid)?;
+                    let start = Instant::now();
+                    loop {
+                        if pid_alive(receipt.pid) == Some(false) {
+                            return if self.observe(&record.id)? == WindowState::Stopped {
+                                Ok(())
+                            } else {
+                                Err(uncertain())
+                            };
+                        }
+                        if start.elapsed() >= STOP_TIMEOUT {
+                            return Err(uncertain());
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                _ => return Err(uncertain()),
+            }
+        };
+        session.state = WindowState::Stopping;
+        #[cfg(unix)]
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &session.child.id().to_string()])
+            .status();
+        #[cfg(windows)]
+        let _ = session.child.kill();
+        let start = Instant::now();
+        loop {
+            match session.child.try_wait() {
+                Ok(Some(_)) => {
+                    sessions.remove(&record.id);
+                    return Ok(());
+                }
+                Err(_) => return Err(uncertain()),
+                Ok(None) if start.elapsed() >= STOP_TIMEOUT => {
+                    session.child.kill().map_err(|_| uncertain())?;
+                    session.child.wait().map_err(|_| uncertain())?;
+                    sessions.remove(&record.id);
+                    return Ok(());
+                }
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
         }
-        api.get(
-            "/api/v1/browser/stop",
-            &[("user_id", &remote.id)],
-            RequestKind::Write,
-        )?;
-        Ok(())
     }
-
     fn observe_profiles(
         &self,
         connection: &BrowserConnection,
         records: &[WindowRecord],
     ) -> BrowserResult<ObservedProfiles> {
-        if records.is_empty() {
-            return Ok(ObservedProfiles::default());
-        }
-        let api = api(connection)?;
-        let profiles = profiles(&api)?;
-        let accessible = verify_observed_identities(records, &profiles)?;
-        let mut active_ids = HashSet::new();
-        let mut transitional = Vec::new();
+        Self::connection(connection)?;
+        let mut states = HashMap::new();
         for record in records {
-            if !accessible.contains(&record.binding.profile_id) {
-                continue;
-            }
-            let (state, _) = active(&api, &record.binding.profile_id)?;
-            if state == WindowState::Running {
-                active_ids.insert(record.binding.profile_id.clone());
-            } else if state != WindowState::Stopped {
-                transitional.push((record.binding.profile_id.clone(), state));
-            }
+            self.record(connection, record, false)?;
+            states.insert(record.binding.profile_id.clone(), self.observe(&record.id)?);
         }
-        let mut states = observed_states(records, &accessible, &active_ids)?;
-        for (id, state) in transitional {
-            states.insert(id, state);
-        }
-        Ok(ObservedProfiles { states, profiles })
+        Ok(ObservedProfiles {
+            states,
+            profiles: Vec::new(),
+        })
     }
-
+    fn reconcile_create(
+        &self,
+        connection: &BrowserConnection,
+        operation_id: &str,
+    ) -> BrowserResult<Option<RemoteProfile>> {
+        Self::connection(connection)?;
+        let _lock = self.operations.try_lock().map_err(|_| uncertain())?;
+        let Some(witness) = self.read_witness(operation_id)? else {
+            return Ok(None);
+        };
+        self.finish_create(&witness)?;
+        Ok(Some(witness.profile()))
+    }
+    fn reconcile_update(
+        &self,
+        connection: &BrowserConnection,
+        old: &WindowRecord,
+        updated: &WindowRecord,
+        evidence: &UpdateEvidence,
+    ) -> BrowserResult<bool> {
+        evidence.validate(self.id())?;
+        self.update_profile(connection, old, updated)?;
+        Ok(true)
+    }
     fn automation_session(
         &self,
         connection: &BrowserConnection,
         record: &WindowRecord,
     ) -> BrowserResult<AutomationSession> {
-        validate_binding(connection, record, self.id())?;
-        require_scope(connection)?;
-        let api = api(connection)?;
-        let _lock = api.lock_profile(&record.binding.profile_id)?;
-        let remote = profiles(&api)?
-            .into_iter()
-            .find(|row| row.id == record.binding.profile_id)
-            .ok_or_else(|| BrowserError::new("profile_missing", "AliasMode 环境不可见"))?;
-        verify_identity(record, &remote)?;
-        let (state, data) = active(&api, &remote.id)?;
-        if state != WindowState::Running {
-            return Err(BrowserError::new("unavailable", "AliasMode 浏览器尚未运行"));
+        self.record(connection, record, false)?;
+        if Self::engine(record)? == AliasEngine::Firefox {
+            return Err(BrowserError::unsupported("Firefox 窗口不提供自动化"));
         }
-        let ws = data["ws"]["puppeteer"]
-            .as_str()
-            .ok_or_else(|| BrowserError::unsupported("当前 AliasMode 环境不提供 Chromium CDP"))?;
-        Ok(AutomationSession::Cdp(CdpEndpoint::websocket(ws)?))
+        if self.observe(&record.id)? != WindowState::Running {
+            return Err(unavailable());
+        }
+        let port = if let Some(session) = self
+            .sessions
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&record.id)
+        {
+            session.port
+        } else {
+            let receipt: SessionReceipt = serde_json::from_slice(
+                &fs::read(self.profile(&record.id)?.join(".raccoon-session.json"))
+                    .map_err(|_| unavailable())?,
+            )
+            .map_err(|_| unavailable())?;
+            receipt.port
+        };
+        Ok(AutomationSession::Cdp(CdpEndpoint::from_port(port)?))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::browser::local_api::tests::{MockResponse, MockServer, record};
+fn unavailable() -> BrowserError {
+    BrowserError::new("unavailable", "AliasMode Chromium 运行环境暂不可用")
+}
+fn uncertain() -> BrowserError {
+    BrowserError::new(
+        "operation_uncertain",
+        "无法确认浏览器进程或环境目录状态，请关闭浏览器后重试",
+    )
+}
+fn missing_proxy() -> BrowserError {
+    BrowserError::new("invalid_config", "所选窗口代理不可用，已阻止浏览器启动")
+}
 
-    fn page(rows: Value, number: u32) -> MockResponse {
-        MockResponse::json(
-            json!({"code":0,"msg":"success","data":{"list":rows,"page":number,"page_size":100}}),
-        )
-    }
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> Option<bool> {
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+        .map(|status| status.success())
+}
 
-    fn row(id: &str, name: &str) -> Value {
-        json!({"user_id":id,"name":name,"created_time":1794268800,"group_id":"","serial_number":"1","last_open_time":0,"fp_verdict":"","fp_captured_at":""})
+#[cfg(unix)]
+fn process_identity(pid: u32, data: &Path, engine: AliasEngine) -> Option<bool> {
+    if pid_alive(pid) != Some(true) {
+        return Some(false);
     }
+    let output = Command::new("/bin/ps")
+        .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8(output.stdout).ok()?;
+    Some(if engine == AliasEngine::Firefox {
+        command.contains("aliasmode")
+            && command.contains("-profile")
+            && command.contains(&data.display().to_string())
+    } else {
+        command.contains("Chromium")
+            && command.contains(&format!("--user-data-dir={}", data.display()))
+    })
+}
 
-    #[test]
-    fn creates_and_reconciles_by_exact_operation_name() {
-        let operation = "fixture-operation";
-        let marker = operation_marker(operation).unwrap();
-        let name = format!("{marker} Window");
-        let server = MockServer::new(vec![
-            MockResponse::json(json!({"code":0,"data":{"id":"profile-1"}})),
-            page(json!([row("profile-1", &name)]), 1),
-            page(json!([]), 2),
-            page(json!([row("profile-1", &name)]), 1),
-            page(json!([]), 2),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "");
-        record.settings.geoip = false;
-        let provider = AliasModeProvider;
-        let created = provider
-            .create_profile(&connection, &record, operation)
-            .unwrap();
-        assert_eq!(created.profile_id, "profile-1");
-        assert_eq!(
-            provider
-                .reconcile_create(&connection, operation)
-                .unwrap()
-                .unwrap()
-                .id,
-            "profile-1"
-        );
-        let requests = server.requests();
-        assert_eq!(requests[0].target, "/api/v1/user/create");
-        assert_eq!(requests[0].body["name"], name);
-        assert_eq!(requests[0].body["engine"], "chromium");
-    }
+#[cfg(unix)]
+fn stop_process(pid: u32) -> BrowserResult<()> {
+    Command::new("/bin/kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .map_err(|_| uncertain())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(uncertain())
+            }
+        })
+}
 
-    #[test]
-    fn rejects_created_profile_without_a_stable_identity_timestamp() {
-        let operation = "fixture-operation";
-        let mut missing_timestamp = row(
-            "profile-1",
-            &format!("{} Window", operation_marker(operation).unwrap()),
-        );
-        missing_timestamp["created_time"] = json!(0);
-        let server = MockServer::new(vec![
-            MockResponse::json(json!({"code":0,"data":{"id":"profile-1"}})),
-            page(json!([missing_timestamp]), 1),
-            page(json!([]), 2),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "");
-        record.settings.geoip = false;
-        assert_eq!(
-            AliasModeProvider
-                .create_profile(&connection, &record, operation)
-                .unwrap_err()
-                .code,
-            "operation_uncertain"
-        );
-    }
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> Option<bool> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue).Id"),
+        ])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim() == pid.to_string())
+}
 
-    #[test]
-    fn start_requires_confirmed_identity_and_blocks_proxy_without_api_call() {
-        let server = MockServer::new(vec![
-            page(json!([row("profile-1", "Window")]), 1),
-            page(json!([]), 2),
-            MockResponse::json(json!({"code":0,"data":{"status":"Inactive"}})),
-            MockResponse::json(json!({"code":0,"data":{}})),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "profile-1");
-        record.provider_config = profile(row("profile-1", "Window")).unwrap().provider_config;
-        let provider = AliasModeProvider;
-        assert_eq!(
-            provider
-                .start_profile(
-                    &connection,
-                    &record,
-                    &ResolvedProxy {
-                        mode: ProxyMode::Manual,
-                        connection_url: Some("socks5://127.0.0.1:7890".into())
-                    }
-                )
-                .unwrap_err()
-                .code,
-            "unsupported"
-        );
-        assert!(server.requests().is_empty());
-        provider
-            .start_profile(
-                &connection,
-                &record,
-                &ResolvedProxy {
-                    mode: ProxyMode::Direct,
-                    connection_url: None,
-                },
-            )
-            .unwrap();
-        let requests = server.requests();
-        assert_eq!(
-            requests[3].target,
-            "/api/v1/browser/start?user_id=profile-1"
-        );
+#[cfg(windows)]
+fn process_identity(pid: u32, data: &Path, engine: AliasEngine) -> Option<bool> {
+    if pid_alive(pid) != Some(true) {
+        return Some(false);
     }
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8_lossy(&output.stdout);
+    Some(if engine == AliasEngine::Firefox {
+        command.contains("aliasmode.exe")
+            && command.contains("-profile")
+            && command.contains(&data.display().to_string())
+    } else {
+        command.contains("chrome.exe")
+            && command.contains(&format!("--user-data-dir={}", data.display()))
+    })
+}
 
-    #[test]
-    fn unknown_lifecycle_never_becomes_stopped() {
-        let server = MockServer::new(vec![
-            page(json!([row("profile-1", "Window")]), 1),
-            page(json!([]), 2),
-            MockResponse::json(
-                json!({"code":0,"data":{"status":"Active","lifecycle":"uncertain"}}),
-            ),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "profile-1");
-        record.provider_config = profile(row("profile-1", "Window")).unwrap().provider_config;
-        let observed = AliasModeProvider
-            .observe_profiles(&connection, &[record])
-            .unwrap();
-        assert_eq!(observed.states["profile-1"], WindowState::Unknown);
-    }
-
-    #[test]
-    fn deletes_only_the_confirmed_stopped_profile() {
-        let server = MockServer::new(vec![
-            page(json!([row("profile-1", "Window")]), 1),
-            page(json!([]), 2),
-            MockResponse::json(json!({"code":0,"data":{"status":"Inactive"}})),
-            MockResponse::json(json!({"code":0,"data":{"deleted":1,"locked":[]}})),
-            page(json!([]), 1),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "profile-1");
-        record.provider_config = profile(row("profile-1", "Window")).unwrap().provider_config;
-        let provider = AliasModeProvider;
-        assert!(provider.capabilities().delete_environment);
-        provider.delete_profile(&connection, &record).unwrap();
-        let requests = server.requests();
-        assert_eq!(requests[3].target, "/api/v1/user/delete");
-        assert_eq!(requests[3].body, json!({"user_ids":["profile-1"]}));
-    }
-
-    #[test]
-    fn refuses_to_delete_an_active_profile_without_mutation() {
-        let server = MockServer::new(vec![
-            page(json!([row("profile-1", "Window")]), 1),
-            page(json!([]), 2),
-            MockResponse::json(json!({"code":0,"data":{"status":"Active","lifecycle":"running"}})),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "profile-1");
-        record.provider_config = profile(row("profile-1", "Window")).unwrap().provider_config;
-        assert_eq!(
-            AliasModeProvider
-                .delete_profile(&connection, &record)
-                .unwrap_err()
-                .code,
-            "profile_busy"
-        );
-        assert_eq!(server.requests().len(), 3);
-    }
-
-    #[test]
-    fn locked_delete_remains_uncertain() {
-        let server = MockServer::new(vec![
-            page(json!([row("profile-1", "Window")]), 1),
-            page(json!([]), 2),
-            MockResponse::json(json!({"code":0,"data":{"status":"Inactive"}})),
-            MockResponse::json(json!({"code":0,"data":{"deleted":0,"locked":["profile-1"]}})),
-        ]);
-        let connection = server.connection(BrowserProviderId::AliasMode);
-        let mut record = record(&connection, "profile-1");
-        record.provider_config = profile(row("profile-1", "Window")).unwrap().provider_config;
-        assert_eq!(
-            AliasModeProvider
-                .delete_profile(&connection, &record)
-                .unwrap_err()
-                .code,
-            "operation_uncertain"
-        );
-    }
+#[cfg(windows)]
+fn stop_process(pid: u32) -> BrowserResult<()> {
+    Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .status()
+        .map_err(|_| uncertain())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(uncertain())
+            }
+        })
 }

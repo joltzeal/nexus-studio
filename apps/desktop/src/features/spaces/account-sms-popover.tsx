@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { Copy, Loader2, Smartphone } from 'lucide-react'
+import { Copy, Loader2, Smartphone } from '@/components/icons'
 import {
   AlertDialog,
   AlertDialogAction,

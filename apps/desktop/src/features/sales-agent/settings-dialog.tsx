@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AgentSettingsSchema, type AgentSettings } from '@nexus/plugin-sdk/agent'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw } from '@/components/icons'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
