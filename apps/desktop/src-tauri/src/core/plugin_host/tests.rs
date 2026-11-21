@@ -892,6 +892,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     )
     .unwrap();
 
+    let source = fs::canonicalize(source).unwrap();
     let loader = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/plugin-source-loader.mjs");
     let host = PluginHost::open(temporary.path().join("host"), Vec::new())
         .unwrap()

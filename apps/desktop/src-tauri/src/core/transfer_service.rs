@@ -7,8 +7,8 @@ use super::group_store::GroupStore;
 use super::plugin_host::{PluginHost, manifest::Capability};
 use super::transfer_archive;
 use super::window_service::{AppOperationGuard, WindowService};
-use super::window_store::{WindowRecord, WindowStore};
-use rusqlite::{OptionalExtension, params};
+use super::window_store::{WindowRecord, WindowStore, group_for_commit};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -997,7 +997,9 @@ impl TransferService {
                 .map_err(|_| failure("无法恢复 Cookie 与站点数据"))?;
             }
             let mut db = open_database(&self.windows.store.database_path())?;
-            let transaction = db.transaction().map_err(|_| "无法开始导入事务")?;
+            let transaction = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| "无法开始导入事务")?;
             for group in &journal.groups {
                 transaction
                     .execute(
@@ -1025,7 +1027,15 @@ impl TransferService {
                 let group_id = manifest.windows[index]
                     .group
                     .as_ref()
-                    .and_then(|group| group_map.get(&group.id));
+                    .and_then(|group| group_map.get(&group.id))
+                    .map(String::as_str);
+                let group_id = group_for_commit(
+                    &transaction,
+                    record.binding.provider_id,
+                    &record.binding.connection_id,
+                    group_id,
+                )
+                .map_err(|_| "无法核对导入窗口的分组")?;
                 transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,?3)
                     ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,group_id=excluded.group_id",
                     params![record.id,serde_json::to_string(record).map_err(|_| "无法编码窗口")?,group_id])
@@ -1384,7 +1394,9 @@ fn rollback_native(
     }
     require_builtin(&originals)?;
     let mut db = open_database(db_path)?;
-    let transaction = db.transaction().map_err(|_| "无法恢复导入前的资料")?;
+    let transaction = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| "无法恢复导入前的资料")?;
     for original in &journal.originals {
         let target = profiles.join(&original.id);
         let backup = operation.join("backup").join(&original.id);
@@ -1398,6 +1410,13 @@ fn rollback_native(
             fs::remove_dir_all(&target).map_err(|_| failure("无法清理失败导入的数据"))?;
         }
         if let Some(record) = &original.record {
+            let group_id = group_for_commit(
+                &transaction,
+                BrowserProviderId::CloakBrowser,
+                BUILTIN_CONNECTION_ID,
+                original.group_id.as_deref(),
+            )
+            .map_err(|_| "无法核对原窗口的分组")?;
             let current: Option<(String, Option<String>)> = transaction
                 .query_row(
                     "SELECT record_json, group_id FROM profile_records WHERE id=?1",
@@ -1408,11 +1427,11 @@ fn rollback_native(
                 .map_err(|_| "无法读取原窗口资料")?;
             if current
                 .as_ref()
-                .is_none_or(|(json, group)| json != record || group != &original.group_id)
+                .is_none_or(|(json, group)| json != record || group != &group_id)
             {
                 transaction.execute("INSERT INTO profile_records(id,record_json,group_id) VALUES(?1,?2,?3)
                     ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,group_id=excluded.group_id",
-                    params![original.id,record,original.group_id]).map_err(|_| "无法恢复原窗口资料")?;
+                    params![original.id,record,group_id]).map_err(|_| "无法恢复原窗口资料")?;
             }
         } else {
             transaction

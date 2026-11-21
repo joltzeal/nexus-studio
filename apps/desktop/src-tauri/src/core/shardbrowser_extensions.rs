@@ -18,7 +18,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -1073,7 +1073,7 @@ fn unzip_archive(archive: &[u8], destination: &Path) -> Result<()> {
     }
     let mut total = 0u64;
     for index in 0..zip.len() {
-        let mut file = zip.by_index(index)?;
+        let file = zip.by_index(index)?;
         if file.is_symlink() {
             bail!("the archive contains a symbolic link");
         }

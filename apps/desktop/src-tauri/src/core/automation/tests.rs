@@ -120,16 +120,21 @@ fn bundles_redact_declared_and_nested_secrets_without_mutating_saved_project() {
     assert!(!encoded.contains("private form"));
     assert!(!encoded.contains("private bearer"));
     assert!(!encoded.contains("fixture-password"));
-    assert_eq!(bundle["needs"][0]["params"], json!(["body"]));
     assert_eq!(
-        fixture
-            .store
-            .get("connection-a", &project.id)
-            .unwrap()
-            .blocks[0]
-            .params["body"],
-        "private form"
+        bundle["needs"][0]["params"],
+        json!(["body", "headers", "proxy"])
     );
+    assert_eq!(
+        bundle["project"]["blocks"][0]["params"],
+        json!({"body":"","headers":"","proxy":""})
+    );
+    assert_eq!(
+        bundle["project"]["blocks"][0]["secrets"],
+        json!(["body", "headers", "proxy"])
+    );
+    let saved = fixture.store.get("connection-a", &project.id).unwrap();
+    assert_eq!(saved.blocks[0].params, project.blocks[0].params);
+    assert_eq!(saved.blocks[0].secrets, project.blocks[0].secrets);
 }
 
 #[test]

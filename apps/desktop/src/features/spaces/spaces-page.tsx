@@ -537,7 +537,7 @@ export function SpacesPage() {
     setEditingAccount(null)
     setError(null)
     closeGate()
-  }, [providerId])
+  }, [providerId, connections, dismissBinding, resetPhoneConfirmation, closeGate])
 
   useEffect(() => {
     selectionScope.current = connectionId

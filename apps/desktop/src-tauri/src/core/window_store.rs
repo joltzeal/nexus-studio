@@ -303,7 +303,12 @@ impl WindowStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| StoreError::Io)?;
         let group = if confirmed {
-            group_for_commit(&tx, record, group)?
+            group_for_commit(
+                &tx,
+                record.binding.provider_id,
+                &record.binding.connection_id,
+                group,
+            )?
         } else {
             group.map(str::to_owned)
         };
@@ -366,7 +371,12 @@ impl WindowStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| StoreError::Io)?;
         let group = if confirmed {
-            group_for_commit(&tx, record, group)?
+            group_for_commit(
+                &tx,
+                record.binding.provider_id,
+                &record.binding.connection_id,
+                group,
+            )?
         } else {
             group.map(str::to_owned)
         };
@@ -723,10 +733,11 @@ impl WindowStore {
     }
 }
 
-/// Resolve Folder deletion inside the same transaction as a confirmed provider write.
-fn group_for_commit(
+/// Resolve Folder deletion inside the transaction committing a confirmed write or recovery.
+pub(crate) fn group_for_commit(
     db: &Connection,
-    record: &WindowRecord,
+    provider_id: BrowserProviderId,
+    connection_id: &str,
     group: Option<&str>,
 ) -> Result<Option<String>, StoreError> {
     let Some(id) = group else { return Ok(None) };
@@ -741,8 +752,7 @@ fn group_for_commit(
     match binding {
         None => Ok(None),
         Some((connection, provider))
-            if connection == record.binding.connection_id
-                && provider == record.binding.provider_id.as_str() =>
+            if connection == connection_id && provider == provider_id.as_str() =>
         {
             Ok(Some(id.into()))
         }

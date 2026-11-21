@@ -25,6 +25,17 @@ describe('desktop release workflow', () => {
     expect(workflow).toContain('Verify signed macOS runtime')
   })
 
+  it('restores source loader dependencies before native tests after production deploy', () => {
+    for (const source of [workflow, ciWorkflow]) {
+      const stage = source.indexOf('pnpm runtime:stage')
+      const restore = source.indexOf('pnpm install --frozen-lockfile --prod=false')
+      const tests = source.indexOf('pnpm rust:test')
+      expect(stage).toBeGreaterThan(-1)
+      expect(restore).toBeGreaterThan(stage)
+      expect(tests).toBeGreaterThan(restore)
+    }
+  })
+
   it('publishes only after all desktop artifacts are packaged', () => {
     const publish = workflow.split('  publish:\n')[1]
     expect(publish).toContain('needs: [package]')

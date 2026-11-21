@@ -238,47 +238,55 @@ fn launch_preserves_proxy_urls_and_online_ip_settings() {
 
 #[test]
 fn runtime_errors_are_structured_without_echoing_runner_output() {
-    for (detail, code) in [
-        ("ACTIVATION_REQUIRED cb_synthetic-secret", "auth_required"),
+    for (detail, code, message) in [
+        (
+            "ACTIVATION_REQUIRED cb_synthetic-secret",
+            "auth_required",
+            "激活验证未通过，请在应用设置中重新验证激活码",
+        ),
         (
             "license key is invalid: cb_synthetic-secret",
             "auth_required",
+            "激活验证未通过，请在应用设置中重新验证激活码",
         ),
-        ("session limit reached: cb_synthetic-secret", "rate_limited"),
+        (
+            "session limit reached: cb_synthetic-secret",
+            "rate_limited",
+            "CloakBrowser 报告授权席位已满，请检查本机会话和授权席位",
+        ),
         (
             "PROFILE_ENGINE_MISMATCH cb_synthetic-secret",
             "invalid_config",
+            "浏览器内核与窗口固定绑定不一致",
         ),
         (
             "PROFILE_PROXY_MISSING cb_synthetic-secret",
             "invalid_config",
+            "缺少必需的代理连接，已阻止浏览器启动",
         ),
         (
             "PROFILE_GEO_ONLINE_UNAVAILABLE cb_synthetic-secret",
             "unavailable",
+            "出口 IP 自动匹配暂不可用，请重试或在窗口设置中关闭自动匹配",
         ),
         (
             "PROFILE_GEO_PROXY_CONNECT_FAILED socks5://synthetic-user:synthetic-password@proxy.invalid:1080",
             "unavailable",
+            "无法连接所选代理，请检查地址和认证信息",
         ),
         (
             "NEXUS_KERNEL_ERROR {\"code\":\"NETWORK\",\"message\":\"cb_synthetic-secret synthetic-password\",\"retryable\":true}",
             "unavailable",
+            "浏览器启动失败，请检查激活码、所选代理和绑定内核",
         ),
     ] {
         let error = runtime_error(detail);
         assert_eq!(error.code, code);
+        assert_eq!(error.message, message);
         let serialized = serde_json::to_string(&error).unwrap();
         assert!(!serialized.contains("cb_synthetic-secret"));
         assert!(!serialized.contains("synthetic-password"));
         assert!(!serialized.contains("synthetic-user"));
-        assert!(!error.message.to_ascii_lowercase().contains("cloakbrowser"));
-        assert!(
-            error
-                .message
-                .chars()
-                .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
-        );
     }
 }
 
@@ -1094,7 +1102,9 @@ fn launch_and_stop_use_the_child_state_and_preserve_the_record() {
             serde_json::from_slice(&fs::read(root.path().join("launch.json")).unwrap()).unwrap();
         let mut expected = saved.clone();
         expected["proxy"] = Value::String(proxy.connection_url.clone().unwrap());
+        expected.as_object_mut().unwrap().remove("proxy_id");
         assert_eq!(capture["record"], expected);
+        assert!(capture["record"].get("proxy_id").is_none());
         assert_eq!(capture["hasKey"], true);
         assert_eq!(capture["autoUpdate"], "false");
         assert!(capture["versionOverride"].is_null());

@@ -44,12 +44,12 @@ jobs:
         env:
           VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
       - run: pnpm runtime:stage
+      - name: Restore desktop build dependencies after production runtime deploy
+        run: pnpm install --frozen-lockfile --prod=false
       - name: Run native regression tests
         run: pnpm rust:test
       - name: Check native formatting and lint
         run: pnpm rust:lint
-      - name: Restore desktop build dependencies after production runtime deploy
-        run: pnpm install --frozen-lockfile --prod=false
       - name: Verify desktop build CLI
         run: pnpm --dir apps/desktop exec tauri --version
       - name: Verify staged runtime

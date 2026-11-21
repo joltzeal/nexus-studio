@@ -55,6 +55,9 @@ jobs:
       - name: Verify Windows packaged runtime
         if: runner.os == 'Windows'
         run: pnpm runtime:stage
+      - name: Restore development dependencies after production runtime deploy
+        if: runner.os == 'Windows'
+        run: pnpm install --frozen-lockfile --prod=false
       - run: pnpm rust:check
       - run: pnpm rust:test
       - run: pnpm rust:lint

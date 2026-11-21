@@ -144,7 +144,7 @@ fn groups_are_scoped_by_browser_space() {
     );
     seed_connection(
         &root.path().join("raccoon.sqlite"),
-        "bit-connection",
+        BITBROWSER_CONNECTION_ID,
         BrowserProviderId::BitBrowser,
         true,
     );
@@ -858,9 +858,14 @@ fn external_metadata_refresh_persists_official_changes_and_preserves_current_loc
     ] {
         let root = tempfile::tempdir().unwrap();
         let profiles = root.path().join("profiles");
+        let connection_id = if provider == BrowserProviderId::BitBrowser {
+            BITBROWSER_CONNECTION_ID
+        } else {
+            "external-connection"
+        };
         seed_connection(
             &root.path().join("raccoon.sqlite"),
-            "external-connection",
+            connection_id,
             provider,
             true,
         );
@@ -870,6 +875,7 @@ fn external_metadata_refresh_persists_official_changes_and_preserves_current_loc
         let store = WindowStore::new(profiles.clone());
         let mut external = external_record(root.path());
         external.binding.provider_id = provider;
+        external.binding.connection_id = connection_id.into();
         external.proxy_mode = proxy_mode;
         match proxy_mode {
             ProxyMode::Manual => external.proxy = Some("socks5://127.0.0.1:1080".into()),
