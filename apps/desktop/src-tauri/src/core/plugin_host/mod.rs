@@ -332,12 +332,19 @@ impl PluginHost {
             return self;
         }
         let plugin_root = plugin_root.canonicalize().unwrap_or(plugin_root);
+        let source_loader_url = match url::Url::from_file_path(&source_loader) {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Could not resolve workspace plugin loader path");
+                return self;
+            }
+        };
 
         let manifest_loader =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/plugin-source-manifests.mjs");
         let output = match Command::new(&self.node)
             .args(["--conditions=development", "--import"])
-            .arg(&source_loader)
+            .arg(source_loader_url.as_str())
             .arg(&manifest_loader)
             .arg(&plugin_root)
             .output()

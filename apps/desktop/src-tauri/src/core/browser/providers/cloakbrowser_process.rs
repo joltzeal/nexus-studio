@@ -216,11 +216,6 @@ fn processes() -> BrowserResult<Vec<Process>> {
     use serde::Deserialize;
 
     #[derive(Deserialize)]
-    struct Snapshot {
-        processes: Vec<Row>,
-    }
-
-    #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Row {
         pid: u32,
@@ -235,11 +230,21 @@ fn processes() -> BrowserResult<Vec<Process>> {
              Where-Object { $_.CommandLine -match ' launch |--user-data-dir=' -and $_.CommandLine -notmatch ' --type=' } | \
              ForEach-Object { @{pid=$_.ProcessId; started=$_.CreationDate.ToUniversalTime().Ticks.ToString(); \
              executable=$_.ExecutablePath; command=$_.CommandLine} }); \
-             ConvertTo-Json -Compress -InputObject @{processes=$rows}",
+             $payload = [pscustomobject]@{ processes = [object[]]$rows }; \
+             ConvertTo-Json -Compress -Depth 4 -InputObject $payload",
     )?;
-    let snapshot: Snapshot = serde_json::from_slice(&output).map_err(|_| uncertain())?;
-    Ok(snapshot
-        .processes
+    let payload: serde_json::Value = serde_json::from_slice(&output).map_err(|_| uncertain())?;
+    let rows = payload.get("processes").cloned().unwrap_or(payload);
+    let rows = match rows {
+        serde_json::Value::Array(rows) => rows,
+        serde_json::Value::Object(_) => vec![rows],
+        serde_json::Value::Null => Vec::new(),
+        _ => return Err(uncertain()),
+    };
+    Ok(rows
+        .into_iter()
+        .map(|row| serde_json::from_value(row).map_err(|_| uncertain()))
+        .collect::<BrowserResult<Vec<Row>>>()?
         .into_iter()
         .filter(|row| row.pid > 1)
         .map(|row| Process {
