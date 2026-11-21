@@ -7,7 +7,7 @@
 - `pnpm run market:publish` 已使用 Wrangler 4 的 `--remote` 上传到 Cloudflare R2 `nexus-studio-market`，先上传 11 个包，最后上传 `catalog.json`。
 - 上传后从远端回读 `catalog.json` 和全部 11 个包，内容与本地文件逐字节一致，catalog 中的版本、大小和 SHA-256 均对应本次构建。
 - 本次发布的最高版本为 `studio.address-generator` 1.3.0、`studio.ai-image` 1.6.5、`studio.email` 1.2.1、`studio.products` 1.1.1、`studio.proxy-pool` 1.1.0、`studio.sales-agent` 1.1.2、`studio.shared-supply` 1.0.3、`studio.sim8` 1.0.6、`studio.vinted-accounts` 1.6.0、`studio.vinted-monitor` 1.1.5、`studio.window-sync` 1.0.2。
-- R2 bucket 已确认可写；公开访问域名仍需在 Cloudflare R2 中启用 Public Development URL 或绑定自定义域名，应用设置中填该根地址即可。
+- R2 bucket 已确认可写，Public Development URL 为 `https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev`，公开 `catalog.json` 和 AI 生图包均已通过 HTTP 回读校验。应用设置中填该根地址即可。
 
 ## 2026-11-21 0.2.3 GitHub 发版结果
 
