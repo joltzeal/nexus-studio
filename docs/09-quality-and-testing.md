@@ -1,5 +1,15 @@
 # 质量门禁与验证记录
 
+## 2026-11-21 0.2.3 GitHub 发版结果
+
+- 标签 `v0.2.3` 对应提交 `c8d69f3436e78165ac579f1e7810c40680644350`，发行工作流 `44916855079` 完成成功。
+  macOS arm64 与 Intel 均通过 `pnpm build:v2`、602 项 Rust 回归测试（0 失败、5 忽略）、Rustfmt、Clippy、Tauri 打包和包内 runtime 校验。
+- 公开 Release [Raccoon v0.2.3](https://github.com/joltzeal/nexus-studio/releases/tag/v0.2.3)
+  包含 arm64/Intel DMG、`.app.tar.gz`、签名文件和 `latest.json`。版本发行不是 GitHub Latest。
+- `raccoon-v2` 预发布更新通道已同步 0.2.3 的 `latest.json`。v1 仍使用 GitHub Latest 的 `v0.1.43` 更新清单；v1 与 v2 的应用标识分别为 `com.nexusstudio.desktop` 和 `com.raccoon.desktop`，数据目录独立。两个 macOS 应用包都叫 `Raccoon.app`，安装时需放在不同目录。
+- 独立 Foundation CI 的 Windows 原生 job 为 583 项通过、7 项失败、5 项忽略，失败包括 6 个 CloakBrowser 生命周期测试和 1 个 workspace plugin handshake 测试，未进入本次发行矩阵。全仓 `format:check` 仍受约 861 个已跟踪上游/历史文件格式差异影响。
+- 当前发行矩阵只包含 macOS，采用 ad-hoc 签名，未完成 Developer ID 公证；Windows 0.2 安装包未构建。
+
 ## 2026-11-21 0.2.2 GitHub 发版结果
 
 - 标签 `v0.2.2` 对应提交 `316d2d3a1033509fb6c068ef1b3f2afc778fab5d`，发行工作流 `44902613774` 完成成功。
