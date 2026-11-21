@@ -1,5 +1,14 @@
 # 质量门禁与验证记录
 
+## 2026-11-22 插件构建与 R2 发布
+
+- 本地 `pnpm run plugins:build` 编译 11 个插件成功，随后 `market:pack` 生成 11 个 `.nexuspkg`，`market:catalog` 生成包含 11 项的完整索引。
+- 11 个最终包均通过 `market:verify` 启动握手验证；地址生成器的内置分类资源和 Ecom Agent 的离线分类资源检查均通过。
+- `pnpm run market:publish` 已使用 Wrangler 4 的 `--remote` 上传到 Cloudflare R2 `nexus-studio-market`，先上传 11 个包，最后上传 `catalog.json`。
+- 上传后从远端回读 `catalog.json` 和全部 11 个包，内容与本地文件逐字节一致，catalog 中的版本、大小和 SHA-256 均对应本次构建。
+- 本次发布的最高版本为 `studio.address-generator` 1.3.0、`studio.ai-image` 1.6.5、`studio.email` 1.2.1、`studio.products` 1.1.1、`studio.proxy-pool` 1.1.0、`studio.sales-agent` 1.1.2、`studio.shared-supply` 1.0.3、`studio.sim8` 1.0.6、`studio.vinted-accounts` 1.6.0、`studio.vinted-monitor` 1.1.5、`studio.window-sync` 1.0.2。
+- R2 bucket 已确认可写；公开访问域名仍需在 Cloudflare R2 中启用 Public Development URL 或绑定自定义域名，应用设置中填该根地址即可。
+
 ## 2026-11-21 0.2.3 GitHub 发版结果
 
 - 标签 `v0.2.3` 对应提交 `c8d69f3436e78165ac579f1e7810c40680644350`，发行工作流 `44916855079` 完成成功。
