@@ -216,6 +216,11 @@ fn processes() -> BrowserResult<Vec<Process>> {
     use serde::Deserialize;
 
     #[derive(Deserialize)]
+    struct Snapshot {
+        processes: Vec<Row>,
+    }
+
+    #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Row {
         pid: u32,
@@ -226,13 +231,15 @@ fn processes() -> BrowserResult<Vec<Process>> {
 
     let output = powershell(
         "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $ErrorActionPreference='Stop'; \
-             ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | \
+             $rows = @(Get-CimInstance Win32_Process | \
              Where-Object { $_.CommandLine -match ' launch |--user-data-dir=' -and $_.CommandLine -notmatch ' --type=' } | \
              ForEach-Object { @{pid=$_.ProcessId; started=$_.CreationDate.ToUniversalTime().Ticks.ToString(); \
-             executable=$_.ExecutablePath; command=$_.CommandLine} })",
+             executable=$_.ExecutablePath; command=$_.CommandLine} }); \
+             ConvertTo-Json -Compress -InputObject @{processes=$rows}",
     )?;
-    let rows: Vec<Row> = serde_json::from_slice(&output).map_err(|_| uncertain())?;
-    Ok(rows
+    let snapshot: Snapshot = serde_json::from_slice(&output).map_err(|_| uncertain())?;
+    Ok(snapshot
+        .processes
         .into_iter()
         .filter(|row| row.pid > 1)
         .map(|row| Process {

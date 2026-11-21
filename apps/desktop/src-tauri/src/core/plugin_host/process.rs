@@ -329,9 +329,11 @@ impl PluginProcess {
                 .map_err(ProcessError::Failed)?;
         }
         if let Some(loader) = options.source_loader {
+            let loader_url = url::Url::from_file_path(loader)
+                .map_err(|_| ProcessError::Failed("插件源码加载器路径无效".into()))?;
             command
                 .args(["--conditions=development", "--import"])
-                .arg(loader);
+                .arg(loader_url.as_str());
         }
         command
             .arg(entry)
