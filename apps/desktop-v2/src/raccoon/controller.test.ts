@@ -108,6 +108,48 @@ test("loads configured connections and reads the selected connection's records",
   })
 })
 
+test('does not publish a refresh when the workspace snapshot is unchanged', async () => {
+  const { workspace } = setup()
+  await workspace.initialize()
+  const previousProfiles = workspace.state.profiles
+  let notifications = 0
+  const unsubscribe = workspace.subscribe(() => {
+    notifications += 1
+  })
+
+  await workspace.refresh()
+  assert.equal(notifications, 0)
+  assert.strictEqual(workspace.state.profiles, previousProfiles)
+
+  unsubscribe()
+})
+
+test('publishes a refresh when an observed Profile changes', async () => {
+  const base = setup()
+  let state: BrowserWindow['state'] = 'stopped'
+  const { workspace } = setup({
+    call: async (command, args) => {
+      if (command === 'browser_window_list')
+        return [record(args?.connectionId as string, state)]
+      return base.workspace.api.call(command, args)
+    },
+  })
+  await workspace.initialize()
+  const previousProfiles = workspace.state.profiles
+  let notifications = 0
+  const unsubscribe = workspace.subscribe(() => {
+    notifications += 1
+  })
+
+  state = 'running'
+  await workspace.refresh()
+  assert.equal(notifications, 1)
+  assert.notStrictEqual(workspace.state.profiles, previousProfiles)
+  assert.equal(workspace.state.profiles[0]?.state, 'running')
+
+  unsubscribe()
+})
+
 test('a fresh workspace selects the always-on BitBrowser instead of an opt-in provider', async () => {
   const { workspace } = setup({
     call: async (command) => {
@@ -241,16 +283,18 @@ test('only a CloakBrowser Profile with an unresolved local state can request cle
   workspace.state.connectionId = cloak.id
   const profile = { ...record(cloak.id, 'running'), providerId: cloak.providerId }
   const call = workspace.api.call.bind(workspace.api)
-  workspace.api.call = (command, args) => command === 'browser_window_list'
-    ? Promise.resolve([{ ...profile, state: 'stopped' }])
-    : call(command, args)
+  workspace.api.call = (command, args) =>
+    command === 'browser_window_list'
+      ? Promise.resolve([{ ...profile, state: 'stopped' }])
+      : call(command, args)
   workspace.state.profiles = [profile]
   await assert.rejects(workspace.cleanupCloakSession('profile-1'), /无需核对/)
   workspace.state.profiles = [{ ...profile, state: 'unknown' }]
   await workspace.cleanupCloakSession('profile-1')
-  assert.deepEqual(calls.filter((call) => call.command === 'browser_cloakbrowser_cleanup'), [
-    { command: 'browser_cloakbrowser_cleanup', args: { id: 'profile-1' } },
-  ])
+  assert.deepEqual(
+    calls.filter((call) => call.command === 'browser_cloakbrowser_cleanup'),
+    [{ command: 'browser_cloakbrowser_cleanup', args: { id: 'profile-1' } }],
+  )
   assert.equal(workspace.state.busy.size, 0)
   assert.equal(workspace.state.profiles[0]?.state, 'stopped')
 })

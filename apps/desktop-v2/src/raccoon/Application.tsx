@@ -220,13 +220,6 @@ export function NativeApplication() {
     [state.profiles],
   )
   useEffect(() => {
-    let active = true
-    let timer: ReturnType<typeof setTimeout>
-    const poll = async () => {
-      if (!active) return
-      await workspace.refresh().catch(() => {})
-      if (active) timer = setTimeout(poll, 3000)
-    }
     let preferred: string | null = null
     try {
       preferred = localStorage.getItem('raccoon.v2.activeConnection')
@@ -236,14 +229,33 @@ export function NativeApplication() {
     void workspace
       .initialize(preferred)
       .catch((error) => toast.fail({ title: '工作台加载失败', detail: error }))
-      .finally(() => {
-        if (active) timer = setTimeout(poll, 3000)
-      })
+  }, [])
+  useEffect(() => {
+    if (state.loading) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const delay = section === 'profiles' ? 5000 : 15000
+    const schedule = (wait = delay) => {
+      clearTimeout(timer)
+      if (active && !document.hidden) timer = setTimeout(poll, wait)
+    }
+    const poll = async () => {
+      if (!active || document.hidden) return
+      await workspace.refresh().catch(() => {})
+      schedule()
+    }
+    const onVisibilityChange = () => {
+      if (document.hidden) clearTimeout(timer)
+      else schedule(0)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    schedule()
     return () => {
       active = false
       clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
-  }, [])
+  }, [section, state.loading])
   async function navigate(next: Section) {
     const scope = captureAutomationScope()
     if (!(await confirmLeave())) return false

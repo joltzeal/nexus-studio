@@ -14,15 +14,19 @@ export const usePluginCatalog = create<Catalog>(() => ({
 }));
 
 let request: Promise<void> | null = null;
+let previousCatalog: string | null = null;
 
 export function refreshPluginCatalog(): Promise<void> {
   if (request) return request;
   request = pluginApi.list().then((plugins) => {
+    const fingerprint = JSON.stringify(plugins);
     usePluginCatalog.setState((current) => ({
-      plugins, loaded: true, error: null,
+      plugins: fingerprint === previousCatalog ? current.plugins : plugins,
+      loaded: true, error: null,
       activeId: plugins.some((plugin) => plugin.id === current.activeId && plugin.enabled && plugin.state !== "available")
         ? current.activeId : null,
     }));
+    previousCatalog = fingerprint;
   }).catch(() => {
     usePluginCatalog.setState({ error: "插件目录读取失败，可重新读取" });
   }).finally(() => { request = null; });

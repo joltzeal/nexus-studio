@@ -73,6 +73,11 @@ have stable UUIDs in SQLite and use the connection-scoped `browser_folder_*`
 commands. Schema 4 rejects earlier development database layouts and preserves
 the files for explicit migration. Normal startup never reads 0.1 data.
 
+Workspace status polling runs every five seconds while Profiles is active and
+every fifteen seconds on other pages. Polling pauses while the app window is
+hidden and resumes with an immediate refresh. Structurally unchanged native
+snapshots retain their references and do not trigger Profile table projection.
+
 ## Native CloakBrowser integration
 
 CloakBrowser is an explicitly enabled laboratory Provider with its own

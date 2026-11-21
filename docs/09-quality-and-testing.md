@@ -1,5 +1,14 @@
 # 质量门禁与验证记录
 
+## 2026-11-22 desktop-v2 安装版响应优化
+
+- `NativeWorkspace` 对原生快照做结构比较，相同响应不再广播；Profile 表投影只在 Profile、Folder、代理或加载/错误状态变化时更新。插件目录内容相同则保留原数组引用。
+- 工作台可见时，Profile 页每 5 秒轮询，其他页面每 15 秒轮询；窗口隐藏时暂停，重新显示后立即刷新。
+- 控制器定向 Node 测试 20 项通过；desktop-v2 全目录 ESLint 与 allowlist 检查通过；无产物 TypeScript 检查和 `git diff --check` 通过。
+- `pnpm run build:v2` 通过，仅构建 workspace packages、desktop-v2 UI Kit 和前端；Vite 提示 `UnsavedGuard` chunk 为 576 KB。未构建 Tauri/Rust 安装包。
+- desktop-v2 `test:unit` 全量入口未通过，原生 Node runner 无法解析多处无扩展名模块导入，另有测试引用不存在的 `apps/desktop-v2/src-tauri` 路径。未将其记作通过。
+- 安装版取样中 WebContent 主线程主要等待系统事件，Tauri 主进程样本集中于 `tauri://localhost` 资源请求与 mutex 等待；这与 `tauri dev` 的 HTTP 资源路径不同，但尚未定位到单一原生锁或 WebKit 根因。本轮按减少轮询和无效 UI 更新处理，未重建或重装发行包，安装版性能改善待复测。
+
 ## 2026-11-22 插件构建与 R2 发布
 
 - 本地 `pnpm run plugins:build` 编译 11 个插件成功，随后 `market:pack` 生成 11 个 `.nexuspkg`，`market:catalog` 生成包含 11 项的完整索引。

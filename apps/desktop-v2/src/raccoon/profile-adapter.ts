@@ -61,9 +61,15 @@ function proxyOf(profile: BrowserWindow): ProxyEntry[] {
 export function connectProfileTable(workspace: NativeWorkspace) {
   const preferences = new Map<string, { views: ReturnType<typeof useViews.getState>["views"]; columns: ReturnType<typeof useProfileUi.getState>["columns"]; widths: ReturnType<typeof useProfileUi.getState>["widths"]; sort: ReturnType<typeof useProfileUi.getState>["sort"] }>();
   let connectionId: string | null = null;
+  let previousProfiles: BrowserWindow[] | null = null;
+  let previousFolders: NativeWorkspace["state"]["folders"] | null = null;
+  let previousProxies: ProxyEntry[] | null = null;
+  let previousLoading: boolean | null = null;
+  let previousError: string | null = null;
   function project() {
     const state = workspace.state;
-    if (state.connectionId !== connectionId) {
+    const connectionChanged = state.connectionId !== connectionId;
+    if (connectionChanged) {
       if (connectionId) {
         const ui = useProfileUi.getState();
         preferences.set(connectionId, { views: useViews.getState().views, columns: ui.columns, widths: ui.widths, sort: ui.sort });
@@ -83,6 +89,14 @@ export function connectProfileTable(workspace: NativeWorkspace) {
       setNativeTagConnection(connectionId);
       useFingerprint.setState({ items: [], status: "idle", error: null, peekId: null, importerOpen: false });
     }
+    const projectionChanged = connectionChanged || state.profiles !== previousProfiles || state.folders !== previousFolders ||
+      useProxy.getState().proxies !== previousProxies || state.loading !== previousLoading || state.error !== previousError;
+    if (!projectionChanged) return;
+    previousProfiles = state.profiles;
+    previousFolders = state.folders;
+    previousProxies = useProxy.getState().proxies;
+    previousLoading = state.loading;
+    previousError = state.error;
     projectNativeFolderMeta(state.folders);
     const folders = new Map(state.folders.map((row) => [row.id, row.name]));
     const running: Record<string, number> = {};

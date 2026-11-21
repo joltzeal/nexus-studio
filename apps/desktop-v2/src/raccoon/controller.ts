@@ -29,6 +29,35 @@ export type WorkspaceState = {
   busy: ReadonlySet<string>
 }
 
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (left instanceof Set && right instanceof Set) {
+    if (left.size !== right.size) return false
+    for (const value of left) if (!right.has(value)) return false
+    return true
+  }
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => sameValue(value, right[index]))
+    )
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object')
+    return false
+  const leftRecord = left as Record<string, unknown>
+  const rightRecord = right as Record<string, unknown>
+  const leftKeys = Object.keys(leftRecord)
+  const rightKeys = Object.keys(rightRecord)
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+        sameValue(leftRecord[key], rightRecord[key]),
+    )
+  )
+}
+
 export class NativeWorkspace {
   api: NativeApi
   state: WorkspaceState = {
@@ -61,6 +90,10 @@ export class NativeWorkspace {
   }
   snapshot = () => this.state
   private publish(patch: Partial<WorkspaceState>) {
+    const changed = Object.entries(patch).some(
+      ([key, value]) => !sameValue(this.state[key as keyof WorkspaceState], value),
+    )
+    if (!changed) return
     this.state = { ...this.state, ...patch }
     for (const listener of this.listeners) listener()
   }
@@ -300,7 +333,10 @@ export class NativeWorkspace {
   }
   async cleanupCloakSession(id: string) {
     const profile = this.profile(id)
-    if (profile.providerId !== 'cloakbrowser' || !['unknown', 'stopping'].includes(profile.state))
+    if (
+      profile.providerId !== 'cloakbrowser' ||
+      !['unknown', 'stopping'].includes(profile.state)
+    )
       throw new Error('当前 Profile 无需核对残留会话')
     await this.mutation(id, 'browser_cloakbrowser_cleanup', { id })
   }
