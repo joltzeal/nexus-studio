@@ -297,14 +297,14 @@ fn linker() -> Result<Linker<HostState>> {
                     return;
                 };
                 let mut buf = vec![0u8; len.max(0) as usize];
-                if mem.read(&mut caller, ptr.max(0) as usize, &mut buf).is_ok() {
-                    if let Ok(s) = String::from_utf8(buf) {
-                        // Bounded: a module in a loop must not fill memory with its
-                        // own diagnostics.
-                        let log = &mut caller.data_mut().log;
-                        if log.len() < 500 {
-                            log.push(s);
-                        }
+                if mem.read(&mut caller, ptr.max(0) as usize, &mut buf).is_ok()
+                    && let Ok(s) = String::from_utf8(buf)
+                {
+                    // Bounded: a module in a loop must not fill memory with its
+                    // own diagnostics.
+                    let log = &mut caller.data_mut().log;
+                    if log.len() < 500 {
+                        log.push(s);
                     }
                 }
             },
@@ -604,12 +604,11 @@ fn compiled() -> &'static Mutex<HashMap<PathBuf, (std::time::SystemTime, Module)
 
 fn compile(path: &PathBuf) -> Result<Module> {
     let stamp = fs::metadata(path).and_then(|m| m.modified()).ok();
-    if let (Some(stamp), Ok(cache)) = (stamp, compiled().lock()) {
-        if let Some((seen, module)) = cache.get(path) {
-            if *seen == stamp {
-                return Ok(module.clone());
-            }
-        }
+    if let (Some(stamp), Ok(cache)) = (stamp, compiled().lock())
+        && let Some((seen, module)) = cache.get(path)
+        && *seen == stamp
+    {
+        return Ok(module.clone());
     }
     // wasmtime carries its own anyhow, so its Result does not take ours;
     // every wasmtime error crosses the boundary as text.
@@ -681,10 +680,9 @@ fn read_packed(loaded: &mut Loaded, packed: i64) -> Result<String> {
     mem.read(&mut loaded.store, ptr, &mut buf)
         .map_err(|e| anyhow!("read module memory: {e}"))?;
     // Hand the memory back so a long run does not grow the module's heap.
-    if let Some(dealloc) = loaded
+    if let Ok(dealloc) = loaded
         .instance
         .get_typed_func::<(i32, i32), ()>(&mut loaded.store, "dealloc")
-        .ok()
     {
         let _ = dealloc.call(&mut loaded.store, (ptr as i32, len as i32));
     }
@@ -793,17 +791,17 @@ pub fn run_block(module_id: &str, input: &Value) -> Result<ModuleResult> {
         view.note_targets(params);
     }
     let mut input = input.clone();
-    if let Some(obj) = input.as_object_mut() {
-        if let Some(vars) = obj.get("vars").and_then(|v| v.as_object()) {
-            let all: HashMap<String, String> = vars
-                .iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect();
-            obj.insert(
-                "vars".into(),
-                serde_json::to_value(view.filter(&all)).unwrap_or_default(),
-            );
-        }
+    if let Some(obj) = input.as_object_mut()
+        && let Some(vars) = obj.get("vars").and_then(|v| v.as_object())
+    {
+        let all: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+            .collect();
+        obj.insert(
+            "vars".into(),
+            serde_json::to_value(view.filter(&all)).unwrap_or_default(),
+        );
     }
 
     let mut loaded = instantiate(
@@ -922,7 +920,7 @@ pub fn run_step(
     } else {
         serde_json::from_str::<ModuleResult>(&json).context("step() did not return JSON")?
     };
-    vars.extend(out.vars.into_iter());
+    vars.extend(out.vars);
     out.vars = vars;
     out.logs = logs;
     Ok(out)
@@ -1283,12 +1281,11 @@ fn manifest_cached(path: &PathBuf) -> Option<Manifest> {
 
 fn read_manifest(path: &PathBuf) -> Result<Manifest> {
     let stamp = fs::metadata(path).and_then(|m| m.modified()).ok();
-    if let (Some(stamp), Ok(cache)) = (stamp, manifests().lock()) {
-        if let Some((seen, manifest)) = cache.get(path) {
-            if *seen == stamp {
-                return Ok(manifest.clone());
-            }
-        }
+    if let (Some(stamp), Ok(cache)) = (stamp, manifests().lock())
+        && let Some((seen, manifest)) = cache.get(path)
+        && *seen == stamp
+    {
+        return Ok(manifest.clone());
     }
     let manifest = read_manifest_uncached(path)?;
     if let (Some(stamp), Ok(mut cache)) = (stamp, manifests().lock()) {
@@ -1313,7 +1310,7 @@ fn read_manifest_uncached(path: &PathBuf) -> Result<Manifest> {
     if json.trim().is_empty() {
         return Ok(Manifest::default());
     }
-    Ok(serde_json::from_str(&json).context("manifest() did not return JSON")?)
+    serde_json::from_str(&json).context("manifest() did not return JSON")
 }
 
 /// Copies a .wasm into the modules directory, refusing one that does not load.

@@ -1271,10 +1271,9 @@ impl AutomationService {
                     .as_array()
                     .is_some_and(|fields| !fields.is_empty())
                 && dismissed.get(key) != Some(&offer.to_string())
+                && let Some(profile) = binding.get(1)
             {
-                if let Some(profile) = binding.get(1) {
-                    profiles.push(profile.clone());
-                }
+                profiles.push(profile.clone());
             }
         }
         Ok(profiles)
@@ -2026,10 +2025,9 @@ fn collect_secrets(value: &Value, secrets: &mut Vec<String>) {
                         | "cookie"
                         | "setcookie"
                         | "value"
-                ) {
-                    if let Some(secret) = value.as_str().filter(|secret| !secret.is_empty()) {
-                        secrets.push(secret.into());
-                    }
+                ) && let Some(secret) = value.as_str().filter(|secret| !secret.is_empty())
+                {
+                    secrets.push(secret.into());
                 }
                 collect_secrets(value, secrets);
             }

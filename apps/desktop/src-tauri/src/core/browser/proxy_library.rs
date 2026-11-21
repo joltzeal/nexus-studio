@@ -198,14 +198,14 @@ impl ProxyLibrary {
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        if let Some(previous) = read_entry(&tx, &entry.id)? {
-            if !previous.same_endpoint(&entry) {
-                tx.execute(
-                    "DELETE FROM browser_proxy_tests WHERE proxy_id=?1",
-                    [&entry.id],
-                )
-                .map_err(storage)?;
-            }
+        if let Some(previous) = read_entry(&tx, &entry.id)?
+            && !previous.same_endpoint(&entry)
+        {
+            tx.execute(
+                "DELETE FROM browser_proxy_tests WHERE proxy_id=?1",
+                [&entry.id],
+            )
+            .map_err(storage)?;
         }
         write_entry(&tx, &entry)?;
         tx.commit().map_err(storage)?;
@@ -360,30 +360,30 @@ impl ProxyLibrary {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         // Draft tests and tests racing an edit must never replace the saved endpoint's history.
-        if let Some(mut saved) = read_entry(&tx, &entry.id)? {
-            if saved.same_endpoint(&entry) {
-                let first: Option<String> = tx.query_row(
+        if let Some(mut saved) = read_entry(&tx, &entry.id)?
+            && saved.same_endpoint(&entry)
+        {
+            let first: Option<String> = tx.query_row(
                     "SELECT json_extract(record_json,'$.first_seen') FROM browser_proxy_tests
                      WHERE proxy_id=?1 AND json_extract(record_json,'$.ip')=?2 ORDER BY sequence LIMIT 1",
                     params![entry.id,snapshot.ip], |row| row.get(0),
                 ).optional().map_err(storage)?;
-                if !snapshot.ip.is_empty() {
-                    if let Some(first) = first {
-                        snapshot.first_seen = first;
-                    }
-                }
-                tx.execute(
-                    "INSERT INTO browser_proxy_tests(proxy_id,record_json) VALUES(?1,?2)",
-                    params![entry.id, serde_json::to_string(&snapshot).map_err(storage)?],
-                )
-                .map_err(storage)?;
-                tx.execute("DELETE FROM browser_proxy_tests WHERE proxy_id=?1 AND sequence NOT IN(SELECT sequence FROM browser_proxy_tests WHERE proxy_id=?1 ORDER BY sequence DESC LIMIT 20)", [&entry.id]).map_err(storage)?;
-                if !snapshot.country_code.is_empty()
-                    && (saved.country.is_empty() || saved.country == "—")
-                {
-                    saved.country = snapshot.country_code.clone();
-                    write_entry(&tx, &saved)?;
-                }
+            if !snapshot.ip.is_empty()
+                && let Some(first) = first
+            {
+                snapshot.first_seen = first;
+            }
+            tx.execute(
+                "INSERT INTO browser_proxy_tests(proxy_id,record_json) VALUES(?1,?2)",
+                params![entry.id, serde_json::to_string(&snapshot).map_err(storage)?],
+            )
+            .map_err(storage)?;
+            tx.execute("DELETE FROM browser_proxy_tests WHERE proxy_id=?1 AND sequence NOT IN(SELECT sequence FROM browser_proxy_tests WHERE proxy_id=?1 ORDER BY sequence DESC LIMIT 20)", [&entry.id]).map_err(storage)?;
+            if !snapshot.country_code.is_empty()
+                && (saved.country.is_empty() || saved.country == "—")
+            {
+                saved.country = snapshot.country_code.clone();
+                write_entry(&tx, &saved)?;
             }
         }
         tx.commit().map_err(storage)?;

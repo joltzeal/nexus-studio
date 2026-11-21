@@ -184,10 +184,10 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     let Ok(settings) = workbench_settings_get(app.clone()) else {
         return Ok(());
     };
-    if settings.start_minimized {
-        if let Some(window) = app.get_webview_window("main") {
-            window.minimize().map_err(|_| "无法最小化应用窗口")?;
-        }
+    if settings.start_minimized
+        && let Some(window) = app.get_webview_window("main")
+    {
+        window.minimize().map_err(|_| "无法最小化应用窗口")?;
     }
     Ok(())
 }

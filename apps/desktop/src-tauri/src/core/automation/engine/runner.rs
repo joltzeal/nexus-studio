@@ -227,10 +227,10 @@ impl Run {
     }
 
     fn worker<F: FnOnce(&mut WorkerState)>(&self, idx: usize, f: F) {
-        if let Ok(mut s) = self.state.lock() {
-            if let Some(w) = s.workers.get_mut(idx) {
-                f(w);
-            }
+        if let Ok(mut s) = self.state.lock()
+            && let Some(w) = s.workers.get_mut(idx)
+        {
+            f(w);
         }
     }
 }
@@ -772,11 +772,11 @@ fn gather_text(node: &Value, out: &mut String) {
     if matches!(name.as_str(), "SCRIPT" | "STYLE" | "NOSCRIPT" | "TEMPLATE") {
         return;
     }
-    if node.get("nodeType").and_then(|t| t.as_i64()) == Some(3) {
-        if let Some(v) = node.get("nodeValue").and_then(|v| v.as_str()) {
-            out.push_str(v);
-            out.push(' ');
-        }
+    if node.get("nodeType").and_then(|t| t.as_i64()) == Some(3)
+        && let Some(v) = node.get("nodeValue").and_then(|v| v.as_str())
+    {
+        out.push_str(v);
+        out.push(' ');
     }
     for key in ["children", "shadowRoots", "contentDocument"] {
         match node.get(key) {
@@ -1017,7 +1017,7 @@ async fn walk_flow(
             .map(host::is_unknown)
             .unwrap_or(false)
         {
-            return WalkEnd::Failed(outcome.err().expect("unknown outcome"));
+            return WalkEnd::Failed(outcome.expect_err("unknown outcome"));
         }
         let branch = match &outcome {
             Ok(Flow::Next) => block.on_done.clone(),
@@ -1071,7 +1071,7 @@ async fn walk_flow(
 
 /// Reads a "name=value, other={{var}}" list into pairs, expanded.
 fn name_value_list(raw: &str, vars: &HashMap<String, String>) -> Vec<(String, String)> {
-    raw.split(|c| c == ',' || c == '\n')
+    raw.split([',', '\n'])
         .filter_map(|part| part.split_once('='))
         .map(|(k, v)| (k.trim().to_string(), expand(v.trim(), vars)))
         .filter(|(k, _)| !k.is_empty())
@@ -1079,7 +1079,7 @@ fn name_value_list(raw: &str, vars: &HashMap<String, String>) -> Vec<(String, St
 }
 
 fn name_list(raw: &str) -> Vec<String> {
-    raw.split(|c| c == ',' || c == '\n')
+    raw.split([',', '\n'])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -1094,10 +1094,10 @@ fn name_list(raw: &str) -> Vec<String> {
 /// guess — the wrong guess here runs somebody else's graph against a live
 /// profile.
 fn resolve_flow(run: &Run, id: &str, name: &str) -> Result<automation::Project> {
-    if !id.is_empty() {
-        if let Some(p) = run.projects.iter().find(|p| p.id == id) {
-            return Ok(p.clone());
-        }
+    if !id.is_empty()
+        && let Some(p) = run.projects.iter().find(|p| p.id == id)
+    {
+        return Ok(p.clone());
     }
     if !name.is_empty() {
         let mut hits = run.projects.iter().filter(|p| p.name == name);
@@ -2495,7 +2495,7 @@ async fn run_block_inner(
             let key = expand(param(p, "key").context("no key")?, vars);
             let mods: Vec<String> = param(p, "modifiers")
                 .map(|m| {
-                    m.split(|c: char| c == ',' || c == '+')
+                    m.split([',', '+'])
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect()
@@ -2826,13 +2826,7 @@ async fn drive_module(
     ctx.may_call(&Frame::Module(module_id.to_string()))?;
     let saved = ctx.enter(Frame::Module(module_id.to_string()))?;
     let result = Box::pin(drive_module_inner(
-        bound,
-        vars,
-        run,
-        ctx,
-        &module_id.to_string(),
-        block_name,
-        params,
+        bound, vars, run, ctx, module_id, block_name, params,
     ))
     .await;
     ctx.leave(saved);
@@ -3064,11 +3058,11 @@ async fn run_worker(
             run.worker(idx, |w| w.status = "done".into());
             break;
         }
-        if let Some(d) = deadline {
-            if Instant::now() >= d {
-                run.worker(idx, |w| w.status = "done".into());
-                break;
-            }
+        if let Some(d) = deadline
+            && Instant::now() >= d
+        {
+            run.worker(idx, |w| w.status = "done".into());
+            break;
         }
         pass += 1;
         ctx.pass = pass;
@@ -3196,10 +3190,10 @@ async fn run_worker(
         on_fail: automation::Branch::Stop,
     };
     let cleanup_result = run_block(&mut bound, &cleanup, &mut vars, &run, &mut ctx).await;
-    if cleanup_result.is_ok() {
-        if let Some(status) = terminal_status {
-            run.worker(idx, |worker| worker.status = status);
-        }
+    if cleanup_result.is_ok()
+        && let Some(status) = terminal_status
+    {
+        run.worker(idx, |worker| worker.status = status);
     }
     if let Err(_error) = cleanup_result {
         run.log("cleanup needs attention; inspect durable intent");
@@ -3567,8 +3561,8 @@ mod tests {
         // Named in "in"/"out" means isolated: the caller keeps its own map and
         // the flow's other variables do not leak into it.
         assert_eq!(vars.get("outer").map(String::as_str), Some("kept"));
-        assert!(vars.get("private").is_none());
-        assert!(vars.get("seed").is_none());
+        assert!(!vars.contains_key("private"));
+        assert!(!vars.contains_key("seed"));
         // The frame was left.
         assert_eq!(ctx.depth, 0);
     }
@@ -3652,7 +3646,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no entry called"), "{err}");
-        assert!(vars.get("ran").is_none(), "nothing may have run");
+        assert!(!vars.contains_key("ran"), "nothing may have run");
     }
 
     #[tokio::test]
@@ -3683,7 +3677,7 @@ mod tests {
             .unwrap();
         assert_eq!(vars.get("second_ran").map(String::as_str), Some("yes"));
         assert!(
-            vars.get("first").is_none(),
+            !vars.contains_key("first"),
             "the half above the entry must not run"
         );
     }

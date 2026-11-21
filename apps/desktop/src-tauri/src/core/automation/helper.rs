@@ -242,23 +242,21 @@ impl HelperBus {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 break;
             };
-            if let Some(report) = message.get("helper") {
-                if service
+            if let Some(report) = message.get("helper")
+                && service
                     .helper_report(&connection, &profile, Some(report.clone()))
                     .is_err()
-                {
-                    break;
-                }
+            {
+                break;
             }
         }
-        if let Ok(mut members) = self.members.lock() {
-            if members
+        if let Ok(mut members) = self.members.lock()
+            && members
                 .get(&key)
                 .is_some_and(|member| member.generation == generation)
-            {
-                members.remove(&key);
-                let _ = service.helper_report(&connection, &profile, None);
-            }
+        {
+            members.remove(&key);
+            let _ = service.helper_report(&connection, &profile, None);
         }
     }
 }

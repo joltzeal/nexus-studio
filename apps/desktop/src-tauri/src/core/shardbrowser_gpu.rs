@@ -188,7 +188,7 @@ async fn evaluate_in_core(port: u16, page_url: &str) -> BrowserResult<String> {
     });
     socket
         .send(tokio_tungstenite::tungstenite::Message::Text(
-            message.to_string().into(),
+            message.to_string(),
         ))
         .await
         .map_err(|_| probe_error("无法发送 GPU 探测请求"))?;
@@ -227,20 +227,19 @@ async fn probe(
     static FLIGHT: OnceLock<tokio::sync::Mutex<Memo>> = OnceLock::new();
     let mut memo = FLIGHT.get_or_init(Default::default).lock().await;
     let ours = memo.engine == engine && memo.cache_path == cache_path;
-    if !force && ours {
-        if let Some(answer) = &memo.answer {
-            return answer.clone();
-        }
+    if !force
+        && ours
+        && let Some(answer) = &memo.answer
+    {
+        return answer.clone();
     }
-    if !force {
-        if let Some(caps) = cached_for(&cache_path, &engine) {
-            *memo = Memo {
-                cache_path,
-                engine,
-                answer: Some(Ok(caps.clone())),
-            };
-            return Ok(caps);
-        }
+    if !force && let Some(caps) = cached_for(&cache_path, &engine) {
+        *memo = Memo {
+            cache_path,
+            engine,
+            answer: Some(Ok(caps.clone())),
+        };
+        return Ok(caps);
     }
     let answer = ask_engine(&binary, &engine, &cache_path).await;
     let had_good = ours && matches!(memo.answer, Some(Ok(_)));
@@ -263,12 +262,12 @@ async fn ask_engine(binary: &Path, engine: &str, cache_path: &Path) -> BrowserRe
             format: DISK_FORMAT,
             caps: caps.clone(),
         };
-        if let (Ok(body), Some(parent)) = (serde_json::to_vec_pretty(&disk), cache_path.parent()) {
-            if let Ok(mut temporary) = tempfile::NamedTempFile::new_in(parent) {
-                use std::io::Write;
-                if temporary.write_all(&body).is_ok() && temporary.as_file().sync_all().is_ok() {
-                    let _ = temporary.persist(cache_path);
-                }
+        if let (Ok(body), Some(parent)) = (serde_json::to_vec_pretty(&disk), cache_path.parent())
+            && let Ok(mut temporary) = tempfile::NamedTempFile::new_in(parent)
+        {
+            use std::io::Write;
+            if temporary.write_all(&body).is_ok() && temporary.as_file().sync_all().is_ok() {
+                let _ = temporary.persist(cache_path);
             }
         }
     }

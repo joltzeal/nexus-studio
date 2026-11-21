@@ -98,7 +98,7 @@ fn validate(cookies: &[Cookie]) -> BrowserResult<()> {
             || cookie.path.contains('\0')
             || cookie
                 .expires
-                .is_some_and(|v| !v.is_finite() || v > 253_402_300_799.0 || v < -1.0)
+                .is_some_and(|v| !v.is_finite() || !(-1.0..=253_402_300_799.0).contains(&v))
             || cookie.same_site.as_ref().is_some_and(|v| {
                 !["strict", "lax", "none", "unspecified", "no_restriction"]
                     .contains(&v.to_ascii_lowercase().as_str())
@@ -589,9 +589,7 @@ async fn focus(info: CdpInfo) -> BrowserResult<()> {
         };
         socket
             .send(Message::Text(
-                json!({"id":id, "method":method,"params":params})
-                    .to_string()
-                    .into(),
+                json!({"id":id, "method":method,"params":params}).to_string(),
             ))
             .await
             .map_err(|_| unavailable())?;

@@ -75,6 +75,9 @@ pub enum ActionIntent {
     Rejected(BrowserError),
 }
 
+/// Action id, phase, input payload, and optional recorded result.
+pub type ActionRecord = (String, String, Value, Option<Value>);
+
 impl AutomationStore {
     pub fn open(path: PathBuf, modules_dir: PathBuf) -> BrowserResult<Self> {
         let database = open_database(&path).map_err(storage_error)?;
@@ -354,28 +357,28 @@ impl AutomationStore {
             if let Some((key, table, kind)) = binding {
                 let value = block.params.get(key).and_then(Value::as_str).unwrap_or("");
                 if !value.contains("{{") {
-                    if kind == "flow" && value.is_empty() {
-                        if let Some(name) = block.params["projectName"]
+                    if kind == "flow"
+                        && value.is_empty()
+                        && let Some(name) = block.params["projectName"]
                             .as_str()
                             .filter(|name| !name.is_empty())
-                        {
-                            if name.contains("{{") {
-                                continue;
-                            }
-                            let matches: i64 = database.query_row(
+                    {
+                        if name.contains("{{") {
+                            continue;
+                        }
+                        let matches: i64 = database.query_row(
                                 "SELECT COUNT(*) FROM automation_projects WHERE connection_id=?1 AND json_extract(project_json,'$.name')=?2",
                                 params![connection_id, name], |row| row.get(0),
                             ).map_err(storage_error)?;
-                            if matches != 1 {
-                                issues.push(issue(
-                                    format!("{path}.params.projectName"),
-                                    kind,
-                                    name,
-                                    "Subflow name must resolve uniquely in this Workspace",
-                                ));
-                            }
-                            continue;
+                        if matches != 1 {
+                            issues.push(issue(
+                                format!("{path}.params.projectName"),
+                                kind,
+                                name,
+                                "Subflow name must resolve uniquely in this Workspace",
+                            ));
                         }
+                        continue;
                     }
                     let sql = format!(
                         "SELECT EXISTS(SELECT 1 FROM {table} WHERE id=?1 AND connection_id=?2)"
@@ -418,15 +421,15 @@ impl AutomationStore {
                     ));
                 }
             }
-            if let Some(id) = module_id(&block.kind) {
-                if !valid_module_id(id) || !self.modules_dir.join(format!("{id}.wasm")).is_file() {
-                    issues.push(issue(
-                        format!("{path}.kind"),
-                        "module",
-                        id,
-                        "Required WASM module is missing",
-                    ));
-                }
+            if let Some(id) = module_id(&block.kind)
+                && (!valid_module_id(id) || !self.modules_dir.join(format!("{id}.wasm")).is_file())
+            {
+                issues.push(issue(
+                    format!("{path}.kind"),
+                    "module",
+                    id,
+                    "Required WASM module is missing",
+                ));
             }
         }
         Ok(issues)
@@ -469,27 +472,24 @@ impl AutomationStore {
                 "flow.call" => Some("project"),
                 _ => None,
             };
-            if let Some(key) = key {
-                if let Some(value) = block.params.get_mut(key) {
-                    if !value.as_str().is_some_and(|value| value.contains("{{")) {
-                        if value.as_str().is_some_and(|value| !value.is_empty()) {
-                            *value = json!("__raccoon_unbound_reference__");
-                        }
-                    }
-                }
+            if let Some(key) = key
+                && let Some(value) = block.params.get_mut(key)
+                && !value.as_str().is_some_and(|value| value.contains("{{"))
+                && value.as_str().is_some_and(|value| !value.is_empty())
+            {
+                *value = json!("__raccoon_unbound_reference__");
             }
-            if let Some(folder) = block.params.get_mut("folder") {
-                if folder
+            if let Some(folder) = block.params.get_mut("folder")
+                && folder
                     .as_str()
                     .is_some_and(|folder| !folder.is_empty() && !folder.contains("{{"))
-                {
-                    *folder = json!("__raccoon_unbound_folder__");
-                }
+            {
+                *folder = json!("__raccoon_unbound_folder__");
             }
-            if block.kind == "flow.call" {
-                if let Some(name) = block.params.get_mut("projectName") {
-                    *name = json!("");
-                }
+            if block.kind == "flow.call"
+                && let Some(name) = block.params.get_mut("projectName")
+            {
+                *name = json!("");
             }
         }
         project.id = uuid::Uuid::new_v4().to_string();
@@ -810,7 +810,7 @@ impl AutomationStore {
         decode(&raw)
     }
 
-    pub fn actions(&self, run: &str) -> BrowserResult<Vec<(String, String, Value, Option<Value>)>> {
+    pub fn actions(&self, run: &str) -> BrowserResult<Vec<ActionRecord>> {
         let database = self.database()?;
         let mut query = database.prepare(
             "SELECT action_id,phase,payload_json,result_json FROM automation_actions WHERE run_id=?1 ORDER BY rowid",
@@ -1553,12 +1553,12 @@ pub(crate) fn redact_value(value: &mut Value) {
                 *text = String::new();
                 return;
             }
-            if let Ok(mut url) = url::Url::parse(text) {
-                if !url.username().is_empty() || url.password().is_some() {
-                    let _ = url.set_username("");
-                    let _ = url.set_password(None);
-                    *text = url.into();
-                }
+            if let Ok(mut url) = url::Url::parse(text)
+                && (!url.username().is_empty() || url.password().is_some())
+            {
+                let _ = url.set_username("");
+                let _ = url.set_password(None);
+                *text = url.into();
             }
         }
         _ => {}

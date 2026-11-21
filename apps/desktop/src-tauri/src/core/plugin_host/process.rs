@@ -73,6 +73,13 @@ pub struct HostGateway {
     pub host_handler: HostHandlerSlot,
 }
 
+/// Optional Node setup applied before the plugin entry is launched.
+pub struct NodeLaunchOptions<'a> {
+    pub network: Option<(&'a NetworkProxy, &'a Path)>,
+    /// Used only when running a workspace plugin directly from TypeScript source.
+    pub source_loader: Option<&'a Path>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginErrorPayload {
     pub code: String,
@@ -298,8 +305,10 @@ impl PluginProcess {
             manifest,
             node,
             key,
-            network,
-            None,
+            NodeLaunchOptions {
+                network,
+                source_loader: None,
+            },
             gateway,
         )
     }
@@ -310,17 +319,16 @@ impl PluginProcess {
         manifest: PluginManifest,
         node: &Path,
         key: &str,
-        network: Option<(&NetworkProxy, &Path)>,
-        source_loader: Option<&Path>,
+        options: NodeLaunchOptions<'_>,
         gateway: HostGateway,
     ) -> Result<(Arc<Self>, ReadyInfo), ProcessError> {
         let mut command = Command::new(node);
-        if let Some((proxy, preload)) = network {
+        if let Some((proxy, preload)) = options.network {
             proxy
                 .apply_to_node(&mut command, preload)
                 .map_err(ProcessError::Failed)?;
         }
-        if let Some(loader) = source_loader {
+        if let Some(loader) = options.source_loader {
             command
                 .args(["--conditions=development", "--import"])
                 .arg(loader);

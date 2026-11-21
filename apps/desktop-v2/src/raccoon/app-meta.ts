@@ -3,7 +3,7 @@ import { isTauri } from '@tauri-apps/api/core'
 import { getVersion } from '@tauri-apps/api/app'
 
 export const APP_NAME = 'Raccoon'
-export const APP_VERSION = '0.2.1'
+export const APP_VERSION = '0.2.2'
 
 export const useAppVersion = create<{ version: string }>(() => ({
   version: APP_VERSION,

@@ -1,7 +1,7 @@
 {
   "name": "@raccoon/desktop-v2",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "desktop:dev": "pnpm --filter @nexus/desktop exec tauri dev --config src-tauri/tauri.v2.conf.json",

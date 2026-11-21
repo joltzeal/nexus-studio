@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 enum Handle {
     Sqlite(SqliteConn),
-    Postgres(postgres::Client),
+    Postgres(Box<postgres::Client>),
     Mysql(mysql::Conn),
     Mongo(mongodb::sync::Database),
 }
@@ -50,10 +50,10 @@ pub fn open(name: &str, driver: &str, target: &str, database: Option<&str>) -> R
             if t.is_empty() || t == ":memory:" {
                 Handle::Sqlite(SqliteConn::open_in_memory()?)
             } else {
-                if let Some(dir) = std::path::Path::new(t).parent() {
-                    if !dir.as_os_str().is_empty() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
+                if let Some(dir) = std::path::Path::new(t).parent()
+                    && !dir.as_os_str().is_empty()
+                {
+                    let _ = std::fs::create_dir_all(dir);
                 }
                 Handle::Sqlite(SqliteConn::open(t)?)
             }
@@ -61,7 +61,10 @@ pub fn open(name: &str, driver: &str, target: &str, database: Option<&str>) -> R
         "postgres" | "postgresql" | "pg" => {
             // NoTls: a TLS connector is a later addition; local/dev servers and
             // sslmode=disable work now.
-            Handle::Postgres(postgres::Client::connect(target, postgres::NoTls)?)
+            Handle::Postgres(Box::new(postgres::Client::connect(
+                target,
+                postgres::NoTls,
+            )?))
         }
         "mysql" | "mariadb" => {
             let opts = mysql::Opts::from_url(target)?;
@@ -339,6 +342,14 @@ pub fn drop_all() {
     }
 }
 
+/// Drop handles for exactly one connection/run. Worker names retain this prefix.
+pub fn drop_scope(scope: &str) {
+    if let Ok(mut handles) = conns().lock() {
+        let prefix = format!("{scope}:");
+        handles.retain(|name, _| !name.starts_with(&prefix));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,13 +411,5 @@ mod tests {
     #[test]
     fn unknown_driver_errors() {
         assert!(open("x", "oracle", "whatever", None).is_err());
-    }
-}
-
-/// Drop handles for exactly one connection/run. Worker names retain this prefix.
-pub fn drop_scope(scope: &str) {
-    if let Ok(mut handles) = conns().lock() {
-        let prefix = format!("{scope}:");
-        handles.retain(|name, _| !name.starts_with(&prefix));
     }
 }

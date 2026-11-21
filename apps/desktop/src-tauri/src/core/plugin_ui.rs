@@ -232,14 +232,13 @@ fn check_scope(
     if !view.methods.iter().any(|entry| entry == method) {
         return Err(error("插件未声明请求的界面方法"));
     }
-    if let Some(session_id) = session_id {
-        if !sessions()
+    if let Some(session_id) = session_id
+        && !sessions()
             .lock()
             .map_err(|_| error("插件面板会话不可用"))?
             .contains_key(session_id)
-        {
-            return Err(error("插件面板已关闭"));
-        }
+    {
+        return Err(error("插件面板已关闭"));
     }
     Ok(view)
 }
@@ -376,17 +375,27 @@ fn service_failure(request: ServiceRequest, code: &'static str) -> CachedService
     }
 }
 
+struct UiCall<'a> {
+    scope: &'a UiScope,
+    method: &'a str,
+    session_id: Option<&'a str>,
+    started: Instant,
+}
+
 fn resolve_service(
     host: &PluginHost,
     windows: &WindowService,
-    scope: &UiScope,
-    method: &str,
-    session_id: Option<&str>,
+    call: &UiCall<'_>,
     services: &[PluginUiService],
     available: &BTreeMap<String, ServiceAvailability>,
     request: ServiceRequest,
-    started: Instant,
 ) -> Result<CachedServiceResult, PluginErrorPayload> {
+    let UiCall {
+        scope,
+        method,
+        session_id,
+        started,
+    } = *call;
     check_scope(host, windows, scope, method, session_id)?;
     let Some(service) = services
         .iter()
@@ -454,6 +463,12 @@ fn mediated_call(
         .as_ref()
         .ok_or_else(|| error("插件没有声明 Profile 面板"))?;
     let available = availability(host, scope, services);
+    let call = UiCall {
+        scope,
+        method,
+        session_id,
+        started,
+    };
     let mut cached: BTreeMap<String, CachedServiceResult> = BTreeMap::new();
     for round in 0..MAX_MEDIATION_ROUNDS {
         check_scope(host, windows, scope, method, session_id)?;
@@ -500,9 +515,7 @@ fn mediated_call(
                 continue;
             }
             let id = request.id.clone();
-            let result = resolve_service(
-                host, windows, scope, method, session_id, services, &available, request, started,
-            )?;
+            let result = resolve_service(host, windows, &call, services, &available, request)?;
             cached.insert(id, result);
             if !bounded_json(&service_results(&cached)) {
                 return Err(error("插件服务结果超过大小限制"));
@@ -589,17 +602,17 @@ pub async fn plugin_ui_command(
                 all.remove(&session_id);
                 drop(all);
                 // Task lifetime is independent of this panel session.
-                if let Ok(view) = declaration(&host, &session.scope) {
-                    if let Some(entry) = view.ui.and_then(|ui| ui.profile_table) {
-                        let _ = host.call_generation(
-                            &session.scope.plugin_id,
-                            &session.scope.identity,
-                            entry.capability,
-                            "ui.view.close",
-                            json!({"sessionId":session_id}),
-                            Duration::from_secs(5),
-                        );
-                    }
+                if let Ok(view) = declaration(&host, &session.scope)
+                    && let Some(entry) = view.ui.and_then(|ui| ui.profile_table)
+                {
+                    let _ = host.call_generation(
+                        &session.scope.plugin_id,
+                        &session.scope.identity,
+                        entry.capability,
+                        "ui.view.close",
+                        json!({"sessionId":session_id}),
+                        Duration::from_secs(5),
+                    );
                 }
                 return Ok(UiResult {
                     session_id,
@@ -776,7 +789,7 @@ mod tests {
             "example.panel",
             "details",
             "workspace",
-            &[id.clone()]
+            std::slice::from_ref(&id)
         ));
         assert!(!valid_scope(
             "example.panel",

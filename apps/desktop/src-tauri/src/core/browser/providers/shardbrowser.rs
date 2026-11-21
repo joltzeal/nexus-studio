@@ -209,14 +209,12 @@ fn launch_profile(
             .get("ui_language")
             .and_then(serde_json::Value::as_str)
             == Some("profile")
-        {
-            if let Some(language) = config
+            && let Some(language) = config
                 .pointer("/navigator/language")
                 .and_then(serde_json::Value::as_str)
                 .filter(|s| *s != "auto" && !s.is_empty())
-            {
-                options.extra_args.push(format!("--lang={language}"));
-            }
+        {
+            options.extra_args.push(format!("--lang={language}"));
         }
         if let (Some(width), Some(height)) = (
             config
@@ -1304,21 +1302,21 @@ impl BrowserProvider for ShardBrowserProvider {
             if uuid::Uuid::parse_str(&id).is_err() {
                 continue;
             }
-            if let Some(receipt) = self.receipt(&id)? {
-                if receipt.operation_id == operation_id {
-                    if receipt.profile_sha256 != self.profile_digest(&receipt.window_id)?
-                        || self
-                            .kernels
-                            .pinned(&receipt.version)
-                            .map_err(|_| uncertain())?
-                            .runtime
-                            .binary_path()
-                            != receipt.binary_path
-                    {
-                        return Err(uncertain());
-                    }
-                    return Ok(Some(Self::remote(receipt)));
+            if let Some(receipt) = self.receipt(&id)?
+                && receipt.operation_id == operation_id
+            {
+                if receipt.profile_sha256 != self.profile_digest(&receipt.window_id)?
+                    || self
+                        .kernels
+                        .pinned(&receipt.version)
+                        .map_err(|_| uncertain())?
+                        .runtime
+                        .binary_path()
+                        != receipt.binary_path
+                {
+                    return Err(uncertain());
                 }
+                return Ok(Some(Self::remote(receipt)));
             }
         }
         Ok(None)

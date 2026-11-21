@@ -756,13 +756,13 @@ pub(crate) fn validate_settings(record: &WindowRecord) -> BrowserResult<()> {
             return Err(BrowserError::new("invalid_config", "环境起始地址无效"));
         }
     }
-    if let Some(bit) = record.settings.bitbrowser.as_ref() {
-        if crate::core::window_store::validate_bit_fingerprint(bit).is_err() {
-            return Err(BrowserError::new(
-                "invalid_config",
-                "比特浏览器指纹配置无效",
-            ));
-        }
+    if let Some(bit) = record.settings.bitbrowser.as_ref()
+        && crate::core::window_store::validate_bit_fingerprint(bit).is_err()
+    {
+        return Err(BrowserError::new(
+            "invalid_config",
+            "比特浏览器指纹配置无效",
+        ));
     }
     Ok(())
 }

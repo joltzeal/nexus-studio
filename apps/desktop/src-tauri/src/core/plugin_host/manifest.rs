@@ -243,8 +243,8 @@ impl PluginManifest {
     /// Structural rules from the integration guide. Runs on every load, not
     /// only on install, so a hand-edited manifest cannot widen its own scope.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if let Some(ui) = &self.ui {
-            if ui.protocol_version != 1
+        if let Some(ui) = &self.ui
+            && (ui.protocol_version != 1
                 || (ui.navigation.is_none() && ui.profile_table.is_none())
                 || (ui.profile_table.is_none() && !ui.services.is_empty())
                 || ui
@@ -280,10 +280,9 @@ impl PluginManifest {
                                 )
                                 .is_err()
                         })
-                })
-            {
-                return Err(ManifestError::UnknownField);
-            }
+                }))
+        {
+            return Err(ManifestError::UnknownField);
         }
         if self.api_version != PLUGIN_API_VERSION {
             return Err(ManifestError::UnsupportedApiVersion);

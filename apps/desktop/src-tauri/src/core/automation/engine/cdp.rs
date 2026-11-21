@@ -428,10 +428,10 @@ where
                             .and_then(|p| p.get("frame"))
                             .cloned()
                             .unwrap_or(Value::Null);
-                        if frame.get("parentId").is_none() {
-                            if let Some(url) = frame.get("url").and_then(|u| u.as_str()) {
-                                on_nav(profile_id.clone(), url.to_string());
-                            }
+                        if frame.get("parentId").is_none()
+                            && let Some(url) = frame.get("url").and_then(|u| u.as_str())
+                        {
+                            on_nav(profile_id.clone(), url.to_string());
                         }
                     }
                     Some("Target.detachedFromTarget") => {
@@ -452,15 +452,13 @@ where
                 pending.clear();
             }
             // The socket is gone; drop the session so a later attach reconnects.
-            if let Ok(mut g) = sessions().lock() {
-                if g.get(&reader_key)
+            if let Ok(mut g) = sessions().lock()
+                && g.get(&reader_key)
                     .map(|current| Arc::ptr_eq(current, &session))
                     .unwrap_or(false)
-                {
-                    if !session.by_run.load(Ordering::Acquire) {
-                        g.remove(&reader_key);
-                    }
-                }
+                && !session.by_run.load(Ordering::Acquire)
+            {
+                g.remove(&reader_key);
             }
         });
     }
@@ -508,12 +506,11 @@ where
 }
 
 pub fn detach(profile_id: &str) {
-    if let Ok(mut g) = sessions().lock() {
-        if let Ok(key) = session_key(profile_id) {
-            if let Some(session) = g.remove(&key) {
-                let _ = session.out.send(Message::Close(None));
-            }
-        }
+    if let Ok(mut g) = sessions().lock()
+        && let Ok(key) = session_key(profile_id)
+        && let Some(session) = g.remove(&key)
+    {
+        let _ = session.out.send(Message::Close(None));
     }
 }
 
@@ -982,10 +979,10 @@ pub async fn pick_element(profile_id: &str, x: f64, y: f64) -> Result<Picked> {
             candidates.push(format!("{prefix}[{name}=\"{}\"]", css_escape(v)));
         }
     }
-    if let Some(v) = attr(attrs, "type") {
-        if tag == "input" || tag == "button" {
-            candidates.push(format!("{prefix}{tag}[type=\"{}\"]", css_escape(v)));
-        }
+    if let Some(v) = attr(attrs, "type")
+        && (tag == "input" || tag == "button")
+    {
+        candidates.push(format!("{prefix}{tag}[type=\"{}\"]", css_escape(v)));
     }
 
     // A structural path, for the many real elements that carry no id, no name

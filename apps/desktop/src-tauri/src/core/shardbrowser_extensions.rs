@@ -1741,12 +1741,12 @@ fn public_ip(ip: IpAddr) -> bool {
         }
         IpAddr::V6(ip) => {
             let segments = ip.segments();
-            !ip.is_unspecified()
-                && !ip.is_loopback()
-                && !ip.is_multicast()
-                && (segments[0] & 0xfe00) != 0xfc00
-                && (segments[0] & 0xffc0) != 0xfe80
-                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8))
                 && ip
                     .to_ipv4_mapped()
                     .is_none_or(|mapped| public_ip(IpAddr::V4(mapped)))
@@ -2621,11 +2621,7 @@ async fn import_url_internal(
     let tree = staging.join("tree");
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir(&staging).map_err(storage)?;
-    let downloaded =
-        download_file(&app, &connection_id, &id, url, &package, &operation.cancel).await;
-    if let Err(error) = downloaded {
-        return Err(error);
-    }
+    download_file(&app, &connection_id, &id, url, &package, &operation.cancel).await?;
     set_progress(&app, &connection_id, &id, UpdatePhase::Verify, 0, 0);
     let bytes = fs::read(&package).map_err(storage)?;
     let verified = if bytes.starts_with(b"Cr24") {
@@ -2925,16 +2921,20 @@ fn file_overlap(old_root: &Path, new_root: &Path) -> Result<f64> {
     Ok(same as f64 / files.len() as f64)
 }
 
+struct StoreUpdatePackage<'a> {
+    path: &'a Path,
+    store_id: &'a str,
+    version: &'a str,
+    sha256: Option<&'a str>,
+    size: Option<u64>,
+}
+
 fn stage_update(
     app: &AppHandle,
     service: &WindowService,
     connection_id: &str,
     id: &str,
-    package: &Path,
-    expected_store_id: &str,
-    expected_version: &str,
-    expected_sha256: Option<&str>,
-    expected_size: Option<u64>,
+    package: &StoreUpdatePackage<'_>,
 ) -> BrowserResult<StagedUpdate> {
     let library = library_dir(service, connection_id)?;
     let db = open_database(&service.store.database_path()).map_err(storage)?;
@@ -2945,26 +2945,26 @@ fn stage_update(
     let next = stage.join("tree");
     let _ = fs::remove_dir_all(&stage);
     fs::create_dir(&stage).map_err(storage)?;
-    let bytes = fs::read(package).map_err(storage)?;
+    let bytes = fs::read(package.path).map_err(storage)?;
     set_progress(
         app,
         connection_id,
         id,
         UpdatePhase::Verify,
         0,
-        expected_size.unwrap_or(0),
+        package.size.unwrap_or(0),
     );
     let verified = verify_crx(
         &bytes,
         &CrxExpectation {
-            id: Some(expected_store_id),
+            id: Some(package.store_id),
             publisher: true,
-            sha256: expected_sha256,
-            size: expected_size,
+            sha256: package.sha256,
+            size: package.size,
         },
     )
     .map_err(|error| invalid(format!("扩展更新包校验失败：{error:#}")))?;
-    if verified.crx_id != expected_store_id || !verified.proof_keys.contains(&PUBLISHER_KEY_HASH) {
+    if verified.crx_id != package.store_id || !verified.proof_keys.contains(&PUBLISHER_KEY_HASH) {
         return Err(invalid("扩展更新包身份校验失败"));
     }
     fs::create_dir(&next).map_err(storage)?;
@@ -2974,7 +2974,7 @@ fn stage_update(
         id,
         UpdatePhase::Unpack,
         0,
-        expected_size.unwrap_or(0),
+        package.size.unwrap_or(0),
     );
     unzip_archive(&bytes[verified.archive_offset..], &next)
         .map_err(|error| invalid(format!("{error:#}")))?;
@@ -2987,7 +2987,7 @@ fn stage_update(
         .get("version")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if next_version != expected_version || !newer(next_version, &live.entry.version) {
+    if next_version != package.version || !newer(next_version, &live.entry.version) {
         return Err(invalid("扩展更新包版本与 Web Store 更新记录不一致"));
     }
     let grown = permission_growth(&live.manifest, &next_manifest);
@@ -3019,7 +3019,7 @@ fn stage_update(
         .map(str::to_owned);
     let staged = StagedUpdate {
         from: live.entry.version,
-        to: expected_version.to_owned(),
+        to: package.version.to_owned(),
         at: now(),
         approved: grown.is_empty() && names.is_none() && needs_engine.is_none(),
         grown,
@@ -3216,11 +3216,13 @@ async fn update_internal(
         &service,
         &connection_id,
         &id,
-        &package,
-        &store_id,
-        &version,
-        sha256.as_deref(),
-        size,
+        &StoreUpdatePackage {
+            path: &package,
+            store_id: &store_id,
+            version: &version,
+            sha256: sha256.as_deref(),
+            size,
+        },
     )?;
     if operation.cancel.load(Ordering::SeqCst) {
         let _ = fs::remove_dir_all(library.join(".updates").join(&id));

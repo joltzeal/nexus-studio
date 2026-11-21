@@ -13,10 +13,11 @@ use serde_json::Value;
 /// "and if this is not there, do that instead". Every step therefore carries
 /// its own branch, and the runner follows it rather than always falling to the
 /// next line.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Branch {
     /// Fall through to the step below. The default.
+    #[default]
     Next,
     /// End this profile's whole run.
     Stop,
@@ -27,12 +28,6 @@ pub enum Branch {
     Goto(String),
     /// Try this same step again, up to `0` more times, then take Next.
     Retry(u32),
-}
-
-impl Default for Branch {
-    fn default() -> Self {
-        Branch::Next
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
