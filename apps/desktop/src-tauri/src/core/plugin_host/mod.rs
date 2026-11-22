@@ -481,11 +481,22 @@ impl PluginHost {
         Ok(status)
     }
 
+    fn requires_license(&self, id: &str) -> bool {
+        FIRST_PARTY_PLUGIN_IDS.contains(&id) && self.workspace_plugin(id).is_none()
+    }
+
     fn require_license(&self, id: &str) -> Result<(), HostError> {
-        if self.workspace_plugin(id).is_none() && FIRST_PARTY_PLUGIN_IDS.contains(&id) {
+        if self.requires_license(id) {
             self.license
                 .require_for(id, self.network.as_ref().map(|(store, _)| store))
                 .map_err(HostError::License)?;
+        }
+        Ok(())
+    }
+
+    fn require_local_license(&self, id: &str) -> Result<(), HostError> {
+        if self.requires_license(id) {
+            self.license.require_local(id).map_err(HostError::License)?;
         }
         Ok(())
     }
@@ -767,7 +778,6 @@ impl PluginHost {
     }
 
     pub fn install(&self, source: &Path) -> Result<PluginView, HostError> {
-        let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
         let candidate = discovery::inspect(source, CandidateSource::Development)
             .ok()
             .flatten()
@@ -776,6 +786,8 @@ impl PluginHost {
             return Err(HostError::WorkspaceSource);
         }
         self.require_license(&candidate.manifest.id)?;
+        let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
+        self.require_local_license(&candidate.manifest.id)?;
         let existing = self
             .snapshot()?
             .plugins
@@ -855,7 +867,6 @@ impl PluginHost {
     /// Installing a higher version replaces the record in place and starts the
     /// new process; the previous version directory is removed afterwards.
     pub fn install_from_package(&self, bytes: &[u8]) -> Result<PluginView, HostError> {
-        let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
         let contents = package::parse(bytes)
             .map_err(|error| HostError::Install(InstallError::Package(error)))?;
         let manifest = contents.manifest.clone();
@@ -863,6 +874,8 @@ impl PluginHost {
             return Err(HostError::WorkspaceSource);
         }
         self.require_license(&manifest.id)?;
+        let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
+        self.require_local_license(&manifest.id)?;
         let existing = self
             .snapshot()?
             .plugins
@@ -1218,14 +1231,19 @@ impl PluginHost {
     }
 
     fn ensure_started(&self, id: &str) -> Result<Arc<PluginProcess>, HostError> {
+        if self.closing.load(Ordering::Acquire) {
+            return Err(ProcessError::Cancelled.into());
+        }
+        let authorization = self.require_license(id);
         let _start = self.process_start.lock().map_err(|_| HostError::Registry)?;
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
         }
-        if let Err(error) = self.require_license(id) {
+        let current_authorization = self.require_local_license(id);
+        if current_authorization.is_err() {
             self.stop(id);
-            return Err(error);
         }
+        authorization.and(current_authorization)?;
         if let Some(existing) = self
             .processes
             .lock()
@@ -1352,7 +1370,7 @@ impl PluginHost {
         }
         // A scoped UI request requires an already usable local lease. Renewal
         // stays with the supervisor and cannot extend this request's deadline.
-        if self.workspace_plugin(id).is_none() && FIRST_PARTY_PLUGIN_IDS.contains(&id) {
+        if self.requires_license(id) {
             let status = self.license.status(id).map_err(HostError::License)?;
             if status.state != "active" {
                 return Err(HostError::License(LicenseError::NotActivated));

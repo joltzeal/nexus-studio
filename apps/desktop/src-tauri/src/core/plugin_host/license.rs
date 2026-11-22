@@ -7,9 +7,10 @@ use ring::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, TryLockError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const FIRST_PARTY_PLUGIN_IDS: &[&str] = &[
     "studio.address-generator",
@@ -26,6 +27,8 @@ pub const FIRST_PARTY_PLUGIN_IDS: &[&str] = &[
 ];
 const WORKER_URL: &str = "https://raccoon-license.bravesfly.workers.dev";
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
+const REFRESH_RETRY_INITIAL: Duration = Duration::from_secs(30);
+const REFRESH_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 fn licensing_proxy_endpoint(endpoint: String) -> String {
     endpoint
@@ -93,9 +96,15 @@ struct Device {
     last_seen_at: i64,
 }
 
+struct RefreshBackoff {
+    delay: Duration,
+    next_at: Instant,
+}
+
 pub struct PluginLicenseStore {
     path: PathBuf,
-    lock: Mutex<()>,
+    storage_lock: Mutex<()>,
+    renewal: HashMap<&'static str, Mutex<Option<RefreshBackoff>>>,
     #[cfg(test)]
     test_signing_key: Mutex<Option<Vec<u8>>>,
 }
@@ -116,7 +125,11 @@ impl PluginLicenseStore {
             .map_err(|_| LicenseError::Storage)?;
         Ok(Self {
             path,
-            lock: Mutex::new(()),
+            storage_lock: Mutex::new(()),
+            renewal: FIRST_PARTY_PLUGIN_IDS
+                .iter()
+                .map(|&id| (id, Mutex::new(None)))
+                .collect(),
             #[cfg(test)]
             test_signing_key: Mutex::new(None),
         })
@@ -124,6 +137,13 @@ impl PluginLicenseStore {
 
     fn connection(&self) -> Result<Connection, LicenseError> {
         Connection::open(&self.path).map_err(|_| LicenseError::Storage)
+    }
+
+    fn renewal_slot(
+        &self,
+        plugin_id: &str,
+    ) -> Result<&Mutex<Option<RefreshBackoff>>, LicenseError> {
+        self.renewal.get(plugin_id).ok_or(LicenseError::Denied)
     }
 
     fn device(&self, connection: &Connection, plugin_id: &str) -> Result<Device, LicenseError> {
@@ -169,9 +189,13 @@ impl PluginLicenseStore {
     }
 
     pub fn status(&self, plugin_id: &str) -> Result<LicenseStatus, LicenseError> {
-        let _guard = self.lock.lock().map_err(|_| LicenseError::Storage)?;
-        let connection = self.connection()?;
-        let device = self.device(&connection, plugin_id)?;
+        let device = {
+            let _guard = self
+                .storage_lock
+                .lock()
+                .map_err(|_| LicenseError::Storage)?;
+            self.device(&self.connection()?, plugin_id)?
+        };
         let now = now();
         let state = match &device.lease {
             None => "inactive",
@@ -206,9 +230,17 @@ impl PluginLicenseStore {
         if card.trim().is_empty() || card.len() > 128 {
             return Err(LicenseError::Denied);
         }
-        let _guard = self.lock.lock().map_err(|_| LicenseError::Storage)?;
-        let connection = self.connection()?;
-        let device = self.device(&connection, plugin_id)?;
+        let mut retry = self
+            .renewal_slot(plugin_id)?
+            .lock()
+            .map_err(|_| LicenseError::Storage)?;
+        let device = {
+            let _guard = self
+                .storage_lock
+                .lock()
+                .map_err(|_| LicenseError::Storage)?;
+            self.device(&self.connection()?, plugin_id)?
+        };
         let reply = self.request(
             "/v1/cards/redeem",
             serde_json::json!({
@@ -219,8 +251,15 @@ impl PluginLicenseStore {
             &device,
             network,
         )?;
-        self.verify(&reply, &device, now())?;
+        let _guard = self
+            .storage_lock
+            .lock()
+            .map_err(|_| LicenseError::Storage)?;
+        let connection = self.connection()?;
+        let device = self.device(&connection, plugin_id)?;
+        self.verify_usable(&reply, &device, now())?;
         self.save(&connection, plugin_id, &reply)?;
+        *retry = None;
         Ok(LicenseStatus {
             state: "active".into(),
             expires_at: Some(reply.payload.expires_at),
@@ -233,61 +272,109 @@ impl PluginLicenseStore {
         plugin_id: &str,
         network: Option<&NetworkProxyStore>,
     ) -> Result<(), LicenseError> {
-        let _guard = self.lock.lock().map_err(|_| LicenseError::Storage)?;
-        let connection = self.connection()?;
-        let device = self.device(&connection, plugin_id)?;
-        let lease = device.lease.as_ref().ok_or(LicenseError::NotActivated)?;
-        let now = now();
-        self.verify(lease, &device, now)?;
-        if now >= lease.payload.expires_at {
-            return Err(LicenseError::Expired);
-        }
-        if now < lease.payload.refresh_after && now < lease.payload.offline_until {
-            self.record_seen(&connection, plugin_id, now)?;
-            return Ok(());
-        }
-        match self.request(
+        let mut retry = match self.renewal_slot(plugin_id)?.try_lock() {
+            Ok(retry) => retry,
+            Err(TryLockError::WouldBlock) => return self.require_local(plugin_id),
+            Err(TryLockError::Poisoned(_)) => return Err(LicenseError::Storage),
+        };
+        let (device, license_id) = {
+            let _guard = self
+                .storage_lock
+                .lock()
+                .map_err(|_| LicenseError::Storage)?;
+            let connection = self.connection()?;
+            let device = self.device(&connection, plugin_id)?;
+            let at = now();
+            let lease = device.lease.as_ref().ok_or(LicenseError::NotActivated)?;
+            self.verify_unexpired(lease, &device, at)?;
+            let refresh_due =
+                at >= lease.payload.refresh_after || at >= lease.payload.offline_until;
+            let retry_due = retry
+                .as_ref()
+                .is_none_or(|retry| Instant::now() >= retry.next_at);
+            if !refresh_due || !retry_due {
+                return self.use_local_lease(&connection, lease, at);
+            }
+            let license_id = lease.payload.license_id.clone();
+            (device, license_id)
+        };
+        let response = self.request(
             "/v1/leases/refresh",
             serde_json::json!({
-                "licenseId": lease.payload.license_id,
+                "licenseId": license_id,
                 "devicePublicKey": device.public_key
             }),
             &device,
             network,
-        ) {
+        );
+        match response {
             Ok(refreshed) => {
-                self.verify(&refreshed, &device, now)?;
+                let _guard = self
+                    .storage_lock
+                    .lock()
+                    .map_err(|_| LicenseError::Storage)?;
+                let connection = self.connection()?;
+                let device = self.device(&connection, plugin_id)?;
+                self.verify_usable(&refreshed, &device, now())?;
                 self.save(&connection, plugin_id, &refreshed)?;
+                *retry = None;
                 Ok(())
             }
             Err(LicenseError::Denied) => {
-                connection
+                let _guard = self
+                    .storage_lock
+                    .lock()
+                    .map_err(|_| LicenseError::Storage)?;
+                self.connection()?
                     .execute(
                         "UPDATE plugin_entitlements SET lease_json = NULL WHERE plugin_id = ?1",
                         [plugin_id],
                     )
                     .map_err(|_| LicenseError::Storage)?;
+                *retry = None;
                 Err(LicenseError::Denied)
             }
-            Err(LicenseError::Unavailable) if now < lease.payload.offline_until => {
-                self.record_seen(&connection, plugin_id, now)?;
-                Ok(())
+            Err(LicenseError::Unavailable) => {
+                let delay = retry.as_ref().map_or(REFRESH_RETRY_INITIAL, |retry| {
+                    (retry.delay * 2).min(REFRESH_RETRY_MAX)
+                });
+                *retry = Some(RefreshBackoff {
+                    delay,
+                    next_at: Instant::now() + delay,
+                });
+                self.require_local(plugin_id)
             }
             Err(error) => Err(error),
         }
     }
 
-    fn record_seen(
+    pub fn require_local(&self, plugin_id: &str) -> Result<(), LicenseError> {
+        let _guard = self
+            .storage_lock
+            .lock()
+            .map_err(|_| LicenseError::Storage)?;
+        let connection = self.connection()?;
+        let device = self.device(&connection, plugin_id)?;
+        let lease = device.lease.as_ref().ok_or(LicenseError::NotActivated)?;
+        let at = now();
+        self.verify_unexpired(lease, &device, at)?;
+        self.use_local_lease(&connection, lease, at)
+    }
+
+    fn use_local_lease(
         &self,
         connection: &Connection,
-        plugin_id: &str,
+        lease: &SignedLease,
         at: i64,
     ) -> Result<(), LicenseError> {
+        if at >= lease.payload.offline_until {
+            return Err(LicenseError::Unavailable);
+        }
         connection
             .execute(
-                "UPDATE plugin_entitlements SET last_seen_at = MAX(last_seen_at, ?1)
-                 WHERE plugin_id = ?2",
-                params![at, plugin_id],
+                "UPDATE plugin_entitlements SET last_seen_at = ?1
+                 WHERE plugin_id = ?2 AND last_seen_at < ?1",
+                params![at, lease.payload.plugin_id],
             )
             .map_err(|_| LicenseError::Storage)?;
         Ok(())
@@ -330,9 +417,38 @@ impl PluginLicenseStore {
         verify_lease(lease, device, now, key_id, public)
     }
 
+    fn verify_unexpired(
+        &self,
+        lease: &SignedLease,
+        device: &Device,
+        at: i64,
+    ) -> Result<(), LicenseError> {
+        self.verify(lease, device, at)?;
+        if at >= lease.payload.expires_at {
+            return Err(LicenseError::Expired);
+        }
+        Ok(())
+    }
+
+    fn verify_usable(
+        &self,
+        lease: &SignedLease,
+        device: &Device,
+        at: i64,
+    ) -> Result<(), LicenseError> {
+        self.verify_unexpired(lease, device, at)?;
+        if at >= lease.payload.offline_until {
+            return Err(LicenseError::Unavailable);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn seed_test_license(&self, plugin_id: &str) -> Result<(), LicenseError> {
-        let _guard = self.lock.lock().map_err(|_| LicenseError::Storage)?;
+        let _guard = self
+            .storage_lock
+            .lock()
+            .map_err(|_| LicenseError::Storage)?;
         let connection = self.connection()?;
         let device = self.device(&connection, plugin_id)?;
         let mut test_key = self

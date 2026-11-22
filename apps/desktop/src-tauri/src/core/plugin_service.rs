@@ -28,15 +28,21 @@ fn capability(value: &str) -> Result<Capability, String> {
 }
 
 #[tauri::command]
-pub fn plugin_catalog(state: State<'_, Arc<PluginHost>>) -> Result<Vec<PluginView>, String> {
-    state.catalog().map_err(message)
+pub async fn plugin_catalog(state: State<'_, Arc<PluginHost>>) -> Result<Vec<PluginView>, String> {
+    let host = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || host.catalog().map_err(message))
+        .await
+        .map_err(|_| "插件目录读取任务中断".to_string())?
 }
 
 #[tauri::command]
-pub fn plugin_license_status(
+pub async fn plugin_license_status(
     state: State<'_, Arc<PluginHost>>,
 ) -> Result<std::collections::BTreeMap<String, LicenseStatus>, String> {
-    state.license_statuses().map_err(message)
+    let host = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || host.license_statuses().map_err(message))
+        .await
+        .map_err(|_| "插件授权状态读取任务中断".to_string())?
 }
 
 #[tauri::command]
@@ -54,10 +60,13 @@ pub async fn plugin_license_activate(
 }
 
 #[tauri::command]
-pub fn plugin_proxy_providers(
+pub async fn plugin_proxy_providers(
     state: State<'_, Arc<PluginHost>>,
 ) -> Result<Vec<PluginView>, String> {
-    state.proxy_providers().map_err(message)
+    let host = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || host.proxy_providers().map_err(message))
+        .await
+        .map_err(|_| "插件代理列表读取任务中断".to_string())?
 }
 
 #[tauri::command]
