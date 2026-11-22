@@ -10,7 +10,7 @@ it('signs the market identity, authorization policy and package checksum togethe
   const folder = await mkdtemp(join(tmpdir(), 'market-signing-test-'))
   try {
     const { privateKey, publicKey } = generateKeyPairSync('ed25519')
-    const catalog = join(folder, 'unsigned.json')
+    const catalog = join(folder, 'package-index.json')
     const config = join(folder, 'config.json')
     const key = join(folder, 'private.pem')
     const output = join(folder, 'catalog.json')
@@ -18,7 +18,7 @@ it('signs the market identity, authorization policy and package checksum togethe
       manifest: { id: 'example.paid' },
       package: { url: 'plugin.nexuspkg', sha256: 'a'.repeat(64) },
     }
-    await writeFile(catalog, JSON.stringify({ schemaVersion: 1, plugins: [plugin] }))
+    await writeFile(catalog, JSON.stringify({ plugins: [plugin] }))
     await writeFile(
       config,
       JSON.stringify({
@@ -64,7 +64,7 @@ it('signs the market identity, authorization policy and package checksum togethe
       },
       plugins: [{ ...plugin, requiresLicense: true }],
     })
-    expect(result.plugins).toEqual([plugin])
+    expect(result).not.toHaveProperty('plugins')
   } finally {
     await rm(folder, { recursive: true, force: true })
   }
@@ -74,7 +74,7 @@ it('publishes the selected signed catalog after its verified package', async () 
   const folder = await mkdtemp(join(tmpdir(), 'market-publishing-test-'))
   try {
     const { privateKey } = generateKeyPairSync('ed25519')
-    const catalog = join(folder, 'catalog.json')
+    const catalog = join(folder, 'package-index.json')
     const config = join(folder, 'config.json')
     const key = join(folder, 'private.pem')
     const output = join(folder, 'catalog-v2.json')
@@ -85,7 +85,6 @@ it('publishes the selected signed catalog after its verified package', async () 
     await writeFile(
       catalog,
       JSON.stringify({
-        schemaVersion: 1,
         plugins: [
           {
             manifest: { id: 'example.free', version: '1.0.0' },
@@ -148,6 +147,9 @@ it('publishes the selected signed catalog after its verified package', async () 
     signed.signed.signature = Buffer.alloc(64).toString('base64')
     await writeFile(output, JSON.stringify(signed))
     expect(() => dryRun()).toThrow(/签名无效/)
+
+    await writeFile(output, JSON.stringify({ schemaVersion: 1, plugins: [] }))
+    expect(() => dryRun()).toThrow(/无效的市场目录版本或签名结构/)
   } finally {
     await rm(folder, { recursive: true, force: true })
   }

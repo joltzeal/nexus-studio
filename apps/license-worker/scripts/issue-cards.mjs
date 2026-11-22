@@ -3,9 +3,12 @@ import { open, readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const [sku, requestedCount, destination, proxy] = process.argv.slice(2)
+const [baseUrl, sku, requestedCount, destination, proxy] = process.argv.slice(2)
+const origin = URL.parse(baseUrl ?? '')
 const count = Number(requestedCount)
 if (
+  origin?.protocol !== 'https:' ||
+  (baseUrl !== origin.origin && baseUrl !== `${origin.origin}/`) ||
   !/^(address-generator|ai-image|email|products|proxy-pool|sales-agent|shared-supply|sim8|vinted-accounts|vinted-monitor|window-sync)-(month|quarter|year)$/.test(
     sku ?? '',
   ) ||
@@ -15,7 +18,7 @@ if (
   !destination
 ) {
   console.error(
-    'Usage: node scripts/issue-cards.mjs <plugin-month|plugin-quarter|plugin-year> <1-100> <output-file> [proxy-url]; plugin: address-generator, ai-image, email, products, proxy-pool, sales-agent, shared-supply, sim8, vinted-accounts, vinted-monitor, window-sync',
+    'Usage: node scripts/issue-cards.mjs <https-issuer-origin> <plugin-month|plugin-quarter|plugin-year> <1-100> <output-file> [proxy-url]; plugin: address-generator, ai-image, email, products, proxy-pool, sales-agent, shared-supply, sim8, vinted-accounts, vinted-monitor, window-sync',
   )
   process.exit(2)
 }
@@ -24,7 +27,7 @@ const token = (
   await readFile(join(homedir(), '.config/raccoon/license-worker/ADMIN_TOKEN'), 'utf8')
 ).trim()
 const lines = [
-  'url = "https://raccoon-license.bravesfly.workers.dev/v1/admin/cards"',
+  `url = ${JSON.stringify(new URL('/v1/admin/cards', origin).href)}`,
   'request = "POST"',
   'header = "content-type: application/json"',
   `header = ${JSON.stringify(`Authorization: Bearer ${token}`)}`,

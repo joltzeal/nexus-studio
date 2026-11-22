@@ -13,9 +13,7 @@ mod tests;
 
 use self::discovery::{CandidateSource, DiscoveryReport};
 use self::install::InstallError;
-use self::license::{
-    FIRST_PARTY_PLUGIN_IDS, LicenseError, LicenseStatus, LicenseTarget, PluginLicenseStore,
-};
+use self::license::{LicenseError, LicenseStatus, LicenseTarget, PluginLicenseStore};
 use self::manifest::{Capability, ManifestError, PluginManifest, PluginPermissions, StorageScope};
 use self::market::{Catalog, MarketBinding, MarketError, MarketStore};
 use self::permissions::PermissionError;
@@ -486,16 +484,6 @@ impl PluginHost {
                 );
             }
         }
-        for &id in FIRST_PARTY_PLUGIN_IDS {
-            if !installed.plugins.iter().any(|plugin| plugin.id == id)
-                && let Some(target) = LicenseTarget::for_plugin(id, None)
-            {
-                statuses.insert(
-                    id.into(),
-                    self.license.status(target).map_err(HostError::License)?,
-                );
-            }
-        }
         Ok(statuses)
     }
 
@@ -522,15 +510,16 @@ impl PluginHost {
                 None => self.installed_market(plugin_id)?,
             },
         };
+        if binding.as_ref().is_some_and(MarketBinding::unsigned) {
+            return Err(MarketError::UnsignedInstallation.into());
+        }
         let target =
             LicenseTarget::for_plugin(plugin_id, binding.as_ref()).ok_or(HostError::NotFound)?;
         let status = self
             .license
             .activate(target, card, self.network.as_ref().map(|(store, _)| store))
             .map_err(HostError::License)?;
-        if market_selection.is_none()
-            || same_market_origin(self.installed_market(plugin_id)?.as_ref(), binding.as_ref())
-        {
+        if market_selection.is_none() || self.installed_market(plugin_id)? == binding {
             let _ = self.ensure_started(plugin_id);
         }
         Ok(status)
@@ -550,6 +539,9 @@ impl PluginHost {
         id: &str,
         binding: Option<&MarketBinding>,
     ) -> Result<(), HostError> {
+        if binding.is_some_and(MarketBinding::unsigned) {
+            return Err(MarketError::UnsignedInstallation.into());
+        }
         if let Some(target) = LicenseTarget::for_plugin(id, binding) {
             self.license
                 .require_for(target, self.network.as_ref().map(|(store, _)| store))
@@ -571,6 +563,9 @@ impl PluginHost {
         id: &str,
         binding: Option<&MarketBinding>,
     ) -> Result<(), HostError> {
+        if binding.is_some_and(MarketBinding::unsigned) {
+            return Err(MarketError::UnsignedInstallation.into());
+        }
         if let Some(target) = LicenseTarget::for_plugin(id, binding) {
             self.license
                 .require_local(target)
@@ -775,14 +770,19 @@ impl PluginHost {
         let target = (!workspace_source)
             .then(|| LicenseTarget::for_plugin(&plugin.id, plugin.market.as_ref()))
             .flatten();
-        let license_error = target.and_then(|target| {
-            self.license
-                .status(target)
-                .ok()
-                .filter(|status| status.state == "active")
-                .is_none()
-                .then_some("插件尚未激活或需要联网核验".to_string())
-        });
+        let license_error =
+            if !workspace_source && plugin.market.as_ref().is_some_and(MarketBinding::unsigned) {
+                Some(MarketError::UnsignedInstallation.message())
+            } else {
+                target.and_then(|target| {
+                    self.license
+                        .status(target)
+                        .ok()
+                        .filter(|status| status.state == "active")
+                        .is_none()
+                        .then_some("插件尚未激活或需要联网核验".to_string())
+                })
+            };
         let process = self
             .processes
             .lock()
@@ -1193,9 +1193,9 @@ impl PluginHost {
         });
         match fetched {
             Ok(catalog) => {
-                if let Some(pin) = &catalog.signing_pin {
-                    settings.signing_pins.insert(catalog_url, pin.clone());
-                }
+                settings
+                    .signing_pins
+                    .insert(catalog_url, catalog.identity.clone());
                 settings.last_checked_at = Some(market::now_timestamp());
                 settings.last_error = None;
                 self.market_store.save(&settings)?;
@@ -1920,12 +1920,7 @@ fn installation_generation(plugin: &InstalledPlugin) -> String {
 }
 
 fn same_install_source(plugin: &InstalledPlugin, binding: Option<&MarketBinding>) -> bool {
-    same_market_origin(plugin.market.as_ref(), binding)
-}
-
-fn same_market_origin(left: Option<&MarketBinding>, right: Option<&MarketBinding>) -> bool {
-    left == right
-        || matches!((left, right), (Some(left), Some(right)) if left.official() && right.official())
+    plugin.market.as_ref() == binding
 }
 
 #[cfg(test)]

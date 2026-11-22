@@ -9,16 +9,16 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const MARKET_SCHEMA_VERSION: u32 = 1;
 const SIGNED_MARKET_SCHEMA_VERSION: u32 = 2;
 pub const SETTINGS_FILE: &str = "store.json";
-pub const CATALOG_NAME: &str = "catalog.json";
-pub const LEGACY_CATALOG_URL: &str =
-    "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog.json";
-const OFFICIAL_V2_CATALOG_URL: &str =
-    "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog-v2.json";
-const OFFICIAL_MARKET_ID: &str = "raccoon-official";
-pub(super) const LEGACY_WORKER_URL: &str = "https://raccoon-license.bravesfly.workers.dev";
+pub const CATALOG_NAME: &str = "catalog-v2.json";
+// Directory signing identity allowed to publish reserved first-party plugin IDs.
+#[cfg(not(test))]
+const FIRST_PARTY_CATALOG_IDENTITY: &str =
+    "8ad81c1f5352f20528e29db2ea63c0f4656c29b32f3a9424dc8193dbda1dbf17";
+#[cfg(test)]
+const FIRST_PARTY_CATALOG_IDENTITY: &str =
+    "cb7b6143bd198e89e256d7cece3338d5fc6af3959b372dbee1e6801222be2a5c";
 pub const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
 pub const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 256;
@@ -38,6 +38,7 @@ pub enum MarketError {
     TooLarge,
     Malformed,
     Untrusted,
+    UnsignedInstallation,
     Io,
 }
 
@@ -48,6 +49,7 @@ impl MarketError {
             MarketError::UnsupportedUrl | MarketError::Malformed | MarketError::Untrusted => {
                 "INVALID_REQUEST"
             }
+            MarketError::UnsignedInstallation => "PERMISSION_DENIED",
             MarketError::Status(404) => "NOT_CONFIGURED",
             MarketError::Offline
             | MarketError::Proxy(_)
@@ -60,13 +62,14 @@ impl MarketError {
     pub fn message(&self) -> String {
         match self {
             MarketError::NotConfigured => "还没有配置插件商店地址".into(),
-            MarketError::UnsupportedUrl => "商店地址只支持 http、https 或 file".into(),
+            MarketError::UnsupportedUrl => "插件商店需要使用 HTTPS 地址".into(),
             MarketError::Offline => "连不上插件商店，请检查网络或地址".into(),
             MarketError::Proxy(reason) => format!("应用代理不可用：{reason}"),
             MarketError::Status(status) => format!("插件商店返回了 HTTP {status}"),
             MarketError::TooLarge => "商店返回的内容超过大小上限".into(),
-            MarketError::Malformed => "商店返回的清单格式不正确".into(),
+            MarketError::Malformed => "插件商店需要提供签名的 v2 目录".into(),
             MarketError::Untrusted => "商店签名无效，或与已信任的商店身份不一致".into(),
+            MarketError::UnsignedInstallation => "请从签名的 v2 插件商店重新安装此插件".into(),
             MarketError::Io => "无法读写本地商店缓存".into(),
         }
     }
@@ -110,19 +113,6 @@ impl LicenseAuthority {
                     && url.origin().ascii_serialization() == self.base_url.trim_end_matches('/')
             })
     }
-
-    fn is_official_issuer(&self) -> bool {
-        let Ok(pinned) =
-            serde_json::from_str::<serde_json::Value>(include_str!("license-public-key.json"))
-        else {
-            return false;
-        };
-        self.protocol_version == 1
-            && self.issuer_id == OFFICIAL_MARKET_ID
-            && self.base_url.trim_end_matches('/') == LEGACY_WORKER_URL
-            && pinned["keyId"].as_str() == Some(self.key_id.as_str())
-            && pinned["publicKey"].as_str() == Some(self.public_key.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,22 +124,12 @@ pub struct MarketBinding {
 }
 
 impl MarketBinding {
-    pub fn legacy_official(&self) -> bool {
-        self.catalog_url == LEGACY_CATALOG_URL
-            && self.identity == digest(LEGACY_CATALOG_URL.as_bytes())
-            && self.authority.is_none()
-    }
-
-    pub(super) fn official_v2(&self) -> bool {
-        self.catalog_url == OFFICIAL_V2_CATALOG_URL
-            && self
-                .authority
-                .as_ref()
-                .is_some_and(LicenseAuthority::is_official_issuer)
+    pub(super) fn unsigned(&self) -> bool {
+        self.identity == digest(self.catalog_url.as_bytes())
     }
 
     pub(super) fn official(&self) -> bool {
-        self.legacy_official() || self.official_v2()
+        self.identity == FIRST_PARTY_CATALOG_IDENTITY
     }
 
     pub fn valid(&self) -> bool {
@@ -179,6 +159,14 @@ fn secure_url(url: &url::Url) -> bool {
         && url.password().is_none()
 }
 
+fn catalog_source_allowed(url: &url::Url) -> bool {
+    #[cfg(test)]
+    if url.scheme() == "file" || (url.scheme() == "http" && url.host_str() == Some("127.0.0.1")) {
+        return true;
+    }
+    secure_url(url)
+}
+
 /// One published plugin. The manifest is carried verbatim so the host can show
 /// name, version and capabilities before downloading anything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +178,7 @@ pub struct Entry {
     #[serde(default)]
     pub changelog: String,
     pub package: PackageRef,
-    pub requires_license: Option<bool>,
+    pub requires_license: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,10 +195,15 @@ pub struct PackageRef {
 struct CatalogDocument {
     schema_version: u32,
     /// Kept as raw values so one malformed row cannot blank the whole store.
-    #[serde(default)]
     plugins: Vec<serde_json::Value>,
-    market: Option<MarketDeclaration>,
-    signed: Option<SignedCatalog>,
+    market: MarketDeclaration,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogEnvelope {
+    schema_version: u32,
+    signed: SignedCatalog,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -234,82 +227,54 @@ pub struct Catalog {
     pub entries: Vec<Entry>,
     pub source_url: String,
     pub identity: String,
-    pub signing_pin: Option<String>,
     licensing: Option<LicenseAuthority>,
 }
 
 impl Catalog {
     pub fn parse(bytes: &[u8], source_url: &str, pin: Option<&str>) -> Result<Self, MarketError> {
-        let outer: CatalogDocument =
+        let outer: CatalogEnvelope =
             serde_json::from_slice(bytes).map_err(|_| MarketError::Malformed)?;
-        let (document, signing_pin) = if let Some(signed) = outer.signed {
-            if outer.schema_version != SIGNED_MARKET_SCHEMA_VERSION {
-                return Err(MarketError::Malformed);
-            }
-            let source = url::Url::parse(source_url).map_err(|_| MarketError::Untrusted)?;
-            if !secure_url(&source) {
-                return Err(MarketError::Untrusted);
-            }
-            let key = key_bytes(&signed.public_key).ok_or(MarketError::Untrusted)?;
-            let payload = STANDARD
-                .decode(&signed.payload)
-                .map_err(|_| MarketError::Untrusted)?;
-            let signature = STANDARD
-                .decode(&signed.signature)
-                .map_err(|_| MarketError::Untrusted)?;
-            UnparsedPublicKey::new(&ED25519, key)
-                .verify(&payload, &signature)
-                .map_err(|_| MarketError::Untrusted)?;
-            let document: CatalogDocument =
-                serde_json::from_slice(&payload).map_err(|_| MarketError::Malformed)?;
-            let market = document.market.as_ref().ok_or(MarketError::Untrusted)?;
-            if market.catalog_url != source_url
-                || !valid_identifier(&market.id)
-                || market
-                    .licensing
-                    .as_ref()
-                    .is_some_and(|authority| !authority.valid())
-            {
-                return Err(MarketError::Untrusted);
-            }
-            let identity = digest(
-                format!("{}\n{}\n{}", source_url, market.id, STANDARD.encode(key)).as_bytes(),
-            );
-            if pin.is_some_and(|pin| pin != identity) {
-                return Err(MarketError::Untrusted);
-            }
-            (document, Some(identity))
-        } else {
-            if pin.is_some() || outer.market.is_some() {
-                return Err(MarketError::Untrusted);
-            }
-            (outer, None)
-        };
-        let expected_version = if signing_pin.is_some() {
-            SIGNED_MARKET_SCHEMA_VERSION
-        } else {
-            MARKET_SCHEMA_VERSION
-        };
-        if document.schema_version != expected_version {
+        if outer.schema_version != SIGNED_MARKET_SCHEMA_VERSION {
             return Err(MarketError::Malformed);
         }
-        if document.plugins.len() > MAX_ENTRIES {
-            return Err(MarketError::Malformed);
+        let source = url::Url::parse(source_url).map_err(|_| MarketError::UnsupportedUrl)?;
+        if !catalog_source_allowed(&source) {
+            return Err(MarketError::UnsupportedUrl);
         }
-        let official_v2 = source_url == OFFICIAL_V2_CATALOG_URL;
-        if official_v2
-            && (signing_pin.is_none()
-                || !document.market.as_ref().is_some_and(|market| {
-                    market.id == OFFICIAL_MARKET_ID
-                        && market
-                            .licensing
-                            .as_ref()
-                            .is_some_and(LicenseAuthority::is_official_issuer)
-                }))
+        let signed = outer.signed;
+        let key = key_bytes(&signed.public_key).ok_or(MarketError::Untrusted)?;
+        let payload = STANDARD
+            .decode(&signed.payload)
+            .map_err(|_| MarketError::Untrusted)?;
+        let signature = STANDARD
+            .decode(&signed.signature)
+            .map_err(|_| MarketError::Untrusted)?;
+        UnparsedPublicKey::new(&ED25519, key)
+            .verify(&payload, &signature)
+            .map_err(|_| MarketError::Untrusted)?;
+        let document: CatalogDocument =
+            serde_json::from_slice(&payload).map_err(|_| MarketError::Malformed)?;
+        let market = document.market;
+        if market.catalog_url != source_url
+            || !valid_identifier(&market.id)
+            || market
+                .licensing
+                .as_ref()
+                .is_some_and(|authority| !authority.valid())
         {
             return Err(MarketError::Untrusted);
         }
-        let licensing = document.market.and_then(|market| market.licensing);
+        let identity =
+            digest(format!("{}\n{}\n{}", source_url, market.id, STANDARD.encode(key)).as_bytes());
+        if pin.is_some_and(|pin| pin != identity) {
+            return Err(MarketError::Untrusted);
+        }
+        if document.schema_version != SIGNED_MARKET_SCHEMA_VERSION
+            || document.plugins.len() > MAX_ENTRIES
+        {
+            return Err(MarketError::Malformed);
+        }
+        let licensing = market.licensing;
         let mut entries: Vec<Entry> = Vec::new();
         for value in document.plugins {
             // A single bad row must not blank the whole store, but a row that
@@ -321,26 +286,21 @@ impl Catalog {
                 continue;
             }
             if super::license::FIRST_PARTY_PLUGIN_IDS.contains(&entry.manifest.id.as_str()) {
-                if source_url != LEGACY_CATALOG_URL && !official_v2 {
+                if identity != FIRST_PARTY_CATALOG_IDENTITY {
                     continue;
                 }
-                if signing_pin.is_some() && entry.requires_license != Some(true) {
+                if !entry.requires_license {
                     return Err(MarketError::Malformed);
                 }
             }
-            match (signing_pin.is_some(), entry.requires_license) {
-                (true, Some(false)) | (false, None) => {}
-                (true, Some(true)) if licensing.is_some() => {}
-                _ => return Err(MarketError::Malformed),
+            if entry.requires_license && licensing.is_none() {
+                return Err(MarketError::Malformed);
             }
             if entries
                 .iter()
                 .any(|seen| seen.manifest.id == entry.manifest.id)
             {
-                if signing_pin.is_some() {
-                    return Err(MarketError::Malformed);
-                }
-                continue;
+                return Err(MarketError::Malformed);
             }
             entries.push(entry);
         }
@@ -348,10 +308,7 @@ impl Catalog {
         Ok(Catalog {
             entries,
             source_url: source_url.into(),
-            identity: signing_pin
-                .clone()
-                .unwrap_or_else(|| digest(source_url.as_bytes())),
-            signing_pin,
+            identity,
             licensing,
         })
     }
@@ -364,10 +321,7 @@ impl Catalog {
         MarketBinding {
             catalog_url: self.source_url.clone(),
             identity: self.identity.clone(),
-            authority: self
-                .licensing
-                .clone()
-                .filter(|_| entry.requires_license == Some(true)),
+            authority: self.licensing.clone().filter(|_| entry.requires_license),
         }
     }
 
@@ -449,7 +403,7 @@ impl MarketStore {
 }
 
 /// Normalises what the user typed. A bare host is upgraded to https, a missing
-/// file name becomes `catalog.json`, and trailing slashes are dropped so the
+/// file name becomes `catalog-v2.json`, and trailing slashes are dropped so the
 /// join below stays predictable.
 pub fn normalize_store_url(input: &str) -> Result<String, MarketError> {
     let trimmed = input.trim();
@@ -484,7 +438,7 @@ pub fn normalize_store_url(input: &str) -> Result<String, MarketError> {
 }
 
 /// Base used to resolve relative package URLs: everything up to the directory
-/// that holds `catalog.json`.
+/// that holds the catalog.
 pub fn store_base(catalog_url: &str) -> String {
     match catalog_url.rfind('/') {
         Some(index) => catalog_url[..=index].to_string(),
@@ -522,6 +476,10 @@ pub fn fetch_with_proxy(
 }
 
 pub fn fetch_catalog(url: &str, proxy: &NetworkProxy) -> Result<Vec<u8>, MarketError> {
+    let source = url::Url::parse(url).map_err(|_| MarketError::UnsupportedUrl)?;
+    if !catalog_source_allowed(&source) {
+        return Err(MarketError::UnsupportedUrl);
+    }
     fetch_url(url, MAX_CATALOG_BYTES, proxy, false)
 }
 

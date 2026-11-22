@@ -1,4 +1,4 @@
-use super::market::{LEGACY_WORKER_URL, LicenseAuthority, MarketBinding};
+use super::market::{LicenseAuthority, MarketBinding};
 use super::registry::digest;
 use crate::core::network_proxy::NetworkProxyStore;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -36,7 +36,7 @@ const REFRESH_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 pub struct LicenseTarget<'a> {
     plugin_id: &'a str,
     market: Option<(&'a str, &'a LicenseAuthority)>,
-    official_alias: bool,
+    first_party: bool,
 }
 
 impl<'a> LicenseTarget<'a> {
@@ -50,21 +50,18 @@ impl<'a> LicenseTarget<'a> {
             return Some(Self {
                 plugin_id,
                 market: Some((&binding.identity, authority)),
-                official_alias: binding.official_v2()
-                    && FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id),
+                first_party: binding.official() && FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id),
             });
         }
-        (source.is_none_or(MarketBinding::legacy_official)
-            && FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id))
-        .then_some(Self {
+        FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id).then_some(Self {
             plugin_id,
             market: None,
-            official_alias: false,
+            first_party: true,
         })
     }
 
     fn storage_key(self) -> String {
-        match self.market.filter(|_| !self.official_alias) {
+        match self.market.filter(|_| !self.first_party) {
             None => self.plugin_id.into(),
             Some((market, authority)) => format!(
                 "market:{}",
@@ -95,6 +92,7 @@ fn licensing_proxy_endpoint(endpoint: String) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LicenseError {
     NotActivated,
+    MissingAuthority,
     Expired,
     Denied,
     Unavailable,
@@ -105,6 +103,7 @@ impl LicenseError {
     pub fn message(self) -> &'static str {
         match self {
             Self::NotActivated => "插件尚未激活，请在插件中心输入激活码",
+            Self::MissingAuthority => "插件缺少授权来源，请从签名的 v2 插件商店安装",
             Self::Expired => "插件授权已过期，请在插件中心重新激活",
             Self::Denied => "激活码不可用或该设备已被撤销",
             Self::Unavailable => "暂时无法连接插件核验服务，请稍后重试",
@@ -281,6 +280,9 @@ impl PluginLicenseStore {
         card: &str,
         network: Option<&NetworkProxyStore>,
     ) -> Result<LicenseStatus, LicenseError> {
+        if target.market.is_none() {
+            return Err(LicenseError::MissingAuthority);
+        }
         if card.trim().is_empty() || card.len() > 128 {
             return Err(LicenseError::Denied);
         }
@@ -475,9 +477,12 @@ impl PluginLicenseStore {
         now: i64,
     ) -> Result<(), LicenseError> {
         if let Some((_, authority)) = target.market {
-            // Both official catalogs use the deployed worker's legacy lease format.
-            let expected_issuer = (!target.official_alias).then_some(authority.issuer_id.as_str());
-            if lease.payload.issuer_id.as_deref() != expected_issuer {
+            let issuer_matches = match lease.payload.issuer_id.as_deref() {
+                Some(issuer) => issuer == authority.issuer_id.as_str(),
+                // The official signed catalog still uses an issuer that omits this field.
+                None => target.first_party,
+            };
+            if !issuer_matches {
                 return Err(LicenseError::Denied);
             }
             return verify_lease(lease, device, now, &authority.key_id, &authority.public_key);
@@ -496,12 +501,7 @@ impl PluginLicenseStore {
             let public = STANDARD.encode(pair.public_key().as_ref());
             return verify_lease(lease, device, now, "test-only", &public);
         }
-        let pinned: serde_json::Value =
-            serde_json::from_str(include_str!("license-public-key.json"))
-                .map_err(|_| LicenseError::Storage)?;
-        let key_id = pinned["keyId"].as_str().ok_or(LicenseError::Storage)?;
-        let public = pinned["publicKey"].as_str().ok_or(LicenseError::Storage)?;
-        verify_lease(lease, device, now, key_id, public)
+        Err(LicenseError::MissingAuthority)
     }
 
     fn verify_unexpired(
@@ -587,6 +587,8 @@ impl PluginLicenseStore {
         device: &Device,
         network: Option<&NetworkProxyStore>,
     ) -> Result<SignedLease, LicenseError> {
+        let (_, authority) = target.market.ok_or(LicenseError::MissingAuthority)?;
+        let base_url = authority.base_url.trim_end_matches('/');
         let body = serde_json::to_string(&input).map_err(|_| LicenseError::Storage)?;
         let pair =
             Ed25519KeyPair::from_pkcs8(&device.private_key).map_err(|_| LicenseError::Storage)?;
@@ -612,9 +614,6 @@ impl PluginLicenseStore {
             );
         }
         let client = client.build().map_err(|_| LicenseError::Unavailable)?;
-        let base_url = target.market.map_or(LEGACY_WORKER_URL, |(_, authority)| {
-            authority.base_url.trim_end_matches('/')
-        });
         let response = client
             .post(format!("{base_url}{path}"))
             .header("x-device-time", timestamp)

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
  */
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const WRANGLER = 'wrangler@4'
-const CATALOG = 'catalog.json'
+const CATALOG = 'catalog-v2.json'
 
 function parseArgs(argv) {
   const options = {
@@ -41,9 +41,6 @@ function parseArgs(argv) {
 }
 
 function catalogEntries(outer, filename) {
-  if (outer.schemaVersion === 1 && !outer.signed && Array.isArray(outer.plugins)) {
-    return outer.plugins
-  }
   const { publicKey, payload, signature } = outer.signed ?? {}
   if (
     outer.schemaVersion !== 2 ||
@@ -129,7 +126,7 @@ function put({ bucket, market, file, cacheControl, contentType, dryRun }) {
 const options = parseArgs(process.argv.slice(2))
 const catalogPath = join(options.market, options.catalog)
 if (!existsSync(catalogPath)) {
-  console.error(`没有找到 ${catalogPath}，先执行 pnpm market:build`)
+  console.error(`没有找到 ${catalogPath}，先使用 scripts/sign-market.mjs 生成签名目录`)
   process.exit(1)
 }
 const catalog = JSON.parse(await readFile(catalogPath, 'utf8'))

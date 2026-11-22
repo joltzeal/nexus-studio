@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 const [catalogPath, configPath, keyPath, outputPath] = process.argv.slice(2)
 if (!catalogPath || !configPath || !keyPath || !outputPath) {
   throw new Error(
-    'Usage: node scripts/sign-market.mjs INPUT_CATALOG MARKET_CONFIG ED25519_PEM OUTPUT_CATALOG',
+    'Usage: node scripts/sign-market.mjs PACKAGE_INDEX MARKET_CONFIG ED25519_PEM OUTPUT_CATALOG',
   )
 }
 if (
@@ -39,7 +39,7 @@ if (
   throw new Error('Invalid market id or HTTPS catalog URL')
 }
 if (
-  schemaVersion !== 1 ||
+  schemaVersion !== undefined ||
   !Array.isArray(plugins) ||
   plugins.length > 256 ||
   plugins.some(
@@ -49,7 +49,7 @@ if (
       !/^[a-f0-9]{64}$/.test(plugin.package.sha256),
   )
 ) {
-  throw new Error('Invalid version 1 catalog')
+  throw new Error('Invalid package index')
 }
 const pluginIds = new Set(plugins.map((plugin) => plugin.manifest.id))
 if (
@@ -103,8 +103,6 @@ const payload = Buffer.from(
 const result = JSON.stringify(
   {
     schemaVersion: 2,
-    generatedAt,
-    plugins,
     signed: {
       publicKey: Buffer.from(publicKey, 'base64url').toString('base64'),
       payload: payload.toString('base64'),

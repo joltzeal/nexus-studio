@@ -8,9 +8,8 @@ import { readPackage, sha256Hex } from './lib/market-package.mjs'
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
 /**
- * Collects every packed `.nexuspkg` under `--out` and writes the `catalog.json`
- * the app fetches. Only the highest version of each plugin is published; older
- * packages stay in the bucket so an installed copy can still be repaired.
+ * Collects the latest packed version of each plugin into a local package index
+ * for the directory signer.
  */
 function parseArgs(argv) {
   const options = { out: join(root, 'market') }
@@ -85,11 +84,10 @@ const entries = [...latest.values()]
   }))
 
 const catalog = {
-  schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   plugins: entries,
 }
-const target = join(options.out, 'catalog.json')
+const target = join(options.out, 'package-index.json')
 await mkdir(options.out, { recursive: true })
 await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8')
-console.log(`catalog.json 写入 ${target}，共 ${entries.length} 个插件`)
+console.log(`本地包索引写入 ${target}，共 ${entries.length} 个插件`)

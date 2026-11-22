@@ -10,7 +10,8 @@
 | `plugins/<name>/dist/`                   | 本地编译后的插件入口和资源，供开发宿主安装                | 否                 |
 | `market/`                                | 插件发布产物的暂存根目录                                  | 否                 |
 | `market/plugins/<id>/<version>.nexuspkg` | 可安装的发布包；这里的 `plugins` 是对象路径，不是源码目录 | 否                 |
-| `market/catalog.json`                    | 商店索引，包含版本、最低主程序版本、下载路径与 SHA-256    | 否                 |
+| `market/package-index.json`              | 发布机上的包索引，包含版本、下载路径与 SHA-256            | 否                 |
+| `market/catalog-v2.json`                 | 桌面应用读取的签名商店目录                                | 否                 |
 | `packages/plugin-contracts/`             | 主应用需要的纯数据类型、方法名和校验规则                  | 是                 |
 | `packages/plugin-sdk/`                   | 通用插件协议、manifest、能力与生命周期                    | 是                 |
 | `apps/desktop/src/features/`             | 随主应用分发的页面与插件调用适配器                        | 是                 |
@@ -59,12 +60,15 @@ rtk proxy pnpm --filter '@nexus/plugin-ai-image...' build
 rtk proxy node scripts/pack-plugin.mjs plugins/ai-image
 rtk proxy pnpm run market:catalog
 rtk proxy pnpm run market:verify market/plugins/studio.ai-image/<version>.nexuspkg
+rtk proxy node scripts/sign-market.mjs \
+  market/package-index.json market/official-market-v2.json \
+  ~/.config/raccoon/market-catalog/official-v2.pem market/catalog-v2.json
 rtk proxy pnpm run market:publish
 ```
 
 发布前运行插件行为测试，验证最终包的 manifest、版本、摘要、启动握手和实际所需方法。含资源的插件还要从最终安装包读取资源，不能用源码目录代替。
 
-`market:publish` 按本地目录中完整的 `catalog.json` 上传：先包、后索引。发布单个插件时先读取线上索引，仅替换目标条目，保留其他插件；不要用只有一个条目的目录覆盖线上完整商店。包上传后回读 SHA-256，再更新并回读索引。对象存储账户属于开发发布环境，不要求最终用户配置。
+`market:publish` 按完整的签名 `catalog-v2.json` 上传，顺序为安装包、目录。发布单个插件时保留线上其他条目。包上传后回读 SHA-256，再更新并回读目录。对象存储账户由发布者管理。
 
 签名市场发布使用 `market:publish --catalog catalog-v2.json`。配置、签名及兼容条件见[插件与插件仓库规范](55-plugin-and-marketplace-standard.md)。
 

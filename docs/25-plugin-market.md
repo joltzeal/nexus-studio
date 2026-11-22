@@ -1,14 +1,12 @@
 # 插件商店与在线更新
 
 开发插件、运营市场或部署授权服务时，使用[插件与插件仓库规范](55-plugin-and-marketplace-standard.md)。
-官方目录分别使用 `catalog.json`（v1）和 `catalog-v2.json`（签名 v2）。
-desktop-v2 0.2.7 和 0.2.8 只允许官方 v1 地址列出第一方插件，
-因此填写官方 v2 地址会得到空列表。使用 0.2.9 或更高版本加载官方 v2 目录。
-发布时先按官方市场配置生成签名目录，
-再用 `market:publish --catalog catalog-v2.json` 指定发布文件。`catalogs.json` 是
-[Vinted 商品分类源数据](48-vinted-catalog-data.md)，由 Ecom Agent 的分类资源生成流程处理。
+desktop-v2 从 0.2.10 起只读取签名 v2 仓库。在插件中心填入 HTTPS 商店根地址或签名目录的
+完整地址。官方仓库使用 `catalog-v2.json`。原先指向未签名目录的设置需改为 v2 地址，
+从未签名仓库安装的插件需要在商店确认替换后才能运行，旧来源的私有数据保留。
+`catalogs.json` 是 Ecom Agent 使用的 [Vinted 商品分类源数据](48-vinted-catalog-data.md)。
 
-## 0.2.7 市场授权与替换
+## 市场授权与替换
 
 支持通过 HTTPS 分发的 `schemaVersion: 2` 签名目录。宿主读取 `signed.payload`
 中的市场 ID、目录 URL、授权服务及每个插件的授权要求。`payload`、`publicKey` 和
@@ -16,14 +14,14 @@ desktop-v2 0.2.7 和 0.2.8 只允许官方 v1 地址列出第一方插件，
 字节及其中的包 SHA-256。宿主从用户配置的 HTTPS 地址首次读取时记录签名身份，
 之后拒绝该地址的签名身份变更和降级为无签名目录。
 
-运营方可以使用 `node scripts/sign-market.mjs INPUT_CATALOG MARKET_CONFIG ED25519_PEM OUTPUT_CATALOG`
-将现有 v1 目录生成签名 v2 目录。市场配置的结构如下，`licensing.publicKey` 填入
+运营方使用 `market:catalog` 生成本地 `package-index.json`，再使用 `scripts/sign-market.mjs`
+生成签名 v2 目录。市场配置的 `licensing.publicKey` 填入
 签发租约的 Ed25519 原始 32 字节公钥的标准 Base64，目录签名私钥另行保管。
 
 ```json
 {
   "id": "example-market",
-  "catalogUrl": "https://market.example.com/catalog.json",
+  "catalogUrl": "https://market.example.com/catalog-v2.json",
   "licensedPluginIds": ["example.plugin"],
   "licensing": {
     "issuerId": "example-issuer",
@@ -35,8 +33,7 @@ desktop-v2 0.2.7 和 0.2.8 只允许官方 v1 地址列出第一方插件，
 }
 ```
 
-免费市场填写空 `licensedPluginIds` 并省略 `licensing`。第三方 v2 目录需要 Raccoon
-0.2.7 或更高版本。现有 Raccoon v1 目录仍可用。第三方未签名目录继续承载免费插件。
+免费市场填写空 `licensedPluginIds` 并省略 `licensing`。
 宿主清单中的 11 个第一方保留 ID 仅由官方目录发布，避免第三方包取得按这些 ID
 绑定的主程序能力。其他插件 ID 可在不同市场重复发布，安装时由用户选择唯一来源。
 
@@ -588,7 +585,7 @@ rtk gh run download <run-id> --repo joltzeal/nexus-studio \
 | 开发构建         | 仍列出 `plugins/*` 工作区插件，方便宿主开发；`NEXUS_PLUGIN_DEV_ROOTS` 可加 |
 | 商店地址         | 手动填写，存于 `<应用数据>/plugins/store.json`（0600，临时文件 + rename）  |
 | 检查时机         | 保存地址后立即检查；启动约 40 秒后首次扫描，之后每 30 分钟一次             |
-| 安装来源         | `catalog.json` 里的 `package.url`，相对路径按商店根地址解析                |
+| 安装来源         | 签名目录内的 `package.url`，相对路径按目录文件所在路径解析                 |
 | 完整性           | 下载后比对 catalog 中的 SHA-256，再逐文件校验包内摘要                      |
 | 版本比较         | SemVer。高于已装版本才升级，同版本重装覆盖，低于已装版本直接拒绝           |
 | 插件代码形态     | 单文件 ESM 打包 → AES-256-GCM 加密 → `payload.bin`，包内只有密文           |
@@ -600,53 +597,14 @@ rtk gh run download <run-id> --repo joltzeal/nexus-studio \
 商店就是一个静态目录（Cloudflare R2、S3、任意静态托管均可）：
 
 ```
-catalog.json
+catalog-v2.json
 plugins/studio.vinted-accounts/1.0.0.nexuspkg
 plugins/studio.vinted-monitor/1.0.0.nexuspkg
 ```
 
-`catalog.json`：
-
-```json
-{
-  "schemaVersion": 1,
-  "generatedAt": "2026-10-22T09:00:00.000Z",
-  "plugins": [
-    {
-      "manifest": {
-        "apiVersion": 1,
-        "id": "studio.vinted-accounts",
-        "version": "1.0.0",
-        "name": "Vinted 账号池",
-        "minCoreVersion": "0.1.0",
-        "capabilities": ["account.pool"],
-        "permissions": {
-          "networkDomains": [],
-          "wantsBrowserAccess": false,
-          "storage": "private",
-          "secrets": []
-        }
-      },
-      "description": "账号池与窗口关联",
-      "changelog": "首个版本",
-      "package": {
-        "url": "plugins/studio.vinted-accounts/1.0.0.nexuspkg",
-        "size": 94835,
-        "sha256": "…64 位小写十六进制…"
-      }
-    }
-  ]
-}
-```
-
-宿主对 v1 catalog 的容错规则：
-
-- `schemaVersion` 必须是 `1`，`plugins` 最多 256 条。
-- 单条解析失败或 manifest 校验失败时**跳过该条**，其余照常显示，不会整份清单作废。
-- `package.sha256` 必须是 64 位十六进制，否则该条被丢弃。
-- 同一 `id` 出现多次时只保留第一条。
-
-`package.url` 可以是相对路径（按 `catalog.json` 所在目录解析），也可以是完整的 `http(s)://` / `file://` 地址。
+`catalog-v2.json` 的外层和签名 payload 均声明 `schemaVersion: 2`。签名有效后，宿主读取
+`market` 和 `plugins`。目录最多 256 项、1 MiB，重复插件 ID 会使整份目录被拒绝。
+无法解析或 manifest 校验失败的条目会跳过。发布规范包含[完整目录字段和约束](55-plugin-and-marketplace-standard.md#仓库目录与签名)。
 
 ## 3. `.nexuspkg` 容器
 
@@ -713,12 +671,12 @@ key = SHA-256(salt + "\n" + pluginId + "\n" + version)
 
 ## 5. 应用侧行为
 
-- 商店地址：`https://`、`http://`、`file://` 三种。省略协议时补 `https://`；末尾不是 `.json` 时补 `/catalog.json`；查询串和 fragment 会被丢弃。
+- 商店目录使用 HTTPS。省略协议时补 `https://`，末尾省略 `.json` 文件名时补 `/catalog-v2.json`。宿主去掉查询串和 fragment。
 - 拉取在 Rust 侧完成（`reqwest`，25 秒超时），**不经过 WebView，因此商店不需要配置 CORS**。
 - 失败只记录在 `store.json` 的 `lastError` 上，后台扫描失败不会弹窗；页面把错误显示在商店面板里。
 - 安装失败（校验不符、manifest 不合法、包损坏）不改动已安装版本。
 - 升级流程：停旧进程 → 写新版本目录 → 换登记表记录 → 删除旧版本目录 → 启动新进程。插件私有数据目录 `data/<id>` 不随版本变化，升级后数据仍在。
-- 已安装但没有商店时，插件照常运行；商店只是安装与升级的来源。
+- 已安装插件使用安装时记录的授权来源。切换或清除当前商店后，付费插件仍向原来源续租。
 
 ## 6. 本地执行方案
 
@@ -727,7 +685,7 @@ key = SHA-256(salt + "\n" + pluginId + "\n" + version)
 ```bash
 pnpm plugins:build                 # 仅在本地编译插件；源码不提交 Git
 pnpm market:pack                    # 产物写到 market/plugins/<id>/<version>.nexuspkg
-pnpm market:catalog                 # 汇总成 market/catalog.json
+pnpm market:catalog                 # 汇总成 market/package-index.json
 ```
 
 只打一个插件：
@@ -737,7 +695,7 @@ node scripts/pack-plugin.mjs plugins/vinted-accounts
 node scripts/build-market.mjs
 ```
 
-`market:pack` 会打印包大小与打包后的源码大小；`catalog.json` 每个插件只保留最高版本。
+`market:pack` 会打印包大小与打包后的源码大小。`package-index.json` 每个插件只保留最高版本，供目录签名使用。
 
 ### 6.2 上线前自检
 
@@ -755,23 +713,17 @@ ok studio.vinted-accounts 1.0.0
 
 这一步能抓住打包后才会暴露的问题：密钥派生不一致、loader 语法错误、依赖没打进 bundle、入口没有自动启动。
 
-### 6.3 不联网自测整个商店
+### 6.3 生成签名目录
 
-`file://` 商店不需要起服务：
-
-```bash
-node -e "console.log('file://' + require('node:path').resolve('market'))"
-```
-
-把打印出来的地址填进「插件中心 → 商店设置」。宿主的 `file://` 分支直接读磁盘，走的是和 HTTPS 完全相同的 catalog 解析、校验与安装路径。
-
-想验证 HTTP 分支：
+市场配置示例见本文开头。以下命令使用 `market/market-config.json` 和运营方保管的
+`market/catalog-signing-key.pem`。
 
 ```bash
-cd market && python3 -m http.server 8787
+node scripts/sign-market.mjs market/package-index.json market/market-config.json \
+  market/catalog-signing-key.pem market/catalog-v2.json
 ```
 
-地址填 `http://127.0.0.1:8787`。
+上传前使用 `pnpm market:publish --dry-run` 核对目录签名与本地包的 SHA-256。
 
 ### 6.4 上传 Cloudflare R2
 
@@ -795,35 +747,11 @@ pnpm market:publish -- --bucket 其他桶名
 > 不带 `--remote` 时命令会「成功」，但文件只写进仓库下的 `.wrangler/state/v3/r2/`，
 > 真实桶里什么都没有。脚本已经内置 `--remote`；手敲命令时别漏。
 
-不想用脚本时，手动等价命令是（`catalog.json` 必须短缓存，插件包可以长缓存）：
+上传后可以回读目录，并用本地签名目录的 SHA-256 核对：
 
 ```bash
-for file in $(find market -name '*.nexuspkg'); do
-  npx wrangler r2 object put "nexus-studio-market/${file#market/}" \
-    --file "$file" --content-type application/octet-stream \
-    --cache-control "public, max-age=31536000, immutable" --remote
-done
-npx wrangler r2 object put nexus-studio-market/catalog.json \
-  --file market/catalog.json --content-type application/json \
-  --cache-control "public, max-age=60" --remote
-```
-
-顺序很重要：先传包，最后传 catalog。中途失败时线上 catalog 仍然只指向已经存在的包。
-
-传完可以验证一次，确认东西真在远端：
-
-```bash
-npx wrangler r2 object get nexus-studio-market/catalog.json --remote --file /tmp/catalog.json
-```
-
-Wrangler 4 没有 `r2 object list`（只剩 `get` / `put` / `delete`），所以「桶里到底有什么」只能靠逐个 `get` 来确认。想连内容一起核对，就把 catalog 里每个包的 sha256 跟下载回来的文件对一遍：
-
-```bash
-node -e "for (const p of require('./market/catalog.json').plugins) console.log(p.package.url, p.package.sha256)" |
-while read -r key want; do
-  npx wrangler r2 object get "nexus-studio-market/$key" --remote --file "/tmp/$(echo "$key" | tr '/' '_')"
-  shasum -a 256 "/tmp/$(echo "$key" | tr '/' '_')" | grep -q "$want" && echo "OK   $key" || echo "DIFF $key"
-done
+npx wrangler r2 object get nexus-studio-market/catalog-v2.json --remote --file /tmp/catalog-v2.json
+shasum -a 256 market/catalog-v2.json /tmp/catalog-v2.json
 ```
 
 本地模拟器留下的 `.wrangler/` 可以直接删掉，它不影响任何东西，并且已经在 `.gitignore` 里。
@@ -839,7 +767,7 @@ done
 - 桶设置里开启 **Public Development URL**，得到 `https://pub-xxxxxxxx.r2.dev`。
 - 绑定自定义域名，例如 `https://market.example.com`。
 
-应用里填桶根地址即可，`/catalog.json` 由宿主补上：
+应用里填桶根地址即可，`/catalog-v2.json` 由宿主补上：
 
 ```
 https://pub-xxxxxxxx.r2.dev
@@ -853,14 +781,15 @@ https://market.example.com
 1. 改 `plugins/<name>/nexus.plugin.ts` 的 `version`。
 2. `pnpm plugins:build && pnpm market:build`。
 3. `pnpm market:verify market/plugins/<id>/<新版本>.nexuspkg`。
-4. `pnpm market:publish`。
-5. 应用侧最迟 30 分钟看到更新；点「检查更新」立即生效。
+4. 用同一个市场配置和签名私钥生成新的 `catalog-v2.json`。
+5. `pnpm market:publish`。
+6. 应用每 30 分钟检查一次；点「检查更新」立即请求目录。
 
 旧版本的 `.nexuspkg` 留在桶里没有害处：catalog 只引用最新版，旧包可以在需要时手工回滚。
 
 ## 7. 已知边界
 
-- v1 目录的完整性依赖 HTTPS 来源及目录所列的包 SHA-256。v2 目录还验证 Ed25519 签名和已记录的市场身份。
+- 宿主校验 Ed25519 目录签名、已记录的市场身份和下载包的 SHA-256。
 - 没有增量下载，每次升级下载完整包（当前单包 100 KB 量级）。
 - 不支持多商店，也不支持私有商店鉴权头。需要时再加。
 - 降级只能手工：把 catalog 的版本改低后应用会拒绝安装，必须先卸载。

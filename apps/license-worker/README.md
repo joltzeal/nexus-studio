@@ -3,11 +3,10 @@
 For a third-party signed market catalog, configure `LEASE_ISSUER_ID` on that
 market's Worker. Its value must match the catalog's `licensing.issuerId`. Use
 the Worker's `LEASE_KEY_ID` and raw Ed25519 public key in the catalog.
-Keep `LEASE_ISSUER_ID` unset on the existing official Worker. The desktop host
-accepts its legacy leases for the official v1 and signed v2 catalog entries.
+The existing official signed catalog also accepts leases that omit `issuerId`.
 
-Cloudflare C3 TypeScript Worker + D1. Deployed at
-`https://raccoon-license.bravesfly.workers.dev` with the `raccoon-license` D1 database.
+Cloudflare C3 TypeScript Worker + D1. Set the deployed HTTPS service origin in
+the market's signed `licensing.baseUrl`.
 The Desktop host gates all eleven first-party plugins independently; each plugin needs
 its own card. No card-shop payment integration has been provisioned.
 
@@ -21,15 +20,15 @@ its own card. No card-shop payment integration has been provisioned.
 4. `rtk proxy pnpm --dir apps/license-worker exec wrangler dev`
 
 The worker has no built-in development secrets. `GET /health` responds without them;
-all mutation and lease routes require configured secrets. The public Ed25519 key must be pinned
-in the Desktop application before trusting any lease. Rotate keys by ID without losing verification
-for leases already issued. Never expose the private signing key or `ADMIN_TOKEN` in the client.
+all mutation and lease routes require configured secrets. Publish the verifier and
+key ID in the signed market catalog. Never expose the private signing key or
+`ADMIN_TOKEN` in the client.
 
 ## Production
 
 The D1 binding and the four Worker secrets are already deployed. Secrets are kept outside
-the repository under `~/.config/raccoon/license-worker/` on the operator machine;
-the public verifier is pinned in the Desktop host. For subsequent migrations, use
+the repository under `~/.config/raccoon/license-worker/` on the operator machine.
+For subsequent migrations, use
 `rtk proxy pnpm --dir apps/license-worker exec wrangler d1 migrations apply DB --remote`,
 then `rtk proxy pnpm --dir apps/license-worker exec wrangler deploy`.
 Do not put the long-lived admin bearer token in a public browser session.
@@ -42,10 +41,10 @@ To issue cards after confirming payment, use the operator-only CLI. It writes th
 to a new file with mode `0600`, and never prints the codes or admin token:
 
 ```sh
-rtk proxy node apps/license-worker/scripts/issue-cards.mjs ai-image-month 1 /private/path/ai-image-cards.txt socks5h://127.0.0.1:7890
+rtk proxy node apps/license-worker/scripts/issue-cards.mjs https://licenses.example.com ai-image-month 1 /private/path/ai-image-cards.txt socks5h://127.0.0.1:7890
 ```
 
-The fourth argument is optional if direct HTTPS works. Each plugin has `-month`,
+The proxy argument is optional if direct HTTPS works. Each plugin has `-month`,
 `-quarter`, and `-year` SKUs, for example `vinted-accounts-year`. The full list is
 documented in `~/.config/raccoon/license-worker/ISSUE-CARDS.md`. Cards appear in the
 response only once; if the network response is lost after issuance, those codes cannot be recovered.

@@ -48,7 +48,7 @@ AliasMode Chromium / Firefox 的受管内核下载和窗口 Provider 已接入�
 | [22 · AI 生图插件](22-ai-image-plugin.md)                           | 生图改图、模型配置、队列与完整批次检索                        |
 | [23 · Vinted 监控插件](23-vinted-monitor-plugin.md)                 | 独立采集代理、监控与商品表格、卖家资料及 AI 生图关联          |
 | [24 · Vinted 账号池插件](24-vinted-accounts-plugin.md)              | 账号导入、窗口关联、独立地址与邮箱关系                        |
-| [25 · 插件商店与在线更新](25-plugin-market.md)                      | 商店地址、`catalog.json`、`.nexuspkg` 加密包与定时更新        |
+| [25 · 插件商店与在线更新](25-plugin-market.md)                      | 商店地址、签名 v2 目录、`.nexuspkg` 加密包与定时更新          |
 | [26 · 应用代理](26-application-network-proxy.md)                    | 设置项、后台请求、系统代理与插件网络边界                      |
 | [27 · 浏览器内核](27-browser-kernels.md)                            | 官方最新版本查询、下载校验、本地清单与窗口固定绑定            |
 | [28 · 窗口加密迁移](28-window-transfer.md)                          | 加密导入导出、浏览器站点状态、插件附件与导入恢复              |

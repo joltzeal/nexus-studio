@@ -1,9 +1,10 @@
 use super::discovery::{CandidateSource, DiscoveryProblem, inspect};
 use super::install::{self, InstallError};
+use super::license::LicenseTarget;
 use super::manifest::{Capability, ManifestError, PluginManifest};
 use super::permissions::{PermissionError, check_call};
 use super::process::{PluginProcess, ProcessError, scrub_url_credentials};
-use super::registry::RegistryStore;
+use super::registry::{InstalledPlugin, RegistryStore};
 use super::{HostError, PluginHost};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -827,7 +828,7 @@ fn first_party_plugins_cannot_be_installed_or_called_without_a_signed_entitlemen
         )
         .unwrap();
 
-        assert_eq!(host.license_statuses().unwrap()[*id].state, "inactive");
+        assert!(!host.license_statuses().unwrap().contains_key(*id));
         let error = host.install(&source).unwrap_err();
         assert_eq!(error.code(), "PERMISSION_DENIED");
         assert_eq!(host.catalog().unwrap()[0].state, "available");
@@ -2481,7 +2482,7 @@ fn store_url_normalisation_accepts_a_bucket_root() {
     use super::market::normalize_store_url;
     assert_eq!(
         normalize_store_url("https://market.example.com/nexus-studio-market/").unwrap(),
-        "https://market.example.com/nexus-studio-market/catalog.json"
+        "https://market.example.com/nexus-studio-market/catalog-v2.json"
     );
     assert_eq!(
         normalize_store_url("https://market.example.com/store/catalog.json").unwrap(),
@@ -2489,11 +2490,11 @@ fn store_url_normalisation_accepts_a_bucket_root() {
     );
     assert_eq!(
         normalize_store_url("market.example.com").unwrap(),
-        "https://market.example.com/catalog.json"
+        "https://market.example.com/catalog-v2.json"
     );
     assert_eq!(
         normalize_store_url("file:///tmp/store").unwrap(),
-        "file:///tmp/store/catalog.json"
+        "file:///tmp/store/catalog-v2.json"
     );
     assert_eq!(
         normalize_store_url("ftp://market.example.com").unwrap_err(),
@@ -2507,14 +2508,13 @@ fn store_url_normalisation_accepts_a_bucket_root() {
 
 #[test]
 fn catalog_drops_rows_it_cannot_trust() {
-    let catalog = serde_json::json!({
-        "schemaVersion": 1,
-        "generatedAt": "2026-10-23T00:00:00.000Z",
-        "plugins": [
+    let source = "https://market.example/catalog.json";
+    let plugins = serde_json::json!([
             {
                 "manifest": serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap(),
                 "description": "fixture",
                 "package": { "url": "plugins/a.nexuspkg", "size": 10, "sha256": "a".repeat(64) },
+                "requiresLicense": false,
             },
             {
                 // Unknown capability: the row is skipped, the rest survives.
@@ -2528,48 +2528,141 @@ fn catalog_drops_rows_it_cannot_trust() {
                     "permissions": { "networkDomains": [], "wantsBrowserAccess": false, "storage": "none", "secrets": [] }
                 },
                 "package": { "url": "plugins/b.nexuspkg", "size": 10, "sha256": "b".repeat(64) },
+                "requiresLicense": false,
             },
             {
                 // Truncated checksum: rejected before anything is downloaded.
                 "manifest": serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap(),
                 "package": { "url": "plugins/c.nexuspkg", "size": 10, "sha256": "short" },
+                "requiresLicense": false,
             }
-        ]
-    });
-    let parsed = super::market::Catalog::parse(
-        catalog.to_string().as_bytes(),
-        "file:///fixtures/catalog.json",
-        None,
-    )
-    .unwrap();
+    ]);
+    let parsed =
+        super::market::Catalog::parse(&signed_fixture_catalog(source, plugins), source, None)
+            .unwrap();
     assert_eq!(parsed.entries.len(), 1);
     assert_eq!(parsed.entries[0].manifest.id, "test.fixture-plugin");
 }
 
+#[test]
+fn market_rejects_unsigned_v1_without_a_previous_signing_pin() {
+    use super::market::{Catalog, MarketError};
+
+    assert_eq!(
+        Catalog::parse(
+            br#"{"schemaVersion":1,"plugins":[]}"#,
+            "https://market.example/catalog.json",
+            None,
+        )
+        .unwrap_err(),
+        MarketError::Malformed
+    );
+}
+
+#[test]
+fn an_unsigned_market_installation_stays_visible_but_cannot_start() {
+    use super::market::{MarketBinding, MarketError};
+    use super::registry::{RegistryDocument, digest};
+
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("host");
+    let manifest: PluginManifest = serde_json::from_str(MANIFEST).unwrap();
+    let id = manifest.id.clone();
+    let source = "https://market.example/catalog.json";
+    RegistryStore::new(root.join("registry.json"))
+        .save(&RegistryDocument {
+            plugins: vec![InstalledPlugin {
+                id: id.clone(),
+                version: manifest.version.clone(),
+                manifest,
+                directory: root.join("installed").join(&id).join("1.2.0"),
+                entry: "index.js".into(),
+                manifest_digest: digest(MANIFEST.as_bytes()),
+                enabled: true,
+                granted_capabilities: Vec::new(),
+                granted_domains: Vec::new(),
+                installed_at: "0".into(),
+                market: Some(MarketBinding {
+                    catalog_url: source.into(),
+                    identity: digest(source.as_bytes()),
+                    authority: None,
+                }),
+            }],
+            ..RegistryDocument::default()
+        })
+        .unwrap();
+    let host = PluginHost::open(root, Vec::new()).unwrap();
+    let view = host.view_of(&id).unwrap();
+    assert_eq!(view.state, "unlicensed");
+    assert_eq!(
+        view.last_error,
+        Some(MarketError::UnsignedInstallation.message())
+    );
+    assert!(matches!(
+        host.ensure_started(&id),
+        Err(HostError::Market(MarketError::UnsignedInstallation))
+    ));
+}
+
+fn signed_catalog_envelope(
+    payload: &serde_json::Value,
+    key: &ring::signature::Ed25519KeyPair,
+) -> Vec<u8> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::signature::KeyPair;
+    let bytes = serde_json::to_vec(payload).unwrap();
+    serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "signed": {
+            "publicKey": STANDARD.encode(key.public_key().as_ref()),
+            "payload": STANDARD.encode(&bytes),
+            "signature": STANDARD.encode(key.sign(&bytes).as_ref()),
+        },
+    }))
+    .unwrap()
+}
+
+fn signed_fixture_catalog(source: &str, plugins: serde_json::Value) -> Vec<u8> {
+    let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[31; 32]).unwrap();
+    signed_catalog_envelope(
+        &serde_json::json!({
+            "schemaVersion": 2,
+            "market": { "id": "fixture", "catalogUrl": source },
+            "plugins": plugins,
+        }),
+        &key,
+    )
+}
+
 fn file_store(directory: &Path, package: &[u8], version: &str) -> String {
+    write_file_store(
+        directory,
+        package,
+        version,
+        &super::registry::digest(package),
+    )
+}
+
+fn write_file_store(directory: &Path, package: &[u8], version: &str, sha256: &str) -> String {
     let plugins = directory.join("plugins/test.fixture-plugin");
     fs::create_dir_all(&plugins).unwrap();
     fs::write(plugins.join(format!("{version}.nexuspkg")), package).unwrap();
     let manifest = MANIFEST.replace("\"1.2.0\"", &format!("\"{version}\""));
-    let catalog = serde_json::json!({
-        "schemaVersion": 1,
-        "plugins": [{
+    let path = directory.join("catalog.json");
+    let url = url::Url::from_file_path(&path).unwrap().to_string();
+    let entries = serde_json::json!([{
             "manifest": serde_json::from_str::<serde_json::Value>(&manifest).unwrap(),
             "description": "fixture",
             "changelog": "first",
+            "requiresLicense": false,
             "package": {
                 "url": format!("plugins/test.fixture-plugin/{version}.nexuspkg"),
                 "size": package.len(),
-                "sha256": super::registry::digest(package),
+                "sha256": sha256,
             }
-        }]
-    });
-    fs::write(
-        directory.join("catalog.json"),
-        serde_json::to_vec_pretty(&catalog).unwrap(),
-    )
-    .unwrap();
-    format!("file://{}", directory.to_string_lossy())
+    }]);
+    fs::write(path, signed_fixture_catalog(&url, entries)).unwrap();
+    url
 }
 
 #[test]
@@ -2619,13 +2712,7 @@ fn the_store_refuses_a_package_whose_checksum_does_not_match() {
     let temporary = tempfile::tempdir().unwrap();
     let store = temporary.path().join("store");
     fs::create_dir_all(&store).unwrap();
-    let url = file_store(&store, &fixture_package(), "1.2.0");
-    // Rewrite the catalog with a checksum that belongs to something else.
-    let catalog_path = store.join("catalog.json");
-    let mut catalog: serde_json::Value =
-        serde_json::from_slice(&fs::read(&catalog_path).unwrap()).unwrap();
-    catalog["plugins"][0]["package"]["sha256"] = serde_json::json!("0".repeat(64));
-    fs::write(&catalog_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    let url = write_file_store(&store, &fixture_package(), "1.2.0", &"0".repeat(64));
 
     let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
     host.set_store_url(Some(url)).unwrap();
@@ -2769,7 +2856,7 @@ fn signed_catalog_binds_the_license_service_to_the_configured_market() {
         super::market::Catalog::parse(
             br#"{"schemaVersion":1,"plugins":[]}"#,
             source,
-            catalog.signing_pin.as_deref(),
+            Some(catalog.identity.as_str()),
         )
         .is_err()
     );
@@ -2781,74 +2868,54 @@ fn signed_catalog_binds_the_license_service_to_the_configured_market() {
 }
 
 #[test]
-fn official_v2_catalog_keeps_the_existing_first_party_device_and_data() {
-    use super::market::{Catalog, LEGACY_CATALOG_URL};
+fn official_signed_catalog_supplies_authority_and_keeps_the_existing_device_and_data() {
+    use super::market::Catalog;
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use ring::{
-        rand::SystemRandom,
-        signature::{Ed25519KeyPair, KeyPair},
-    };
+    use ring::signature::{Ed25519KeyPair, KeyPair};
 
-    let source = "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog-v2.json";
-    let authority: serde_json::Value =
-        serde_json::from_str(include_str!("license-public-key.json")).unwrap();
+    let source = "https://first-party.example/catalog.json";
+    let key = Ed25519KeyPair::from_seed_unchecked(&[76; 32]).unwrap();
+    let issuer_key = Ed25519KeyPair::from_seed_unchecked(&[24; 32]).unwrap();
     let manifest: serde_json::Value =
         serde_json::from_str(&MANIFEST.replace("test.fixture-plugin", "studio.proxy-pool"))
             .unwrap();
-    let entry = serde_json::json!({
-        "manifest": manifest,
-        "package": { "url": "plugin.nexuspkg", "size": 1, "sha256": "a".repeat(64) },
-    });
-    let legacy = serde_json::json!({"schemaVersion": 1, "plugins": [entry.clone()]});
-    let legacy = Catalog::parse(legacy.to_string().as_bytes(), LEGACY_CATALOG_URL, None).unwrap();
-
-    let mut paid = entry;
-    paid["requiresLicense"] = serde_json::json!(true);
     let mut payload = serde_json::json!({
         "schemaVersion": 2,
         "market": {
-            "id": "raccoon-official",
+            "id": "fixture-market",
             "catalogUrl": source,
             "licensing": {
-                "issuerId": "raccoon-official",
+                "issuerId": "fixture-issuer",
                 "protocolVersion": 1,
-                "baseUrl": "https://raccoon-license.bravesfly.workers.dev",
-                "keyId": authority["keyId"],
-                "publicKey": authority["publicKey"],
+                "baseUrl": "https://issuer.example",
+                "keyId": "fixture-key",
+                "publicKey": STANDARD.encode(issuer_key.public_key().as_ref()),
             },
         },
-        "plugins": [paid],
+        "plugins": [{
+            "manifest": manifest,
+            "package": { "url": "plugin.nexuspkg", "size": 1, "sha256": "a".repeat(64) },
+            "requiresLicense": true,
+        }],
     });
-    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
-    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-    let envelope = |payload: &serde_json::Value| {
-        let bytes = serde_json::to_vec(payload).unwrap();
-        serde_json::json!({
-            "schemaVersion": 2,
-            "signed": {
-                "publicKey": STANDARD.encode(key.public_key().as_ref()),
-                "payload": STANDARD.encode(&bytes),
-                "signature": STANDARD.encode(key.sign(&bytes).as_ref()),
-            },
-        })
-        .to_string()
+    let parse = |payload: &serde_json::Value| {
+        Catalog::parse(&signed_catalog_envelope(payload, &key), source, None)
     };
-    let catalog = Catalog::parse(envelope(&payload).as_bytes(), source, None).unwrap();
+    let catalog = parse(&payload).unwrap();
     let id = "studio.proxy-pool";
-    let old_binding = legacy.binding(legacy.find(id).unwrap());
     let binding = catalog.binding(catalog.find(id).unwrap());
     let temporary = tempfile::tempdir().unwrap();
     let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
     let old_device = host
         .license
-        .status(LicenseTarget::for_plugin(id, Some(&old_binding)).unwrap())
+        .status(LicenseTarget::for_plugin(id, None).unwrap())
         .unwrap();
     let new_device = host
         .license
         .status(LicenseTarget::for_plugin(id, Some(&binding)).unwrap())
         .unwrap();
     assert_eq!(old_device.device_code, new_device.device_code);
-    let mut installed = InstalledPlugin {
+    let installed = InstalledPlugin {
         id: id.into(),
         version: "1.2.0".into(),
         manifest: catalog.find(id).unwrap().manifest.clone(),
@@ -2859,20 +2926,34 @@ fn official_v2_catalog_keeps_the_existing_first_party_device_and_data() {
         granted_capabilities: Vec::new(),
         granted_domains: Vec::new(),
         installed_at: "0".into(),
-        market: Some(old_binding),
+        market: Some(binding),
     };
-    assert!(super::same_install_source(&installed, Some(&binding)));
-    installed.market = Some(binding);
     assert_eq!(
         installed.storage_directory(host.root()),
         host.root().join("data/studio.proxy-pool")
     );
 
     payload["plugins"][0]["requiresLicense"] = serde_json::json!(false);
-    assert!(Catalog::parse(envelope(&payload).as_bytes(), source, None).is_err());
+    assert!(parse(&payload).is_err());
     payload["plugins"][0]["requiresLicense"] = serde_json::json!(true);
     payload["market"]["licensing"]["baseUrl"] = serde_json::json!("https://elsewhere.example");
-    assert!(Catalog::parse(envelope(&payload).as_bytes(), source, None).is_err());
+    let updated = parse(&payload).unwrap();
+    let updated_binding = updated.binding(updated.find(id).unwrap());
+    assert!(!super::same_install_source(
+        &installed,
+        Some(&updated_binding)
+    ));
+    assert_eq!(
+        updated_binding.authority.unwrap().base_url,
+        "https://elsewhere.example"
+    );
+    let foreign = Catalog::parse(
+        &signed_catalog_envelope(&payload, &issuer_key),
+        source,
+        None,
+    )
+    .unwrap();
+    assert!(foreign.find(id).is_none());
 }
 
 #[test]
@@ -2932,13 +3013,14 @@ fn a_released_build_lists_no_plugins_until_one_is_installed() {
 
 /// Serves exactly the two requests an install makes: the catalog, then the
 /// package it points at. Used to exercise the HTTP branch without a network.
-fn spawn_store(catalog: String, package: Vec<u8>) -> String {
+fn spawn_store(entries: serde_json::Value, package: Vec<u8>) -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    let catalog = signed_fixture_catalog(&format!("http://{address}/catalog-v2.json"), entries);
     std::thread::spawn(move || {
         let responses = [
-            ("/catalog.json", catalog.into_bytes()),
+            ("/catalog-v2.json", catalog),
             ("/plugins/test.fixture-plugin/1.2.0.nexuspkg", package),
         ];
         for (path, body) in responses {
@@ -2967,20 +3049,17 @@ fn spawn_store(catalog: String, package: Vec<u8>) -> String {
 fn a_package_installs_from_an_http_store() {
     let _slot = NodeSlot::acquire();
     let package = fixture_package();
-    let catalog = serde_json::json!({
-        "schemaVersion": 1,
-        "plugins": [{
+    let entries = serde_json::json!([{
             "manifest": serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap(),
             "description": "fixture",
+            "requiresLicense": false,
             "package": {
                 "url": "plugins/test.fixture-plugin/1.2.0.nexuspkg",
                 "size": package.len(),
                 "sha256": super::registry::digest(&package),
             }
-        }]
-    })
-    .to_string();
-    let base = spawn_store(catalog, package);
+    }]);
+    let base = spawn_store(entries, package);
 
     let temporary = tempfile::tempdir().unwrap();
     let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
@@ -2989,7 +3068,7 @@ fn a_package_installs_from_an_http_store() {
         status
             .catalog_url
             .as_deref()
-            .map(|url| url.ends_with("/catalog.json")),
+            .map(|url| url.ends_with("/catalog-v2.json")),
         Some(true)
     );
     assert_eq!(status.entries.len(), 1);
