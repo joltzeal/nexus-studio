@@ -1,5 +1,43 @@
 # 插件商店与在线更新
 
+## 0.2.7 市场授权与替换
+
+支持通过 HTTPS 分发的 `schemaVersion: 2` 签名目录。宿主读取 `signed.payload`
+中的市场 ID、目录 URL、授权服务及每个插件的授权要求。`payload`、`publicKey` 和
+`signature` 均使用标准 Base64。目录使用 Ed25519 签名，签名覆盖原始 payload
+字节及其中的包 SHA-256。宿主从用户配置的 HTTPS 地址首次读取时记录签名身份，
+之后拒绝该地址的签名身份变更和降级为无签名目录。
+
+运营方可以使用 `node scripts/sign-market.mjs INPUT_CATALOG MARKET_CONFIG ED25519_PEM OUTPUT_CATALOG`
+将现有 v1 目录生成签名 v2 目录。市场配置的结构如下，`licensing.publicKey` 填入
+签发租约的 Ed25519 原始 32 字节公钥的标准 Base64，目录签名私钥另行保管。
+
+```json
+{
+  "id": "example-market",
+  "catalogUrl": "https://market.example.com/catalog.json",
+  "licensedPluginIds": ["example.plugin"],
+  "licensing": {
+    "issuerId": "example-issuer",
+    "protocolVersion": 1,
+    "baseUrl": "https://license.example.com",
+    "keyId": "issuer-2026-01",
+    "publicKey": "<Base64>"
+  }
+}
+```
+
+免费市场填写空 `licensedPluginIds` 并省略 `licensing`。v2 目录需要 Raccoon
+0.2.7 或更高版本。现有 Raccoon v1 目录仍可用。第三方未签名目录继续承载免费插件。
+内置插件的 `studio.*` 保留 ID 仅由官方目录发布，避免第三方包取得按这些 ID
+绑定的主程序能力。其他插件 ID 可在不同市场重复发布，安装时由用户选择唯一来源。
+
+切换商店仅改变当前目录。安装记录保存实际来源、授权发行方和服务地址。
+当前市场有同 ID 的其他来源插件时，用户确认后才替换。批量更新跳过这类条目。
+宿主先验证新包和授权，再切换唯一安装记录。不同市场使用独立的设备密钥、租约和
+插件私有数据目录。替换时停止旧进程，保留旧来源的私有数据。
+没有记录来源的既有安装首次从商店覆盖时也需要确认。
+
 ## Raccoon 0.1.42 配套 AI 生图插件（2026-11-16）
 
 `studio.ai-image` 升至 `1.6.5`，最低主程序仍为 `0.1.38`。普通参考图按商品

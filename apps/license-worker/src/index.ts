@@ -6,6 +6,7 @@ interface Env {
   ADMIN_TOKEN: string
   LEASE_SIGNING_KEY: string
   LEASE_KEY_ID: string
+  LEASE_ISSUER_ID?: string
 }
 
 type Data = Record<string, unknown>
@@ -56,6 +57,7 @@ async function lease(
     refreshAfter: Math.min(expiresAt, now + 12 * 3600),
     revision,
     keyId: env.LEASE_KEY_ID,
+    ...(env.LEASE_ISSUER_ID ? { issuerId: env.LEASE_ISSUER_ID } : {}),
   }
   return json(await signLease(fields, env.LEASE_SIGNING_KEY))
 }

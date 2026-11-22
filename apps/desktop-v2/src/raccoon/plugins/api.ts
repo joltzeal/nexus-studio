@@ -7,7 +7,7 @@ import type {
 
 const PLUGIN_STATES = new Set<PluginState>(["available", "starting", "running", "retrying", "unlicensed"]);
 const LICENSE_STATES = new Set<PluginLicenseState>(["inactive", "active", "expired", "invalid", "needsConnection"]);
-const MARKET_STATES = new Set<MarketEntryState>(["install", "update", "current"]);
+const MARKET_STATES = new Set<MarketEntryState>(["install", "update", "current", "replace"]);
 
 function object(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(message);
@@ -55,7 +55,8 @@ function plugin(value: unknown): PluginView {
   const state = text(row, "state", "插件目录返回格式无效") as PluginState;
   if (!PLUGIN_STATES.has(state)
     || typeof row.enabled !== "boolean"
-    || typeof row.storageDurable !== "boolean") {
+    || typeof row.storageDurable !== "boolean"
+    || (row.licenseRequired !== undefined && typeof row.licenseRequired !== "boolean")) {
     throw new Error("插件目录返回格式无效");
   }
   return {
@@ -79,6 +80,7 @@ function plugin(value: unknown): PluginView {
     ui: row.ui == null ? null : PluginUiDeclarationSchema.parse(row.ui),
     installation: row.installation === undefined ? '' : text(row, 'installation', '插件安装标识无效'),
     runtimeGeneration: row.runtimeGeneration == null ? null : text(row, 'runtimeGeneration', '插件进程标识无效'),
+    licenseRequired: row.licenseRequired === true,
   };
 }
 
@@ -118,6 +120,10 @@ function marketEntry(value: unknown): MarketEntry {
     state,
     size: integer(row, "size", "插件商店返回格式无效"),
     checksum: text(row, "checksum", "插件商店返回格式无效"),
+    selection: text(row, "selection", "插件商店返回格式无效"),
+    licenseStatus: row.licenseStatus === null ? null : license(row.licenseStatus),
+    replacesInstallation: nullableText(row, "replacesInstallation", "插件商店返回格式无效"),
+    installedCatalogUrl: nullableText(row, "installedCatalogUrl", "插件商店返回格式无效"),
   };
 }
 
@@ -152,7 +158,8 @@ export const pluginApi = {
     return value.map(plugin);
   }),
   licenseStatus: () => call("plugin_license_status", undefined, licenses),
-  activate: (pluginId: string, card: string) => call("plugin_license_activate", { pluginId, card }, license),
+  activate: (pluginId: string, card: string, marketSelection?: string, installedSelection?: string) =>
+    call("plugin_license_activate", { pluginId, card, marketSelection, installedSelection }, license),
   installLocal: (source: string) => call("plugin_install", { source }, plugin),
   async uninstall(id: string): Promise<void> {
     try {
@@ -164,5 +171,6 @@ export const pluginApi = {
   marketStatus: () => call("plugin_market_status", undefined, market),
   setMarketStore: (url: string | null) => call("plugin_market_set_store", { url }, market),
   refreshMarket: () => call("plugin_market_refresh", undefined, market),
-  installMarket: (id: string) => call("plugin_market_install", { id }, plugin),
+  installMarket: (entry: MarketEntry, replacement?: string) =>
+    call("plugin_market_install", { id: entry.id, selection: entry.selection, replacement }, plugin),
 };

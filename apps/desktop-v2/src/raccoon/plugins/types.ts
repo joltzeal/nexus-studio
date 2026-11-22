@@ -2,7 +2,7 @@ import type { PluginUiDeclaration } from '@nexus/plugin-sdk/ui';
 
 export type PluginState = "available" | "starting" | "running" | "retrying" | "unlicensed";
 export type PluginLicenseState = "inactive" | "active" | "expired" | "invalid" | "needsConnection";
-export type MarketEntryState = "install" | "update" | "current";
+export type MarketEntryState = "install" | "update" | "current" | "replace";
 
 export type PluginPermissions = {
   networkDomains: string[];
@@ -32,6 +32,7 @@ export type PluginView = {
   ui?: PluginUiDeclaration | null;
   installation?: string;
   runtimeGeneration?: string | null;
+  licenseRequired?: boolean;
 };
 
 export type PluginLicenseStatus = {
@@ -53,6 +54,10 @@ export type MarketEntry = {
   state: MarketEntryState;
   size: number;
   checksum: string;
+  selection: string;
+  licenseStatus: PluginLicenseStatus | null;
+  replacesInstallation: string | null;
+  installedCatalogUrl: string | null;
 };
 
 export type MarketStatus = {

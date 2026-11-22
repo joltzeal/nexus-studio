@@ -13,9 +13,11 @@ mod tests;
 
 use self::discovery::{CandidateSource, DiscoveryReport};
 use self::install::InstallError;
-use self::license::{FIRST_PARTY_PLUGIN_IDS, LicenseError, LicenseStatus, PluginLicenseStore};
+use self::license::{
+    FIRST_PARTY_PLUGIN_IDS, LicenseError, LicenseStatus, LicenseTarget, PluginLicenseStore,
+};
 use self::manifest::{Capability, ManifestError, PluginManifest, PluginPermissions, StorageScope};
-use self::market::{Catalog, MarketError, MarketStore, StoreSettings};
+use self::market::{Catalog, MarketBinding, MarketError, MarketStore};
 use self::permissions::PermissionError;
 use self::process::{
     HostGateway, HostHandlerSlot, HostRequestHandler, NodeLaunchOptions, PluginCaller,
@@ -61,6 +63,8 @@ pub enum HostError {
     Market(MarketError),
     License(LicenseError),
     WorkspaceSource,
+    ReplacementRequired,
+    MarketChanged,
     NotFound,
 }
 
@@ -75,7 +79,9 @@ impl HostError {
             HostError::Process(error) => error.code(),
             HostError::Market(error) => error.code(),
             HostError::License(LicenseError::Unavailable | LicenseError::Storage) => "UNAVAILABLE",
-            HostError::WorkspaceSource => "INVALID_REQUEST",
+            HostError::WorkspaceSource
+            | HostError::ReplacementRequired
+            | HostError::MarketChanged => "INVALID_REQUEST",
             HostError::License(_) => "PERMISSION_DENIED",
         }
     }
@@ -92,6 +98,8 @@ impl HostError {
             HostError::Market(error) => error.message(),
             HostError::License(error) => error.message().into(),
             HostError::WorkspaceSource => "工作区源码插件由开发宿主直接加载".into(),
+            HostError::ReplacementRequired => "已安装同 ID 的其他来源插件，请先确认替换".into(),
+            HostError::MarketChanged => "商店条目或原安装已变更，请刷新后重新操作".into(),
         }
     }
 
@@ -181,10 +189,11 @@ pub struct PluginView {
     pub ui: Option<manifest::PluginUi>,
     pub installation: String,
     pub runtime_generation: Option<String>,
+    pub license_required: bool,
 }
 
 /// One row of the configured store. `state` is derived by comparing the
-/// published version with what is installed: `install`, `update` or `current`.
+/// published version and origin with what is installed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketEntryView {
@@ -200,6 +209,10 @@ pub struct MarketEntryView {
     pub state: String,
     pub size: u64,
     pub checksum: String,
+    pub selection: String,
+    pub license_status: Option<LicenseStatus>,
+    pub replaces_installation: Option<String>,
+    pub installed_catalog_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -229,6 +242,7 @@ pub struct PluginHost {
     lists_candidates: bool,
     market_store: MarketStore,
     market: Mutex<Catalog>,
+    market_operation: Mutex<()>,
     market_watch: Mutex<Option<Supervisor>>,
     network: Option<(crate::core::network_proxy::NetworkProxyStore, PathBuf)>,
     license: PluginLicenseStore,
@@ -304,6 +318,7 @@ impl PluginHost {
         let host = Self {
             market_store,
             market: Mutex::new(Catalog::default()),
+            market_operation: Mutex::new(()),
             market_watch: Mutex::new(None),
             network: None,
             license,
@@ -410,6 +425,7 @@ impl PluginHost {
                 manifest_digest: registry::digest(&manifest_bytes),
                 enabled: true,
                 installed_at: "workspace-source".into(),
+                market: None,
             };
             if plugins.contains_key(&id) {
                 eprintln!("Skipped duplicate workspace plugin id {id}");
@@ -432,6 +448,9 @@ impl PluginHost {
     }
 
     pub fn restart_for_network_change(&self) {
+        let Ok(lifecycle) = self.process_start.lock() else {
+            return;
+        };
         let ids: Vec<String> = self
             .processes
             .lock()
@@ -441,6 +460,7 @@ impl PluginHost {
             self.stop(&id);
             self.forget_attempt(&id);
         }
+        drop(lifecycle);
         self.supervise_once();
     }
 
@@ -456,47 +476,103 @@ impl PluginHost {
     pub fn license_statuses(
         &self,
     ) -> Result<std::collections::BTreeMap<String, LicenseStatus>, HostError> {
-        self.license
-            .status_all(FIRST_PARTY_PLUGIN_IDS)
-            .map_err(HostError::License)
+        let installed = self.snapshot()?;
+        let mut statuses = std::collections::BTreeMap::new();
+        for plugin in &installed.plugins {
+            if let Some(target) = LicenseTarget::for_plugin(&plugin.id, plugin.market.as_ref()) {
+                statuses.insert(
+                    plugin.id.clone(),
+                    self.license.status(target).map_err(HostError::License)?,
+                );
+            }
+        }
+        for &id in FIRST_PARTY_PLUGIN_IDS {
+            if !installed.plugins.iter().any(|plugin| plugin.id == id)
+                && let Some(target) = LicenseTarget::for_plugin(id, None)
+            {
+                statuses.insert(
+                    id.into(),
+                    self.license.status(target).map_err(HostError::License)?,
+                );
+            }
+        }
+        Ok(statuses)
     }
 
     pub fn activate_license(
         &self,
         plugin_id: &str,
         card: &str,
+        market_selection: Option<&str>,
+        installed_selection: Option<&str>,
     ) -> Result<LicenseStatus, HostError> {
-        if !FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id) {
-            return Err(HostError::NotFound);
-        }
+        let binding = match market_selection {
+            Some(selection) => {
+                let (catalog, entry) = self.selected_market_entry(plugin_id, Some(selection))?;
+                Some(catalog.binding(&entry))
+            }
+            None => match installed_selection {
+                Some(selection) => {
+                    let plugin = self.find(plugin_id)?;
+                    if installation_generation(&plugin) != selection {
+                        return Err(HostError::MarketChanged);
+                    }
+                    plugin.market
+                }
+                None => self.installed_market(plugin_id)?,
+            },
+        };
+        let target =
+            LicenseTarget::for_plugin(plugin_id, binding.as_ref()).ok_or(HostError::NotFound)?;
         let status = self
             .license
-            .activate(
-                plugin_id,
-                card,
-                self.network.as_ref().map(|(store, _)| store),
-            )
+            .activate(target, card, self.network.as_ref().map(|(store, _)| store))
             .map_err(HostError::License)?;
-        let _ = self.ensure_started(plugin_id);
+        if market_selection.is_none() || binding == self.installed_market(plugin_id)? {
+            let _ = self.ensure_started(plugin_id);
+        }
         Ok(status)
     }
 
-    fn requires_license(&self, id: &str) -> bool {
-        FIRST_PARTY_PLUGIN_IDS.contains(&id) && self.workspace_plugin(id).is_none()
+    fn installed_market(&self, id: &str) -> Result<Option<MarketBinding>, HostError> {
+        let registry = self.registry.lock().map_err(|_| HostError::Registry)?;
+        Ok(registry
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == id)
+            .and_then(|plugin| plugin.market.clone()))
     }
 
-    fn require_license(&self, id: &str) -> Result<(), HostError> {
-        if self.requires_license(id) {
+    fn require_source_license(
+        &self,
+        id: &str,
+        binding: Option<&MarketBinding>,
+    ) -> Result<(), HostError> {
+        if let Some(target) = LicenseTarget::for_plugin(id, binding) {
             self.license
-                .require_for(id, self.network.as_ref().map(|(store, _)| store))
+                .require_for(target, self.network.as_ref().map(|(store, _)| store))
                 .map_err(HostError::License)?;
         }
         Ok(())
     }
 
     fn require_local_license(&self, id: &str) -> Result<(), HostError> {
-        if self.requires_license(id) {
-            self.license.require_local(id).map_err(HostError::License)?;
+        if self.workspace_plugin(id).is_some() {
+            return Ok(());
+        }
+        let binding = self.installed_market(id)?;
+        self.require_local_source_license(id, binding.as_ref())
+    }
+
+    fn require_local_source_license(
+        &self,
+        id: &str,
+        binding: Option<&MarketBinding>,
+    ) -> Result<(), HostError> {
+        if let Some(target) = LicenseTarget::for_plugin(id, binding) {
+            self.license
+                .require_local(target)
+                .map_err(HostError::License)?;
         }
         Ok(())
     }
@@ -510,7 +586,7 @@ impl PluginHost {
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
         }
-        self.require_license(&caller.plugin_id)?;
+        self.require_local_license(&caller.plugin_id)?;
         let plugin = self.find(&caller.plugin_id)?;
         permissions::check_agent_gateway(&plugin)?;
         let current = self
@@ -632,7 +708,7 @@ impl PluginHost {
             let mut view = self.view(plugin);
             view.source_directory = candidates
                 .iter()
-                .find(|candidate| candidate.manifest.id == plugin.id)
+                .find(|candidate| plugin.market.is_none() && candidate.manifest.id == plugin.id)
                 .map(|candidate| candidate.directory.to_string_lossy().into_owned());
             views.push(view);
         }
@@ -672,6 +748,7 @@ impl PluginHost {
                 ui: candidate.manifest.ui.clone(),
                 installation: candidate.digest.clone(),
                 runtime_generation: None,
+                license_required: LicenseTarget::for_plugin(&candidate.manifest.id, None).is_some(),
             });
         }
         views.sort_by(|left, right| left.id.cmp(&right.id));
@@ -693,17 +770,17 @@ impl PluginHost {
 
     fn view(&self, plugin: &InstalledPlugin) -> PluginView {
         let workspace_source = self.workspace_plugin(&plugin.id).is_some();
-        let license_error =
-            if !workspace_source && FIRST_PARTY_PLUGIN_IDS.contains(&plugin.id.as_str()) {
-                self.license
-                    .status(&plugin.id)
-                    .ok()
-                    .filter(|status| status.state == "active")
-                    .is_none()
-                    .then_some("插件尚未激活或需要联网核验".to_string())
-            } else {
-                None
-            };
+        let target = (!workspace_source)
+            .then(|| LicenseTarget::for_plugin(&plugin.id, plugin.market.as_ref()))
+            .flatten();
+        let license_error = target.and_then(|target| {
+            self.license
+                .status(target)
+                .ok()
+                .filter(|status| status.state == "active")
+                .is_none()
+                .then_some("插件尚未激活或需要联网核验".to_string())
+        });
         let process = self
             .processes
             .lock()
@@ -774,6 +851,7 @@ impl PluginHost {
             runtime_generation: process
                 .as_ref()
                 .map(|process| process.caller().generation.clone()),
+            license_required: target.is_some(),
         }
     }
 
@@ -785,15 +863,18 @@ impl PluginHost {
         if self.workspace_plugin(&candidate.manifest.id).is_some() {
             return Err(HostError::WorkspaceSource);
         }
-        self.require_license(&candidate.manifest.id)?;
+        self.require_source_license(&candidate.manifest.id, None)?;
         let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
-        self.require_local_license(&candidate.manifest.id)?;
+        self.require_local_source_license(&candidate.manifest.id, None)?;
         let existing = self
             .snapshot()?
             .plugins
             .into_iter()
             .find(|plugin| plugin.id == candidate.manifest.id);
         if let Some(plugin) = &existing {
+            if plugin.market.is_some() {
+                return Err(HostError::ReplacementRequired);
+            }
             // Reinstalling the same version is how a package built from a
             // directory picks up new code; a lower version is still refused.
             if matches!(
@@ -825,6 +906,7 @@ impl PluginHost {
             granted_capabilities: candidate.manifest.capabilities.clone(),
             granted_domains: candidate.manifest.permissions.network_domains.clone(),
             installed_at: timestamp(),
+            market: None,
         };
         let mut document = self.snapshot()?;
         document.plugins.retain(|plugin| plugin.id != record.id);
@@ -853,7 +935,7 @@ impl PluginHost {
         let plugin = self.find(id)?;
         self.stop(id);
         self.forget_attempt(id);
-        install::uninstall(&self.root, &plugin.id, &plugin.version)?;
+        install::remove_version_directory(&self.root, &plugin.id, &plugin.directory)?;
         let mut document = self.snapshot()?;
         document.plugins.retain(|entry| entry.id != id);
         self.persist(&document)?;
@@ -866,36 +948,68 @@ impl PluginHost {
     /// Installs a `.nexuspkg` that was already downloaded and checksummed.
     /// Installing a higher version replaces the record in place and starts the
     /// new process; the previous version directory is removed afterwards.
+    #[cfg(test)]
     pub fn install_from_package(&self, bytes: &[u8]) -> Result<PluginView, HostError> {
         let contents = package::parse(bytes)
             .map_err(|error| HostError::Install(InstallError::Package(error)))?;
+        self.install_package(contents, None, None)
+    }
+
+    fn install_package(
+        &self,
+        contents: package::PackageContents,
+        binding: Option<MarketBinding>,
+        replacement: Option<&str>,
+    ) -> Result<PluginView, HostError> {
         let manifest = contents.manifest.clone();
         if self.workspace_plugin(&manifest.id).is_some() {
             return Err(HostError::WorkspaceSource);
         }
-        self.require_license(&manifest.id)?;
+        self.require_source_license(&manifest.id, binding.as_ref())?;
         let installation = self.process_start.lock().map_err(|_| HostError::Registry)?;
-        self.require_local_license(&manifest.id)?;
-        let existing = self
-            .snapshot()?
+        self.require_local_source_license(&manifest.id, binding.as_ref())?;
+        let mut document = self.snapshot()?;
+        let existing = document
             .plugins
-            .into_iter()
-            .find(|plugin| plugin.id == manifest.id);
-        if let Some(plugin) = &existing {
-            if matches!(
+            .iter()
+            .find(|plugin| plugin.id == manifest.id)
+            .cloned();
+        let replaces = existing
+            .as_ref()
+            .filter(|plugin| !same_install_source(plugin, binding.as_ref()));
+        match (replaces, replacement) {
+            (Some(_), None) => return Err(HostError::ReplacementRequired),
+            (Some(plugin), Some(expected)) if installation_generation(plugin) == expected => {}
+            (_, Some(_)) => return Err(HostError::MarketChanged),
+            (None, None) => {}
+        }
+        if let Some(plugin) = &existing
+            && replaces.is_none()
+            && matches!(
                 market::compare_versions(&manifest.version, &plugin.version),
                 Some(std::cmp::Ordering::Less)
-            ) {
-                return Err(HostError::Install(InstallError::Downgrade));
-            }
-            // The running process holds the old entry file open on Windows, so
-            // it has to stop before the version directory is replaced.
-            self.stop(&plugin.id);
-            self.forget_attempt(&plugin.id);
+            )
+        {
+            return Err(HostError::Install(InstallError::Downgrade));
         }
 
-        let directory =
-            install::write_version(&self.root, &manifest.id, &manifest.version, &contents.files)?;
+        // A market installation must leave the current files intact until the
+        // new registry record has been saved, including same-version replacements.
+        let directory_version = if binding.is_some() {
+            format!("{}-{}", manifest.version, uuid::Uuid::new_v4())
+        } else {
+            if let Some(plugin) = &existing {
+                self.stop(&plugin.id);
+                self.forget_attempt(&plugin.id);
+            }
+            manifest.version.clone()
+        };
+        let directory = install::write_version(
+            &self.root,
+            &manifest.id,
+            &directory_version,
+            &contents.files,
+        )?;
         let manifest_bytes = contents
             .read("nexus.plugin.json")
             .map(<[u8]>::to_vec)
@@ -911,18 +1025,27 @@ impl PluginHost {
             granted_capabilities: manifest.capabilities.clone(),
             granted_domains: manifest.permissions.network_domains.clone(),
             installed_at: timestamp(),
+            market: binding,
         };
-        let mut document = self.snapshot()?;
         document.plugins.retain(|plugin| plugin.id != record.id);
         document.plugins.push(record.clone());
-        self.persist(&document)?;
+        if let Err(error) = self.persist(&document) {
+            if record.market.is_some() {
+                let _ =
+                    install::remove_version_directory(&self.root, &record.id, &record.directory);
+            }
+            return Err(error);
+        }
+        self.stop(&record.id);
+        self.forget_attempt(&record.id);
         if let Ok(mut current) = self.registry.lock() {
             *current = document;
         }
         if let Some(previous) = existing
-            && previous.version != record.version
+            && previous.directory != record.directory
         {
-            let _ = install::uninstall(&self.root, &previous.id, &previous.version);
+            let _ =
+                install::remove_version_directory(&self.root, &previous.id, &previous.directory);
         }
         drop(installation);
         let _ = self.ensure_started(&record.id);
@@ -931,25 +1054,33 @@ impl PluginHost {
 
     pub fn market_status(&self) -> Result<MarketStatusView, HostError> {
         let settings = self.market_store.load();
-        let catalog = self
+        let mut catalog = self
             .market
             .lock()
             .map(|catalog| catalog.clone())
             .unwrap_or_default();
+        if settings.store_url.as_deref() != Some(catalog.source_url.as_str()) {
+            catalog = Catalog::default();
+        }
         let document = self.snapshot()?;
         let workspace = self.workspace_snapshot();
         let mut entries: Vec<MarketEntryView> = catalog
             .entries
             .iter()
-            .map(|entry| {
+            .map(|entry| -> Result<MarketEntryView, HostError> {
+                let binding = catalog.binding(entry);
+                let is_workspace = workspace.contains_key(&entry.manifest.id);
                 let installed = workspace.get(&entry.manifest.id).or_else(|| {
                     document
                         .plugins
                         .iter()
                         .find(|plugin| plugin.id == entry.manifest.id)
                 });
+                let replaces = installed
+                    .filter(|plugin| !is_workspace && !same_install_source(plugin, Some(&binding)));
                 let state = match installed {
                     None => "install",
+                    Some(_) if replaces.is_some() => "replace",
                     Some(plugin) => {
                         match market::compare_versions(&plugin.version, &entry.manifest.version) {
                             Some(std::cmp::Ordering::Less) => "update",
@@ -957,7 +1088,12 @@ impl PluginHost {
                         }
                     }
                 };
-                MarketEntryView {
+                let license_status = LicenseTarget::for_plugin(&entry.manifest.id, Some(&binding))
+                    .filter(|_| !is_workspace)
+                    .map(|target| self.license.status(target))
+                    .transpose()
+                    .map_err(HostError::License)?;
+                Ok(MarketEntryView {
                     id: entry.manifest.id.clone(),
                     name: entry.manifest.name.clone(),
                     version: entry.manifest.version.clone(),
@@ -970,9 +1106,18 @@ impl PluginHost {
                     state: state.into(),
                     size: entry.package.size,
                     checksum: entry.package.sha256.clone(),
-                }
+                    selection: catalog.selection(entry),
+                    license_status,
+                    replaces_installation: replaces.map(installation_generation),
+                    installed_catalog_url: installed.and_then(|plugin| {
+                        plugin
+                            .market
+                            .as_ref()
+                            .map(|market| market.catalog_url.clone())
+                    }),
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         entries.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(MarketStatusView {
             catalog_url: settings
@@ -989,7 +1134,11 @@ impl PluginHost {
     /// Stores the URL and refreshes once so the page shows the result of the
     /// address it just saved. An empty value clears the store.
     pub fn set_store_url(&self, url: Option<String>) -> Result<MarketStatusView, HostError> {
-        let mut settings = self.market_store.load();
+        let _operation = self
+            .market_operation
+            .lock()
+            .map_err(|_| HostError::Registry)?;
+        let mut settings = self.market_store.load_checked()?;
         match url {
             Some(value) if !value.trim().is_empty() => {
                 let normalized = market::normalize_store_url(&value)?;
@@ -997,7 +1146,7 @@ impl PluginHost {
                 settings.last_checked_at = None;
                 settings.last_error = None;
                 self.market_store.save(&settings)?;
-                self.refresh_market()
+                self.refresh_market_inner()
             }
             _ => {
                 settings.store_url = None;
@@ -1013,7 +1162,15 @@ impl PluginHost {
     }
 
     pub fn refresh_market(&self) -> Result<MarketStatusView, HostError> {
-        let mut settings = self.market_store.load();
+        let _operation = self
+            .market_operation
+            .lock()
+            .map_err(|_| HostError::Registry)?;
+        self.refresh_market_inner()
+    }
+
+    fn refresh_market_inner(&self) -> Result<MarketStatusView, HostError> {
+        let mut settings = self.market_store.load_checked()?;
         let Some(store_url) = settings.store_url.clone() else {
             return Err(HostError::Market(MarketError::NotConfigured));
         };
@@ -1025,16 +1182,22 @@ impl PluginHost {
             .transpose()
             .map_err(|error| HostError::Market(MarketError::Proxy(error)))?
             .unwrap_or_default();
-        let fetched = market::fetch_with_proxy(&catalog_url, market::MAX_CATALOG_BYTES, &proxy)
-            .and_then(|bytes| Catalog::parse(&bytes));
+        let fetched = market::fetch_catalog(&catalog_url, &proxy).and_then(|bytes| {
+            Catalog::parse(
+                &bytes,
+                &catalog_url,
+                settings.signing_pins.get(&catalog_url).map(String::as_str),
+            )
+        });
         match fetched {
             Ok(catalog) => {
-                if let Ok(mut slot) = self.market.lock() {
-                    *slot = catalog;
+                if let Some(pin) = &catalog.signing_pin {
+                    settings.signing_pins.insert(catalog_url, pin.clone());
                 }
                 settings.last_checked_at = Some(market::now_timestamp());
                 settings.last_error = None;
-                let _ = self.market_store.save(&settings);
+                self.market_store.save(&settings)?;
+                *self.market.lock().map_err(|_| HostError::Registry)? = catalog;
                 self.market_status()
             }
             Err(error) => {
@@ -1045,31 +1208,60 @@ impl PluginHost {
         }
     }
 
-    pub fn install_from_market(&self, id: &str) -> Result<PluginView, HostError> {
+    fn selected_market_entry(
+        &self,
+        id: &str,
+        selection: Option<&str>,
+    ) -> Result<(Catalog, market::Entry), HostError> {
+        let read = || -> Result<Option<(Catalog, market::Entry)>, HostError> {
+            let settings = self.market_store.load_checked()?;
+            let catalog = self.market.lock().map_err(|_| HostError::Registry)?;
+            if settings.store_url.as_deref() != Some(catalog.source_url.as_str()) {
+                return Ok(None);
+            }
+            let Some(entry) = catalog.find(id) else {
+                return Ok(None);
+            };
+            if selection.is_some_and(|selected| selected != catalog.selection(entry)) {
+                return Err(HostError::MarketChanged);
+            }
+            Ok(Some((catalog.clone(), entry.clone())))
+        };
+        if let Some(selected) = read()? {
+            return Ok(selected);
+        }
+        if selection.is_some() {
+            return Err(HostError::MarketChanged);
+        }
+        self.refresh_market()?;
+        read()?.ok_or(HostError::NotFound)
+    }
+
+    pub fn install_from_market(
+        &self,
+        id: &str,
+        selection: Option<&str>,
+        replacement: Option<&str>,
+    ) -> Result<PluginView, HostError> {
+        if replacement.is_some() && selection.is_none() {
+            return Err(HostError::MarketChanged);
+        }
         if self.workspace_plugin(id).is_some() {
             return Err(HostError::WorkspaceSource);
         }
-        self.require_license(id)?;
-        let mut entry = self
-            .market
-            .lock()
-            .ok()
-            .and_then(|catalog| catalog.find(id).cloned());
-        if entry.is_none() {
-            self.refresh_market()?;
-            entry = self
-                .market
-                .lock()
-                .ok()
-                .and_then(|catalog| catalog.find(id).cloned());
+        let (catalog, entry) = self.selected_market_entry(id, selection)?;
+        let binding = catalog.binding(&entry);
+        if replacement.is_none()
+            && self
+                .snapshot()?
+                .plugins
+                .iter()
+                .any(|plugin| plugin.id == id && !same_install_source(plugin, Some(&binding)))
+        {
+            return Err(HostError::ReplacementRequired);
         }
-        let entry = entry.ok_or(HostError::NotFound)?;
-        let settings: StoreSettings = self.market_store.load();
-        let store_url = settings
-            .store_url
-            .ok_or(HostError::Market(MarketError::NotConfigured))?;
-        let catalog_url = market::normalize_store_url(&store_url)?;
-        let base = market::store_base(&catalog_url);
+        self.require_source_license(id, Some(&binding))?;
+        let base = market::store_base(&catalog.source_url);
         let url = market::resolve_package_url(&base, &entry.package.url);
         let proxy = self
             .network
@@ -1082,16 +1274,19 @@ impl PluginHost {
         if registry::digest(&bytes) != entry.package.sha256 {
             return Err(HostError::Install(InstallError::ChecksumMismatch));
         }
-        let view = self.install_from_package(&bytes)?;
-        if view.id != entry.manifest.id {
-            // The catalog and the package disagree about identity: roll the
-            // install back rather than leave a surprise behind.
-            let _ = self.uninstall(&view.id);
+        let contents = package::parse(&bytes)
+            .map_err(|error| HostError::Install(InstallError::Package(error)))?;
+        if contents.manifest != entry.manifest {
             return Err(HostError::Install(InstallError::Package(
                 package::PackageError::MalformedHeader,
             )));
         }
-        Ok(view)
+        let _operation = self
+            .market_operation
+            .lock()
+            .map_err(|_| HostError::Registry)?;
+        self.selected_market_entry(id, Some(&catalog.selection(&entry)))?;
+        self.install_package(contents, Some(binding), replacement)
     }
 
     /// Checks the store on a timer. Failures are recorded on the settings and
@@ -1153,7 +1348,22 @@ impl PluginHost {
             return;
         };
         for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
-            if self.require_license(&plugin.id).is_err() {
+            if self.closing.load(Ordering::Acquire) {
+                break;
+            }
+            if self.workspace_plugin(&plugin.id).is_none() {
+                let _ = self.require_source_license(&plugin.id, plugin.market.as_ref());
+            }
+            let Ok(_lifecycle) = self.process_start.lock() else {
+                return;
+            };
+            let Ok(current) = self.find(&plugin.id) else {
+                continue;
+            };
+            if installation_generation(&current) != installation_generation(plugin) {
+                continue;
+            }
+            if self.require_local_license(&plugin.id).is_err() {
                 self.stop(&plugin.id);
                 continue;
             }
@@ -1172,7 +1382,7 @@ impl PluginHost {
                 continue;
             }
             self.stop(&plugin.id);
-            match self.ensure_started(&plugin.id) {
+            match self.ensure_started_locked(&plugin.id) {
                 Ok(_) => self.note_started(&plugin.id),
                 Err(_) => self.note_failure(&plugin.id),
             }
@@ -1219,6 +1429,8 @@ impl PluginHost {
         }
     }
 
+    // Call while holding process_start so the process is fully shut down before
+    // any replacement can use the same ID.
     fn stop(&self, id: &str) {
         let process = self
             .processes
@@ -1234,8 +1446,11 @@ impl PluginHost {
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
         }
-        let authorization = self.require_license(id);
         let _start = self.process_start.lock().map_err(|_| HostError::Registry)?;
+        self.ensure_started_locked(id)
+    }
+
+    fn ensure_started_locked(&self, id: &str) -> Result<Arc<PluginProcess>, HostError> {
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
         }
@@ -1243,7 +1458,7 @@ impl PluginHost {
         if current_authorization.is_err() {
             self.stop(id);
         }
-        authorization.and(current_authorization)?;
+        current_authorization?;
         if let Some(existing) = self
             .processes
             .lock()
@@ -1368,14 +1583,6 @@ impl PluginHost {
         if self.closing.load(Ordering::Acquire) {
             return Err(ProcessError::Cancelled.into());
         }
-        // A scoped UI request requires an already usable local lease. Renewal
-        // stays with the supervisor and cannot extend this request's deadline.
-        if self.requires_license(id) {
-            let status = self.license.status(id).map_err(HostError::License)?;
-            if status.state != "active" {
-                return Err(HostError::License(LicenseError::NotActivated));
-            }
-        }
         let workspace = self
             .workspace_plugins
             .lock()
@@ -1396,6 +1603,10 @@ impl PluginHost {
             || !process.is_alive()
         {
             return Err(PermissionError::StaleGeneration.into());
+        }
+        // A scoped UI call uses the selected installation's local lease.
+        if !workspace.contains_key(id) {
+            self.require_local_source_license(id, plugin.market.as_ref())?;
         }
         let ready = process.ready().ok_or(ProcessError::NotReady)?;
         permissions::check_call(plugin, &ready, capability, method)?;
@@ -1568,6 +1779,9 @@ impl PluginHost {
             supervisor.running.store(false, Ordering::Relaxed);
             let _ = supervisor.handle.join();
         }
+        let Ok(_lifecycle) = self.process_start.lock() else {
+            return;
+        };
         let ids: Vec<String> = self
             .processes
             .lock()
@@ -1703,6 +1917,10 @@ fn installation_generation(plugin: &InstalledPlugin) -> String {
     )
 }
 
+fn same_install_source(plugin: &InstalledPlugin, binding: Option<&MarketBinding>) -> bool {
+    plugin.market.as_ref() == binding
+}
+
 #[cfg(test)]
 mod ui_generation_tests {
     use super::*;
@@ -1738,6 +1956,7 @@ mod ui_generation_tests {
             granted_capabilities: vec![Capability::ProductCatalog],
             granted_domains: Vec::new(),
             installed_at: "fixture-installation".into(),
+            market: None,
         };
         let identity = format!("{}:missing-runtime", installation_generation(&plugin));
         host.registry.lock().unwrap().plugins.push(plugin);

@@ -50,10 +50,18 @@ pub async fn plugin_license_activate(
     state: State<'_, Arc<PluginHost>>,
     plugin_id: String,
     card: String,
+    market_selection: Option<String>,
+    installed_selection: Option<String>,
 ) -> Result<LicenseStatus, String> {
     let host = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        host.activate_license(&plugin_id, &card).map_err(message)
+        host.activate_license(
+            &plugin_id,
+            &card,
+            market_selection.as_deref(),
+            installed_selection.as_deref(),
+        )
+        .map_err(message)
     })
     .await
     .map_err(|_| "插件激活任务中断".to_string())?
@@ -91,8 +99,13 @@ pub async fn plugin_uninstall(state: State<'_, Arc<PluginHost>>, id: String) -> 
 }
 
 #[tauri::command]
-pub fn plugin_market_status(state: State<'_, Arc<PluginHost>>) -> Result<MarketStatusView, String> {
-    state.market_status().map_err(message)
+pub async fn plugin_market_status(
+    state: State<'_, Arc<PluginHost>>,
+) -> Result<MarketStatusView, String> {
+    let host = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || host.market_status().map_err(message))
+        .await
+        .map_err(|_| "插件商店状态读取任务中断".to_string())?
 }
 
 #[tauri::command]
@@ -122,11 +135,17 @@ pub async fn plugin_market_refresh(
 pub async fn plugin_market_install(
     state: State<'_, Arc<PluginHost>>,
     id: String,
+    selection: Option<String>,
+    replacement: Option<String>,
 ) -> Result<PluginView, String> {
     let state = Arc::clone(&state);
-    tauri::async_runtime::spawn_blocking(move || state.install_from_market(&id).map_err(message))
-        .await
-        .map_err(|_| "插件下载任务中断".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .install_from_market(&id, selection.as_deref(), replacement.as_deref())
+            .map_err(message)
+    })
+    .await
+    .map_err(|_| "插件下载任务中断".to_string())?
 }
 
 #[derive(Debug, Deserialize)]

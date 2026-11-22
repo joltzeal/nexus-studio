@@ -125,6 +125,26 @@ afterEach(async () => {
 })
 
 describe('license Worker with D1', () => {
+  it('identifies the configured issuer on both redemption and renewal', async () => {
+    env.LEASE_ISSUER_ID = 'market-a'
+    const result = await redeem(await issueCard())
+    expect(result.status).toBe(200)
+    const { payload } = (await result.json()) as {
+      payload: { issuerId: string; licenseId: string }
+    }
+    expect(payload.issuerId).toBe('market-a')
+
+    const refreshed = await call(
+      '/v1/leases/refresh',
+      { licenseId: payload.licenseId, devicePublicKey: await publicKey(device) },
+      device,
+    )
+    expect(refreshed.status).toBe(200)
+    await expect(refreshed.json()).resolves.toMatchObject({
+      payload: { issuerId: 'market-a', licenseId: payload.licenseId },
+    })
+  })
+
   it('issues plugin-scoped cards for all first-party plugin SKUs', async () => {
     const plugins = [
       'studio.address-generator',

@@ -1,10 +1,12 @@
 use super::manifest::{Capability, PluginManifest};
+use super::market::MarketBinding;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const REGISTRY_SCHEMA_VERSION: u8 = 1;
+const MAX_REGISTRY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -22,6 +24,8 @@ pub struct InstalledPlugin {
     pub granted_capabilities: Vec<Capability>,
     pub granted_domains: Vec<String>,
     pub installed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market: Option<MarketBinding>,
 }
 
 impl InstalledPlugin {
@@ -34,7 +38,15 @@ impl InstalledPlugin {
     }
 
     pub fn storage_directory(&self, plugins_root: &Path) -> PathBuf {
-        plugins_root.join("data").join(&self.id)
+        let data = plugins_root.join("data");
+        match self
+            .market
+            .as_ref()
+            .filter(|source| !source.legacy_official())
+        {
+            Some(source) => data.join("markets").join(&source.identity).join(&self.id),
+            None => data.join(&self.id),
+        }
     }
 }
 
@@ -80,7 +92,7 @@ impl RegistryStore {
             return Ok(RegistryDocument::default());
         }
         let bytes = fs::read(&self.path).map_err(|_| RegistryError::Io)?;
-        if bytes.len() > 256 * 1024 {
+        if bytes.len() > MAX_REGISTRY_BYTES {
             return Err(RegistryError::Corrupt);
         }
         let document: RegistryDocument =
@@ -94,6 +106,7 @@ impl RegistryStore {
             if plugin.manifest.id != plugin.id
                 || plugin.manifest.version != plugin.version
                 || plugin.manifest.validate().is_err()
+                || plugin.market.as_ref().is_some_and(|source| !source.valid())
             {
                 return Err(RegistryError::Corrupt);
             }
@@ -106,6 +119,9 @@ impl RegistryStore {
             fs::create_dir_all(parent).map_err(|_| RegistryError::Io)?;
         }
         let bytes = serde_json::to_vec_pretty(document).map_err(|_| RegistryError::Io)?;
+        if bytes.len() > MAX_REGISTRY_BYTES {
+            return Err(RegistryError::Io);
+        }
         let temporary = self.path.with_extension("json.tmp");
         {
             let mut file = OpenOptions::new()

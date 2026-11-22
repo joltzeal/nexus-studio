@@ -31,10 +31,7 @@ import { PluginWorkspace } from './PluginWorkspace'
 import { PluginConfigurationDialog } from './PluginConfigurationDialog'
 import { PluginNavigationIcon } from '../../raccoon/plugins/PluginNavigationIcon'
 import { pluginApi } from '../../raccoon/plugins/api'
-import {
-  hasUsablePluginLicense,
-  requiresPluginLicense,
-} from '../../raccoon/plugins/licensing'
+import { hasUsablePluginLicense } from '../../raccoon/plugins/licensing'
 import type {
   MarketEntry,
   MarketStatus,
@@ -108,11 +105,7 @@ function licenseText(status: PluginLicenseStatus | undefined): string {
   if (!status || status.state === 'inactive') return '需要激活'
   if (status.state === 'expired') return '授权已过期'
   if (status.state === 'invalid') return '授权无效'
-  if (status.state === 'needsConnection') {
-    return status.expiresAt
-      ? `离线可用至 ${new Date(status.expiresAt * 1000).toLocaleDateString()}`
-      : '需要联网核验'
-  }
+  if (status.state === 'needsConnection') return '需要联网核验'
   return status.expiresAt
     ? `已激活至 ${new Date(status.expiresAt * 1000).toLocaleDateString()}`
     : '已激活'
@@ -132,14 +125,20 @@ export function PluginsPage({
   const [notice, setNotice] = useState<string | null>(null)
   const [inspecting, setInspecting] = useState<PluginView | null>(null)
   const [marketInspecting, setMarketInspecting] = useState<MarketEntry | null>(null)
+  const [replacing, setReplacing] = useState<MarketEntry | null>(null)
   const [removing, setRemoving] = useState<PluginView | null>(null)
   const [storeOpen, setStoreOpen] = useState(false)
   const [configurationOpen, setConfigurationOpen] = useState(false)
   const [storeDraft, setStoreDraft] = useState('')
   const [storeError, setStoreError] = useState<string | null>(null)
-  const [licenseTarget, setLicenseTarget] = useState<{ id: string; name: string } | null>(
-    null,
-  )
+  const [licenseTarget, setLicenseTarget] = useState<{
+    id: string
+    name: string
+    state: PluginLicenseStatus | undefined
+    marketSelection?: string
+    installedSelection?: string
+    catalogUrl?: string | null
+  } | null>(null)
   const [cardDraft, setCardDraft] = useState('')
   const [licenseError, setLicenseError] = useState<string | null>(null)
 
@@ -198,7 +197,7 @@ export function PluginsPage({
       .filter(
         (plugin) =>
           plugin.source !== 'workspace' &&
-          requiresPluginLicense(plugin.id) &&
+          plugin.licenseRequired &&
           !hasUsablePluginLicense(licenses[plugin.id]?.state),
       )
       .map((plugin) => plugin.id),
@@ -208,8 +207,8 @@ export function PluginsPage({
           !plugins.some(
             (plugin) => plugin.id === entry.id && plugin.source === 'workspace',
           ) &&
-          requiresPluginLicense(entry.id) &&
-          !hasUsablePluginLicense(licenses[entry.id]?.state),
+          entry.licenseStatus !== null &&
+          !hasUsablePluginLicense(entry.licenseStatus.state),
       )
       .map((entry) => entry.id),
   ]).size
@@ -288,10 +287,29 @@ export function PluginsPage({
     setStoreOpen(true)
   }
 
-  function openLicense(id: string, name: string) {
-    setLicenseTarget({ id, name })
+  function openLicense(row: PluginRow) {
+    const entry = row.kind === 'market' ? row.market : null
+    setLicenseTarget({
+      id: row.id,
+      name: row.name,
+      state: entry ? (entry.licenseStatus ?? undefined) : licenses[row.id],
+      marketSelection: entry?.selection,
+      installedSelection: entry ? undefined : row.plugin?.installation || undefined,
+      catalogUrl: entry ? market?.catalogUrl : undefined,
+    })
     setCardDraft('')
     setLicenseError(null)
+  }
+
+  function installMarket(entry: MarketEntry, replacement?: string) {
+    const verb = replacement ? '替换' : entry.state === 'update' ? '更新' : '安装'
+    return run(
+      `market:${entry.id}`,
+      async () => {
+        await pluginApi.installMarket(entry, replacement)
+      },
+      `已${verb} ${entry.name}`,
+    )
   }
 
   function closeLicense() {
@@ -319,8 +337,15 @@ export function PluginsPage({
     setBusy(`license:${licenseTarget.id}`)
     setLicenseError(null)
     try {
-      const activated = await pluginApi.activate(licenseTarget.id, cardDraft.trim())
-      setLicenses((current) => ({ ...current, [licenseTarget.id]: activated }))
+      const activated = await pluginApi.activate(
+        licenseTarget.id,
+        cardDraft.trim(),
+        licenseTarget.marketSelection,
+        licenseTarget.installedSelection,
+      )
+      if (!licenseTarget.marketSelection) {
+        setLicenses((current) => ({ ...current, [licenseTarget.id]: activated }))
+      }
       closeLicense()
       try {
         await load()
@@ -363,8 +388,8 @@ export function PluginsPage({
       )
       const candidates = availableUpdates.filter(
         (entry) =>
-          !requiresPluginLicense(entry.id) ||
-          hasUsablePluginLicense(freshLicenses[entry.id]?.state),
+          entry.licenseStatus === null ||
+          hasUsablePluginLicense(entry.licenseStatus.state),
       )
       const skipped = availableUpdates.length - candidates.length
       const failures: string[] = []
@@ -372,7 +397,7 @@ export function PluginsPage({
       for (const [index, entry] of candidates.entries()) {
         setNotice(`正在更新 ${index + 1}/${candidates.length} · ${entry.name}`)
         try {
-          await pluginApi.installMarket(entry.id)
+          await pluginApi.installMarket(entry)
           updated++
         } catch (cause) {
           failures.push(`${entry.name}：${errorMessage(cause)}`)
@@ -400,25 +425,18 @@ export function PluginsPage({
     }
   }
 
-  function licensed(id: string): boolean {
-    return (
-      plugins.some((plugin) => plugin.id === id && plugin.source === 'workspace') ||
-      !requiresPluginLicense(id) ||
-      hasUsablePluginLicense(licenses[id]?.state)
-    )
+  function needsLicense(row: PluginRow): boolean {
+    return row.kind === 'market'
+      ? row.market?.licenseStatus != null
+      : row.plugin?.licenseRequired === true
+  }
+
+  function licensed(row: PluginRow): boolean {
+    const state = row.kind === 'market' ? row.market?.licenseStatus : licenses[row.id]
+    return !needsLicense(row) || hasUsablePluginLicense(state?.state)
   }
 
   function primaryAction(row: PluginRow) {
-    if (!licensed(row.id)) {
-      return (
-        <PluginRowAction
-          label="激活插件"
-          icon={<KeyIcon className="size-3.5" />}
-          disabled={busy !== null}
-          onClick={() => openLicense(row.id, row.name)}
-        />
-      )
-    }
     if (row.plugin?.source === 'workspace') {
       return (
         <Badge size="small" color="information">
@@ -426,8 +444,30 @@ export function PluginsPage({
         </Badge>
       )
     }
-    if (row.kind === 'market') {
-      if (row.market?.state === 'current')
+    if (row.kind === 'market' && row.market?.state === 'replace') {
+      const entry = row.market
+      return (
+        <PluginRowAction
+          label="替换已安装插件"
+          icon={<RefreshIcon className="size-3.5" />}
+          disabled={busy !== null}
+          onClick={() => setReplacing(entry)}
+        />
+      )
+    }
+    if (!licensed(row)) {
+      return (
+        <PluginRowAction
+          label="激活插件"
+          icon={<KeyIcon className="size-3.5" />}
+          disabled={busy !== null}
+          onClick={() => openLicense(row)}
+        />
+      )
+    }
+    if (row.kind === 'market' && row.market) {
+      const entry = row.market
+      if (entry.state === 'current')
         return (
           <Badge size="small" color="success">
             已安装
@@ -435,9 +475,9 @@ export function PluginsPage({
         )
       return (
         <PluginRowAction
-          label={row.market?.state === 'update' ? '更新插件' : '安装插件'}
+          label={entry.state === 'update' ? '更新插件' : '安装插件'}
           icon={
-            row.market?.state === 'update' ? (
+            entry.state === 'update' ? (
               <RefreshIcon className="size-3.5" />
             ) : (
               <DownloadIcon className="size-3.5" />
@@ -445,15 +485,7 @@ export function PluginsPage({
           }
           isLoading={busy === `market:${row.id}`}
           disabled={busy !== null}
-          onClick={() =>
-            void run(
-              `market:${row.id}`,
-              () => pluginApi.installMarket(row.id).then(() => {}),
-              row.market?.state === 'update'
-                ? `已更新 ${row.name}`
-                : `已安装 ${row.name}`,
-            )
-          }
+          onClick={() => void installMarket(entry)}
         />
       )
     }
@@ -476,19 +508,14 @@ export function PluginsPage({
       )
     }
     if (row.market?.state === 'update') {
+      const entry = row.market
       return (
         <PluginRowAction
           label="更新插件"
           icon={<RefreshIcon className="size-3.5" />}
-          isLoading={busy === `update:${row.id}`}
+          isLoading={busy === `market:${row.id}`}
           disabled={busy !== null}
-          onClick={() =>
-            void run(
-              `update:${row.id}`,
-              () => pluginApi.installMarket(row.id).then(() => {}),
-              `已更新 ${row.name}`,
-            )
-          }
+          onClick={() => void installMarket(entry)}
         />
       )
     }
@@ -519,11 +546,11 @@ export function PluginsPage({
         onSelect: () => setMarketInspecting(row.market),
       })
     }
-    if (requiresPluginLicense(row.id) && row.plugin?.source !== 'workspace') {
+    if (needsLicense(row)) {
       items.push({
-        label: licensed(row.id) ? '查看授权' : '激活插件',
+        label: licensed(row) ? '查看授权' : '激活插件',
         icon: <KeyIcon className="size-3.5" />,
-        onSelect: () => openLicense(row.id, row.name),
+        onSelect: () => openLicense(row),
       })
     }
     if (
@@ -534,7 +561,7 @@ export function PluginsPage({
       items.push({
         label: '从本地目录重新安装',
         icon: <RefreshIcon className="size-3.5" />,
-        disabled: busy !== null || !licensed(row.id),
+        disabled: busy !== null || !licensed(row),
         onSelect: () =>
           void run(
             `reinstall:${row.id}`,
@@ -622,7 +649,7 @@ export function PluginsPage({
               >
                 {STATE_LABELS[row.plugin.state]}
               </Badge>
-              {requiresPluginLicense(row.id) && row.plugin.source !== 'workspace' && (
+              {row.plugin.licenseRequired && (
                 <span className="truncate text-micro text-text-soft-400">
                   {licenseText(licenses[row.id])}
                 </span>
@@ -956,9 +983,11 @@ export function PluginsPage({
                 '安装状态',
                 marketInspecting.state === 'current'
                   ? '已是最新版本'
-                  : marketInspecting.state === 'update'
-                    ? `可从 v${marketInspecting.installedVersion ?? '未知'} 更新`
-                    : '尚未安装',
+                  : marketInspecting.state === 'replace'
+                    ? `与已安装的 v${marketInspecting.installedVersion ?? '未知'} 同 ID`
+                    : marketInspecting.state === 'update'
+                      ? `可从 v${marketInspecting.installedVersion ?? '未知'} 更新`
+                      : '尚未安装',
               ],
               ['能力', capabilityText(marketInspecting.capabilities)],
               ['大小', sizeText(marketInspecting.size)],
@@ -987,7 +1016,7 @@ export function PluginsPage({
         title={`激活 ${licenseTarget?.name ?? '插件'}`}
         subtitle={
           licenseTarget
-            ? `${licenseTarget.id} · ${licenseText(licenses[licenseTarget.id])}`
+            ? `${licenseTarget.id} · ${licenseText(licenseTarget.state)}`
             : undefined
         }
         dirty={cardDraft.trim() !== ''}
@@ -999,6 +1028,11 @@ export function PluginsPage({
         footerNote={licenseError}
       >
         <div className="py-inset">
+          {licenseTarget?.catalogUrl && (
+            <p className="mb-2 break-all text-help text-text-soft-400">
+              激活此商店的插件 · {licenseTarget.catalogUrl}
+            </p>
+          )}
           <Input
             label="插件激活码"
             placeholder="RAC-..."
@@ -1056,13 +1090,55 @@ export function PluginsPage({
       </DialogModal>
 
       <AlertModal
+        open={replacing !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy?.startsWith('market:')) setReplacing(null)
+        }}
+        status="warning"
+        title={`替换 ${replacing?.name ?? '插件'}？`}
+        description={
+          replacing
+            ? `已安装同 ID 的插件（v${replacing.installedVersion}，来源 ${replacing.installedCatalogUrl ?? '未记录'}）。确认后将用当前商店的 v${replacing.version} 替换。跨商店的授权和数据分别保留。`
+            : undefined
+        }
+        confirmLabel={
+          replacing?.licenseStatus &&
+          !hasUsablePluginLicense(replacing.licenseStatus.state)
+            ? '先激活新插件'
+            : '确认替换'
+        }
+        isLoading={replacing !== null && busy === `market:${replacing.id}`}
+        onConfirm={() => {
+          const entry = replacing
+          if (!entry?.replacesInstallation) return
+          if (entry.licenseStatus && !hasUsablePluginLicense(entry.licenseStatus.state)) {
+            setReplacing(null)
+            setCardDraft('')
+            setLicenseError(null)
+            setLicenseTarget({
+              id: entry.id,
+              name: entry.name,
+              state: entry.licenseStatus,
+              marketSelection: entry.selection,
+              catalogUrl: market?.catalogUrl,
+            })
+            return
+          }
+          void installMarket(entry, entry.replacesInstallation).then((installed) => {
+            if (installed) setReplacing(null)
+          })
+        }}
+        onCancel={() => setReplacing(null)}
+      />
+
+      <AlertModal
         open={removing !== null}
         onOpenChange={(open) => {
           if (!open && busy?.startsWith('uninstall:') !== true) setRemoving(null)
         }}
         status="error"
         title={`卸载 ${removing?.name ?? '插件'}`}
-        description="插件文件与它保存的数据都会被删除。重新使用时需要再次安装。"
+        description="插件将停止运行并移除安装文件。已保存的数据会保留。"
         confirmLabel="卸载"
         isLoading={removing ? busy === `uninstall:${removing.id}` : false}
         onConfirm={() => {

@@ -1,5 +1,10 @@
 # Raccoon plugin license Worker
 
+For a signed market catalog, configure `LEASE_ISSUER_ID` on that market's
+Worker. Its value must match the catalog's `licensing.issuerId`. Use the
+Worker's `LEASE_KEY_ID` and raw Ed25519 public key in the catalog. The existing
+official v1 catalog uses the legacy lease format with `LEASE_ISSUER_ID` unset.
+
 Cloudflare C3 TypeScript Worker + D1. Deployed at
 `https://raccoon-license.bravesfly.workers.dev` with the `raccoon-license` D1 database.
 The Desktop host gates all eleven first-party plugins independently; each plugin needs

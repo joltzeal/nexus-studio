@@ -755,6 +755,7 @@ fn permission_checkpoint_denies_undeclared_and_ungranted_capabilities() {
         granted_capabilities: vec![Capability::ProxyProvider],
         granted_domains: Vec::new(),
         installed_at: "0".into(),
+        market: None,
     };
     let ready = super::process::ReadyInfo {
         plugin_id: plugin.id.clone(),
@@ -1094,6 +1095,7 @@ fn a_disabled_registry_entry_and_its_grants_are_preserved_on_open() {
                 granted_capabilities: Vec::new(),
                 granted_domains: Vec::new(),
                 installed_at: "0".into(),
+                market: None,
             }],
         })
         .unwrap();
@@ -2146,6 +2148,7 @@ fn sales_agent_reverse_gateway_requires_exact_identity_grant_and_browser_permiss
         granted_capabilities: vec![Capability::SalesAgent],
         granted_domains: vec![],
         installed_at: "fixture-installation".into(),
+        market: None,
     };
     assert!(check_agent_gateway(&plugin).is_ok());
     plugin.granted_capabilities.clear();
@@ -2533,7 +2536,12 @@ fn catalog_drops_rows_it_cannot_trust() {
             }
         ]
     });
-    let parsed = super::market::Catalog::parse(catalog.to_string().as_bytes()).unwrap();
+    let parsed = super::market::Catalog::parse(
+        catalog.to_string().as_bytes(),
+        "file:///fixtures/catalog.json",
+        None,
+    )
+    .unwrap();
     assert_eq!(parsed.entries.len(), 1);
     assert_eq!(parsed.entries[0].manifest.id, "test.fixture-plugin");
 }
@@ -2578,7 +2586,9 @@ fn a_package_installs_from_the_store_and_starts() {
     assert_eq!(status.entries[0].state, "install");
     assert!(status.last_error.is_none());
 
-    let view = host.install_from_market("test.fixture-plugin").unwrap();
+    let view = host
+        .install_from_market("test.fixture-plugin", None, None)
+        .unwrap();
     assert_eq!(view.version, "1.2.0");
     assert_eq!(view.state, "running", "lastError: {:?}", view.last_error);
     assert!(view.methods.contains(&"test.echo".to_string()));
@@ -2619,10 +2629,155 @@ fn the_store_refuses_a_package_whose_checksum_does_not_match() {
 
     let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
     host.set_store_url(Some(url)).unwrap();
-    let error = host.install_from_market("test.fixture-plugin").unwrap_err();
+    let error = host
+        .install_from_market("test.fixture-plugin", None, None)
+        .unwrap_err();
     assert_eq!(error.code(), "INVALID_REQUEST");
     assert!(host.catalog().unwrap().is_empty());
     host.shutdown();
+}
+
+#[test]
+fn switching_stores_requires_confirmation_before_replacing_the_same_plugin_id() {
+    let _slot = NodeSlot::acquire();
+    let temporary = tempfile::tempdir().unwrap();
+    let package = fixture_package();
+    let first = file_store(&temporary.path().join("first"), &package, "1.2.0");
+    let second = file_store(&temporary.path().join("second"), &package, "1.2.0");
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+    host.set_store_url(Some(first)).unwrap();
+    let original = host
+        .install_from_market("test.fixture-plugin", None, None)
+        .unwrap();
+
+    let status = host.set_store_url(Some(second)).unwrap();
+    let entry = &status.entries[0];
+    assert_eq!(entry.state, "replace");
+    let original_record = host.find(&entry.id).unwrap();
+    assert_eq!(
+        host.install_from_market(&entry.id, Some(&entry.selection), None),
+        Err(HostError::ReplacementRequired)
+    );
+    assert_eq!(
+        host.install_from_market(
+            &entry.id,
+            Some(&entry.selection),
+            Some("stale-installation")
+        ),
+        Err(HostError::MarketChanged)
+    );
+    assert_eq!(
+        host.view_of(&entry.id).unwrap().installation,
+        original.installation
+    );
+
+    let incoming = temporary
+        .path()
+        .join("second/plugins/test.fixture-plugin/1.2.0.nexuspkg");
+    fs::write(&incoming, b"invalid package").unwrap();
+    assert!(
+        host.install_from_market(
+            &entry.id,
+            Some(&entry.selection),
+            Some(&original.installation)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        host.view_of(&entry.id).unwrap().installation,
+        original.installation
+    );
+    fs::write(incoming, package).unwrap();
+
+    let replacement = host
+        .install_from_market(
+            &entry.id,
+            Some(&entry.selection),
+            Some(&original.installation),
+        )
+        .unwrap();
+    assert_ne!(replacement.installation, original.installation);
+    assert_eq!(host.catalog().unwrap().len(), 1);
+    let new_record = host.find(&entry.id).unwrap();
+    assert_ne!(
+        new_record.storage_directory(host.root()),
+        original_record.storage_directory(host.root())
+    );
+    assert_eq!(host.market_status().unwrap().entries[0].state, "current");
+    host.shutdown();
+}
+
+#[test]
+fn signed_catalog_binds_the_license_service_to_the_configured_market() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    let source = "https://market.example/catalog.json";
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let public = STANDARD.encode(key.public_key().as_ref());
+    let payload = serde_json::json!({
+        "schemaVersion": 2,
+        "market": {
+            "id": "example",
+            "catalogUrl": source,
+            "licensing": {
+                "issuerId": "example-issuer",
+                "protocolVersion": 1,
+                "baseUrl": "https://license.example",
+                "keyId": "key-1",
+                "publicKey": public,
+            },
+        },
+        "plugins": [{
+            "manifest": serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap(),
+            "package": { "url": "plugin.nexuspkg", "size": 1, "sha256": "a".repeat(64) },
+            "requiresLicense": true,
+        }]
+    });
+    let mut outer = serde_json::json!({
+        "schemaVersion": 2,
+        "signed": {
+            "publicKey": public,
+            "payload": STANDARD.encode(payload.to_string()),
+            "signature": STANDARD.encode(key.sign(payload.to_string().as_bytes()).as_ref()),
+        },
+    });
+    let catalog =
+        super::market::Catalog::parse(outer.to_string().as_bytes(), source, None).unwrap();
+    let binding = catalog.binding(catalog.find("test.fixture-plugin").unwrap());
+    assert_eq!(
+        binding.authority.unwrap().base_url,
+        "https://license.example"
+    );
+    assert!(
+        super::market::Catalog::parse(
+            outer.to_string().as_bytes(),
+            "https://another.example/catalog.json",
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        super::market::Catalog::parse(outer.to_string().as_bytes(), source, Some("wrong-pin"))
+            .is_err()
+    );
+    assert!(
+        super::market::Catalog::parse(
+            br#"{"schemaVersion":1,"plugins":[]}"#,
+            source,
+            catalog.signing_pin.as_deref(),
+        )
+        .is_err()
+    );
+
+    let mut malicious = payload;
+    malicious["market"]["licensing"]["baseUrl"] = serde_json::json!("https://elsewhere.example");
+    outer["signed"]["payload"] = serde_json::json!(STANDARD.encode(malicious.to_string()));
+    assert!(super::market::Catalog::parse(outer.to_string().as_bytes(), source, None).is_err());
 }
 
 #[test]
@@ -2744,7 +2899,9 @@ fn a_package_installs_from_an_http_store() {
     );
     assert_eq!(status.entries.len(), 1);
 
-    let view = host.install_from_market("test.fixture-plugin").unwrap();
+    let view = host
+        .install_from_market("test.fixture-plugin", None, None)
+        .unwrap();
     assert_eq!(view.state, "running", "lastError: {:?}", view.last_error);
     host.shutdown();
 }

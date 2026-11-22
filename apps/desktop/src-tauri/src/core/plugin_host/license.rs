@@ -1,3 +1,5 @@
+use super::market::{LicenseAuthority, MarketBinding};
+use super::registry::digest;
 use crate::core::network_proxy::NetworkProxyStore;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::{
@@ -8,8 +10,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const FIRST_PARTY_PLUGIN_IDS: &[&str] = &[
@@ -25,10 +28,59 @@ pub const FIRST_PARTY_PLUGIN_IDS: &[&str] = &[
     "studio.vinted-monitor",
     "studio.window-sync",
 ];
-const WORKER_URL: &str = "https://raccoon-license.bravesfly.workers.dev";
+const LEGACY_WORKER_URL: &str = "https://raccoon-license.bravesfly.workers.dev";
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 const REFRESH_RETRY_INITIAL: Duration = Duration::from_secs(30);
 const REFRESH_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone, Copy)]
+pub struct LicenseTarget<'a> {
+    plugin_id: &'a str,
+    market: Option<(&'a str, &'a LicenseAuthority)>,
+}
+
+impl<'a> LicenseTarget<'a> {
+    pub fn for_plugin(plugin_id: &'a str, source: Option<&'a MarketBinding>) -> Option<Self> {
+        if let Some((binding, authority)) = source.and_then(|binding| {
+            binding
+                .authority
+                .as_ref()
+                .map(|authority| (binding, authority))
+        }) {
+            return Some(Self {
+                plugin_id,
+                market: Some((&binding.identity, authority)),
+            });
+        }
+        (source.is_none_or(MarketBinding::legacy_official)
+            && FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id))
+        .then_some(Self {
+            plugin_id,
+            market: None,
+        })
+    }
+
+    fn storage_key(self) -> String {
+        match self.market {
+            None => self.plugin_id.into(),
+            Some((market, authority)) => format!(
+                "market:{}",
+                digest(
+                    format!(
+                        "{market}\n{}\n{}\n{}\n{}\n{}\n{}",
+                        authority.issuer_id,
+                        authority.key_id,
+                        authority.public_key,
+                        authority.base_url,
+                        authority.protocol_version,
+                        self.plugin_id
+                    )
+                    .as_bytes()
+                )
+            ),
+        }
+    }
+}
 
 fn licensing_proxy_endpoint(endpoint: String) -> String {
     endpoint
@@ -79,6 +131,8 @@ struct LeasePayload {
     refresh_after: i64,
     revision: u64,
     key_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issuer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,10 +155,12 @@ struct RefreshBackoff {
     next_at: Instant,
 }
 
+type RenewalSlot = Arc<Mutex<Option<RefreshBackoff>>>;
+
 pub struct PluginLicenseStore {
     path: PathBuf,
     storage_lock: Mutex<()>,
-    renewal: HashMap<&'static str, Mutex<Option<RefreshBackoff>>>,
+    renewal: Mutex<HashMap<String, RenewalSlot>>,
     #[cfg(test)]
     test_signing_key: Mutex<Option<Vec<u8>>>,
 }
@@ -126,10 +182,7 @@ impl PluginLicenseStore {
         Ok(Self {
             path,
             storage_lock: Mutex::new(()),
-            renewal: FIRST_PARTY_PLUGIN_IDS
-                .iter()
-                .map(|&id| (id, Mutex::new(None)))
-                .collect(),
+            renewal: Mutex::default(),
             #[cfg(test)]
             test_signing_key: Mutex::new(None),
         })
@@ -139,19 +192,27 @@ impl PluginLicenseStore {
         Connection::open(&self.path).map_err(|_| LicenseError::Storage)
     }
 
-    fn renewal_slot(
-        &self,
-        plugin_id: &str,
-    ) -> Result<&Mutex<Option<RefreshBackoff>>, LicenseError> {
-        self.renewal.get(plugin_id).ok_or(LicenseError::Denied)
+    fn renewal_slot(&self, storage_key: &str) -> Result<RenewalSlot, LicenseError> {
+        let mut slots = self.renewal.lock().map_err(|_| LicenseError::Storage)?;
+        if let Some(slot) = slots.get(storage_key) {
+            return Ok(Arc::clone(slot));
+        }
+        let slot = Arc::new(Mutex::new(None));
+        slots.insert(storage_key.into(), Arc::clone(&slot));
+        Ok(slot)
     }
 
-    fn device(&self, connection: &Connection, plugin_id: &str) -> Result<Device, LicenseError> {
+    fn device(
+        &self,
+        connection: &Connection,
+        target: LicenseTarget<'_>,
+    ) -> Result<Device, LicenseError> {
+        let storage_key = target.storage_key();
         let stored: Option<(Vec<u8>, String, Option<String>, i64)> = connection
             .query_row(
                 "SELECT private_key, public_key, lease_json, last_seen_at
                  FROM plugin_entitlements WHERE plugin_id = ?1",
-                [plugin_id],
+                [&storage_key],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
@@ -161,7 +222,7 @@ impl PluginLicenseStore {
                 .map(|value| serde_json::from_str(&value).map_err(|_| LicenseError::Storage))
                 .transpose()?;
             return Ok(Device {
-                plugin_id: plugin_id.into(),
+                plugin_id: target.plugin_id.into(),
                 private_key,
                 public_key,
                 lease,
@@ -176,11 +237,11 @@ impl PluginLicenseStore {
             .execute(
                 "INSERT INTO plugin_entitlements (plugin_id, private_key, public_key)
                  VALUES (?1, ?2, ?3)",
-                params![plugin_id, pkcs8.as_ref(), public_key],
+                params![storage_key, pkcs8.as_ref(), public_key],
             )
             .map_err(|_| LicenseError::Storage)?;
         Ok(Device {
-            plugin_id: plugin_id.into(),
+            plugin_id: target.plugin_id.into(),
             private_key: pkcs8.as_ref().to_vec(),
             public_key,
             lease: None,
@@ -188,18 +249,18 @@ impl PluginLicenseStore {
         })
     }
 
-    pub fn status(&self, plugin_id: &str) -> Result<LicenseStatus, LicenseError> {
+    pub fn status(&self, target: LicenseTarget<'_>) -> Result<LicenseStatus, LicenseError> {
         let device = {
             let _guard = self
                 .storage_lock
                 .lock()
                 .map_err(|_| LicenseError::Storage)?;
-            self.device(&self.connection()?, plugin_id)?
+            self.device(&self.connection()?, target)?
         };
         let now = now();
         let state = match &device.lease {
             None => "inactive",
-            Some(lease) if self.verify(lease, &device, now).is_err() => "invalid",
+            Some(lease) if self.verify(target, lease, &device, now).is_err() => "invalid",
             Some(lease) if now >= lease.payload.expires_at => "expired",
             Some(lease) if now >= lease.payload.offline_until => "needsConnection",
             Some(_) => "active",
@@ -211,41 +272,31 @@ impl PluginLicenseStore {
         })
     }
 
-    pub fn status_all(
-        &self,
-        plugin_ids: &[&str],
-    ) -> Result<std::collections::BTreeMap<String, LicenseStatus>, LicenseError> {
-        plugin_ids
-            .iter()
-            .map(|id| Ok(((*id).to_string(), self.status(id)?)))
-            .collect()
-    }
-
     pub fn activate(
         &self,
-        plugin_id: &str,
+        target: LicenseTarget<'_>,
         card: &str,
         network: Option<&NetworkProxyStore>,
     ) -> Result<LicenseStatus, LicenseError> {
         if card.trim().is_empty() || card.len() > 128 {
             return Err(LicenseError::Denied);
         }
-        let mut retry = self
-            .renewal_slot(plugin_id)?
-            .lock()
-            .map_err(|_| LicenseError::Storage)?;
+        let storage_key = target.storage_key();
+        let renewal = self.renewal_slot(&storage_key)?;
+        let mut retry = renewal.lock().map_err(|_| LicenseError::Storage)?;
         let device = {
             let _guard = self
                 .storage_lock
                 .lock()
                 .map_err(|_| LicenseError::Storage)?;
-            self.device(&self.connection()?, plugin_id)?
+            self.device(&self.connection()?, target)?
         };
         let reply = self.request(
+            target,
             "/v1/cards/redeem",
             serde_json::json!({
                 "card": card.trim(),
-                "pluginId": plugin_id,
+                "pluginId": target.plugin_id,
                 "devicePublicKey": device.public_key
             }),
             &device,
@@ -256,9 +307,9 @@ impl PluginLicenseStore {
             .lock()
             .map_err(|_| LicenseError::Storage)?;
         let connection = self.connection()?;
-        let device = self.device(&connection, plugin_id)?;
-        self.verify_usable(&reply, &device, now())?;
-        self.save(&connection, plugin_id, &reply)?;
+        let device = self.device(&connection, target)?;
+        self.verify_usable(target, &reply, &device, now())?;
+        self.save(&connection, &storage_key, &reply)?;
         *retry = None;
         Ok(LicenseStatus {
             state: "active".into(),
@@ -269,12 +320,14 @@ impl PluginLicenseStore {
 
     pub fn require_for(
         &self,
-        plugin_id: &str,
+        target: LicenseTarget<'_>,
         network: Option<&NetworkProxyStore>,
     ) -> Result<(), LicenseError> {
-        let mut retry = match self.renewal_slot(plugin_id)?.try_lock() {
+        let storage_key = target.storage_key();
+        let renewal = self.renewal_slot(&storage_key)?;
+        let mut retry = match renewal.try_lock() {
             Ok(retry) => retry,
-            Err(TryLockError::WouldBlock) => return self.require_local(plugin_id),
+            Err(TryLockError::WouldBlock) => return self.require_local(target),
             Err(TryLockError::Poisoned(_)) => return Err(LicenseError::Storage),
         };
         let (device, license_id) = {
@@ -283,30 +336,45 @@ impl PluginLicenseStore {
                 .lock()
                 .map_err(|_| LicenseError::Storage)?;
             let connection = self.connection()?;
-            let device = self.device(&connection, plugin_id)?;
+            let device = self.device(&connection, target)?;
             let at = now();
             let lease = device.lease.as_ref().ok_or(LicenseError::NotActivated)?;
-            self.verify_unexpired(lease, &device, at)?;
+            self.verify_unexpired(target, lease, &device, at)?;
             let refresh_due =
                 at >= lease.payload.refresh_after || at >= lease.payload.offline_until;
             let retry_due = retry
                 .as_ref()
                 .is_none_or(|retry| Instant::now() >= retry.next_at);
             if !refresh_due || !retry_due {
-                return self.use_local_lease(&connection, lease, at);
+                return self.use_local_lease(&connection, &storage_key, lease, at);
             }
             let license_id = lease.payload.license_id.clone();
             (device, license_id)
         };
-        let response = self.request(
-            "/v1/leases/refresh",
-            serde_json::json!({
-                "licenseId": license_id,
-                "devicePublicKey": device.public_key
-            }),
-            &device,
-            network,
-        );
+        let response = self
+            .request(
+                target,
+                "/v1/leases/refresh",
+                serde_json::json!({
+                    "licenseId": license_id,
+                    "devicePublicKey": device.public_key
+                }),
+                &device,
+                network,
+            )
+            .and_then(|refreshed| {
+                self.verify_usable(target, &refreshed, &device, now())
+                    .map_err(|_| LicenseError::Unavailable)?;
+                if refreshed.payload.license_id != license_id
+                    || device
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| refreshed.payload.revision < lease.payload.revision)
+                {
+                    return Err(LicenseError::Unavailable);
+                }
+                Ok(refreshed)
+            });
         match response {
             Ok(refreshed) => {
                 let _guard = self
@@ -314,9 +382,7 @@ impl PluginLicenseStore {
                     .lock()
                     .map_err(|_| LicenseError::Storage)?;
                 let connection = self.connection()?;
-                let device = self.device(&connection, plugin_id)?;
-                self.verify_usable(&refreshed, &device, now())?;
-                self.save(&connection, plugin_id, &refreshed)?;
+                self.save(&connection, &storage_key, &refreshed)?;
                 *retry = None;
                 Ok(())
             }
@@ -328,7 +394,7 @@ impl PluginLicenseStore {
                 self.connection()?
                     .execute(
                         "UPDATE plugin_entitlements SET lease_json = NULL WHERE plugin_id = ?1",
-                        [plugin_id],
+                        [&storage_key],
                     )
                     .map_err(|_| LicenseError::Storage)?;
                 *retry = None;
@@ -342,28 +408,29 @@ impl PluginLicenseStore {
                     delay,
                     next_at: Instant::now() + delay,
                 });
-                self.require_local(plugin_id)
+                self.require_local(target)
             }
             Err(error) => Err(error),
         }
     }
 
-    pub fn require_local(&self, plugin_id: &str) -> Result<(), LicenseError> {
+    pub fn require_local(&self, target: LicenseTarget<'_>) -> Result<(), LicenseError> {
         let _guard = self
             .storage_lock
             .lock()
             .map_err(|_| LicenseError::Storage)?;
         let connection = self.connection()?;
-        let device = self.device(&connection, plugin_id)?;
+        let device = self.device(&connection, target)?;
         let lease = device.lease.as_ref().ok_or(LicenseError::NotActivated)?;
         let at = now();
-        self.verify_unexpired(lease, &device, at)?;
-        self.use_local_lease(&connection, lease, at)
+        self.verify_unexpired(target, lease, &device, at)?;
+        self.use_local_lease(&connection, &target.storage_key(), lease, at)
     }
 
     fn use_local_lease(
         &self,
         connection: &Connection,
+        storage_key: &str,
         lease: &SignedLease,
         at: i64,
     ) -> Result<(), LicenseError> {
@@ -374,7 +441,7 @@ impl PluginLicenseStore {
             .execute(
                 "UPDATE plugin_entitlements SET last_seen_at = ?1
                  WHERE plugin_id = ?2 AND last_seen_at < ?1",
-                params![at, lease.payload.plugin_id],
+                params![at, storage_key],
             )
             .map_err(|_| LicenseError::Storage)?;
         Ok(())
@@ -397,7 +464,22 @@ impl PluginLicenseStore {
         Ok(())
     }
 
-    fn verify(&self, lease: &SignedLease, device: &Device, now: i64) -> Result<(), LicenseError> {
+    fn verify(
+        &self,
+        target: LicenseTarget<'_>,
+        lease: &SignedLease,
+        device: &Device,
+        now: i64,
+    ) -> Result<(), LicenseError> {
+        if let Some((_, authority)) = target.market {
+            if lease.payload.issuer_id.as_deref() != Some(authority.issuer_id.as_str()) {
+                return Err(LicenseError::Denied);
+            }
+            return verify_lease(lease, device, now, &authority.key_id, &authority.public_key);
+        }
+        if lease.payload.issuer_id.is_some() {
+            return Err(LicenseError::Denied);
+        }
         #[cfg(test)]
         let test_key = self
             .test_signing_key
@@ -419,11 +501,12 @@ impl PluginLicenseStore {
 
     fn verify_unexpired(
         &self,
+        target: LicenseTarget<'_>,
         lease: &SignedLease,
         device: &Device,
         at: i64,
     ) -> Result<(), LicenseError> {
-        self.verify(lease, device, at)?;
+        self.verify(target, lease, device, at)?;
         if at >= lease.payload.expires_at {
             return Err(LicenseError::Expired);
         }
@@ -432,11 +515,12 @@ impl PluginLicenseStore {
 
     fn verify_usable(
         &self,
+        target: LicenseTarget<'_>,
         lease: &SignedLease,
         device: &Device,
         at: i64,
     ) -> Result<(), LicenseError> {
-        self.verify_unexpired(lease, device, at)?;
+        self.verify_unexpired(target, lease, device, at)?;
         if at >= lease.payload.offline_until {
             return Err(LicenseError::Unavailable);
         }
@@ -450,7 +534,8 @@ impl PluginLicenseStore {
             .lock()
             .map_err(|_| LicenseError::Storage)?;
         let connection = self.connection()?;
-        let device = self.device(&connection, plugin_id)?;
+        let target = LicenseTarget::for_plugin(plugin_id, None).ok_or(LicenseError::Denied)?;
+        let device = self.device(&connection, target)?;
         let mut test_key = self
             .test_signing_key
             .lock()
@@ -479,6 +564,7 @@ impl PluginLicenseStore {
             refresh_after: issued_at + 43_200,
             revision: 1,
             key_id: "test-only".into(),
+            issuer_id: None,
         };
         let signature = STANDARD.encode(
             pair.sign(&serde_json::to_vec(&payload).map_err(|_| LicenseError::Storage)?)
@@ -490,6 +576,7 @@ impl PluginLicenseStore {
 
     fn request(
         &self,
+        target: LicenseTarget<'_>,
         path: &str,
         input: serde_json::Value,
         device: &Device,
@@ -511,6 +598,7 @@ impl PluginLicenseStore {
             .map_err(|_| LicenseError::Unavailable)?;
         let mut client = reqwest::blocking::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15));
         if let Some(endpoint) = endpoint {
             client = client.proxy(
@@ -519,8 +607,11 @@ impl PluginLicenseStore {
             );
         }
         let client = client.build().map_err(|_| LicenseError::Unavailable)?;
+        let base_url = target.market.map_or(LEGACY_WORKER_URL, |(_, authority)| {
+            authority.base_url.trim_end_matches('/')
+        });
         let response = client
-            .post(format!("{WORKER_URL}{path}"))
+            .post(format!("{base_url}{path}"))
             .header("x-device-time", timestamp)
             .header("x-device-nonce", nonce)
             .header("x-device-signature", signature)
@@ -538,7 +629,11 @@ impl PluginLicenseStore {
         {
             return Err(LicenseError::Unavailable);
         }
-        let bytes = response.bytes().map_err(|_| LicenseError::Unavailable)?;
+        let mut bytes = Vec::new();
+        response
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| LicenseError::Unavailable)?;
         if bytes.len() as u64 > MAX_RESPONSE_BYTES {
             return Err(LicenseError::Unavailable);
         }
@@ -625,6 +720,7 @@ mod tests {
             offline_until: issued_at + 3600,
             revision: 1,
             key_id: "test-key".into(),
+            issuer_id: None,
         };
         let sign = |payload: LeasePayload| SignedLease {
             signature: STANDARD.encode(pair.sign(&serde_json::to_vec(&payload).unwrap()).as_ref()),
@@ -668,14 +764,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = PluginLicenseStore::new(directory.path().join("license.sqlite")).unwrap();
         store.seed_test_license("studio.sales-agent").unwrap();
-        assert_eq!(store.status("studio.sales-agent").unwrap().state, "active");
+        let activated = LicenseTarget::for_plugin("studio.sales-agent", None).unwrap();
+        let other = LicenseTarget::for_plugin("studio.window-sync", None).unwrap();
+        assert_eq!(store.status(activated).unwrap().state, "active");
+        assert_eq!(store.status(other).unwrap().state, "inactive");
+        assert!(store.require_for(activated, None).is_ok());
         assert_eq!(
-            store.status("studio.window-sync").unwrap().state,
-            "inactive"
-        );
-        assert!(store.require_for("studio.sales-agent", None).is_ok());
-        assert_eq!(
-            store.require_for("studio.window-sync", None),
+            store.require_for(other, None),
             Err(LicenseError::NotActivated)
         );
     }

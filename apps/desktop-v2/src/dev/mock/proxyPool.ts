@@ -35,6 +35,7 @@ const plugin = () => ({
   permissions: { networkDomains: ["api64.ipify.org", "proxycheck.io"], wantsBrowserAccess: false, storage: "private", secrets: [] },
   source: "preview", state: "running", enabled: true, methods, status: { preview: true },
   lastError: null, storageDurable: false, secretSlots: [], sourceDirectory: null,
+  licenseRequired: true,
 });
 const market = () => ({ storeUrl: null, catalogUrl: null, lastCheckedAt: null, lastError: null, entries: [] });
 

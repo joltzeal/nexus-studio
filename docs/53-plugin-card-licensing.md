@@ -1,5 +1,38 @@
 # 第一方插件卡密授权
 
+## 0.2.7 市场授权协议
+
+Rust 宿主统一执行卡密兑换、签名租约验证、可用性判定和后台续租。
+签名市场目录为受限插件提供授权发行方、验签公钥和 HTTPS 服务地址，
+详见[插件商店目录](25-plugin-market.md)。安装后按本地记录选择发行方。
+设备密钥、租约、重试退避按市场及发行方身份和插件 ID 隔离。
+已有官方目录和无来源安装沿用原 Worker 地址、原公钥和已有租约。
+这条兼容路径仅适用于既有第一方插件的旧契约。
+
+授权协议版本为 1。宿主调用以下两个端点。
+
+| 端点                      | 请求 JSON                             |
+| ------------------------- | ------------------------------------- |
+| `POST /v1/cards/redeem`   | `card`、`pluginId`、`devicePublicKey` |
+| `POST /v1/leases/refresh` | `licenseId`、`devicePublicKey`        |
+
+请求携带 `x-device-time`、`x-device-nonce`、`x-device-signature`。
+Ed25519 签名消息为 `v1\nPOST\n{path}\n{timestamp}\n{nonce}\n{sha256(body)}`。
+成功返回 `{ payload, signature }`。签名为标准 Base64，签发端按以下字段顺序
+紧凑序列化 JSON 并签名。时间戳统一为 UTC Unix 秒。
+
+```text
+v, licenseId, pluginId, devicePublicKey, issuedAt, expiresAt,
+offlineUntil, refreshAfter, revision, keyId, issuerId
+```
+
+新市场的 `issuerId` 必须与目录授权配置一致。使用 `apps/license-worker` 部署时，
+为该 Worker 配置同值的 `LEASE_ISSUER_ID` 和 `LEASE_KEY_ID`。
+主程序核对插件、设备、发行方、签名、租约版本和时间后决定可用性。
+续租 HTTP 403 清除本地租约。网络失败或无效响应触发退避，
+宿主在有效的离线窗口内继续使用旧租约。启动和 RPC 只判断本地租约，
+已安装插件由宿主监督循环在后台续租。
+
 `apps/license-worker` 已部署 Worker 和 D1，提供管理员发卡、单设备兑换、
 设备签名刷新、撤销与签名租约。Desktop 宿主对 11 个第一方插件独立执行授权门禁，
 覆盖安装、启动、重启、调用与 Agent gateway；插件中心提供逐插件激活入口。

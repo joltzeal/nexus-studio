@@ -169,8 +169,19 @@ pub fn write_version(
 
 pub fn uninstall(root: &Path, plugin_id: &str, version: &str) -> Result<(), InstallError> {
     let directory = version_directory(root, plugin_id, version);
+    remove_version_directory(root, plugin_id, &directory)
+}
+
+pub fn remove_version_directory(
+    root: &Path,
+    plugin_id: &str,
+    directory: &Path,
+) -> Result<(), InstallError> {
+    if directory.parent() != Some(root.join("installed").join(plugin_id).as_path()) {
+        return Err(InstallError::Io);
+    }
     if directory.exists() {
-        fs::remove_dir_all(&directory).map_err(|_| InstallError::Io)?;
+        fs::remove_dir_all(directory).map_err(|_| InstallError::Io)?;
     }
     if let Some(parent) = directory.parent() {
         // Drop the per-plugin directory once its last version is gone.
