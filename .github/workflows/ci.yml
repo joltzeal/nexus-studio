@@ -26,8 +26,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build:v2
+      - run: pnpm build
+      - run: pnpm exec vitest run
       - run: pnpm runtime:check
 
   native:
@@ -51,7 +51,7 @@ jobs:
       - name: Install the project Rust toolchain
         run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build:v2
+      - run: pnpm build
       - name: Verify Windows packaged runtime
         if: runner.os == 'Windows'
         run: pnpm runtime:stage

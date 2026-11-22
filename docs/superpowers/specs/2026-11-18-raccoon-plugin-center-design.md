@@ -28,13 +28,13 @@ desktop-v2 使用 ShardBrowser Launcher 页面骨架。
 
 “已安装”页签列定义如下。
 
-| 列 | 内容 | 建议宽度 |
-| --- | --- | --- |
+| 列   | 内容                           | 建议宽度                |
+| ---- | ------------------------------ | ----------------------- |
 | 插件 | 32px 中性图标块、名称、插件 ID | `minmax(250px, 1.35fr)` |
-| 能力 | manifest capability 列表 | `minmax(170px, 1fr)` |
-| 版本 | 当前版本和可更新版本 | `minmax(110px, .55fr)` |
-| 状态 | 宿主进程状态和授权状态 | `minmax(210px, 1.2fr)` |
-| 操作 | 主操作和更多菜单 | DataList 固定操作轨 |
+| 能力 | manifest capability 列表       | `minmax(170px, 1fr)`    |
+| 版本 | 当前版本和可更新版本           | `minmax(110px, .55fr)`  |
+| 状态 | 宿主进程状态和授权状态         | `minmax(210px, 1.2fr)`  |
+| 操作 | 主操作和更多菜单               | DataList 固定操作轨     |
 
 “插件商店”沿用前三列。最后一列显示发布说明和包大小。行主操作根据状态显示安装、更新、激活或“已安装”。
 
@@ -70,22 +70,22 @@ desktop-v2 使用 ShardBrowser Launcher 页面骨架。
 
 宿主状态映射如下。
 
-| 宿主值 | 页面文案 | Badge |
-| --- | --- | --- |
-| `available` | 本地可安装 | gray |
-| `starting` | 启动中 | information |
-| `running` | 运行中 | success |
-| `retrying` | 后台重试 | warning |
-| `unlicensed` | 需要激活 | warning |
+| 宿主值       | 页面文案   | Badge       |
+| ------------ | ---------- | ----------- |
+| `available`  | 本地可安装 | gray        |
+| `starting`   | 启动中     | information |
+| `running`    | 运行中     | success     |
+| `retrying`   | 后台重试   | warning     |
+| `unlicensed` | 需要激活   | warning     |
 
 第一方插件授权映射如下。
 
-| 授权值 | 页面文案 |
-| --- | --- |
-| `inactive` | 需要激活 |
-| `active` | 已激活或已激活至指定日期 |
-| `expired` | 授权已过期 |
-| `invalid` | 授权无效 |
+| 授权值            | 页面文案                         |
+| ----------------- | -------------------------------- |
+| `inactive`        | 需要激活                         |
+| `active`          | 已激活或已激活至指定日期         |
+| `expired`         | 授权已过期                       |
+| `invalid`         | 授权无效                         |
 | `needsConnection` | 需要联网核验或离线可用至指定日期 |
 
 进程状态和授权状态分别展示。安装、进程启动和业务可调用性由宿主继续分别判定。

@@ -32,12 +32,14 @@
 ### Task 1: Product boundary adapter
 
 **Files:**
+
 - Create: `apps/desktop-v2/src/raccoon/plugins/products/model.ts`
 - Create: `apps/desktop-v2/src/raccoon/plugins/products/parse.ts`
 - Create: `apps/desktop-v2/src/raccoon/plugins/products/api.ts`
 - Test: `apps/desktop-v2/src/raccoon/plugins/products/api.test.ts`
 
 **Interfaces:**
+
 - Consumes `@nexus/plugin-contracts/products` and v2 `callPlugin`.
 - Produces `productApi.list/get/save/remove/import/listPublications`, image upload/read/discard helpers, and `PRODUCT_METHODS` page gates.
 
@@ -49,11 +51,13 @@
 ### Task 2: Product domain forms and AI import adapter
 
 **Files:**
+
 - Create: `apps/desktop-v2/src/raccoon/plugins/products/form.ts`
 - Create: `apps/desktop-v2/src/raccoon/plugins/products/ai-import.ts`
 - Test: `apps/desktop-v2/src/raccoon/plugins/products/ai-import.test.ts`
 
 **Interfaces:**
+
 - Consumes Task 1 adapter and existing AI image `getRecord/readImageBytes`.
 - Produces form defaults/serialization, product error mapping, `importGenerationProduct(recordId, options)` and process identity checks.
 
@@ -65,6 +69,7 @@
 ### Task 3: v2 product pages
 
 **Files:**
+
 - Create: `apps/desktop-v2/src/pages/plugins/products/index.tsx`
 - Create: `apps/desktop-v2/src/pages/plugins/products/ProductEditor.tsx`
 - Create: `apps/desktop-v2/src/pages/plugins/products/ImportDialog.tsx`
@@ -73,6 +78,7 @@
 - Modify: `apps/desktop-v2/src/pages/plugins/PluginPage.tsx`
 
 **Interfaces:**
+
 - Consumes product adapter, form helpers, and AI import orchestration.
 - Produces lazy `ProductsPage` for `studio.products`, with base/optional method gates and bounded responsive filters.
 
@@ -84,6 +90,7 @@
 ### Task 4: Documentation and verification
 
 **Files:**
+
 - Modify: `docs/43-products-plugin.md`
 - Modify: `docs/09-quality-and-testing.md`
 - Modify: `apps/desktop-v2/README.md`

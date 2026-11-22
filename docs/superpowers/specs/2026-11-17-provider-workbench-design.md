@@ -21,16 +21,16 @@ Raccoon 手动启用、下载和维护内核的实验性接入。不再向用户
 当前已有 `BrowserProvider` trait 与 `ProviderRegistry::get(providerId)` 分派，
 所以**不需要从头发明全局工厂**。但下列代码把 CloakBrowser 视作默认的内置特例：
 
-| 层 | 具体位置 | 当前耦合 |
-| --- | --- | --- |
-| 接入初始化 | `browser/connection_store.rs` | 每次初始化自动建 `builtin-cloakbrowser`；外部接入需人工确认。 |
-| 调度与依赖注入 | `window_service.rs` | 持有独立 `builtin: Arc<CloakBrowserProvider>`，并在多个创建、恢复、启动和安装路径对其分支。 |
-| 记录与启动 | `window_store.rs`、`window_service.rs` | 只有 CloakBrowser 可存内核路径、版本及种子；其他 Provider 被判作厂商外部环境。 |
-| 受管运行时 | `browser/providers/cloakbrowser.rs`、`kernel_service.rs`、`packages/browser-runtime` | SDK 授权、内核安装、启动、代理、进程锁和数据快照专属。 |
-| 数据升级及迁移 | `database.rs`、`transfer_service.rs` | 既有数据库一次性升级写入 CloakBrowser 绑定；加密快照限定该 Provider。 |
-| 页面 | `spaces-page.tsx`、`window-editor.tsx`、`browser-connections-page.tsx` | 默认 Tab 为 CloakBrowser，列表显示「内置浏览器」，表单按 provider ID 特判。 |
-| Agent 与插件契约 | `packages/plugin-sdk/src/agent.ts`、`core/agent/settings.rs` | 并发字段及可用 Provider 枚举写死为 CloakBrowser、AdsPower、比特浏览器；AliasMode 尚不在 Agent 允许列表。 |
-| 发行 | `plugin_service.rs`、`runtime_paths.rs`、`scripts/stage-desktop-runtime.mjs` | 启动和打包要求 Node/浏览器适配器文件，Node 同时被插件宿主使用，不能因为下调 CloakBrowser 优先级就把 Node 删掉。 |
+| 层               | 具体位置                                                                             | 当前耦合                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 接入初始化       | `browser/connection_store.rs`                                                        | 每次初始化自动建 `builtin-cloakbrowser`；外部接入需人工确认。                                                   |
+| 调度与依赖注入   | `window_service.rs`                                                                  | 持有独立 `builtin: Arc<CloakBrowserProvider>`，并在多个创建、恢复、启动和安装路径对其分支。                     |
+| 记录与启动       | `window_store.rs`、`window_service.rs`                                               | 只有 CloakBrowser 可存内核路径、版本及种子；其他 Provider 被判作厂商外部环境。                                  |
+| 受管运行时       | `browser/providers/cloakbrowser.rs`、`kernel_service.rs`、`packages/browser-runtime` | SDK 授权、内核安装、启动、代理、进程锁和数据快照专属。                                                          |
+| 数据升级及迁移   | `database.rs`、`transfer_service.rs`                                                 | 既有数据库一次性升级写入 CloakBrowser 绑定；加密快照限定该 Provider。                                           |
+| 页面             | `spaces-page.tsx`、`window-editor.tsx`、`browser-connections-page.tsx`               | 默认 Tab 为 CloakBrowser，列表显示「内置浏览器」，表单按 provider ID 特判。                                     |
+| Agent 与插件契约 | `packages/plugin-sdk/src/agent.ts`、`core/agent/settings.rs`                         | 并发字段及可用 Provider 枚举写死为 CloakBrowser、AdsPower、比特浏览器；AliasMode 尚不在 Agent 允许列表。        |
+| 发行             | `plugin_service.rs`、`runtime_paths.rs`、`scripts/stage-desktop-runtime.mjs`         | 启动和打包要求 Node/浏览器适配器文件，Node 同时被插件宿主使用，不能因为下调 CloakBrowser 优先级就把 Node 删掉。 |
 
 因此，这是**跨页面、调度、存储契约、Agent 和发行的重构**；单独增加一个
 `createProvider()` 工厂函数不能移除上述硬编码。保留一个 Provider 注册入口和
@@ -38,11 +38,11 @@ Raccoon 手动启用、下载和维护内核的实验性接入。不再向用户
 
 ## 方案比较
 
-| 方式 | 结果 |
-| --- | --- |
-| 只改默认 Tab、设置文案，保留内置特判 | 成本低，但新内核仍被当成外部接入或依赖 CloakBrowser SDK，长期持续分叉。 |
-| **调整接入模型，区分受管内核和本机厂商 API；统一编排，只在 Provider 内实现差异** | 改动跨多层，但与 Raccoon 的中间层定位一致，可逐步上线。 |
-| 把全部厂商逻辑合入单一超级工厂 | 失去清晰的错误、代理和恢复边界；难以保持不同内核的版本与数据隔离。 |
+| 方式                                                                             | 结果                                                                    |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 只改默认 Tab、设置文案，保留内置特判                                             | 成本低，但新内核仍被当成外部接入或依赖 CloakBrowser SDK，长期持续分叉。 |
+| **调整接入模型，区分受管内核和本机厂商 API；统一编排，只在 Provider 内实现差异** | 改动跨多层，但与 Raccoon 的中间层定位一致，可逐步上线。                 |
+| 把全部厂商逻辑合入单一超级工厂                                                   | 失去清晰的错误、代理和恢复边界；难以保持不同内核的版本与数据隔离。      |
 
 选第二种。工厂/Registry 负责发现、创建和分派 Provider，不负责自行实现所有
 浏览器逻辑。

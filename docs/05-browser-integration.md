@@ -35,8 +35,8 @@ UI Kit 弹窗框架；Workspace 由已配置连接读取，以 connectionId 隔�
 `browser_operation_get` 可读回明确失败或已提交的单条操作。
 Folder 使用 UUID 及连接范围，新数据库 schema 为 4。
 
-原生开发入口使用 `apps/desktop/src-tauri/tauri.v2.conf.json`，0.1 默认发行
-脚本仍使用旧前端。普通浏览器在原根地址进入明确标注的样例预览。
+原生开发和发行共用 `apps/desktop/src-tauri/tauri.conf.json`。
+普通浏览器打开 Vite 地址时进入明确标注的样例预览。
 受控 Raccoon IPC 的前端生命周期测试已执行；Rust 编译、真实内核、代理、
 原生重启及 Windows 验收尚待完成。实际检查见质量记录。
 

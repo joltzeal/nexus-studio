@@ -14,7 +14,7 @@
 | `market/catalog-v2.json`                 | 桌面应用读取的签名商店目录                                | 否                 |
 | `packages/plugin-contracts/`             | 主应用需要的纯数据类型、方法名和校验规则                  | 是                 |
 | `packages/plugin-sdk/`                   | 通用插件协议、manifest、能力与生命周期                    | 是                 |
-| `apps/desktop/src/features/`             | 随主应用分发的页面与插件调用适配器                        | 是                 |
+| `apps/desktop-v2/src/raccoon/plugins/`   | 随主应用分发的页面与插件调用适配器                        | 是                 |
 
 `market/` 不是运行中的业务数据库，也不是第二份插件源码。插件安装后的私有数据仍在应用数据目录，升级发布包不替换这些数据。
 

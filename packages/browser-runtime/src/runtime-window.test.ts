@@ -100,8 +100,9 @@ describe('version 2 built-in runtime window', () => {
     ['unknown override field', { brand: 'Acme' }],
   ])('rejects a malformed CloakBrowser override: %s', (_label, cloakbrowser) => {
     const record = runtimeWindow()
-    record.settings.cloakbrowser = cloakbrowser
-    expect(() => parseRuntimeWindow(record)).toThrow('PROFILE_RECORD_INVALID')
+    expect(() =>
+      parseRuntimeWindow({ ...record, settings: { ...record.settings, cloakbrowser } }),
+    ).toThrow('PROFILE_RECORD_INVALID')
   })
 
   it('accepts an unresolved plugin proxy for offline snapshots without resolving or rewriting it', () => {

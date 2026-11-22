@@ -14,7 +14,8 @@ describe('preferences contract', () => {
   it('does not store a manually named workspace in 0.2', () => {
     expect(DEFAULT_PREFERENCES.schemaVersion).toBe(2)
     expect(
-      PreferencesSchema.safeParse({ ...DEFAULT_PREFERENCES, workspaceName: 'Old studio' }).success,
+      PreferencesSchema.safeParse({ ...DEFAULT_PREFERENCES, workspaceName: 'Old studio' })
+        .success,
     ).toBe(false)
   })
 

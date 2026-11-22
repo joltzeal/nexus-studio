@@ -1,18 +1,18 @@
 import { defineConfig } from "@playwright/test";
 
 // A parallel worktree sets E2E_PORT to run its own dev server beside the main
-// tree's 1420. It runs no preview server: the timing projects stay with the
+// tree's 1422. It runs no preview server: the timing projects stay with the
 // main tree.
 const lanePort = process.env.E2E_PORT;
 // E2E_BUILT=1 serves the app projects from a production build of the mock
 // (dist-mock-e2e, `vite preview`) instead of the dev server: several times
-// faster to load, and it fails fast. It needs E2E_PORT: the main tree's 1420
+// faster to load, and it fails fast. It needs E2E_PORT: the main tree's 1422
 // and 4173 belong to the owner.
 const built = process.env.E2E_BUILT === "1";
 if (built && !lanePort) {
-  throw new Error("E2E_BUILT=1 needs E2E_PORT (a free port; never 1420 or 4173, which are the owner's).");
+  throw new Error("E2E_BUILT=1 needs E2E_PORT (a free port other than 1422 and 4173).");
 }
-const devURL = `http://127.0.0.1:${lanePort ?? "1420"}`;
+const devURL = `http://127.0.0.1:${lanePort ?? "1422"}`;
 // A lane measures timing on a preview build of its own, on its own port
 // (PERF_PORT), never the main tree's 4173.
 const perfPort = lanePort ? process.env.PERF_PORT : undefined;

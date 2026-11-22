@@ -89,8 +89,12 @@ async function main(): Promise<void> {
       }
       const seats = await getSessionSeats(key)
       const count = (value: unknown) =>
-        typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
-      process.stdout.write(`${JSON.stringify({ active: count(seats.active), limit: count(seats.limit) })}\n`)
+        typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+          ? value
+          : null
+      process.stdout.write(
+        `${JSON.stringify({ active: count(seats.active), limit: count(seats.limit) })}\n`,
+      )
     } catch {
       throw new Error('LICENSE_SEATS_UNAVAILABLE')
     }
@@ -146,7 +150,8 @@ async function main(): Promise<void> {
         const state = await snapshotProfile(userDataDir, record)
         process.stdout.write(`${JSON.stringify(state)}\n`)
       } else {
-        if (sessionId && !/^[a-f0-9]{32}$/.test(sessionId)) throw new Error('PROFILE_SESSION_INVALID')
+        if (sessionId && !/^[a-f0-9]{32}$/.test(sessionId))
+          throw new Error('PROFILE_SESSION_INVALID')
         await openProfile(userDataDir, record, commands, sessionId)
       }
     } finally {

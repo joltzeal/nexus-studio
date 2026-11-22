@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -54,7 +62,11 @@ if (
   throw new Error('Review the bundled Node version before changing .node-version')
 }
 const interruptedStage = await hasInterruptedStage()
-if ((existsSync(runtime) || existsSync(binaries)) && !existsSync(marker) && !interruptedStage) {
+if (
+  (existsSync(runtime) || existsSync(binaries)) &&
+  !existsSync(marker) &&
+  !interruptedStage
+) {
   throw new Error('Refusing to replace runtime files not created by this script')
 }
 if (interruptedStage) {

@@ -15,8 +15,8 @@ describe('desktop release workflow', () => {
   it('builds the v2 macOS targets with their runtime', () => {
     expect(workflow).toContain('target: aarch64-apple-darwin')
     expect(workflow).toContain('target: x86_64-apple-darwin')
-    expect(workflow).toContain('pnpm build:v2')
-    expect(workflow).toContain('--config src-tauri/tauri.v2.conf.json')
+    expect(workflow).toContain('run: pnpm build\n')
+    expect(workflow).toContain('--config src-tauri/tauri.release.conf.json')
     expect(workflow).toContain('pnpm install --frozen-lockfile')
     expect(workflow).toContain('pnpm runtime:stage')
     expect(workflow).toContain('pnpm rust:test')
@@ -56,7 +56,7 @@ describe('desktop release workflow', () => {
     expect(workflow).toContain('插件包独立发布至 R2')
   })
 
-  it('keeps release tags out of the legacy desktop CI build', () => {
+  it('keeps release tags out of the branch CI build', () => {
     expect(ciWorkflow).toContain("branches: ['**']")
   })
 })

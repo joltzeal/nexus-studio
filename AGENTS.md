@@ -1,7 +1,7 @@
 # Raccoon 工程约定
 
 修改前先读 `docs/README.md`、`docs/03-development-standards.md` 和对应模块文档。
-当前处于 0.2 重写阶段。`apps/desktop-v2` 是基于 ShardBrowser Launcher 前端源码的独立 UI 基础；`apps/desktop/src-tauri` 是现有 Raccoon Rust 后端。两者**尚未接通**，现有桌面包仍使用 `apps/desktop/src`。不得把网页预览、开发期 mock 或旧后端已存在的接口称为 0.2 已可用的真实集成。
+`apps/desktop-v2` 是 Raccoon 0.2 的桌面前端，通过 `apps/desktop/src-tauri/tauri.conf.json` 接入 Rust 原生宿主。主分支的开发与发行使用这一入口。网页预览和开发期 mock 仅用于验证界面，真实 Provider 和安装验证以对应记录为准。
 0.2 不在正常运行路径兼容 0.1 的旧 schema、旧 IPC 或旧数据；未来单独设计显式运行的 0.1→0.2 迁移脚本。不得为了迁移阻塞 0.2 的新契约，也不得删除旧用户数据。
 
 ## 0.2 产品模型（目标契约）
@@ -58,7 +58,7 @@
 ## 编码与长期边界
 
 - 使用 strict TypeScript 与边界数据校验，跨包通过公开导出访问。
-- `apps/desktop` 的旧主题规则只适用于旧前端；v2 遵循导入的 ShardX UI Kit、Tailwind 与原版页面组件，不在业务 JSX 中写原始色值或新建第二套全局视觉体系。
+- 前端遵循导入的 ShardX UI Kit、Tailwind 与原版页面组件，不在业务 JSX 中写原始色值或新建第二套全局视觉体系。
 - 测试有意义的持久化、状态转换、关系一致性、协议失败与恢复行为。
 - Rust 是 SQLite 唯一所有者，命令使用结构化错误；明文存储不能描述成加密或系统凭据保管。
 - 现有 SQLite 的窗口 schema 2 和迁移 manifest 3 属于旧应用当前事实；0.2 建立独立目录和新 schema，正常启动不读取 0.1 数据。迁移后续由单独显式脚本负责备份、冲突报告和核对，不在新应用内增加运行时兼容读取。

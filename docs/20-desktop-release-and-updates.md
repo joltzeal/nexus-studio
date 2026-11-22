@@ -1,5 +1,8 @@
 # 桌面发行与应用内更新
 
+当前发行使用 `apps/desktop-v2` 和 `apps/desktop/src-tauri/tauri.conf.json`。
+0.1 的版本记录保留作历史参考，现行流程见下方「CI 与自动发布」和「更新通道」。
+
 ## 0.1.43 AliasMode 实验性接入与商品流程（2026-11-17）
 
 实验室开关显示 AliasMode 连接和首页窗口 Tab；受限的本机 API Provider 支持创建、
@@ -565,7 +568,7 @@ macOS 继续执行最终包内运行时检查。`publish` 作业依赖整个 `pa
 `~/Library/Application Support/Nexus Studio Release/updater.key`；丢失密钥后，
 现有安装无法无缝接受新签名。发版前同步根 `package.json`、
 `apps/desktop/package.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`
-和 `src-tauri/tauri.conf.json`、`src-tauri/tauri.v2.conf.json`、
+和 `src-tauri/tauri.conf.json`、
 `apps/desktop-v2/package.json` 中的应用版本。侧栏与关于页共用桌面包版本，
 插件保留各自独立的版本号。
 未提供 `APPLE_SIGNING_IDENTITY` 时，macOS 工作流使用临时 ad-hoc 签名使
@@ -595,18 +598,14 @@ macOS 发行构建完成后必须运行 `pnpm runtime:verify-packaged`，使用�
 
 ## 更新通道
 
-安装包的 updater 公钥固定在 `tauri.release.conf.json`；关于页只在发行版
-提供“检查更新”。检查清单用于发现新版本，更新包在下载和安装时由 Tauri 按固定公钥
-验证签名；检查成功不等于已完成包验签。更新可下载、安装并重启，运行中窗口必须先停止。
+安装包的 updater 公钥和地址固定在 `tauri.conf.json`。发行版启动后检查清单并后台下载，
+下载完成后在侧栏显示升级入口。Tauri 使用固定公钥验证更新包签名。
 更新不会删除本机 SQLite、插件私有数据或浏览器 user-data。
 
-`joltzeal/nexus-studio` 已于 2026-10-23 改为公开仓库，
-`v0.1.2` 已正式发布，Release 中包含安装文件、更新包、签名与 `latest.json`。
-源码中的发行配置使用
-`https://github.com/joltzeal/nexus-studio/releases/latest/download/latest.json`。
-2026-10-23 实际匿名请求确认主仓库最新正式版本为 `v0.1.2`，
-该清单返回 HTTP 200；旧 `joltzeal/nexus-studio-updates` 仓库及其清单均返回 HTTP 404。
-打开或关闭代理不能修复不存在的更新源。
+0.2 检查 `https://github.com/joltzeal/nexus-studio/releases/download/raccoon-v2/latest.json`。
+排查时先对照清单的 `version` 和 `platforms`，再看对应标签的 `package` 与 `publish` 作业。
+清单版本与已安装版本相同时，检查不会发现更高版本。当前发布矩阵仅写入 macOS 条目，
+Windows 客户端需要相应的 Windows 更新产物及清单条目。
 
 检查更新通过 Rust `core/updater_service.rs` 的 `app_update_check` 入口，
 每次读取本机应用代理设置，再为 Tauri updater 的检查与下载客户端配置同一路由。
@@ -622,12 +621,6 @@ macOS 发行构建完成后必须运行 `pnpm runtime:verify-packaged`，使用�
 代理设置、网络与超时错误。应用级控制器持有正在下载及已下载的更新，关于页只订阅状态，
 离开页面不会丢弃下载结果或重复下载；失败及应用退出时释放相应资源。
 检查失败不会显示“当前已是最新版本”；安装失败不会触发重启。
-
-更改源码和发布主仓库 Release 都不会修改已安装应用中的旧端点。
-已经安装、仍指向 `nexus-studio-updates` 的版本需要手动安装包含修复的构建，
-或另行提供旧地址的兼容更新源。本次未创建兼容仓库、修改公开 Release、
-上传清单或重新签名发布包；现有 `v0.1.2` 资产不会因源码修复而变化。
-尚未执行新安装包的真实覆盖安装与重启，不将端点及单元测试结果视为该发行验证。
 
 ## 本机验证记录（2026-10-22）
 

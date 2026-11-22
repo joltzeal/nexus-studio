@@ -270,7 +270,7 @@ describe('vendored Windows NSIS installer', () => {
         'utf8',
       ),
     )
-    expect(config.identifier).toBe('com.nexusstudio.desktop')
+    expect(config.identifier).toBe('com.raccoon.desktop')
     expect(
       config.bundle.windows.nsis?.installMode ??
         schema.definitions.NsisConfig.properties.installMode.default,

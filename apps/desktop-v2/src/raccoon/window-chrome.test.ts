@@ -6,29 +6,19 @@ const tauri = new URL('../../../desktop/src-tauri/', import.meta.url)
 const json = (path: string) => JSON.parse(readFileSync(new URL(path, tauri), 'utf8'))
 
 test('v2 dev and build use an overlay without removing native macOS traffic lights', () => {
-  const base = json('tauri.conf.json')
-  const v2 = json('tauri.v2.conf.json')
-  const merged = { ...base.app, ...v2.app }
-  assert.equal(merged.windows.length, 1)
-  const main = merged.windows[0]
+  const config = json('tauri.conf.json')
+  assert.equal(config.identifier, 'com.raccoon.desktop')
+  assert.equal(config.app.windows.length, 1)
+  const main = config.app.windows[0]
   assert.equal(main.label ?? 'main', 'main')
   assert.equal(main.titleBarStyle, 'Overlay')
   assert.equal(main.hiddenTitle, true)
   assert.notEqual(main.decorations, false)
   assert.deepEqual(main.trafficLightPosition, { x: 14, y: 21 })
   assert.equal(main.dragDropEnabled, false)
-  assert.equal(main.minWidth, base.app.windows[0].minWidth)
-  assert.equal(main.minHeight, base.app.windows[0].minHeight)
-  assert.equal(v2.build.frontendDist, '../../desktop-v2/dist')
-})
-
-test('native startup applies embedded v2 chrome before creating windows', () => {
-  const source = readFileSync(new URL('src/lib.rs', tauri), 'utf8')
-  const context = source.indexOf('let mut context = tauri::generate_context!();')
-  const configure = source.indexOf('configure_main_window(context.config_mut());')
-  const build = source.indexOf('.build(context)')
-  assert.ok(context >= 0 && configure > context && build > configure)
-  assert.match(source, /include_str!\("\.\.\/tauri\.v2\.conf\.json"\)/)
+  assert.equal(main.minWidth, 960)
+  assert.equal(main.minHeight, 700)
+  assert.equal(config.build.frontendDist, '../../desktop-v2/dist')
 })
 
 test('native chrome controls and theme sync have narrowly scoped window permissions', () => {

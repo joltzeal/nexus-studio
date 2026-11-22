@@ -4,19 +4,19 @@ Source is ProxyShard/ShardBrowser at commit `99e780e2e685e5b3b5357c5baee8796e10b
 
 ## Files and upstream origins
 
-| Local file | Upstream source or responsibility |
-| --- | --- |
-| `runner.rs` | `src-tauri/src/runner.rs`, including step dispatch, branches, retry, canvas order, loops, deadlines, subflows, v1 and v2 module dispatch |
-| `cdp.rs` | `src-tauri/src/cdp.rs`, including WebSocket command/reply transport, DOM/shadow lookup, picking, navigation and screencast events |
-| `wasm.rs` | `src-tauri/src/wasm.rs`, including Wasmtime ABI, variable filtering, grants, manifests, resource limits, module installation and state |
-| `modguard.rs` | `src-tauri/src/modguard.rs`, preserving dynamic-action restrictions |
-| `requests.rs` | `src-tauri/src/requests.rs`, preserving Rust HTTP fingerprinting and cookie sessions |
-| `db.rs` | `src-tauri/src/db.rs`, preserving SQLite, PostgreSQL, MySQL/MariaDB and MongoDB drivers |
-| `model.rs` | Project, Block, Branch and RunSettings from `src-tauri/src/space/local/automation.rs` |
-| `host.rs` | Explicit Raccoon service boundary, immutable scope, capability and durable-intent types |
-| `chromium.rs` | Standard Chromium Input, Runtime/isolated world and Network/Fetch adaptation |
-| `mod.rs` | Public module registration and exports |
-| `test_host.rs` | Controlled test host used by runner tests |
+| Local file     | Upstream source or responsibility                                                                                                        |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `runner.rs`    | `src-tauri/src/runner.rs`, including step dispatch, branches, retry, canvas order, loops, deadlines, subflows, v1 and v2 module dispatch |
+| `cdp.rs`       | `src-tauri/src/cdp.rs`, including WebSocket command/reply transport, DOM/shadow lookup, picking, navigation and screencast events        |
+| `wasm.rs`      | `src-tauri/src/wasm.rs`, including Wasmtime ABI, variable filtering, grants, manifests, resource limits, module installation and state   |
+| `modguard.rs`  | `src-tauri/src/modguard.rs`, preserving dynamic-action restrictions                                                                      |
+| `requests.rs`  | `src-tauri/src/requests.rs`, preserving Rust HTTP fingerprinting and cookie sessions                                                     |
+| `db.rs`        | `src-tauri/src/db.rs`, preserving SQLite, PostgreSQL, MySQL/MariaDB and MongoDB drivers                                                  |
+| `model.rs`     | Project, Block, Branch and RunSettings from `src-tauri/src/space/local/automation.rs`                                                    |
+| `host.rs`      | Explicit Raccoon service boundary, immutable scope, capability and durable-intent types                                                  |
+| `chromium.rs`  | Standard Chromium Input, Runtime/isolated world and Network/Fetch adaptation                                                             |
+| `mod.rs`       | Public module registration and exports                                                                                                   |
+| `test_host.rs` | Controlled test host used by runner tests                                                                                                |
 
 ## Service contract
 
@@ -54,26 +54,26 @@ WASM binaries and digest-bound grants freeze into an application-root snapshot f
 
 These versions match the main workspace lock at the final static review. Main owns Cargo declarations and lock updates.
 
-| Crate | Exact resolved version | Required declaration/features |
-| --- | --- | --- |
-| `wasmtime` | `41.0.4` | `=41.0.4`, upstream default features |
-| `wreq` | `0.15.3` | `=0.15.3`, defaults plus `cookies`, `gzip`, `brotli`, `deflate`, `zstd` |
-| `wreq-util` | `0.1.0` | `=0.1.0`, defaults plus `emulation`, `emulation-serde` |
-| `postgres` | `0.19.14` | `=0.19.14`, defaults, upstream `NoTls` behavior |
-| `mysql` | `28.0.4` | `=28.0.4`, `default-features=false`, `minimal-rust`, `rustls` |
-| `mongodb` | `3.10.1` | `=3.10.1`, defaults plus `sync` |
-| `anyhow` | `1.0.104` | default features |
-| `serde` | `1.0.229` | `derive` |
-| `serde_json` | `1.0.154` | default features |
-| `tokio` | `1.54.1` | `rt-multi-thread`, `macros`, `process`, `net`, `io-util`, `time`, `sync` |
-| `tokio-tungstenite` | `0.24.0` | `default-features=false`, `connect` |
-| `futures-util` | `0.3.34` | `sink`, defaults |
-| `rusqlite` | `0.40.2` | `default-features=false`, `bundled` |
-| `url` | `2.5.8` | defaults |
-| `uuid` | `1.29.3` | `v4`, `serde` |
-| `base64` | `0.22.1` | defaults |
-| `sha2` | `0.10.9` | defaults |
-| `regex` | `1.13.2` | defaults, standard traffic matching |
+| Crate               | Exact resolved version | Required declaration/features                                            |
+| ------------------- | ---------------------- | ------------------------------------------------------------------------ |
+| `wasmtime`          | `41.0.4`               | `=41.0.4`, upstream default features                                     |
+| `wreq`              | `0.15.3`               | `=0.15.3`, defaults plus `cookies`, `gzip`, `brotli`, `deflate`, `zstd`  |
+| `wreq-util`         | `0.1.0`                | `=0.1.0`, defaults plus `emulation`, `emulation-serde`                   |
+| `postgres`          | `0.19.14`              | `=0.19.14`, defaults, upstream `NoTls` behavior                          |
+| `mysql`             | `28.0.4`               | `=28.0.4`, `default-features=false`, `minimal-rust`, `rustls`            |
+| `mongodb`           | `3.10.1`               | `=3.10.1`, defaults plus `sync`                                          |
+| `anyhow`            | `1.0.104`              | default features                                                         |
+| `serde`             | `1.0.229`              | `derive`                                                                 |
+| `serde_json`        | `1.0.154`              | default features                                                         |
+| `tokio`             | `1.54.1`               | `rt-multi-thread`, `macros`, `process`, `net`, `io-util`, `time`, `sync` |
+| `tokio-tungstenite` | `0.24.0`               | `default-features=false`, `connect`                                      |
+| `futures-util`      | `0.3.34`               | `sink`, defaults                                                         |
+| `rusqlite`          | `0.40.2`               | `default-features=false`, `bundled`                                      |
+| `url`               | `2.5.8`                | defaults                                                                 |
+| `uuid`              | `1.29.3`               | `v4`, `serde`                                                            |
+| `base64`            | `0.22.1`               | defaults                                                                 |
+| `sha2`              | `0.10.9`               | defaults                                                                 |
+| `regex`             | `1.13.2`               | defaults, standard traffic matching                                      |
 
 Upstream declared Wasmtime `48.0.1`, wreq `0.16.1` and wreq-util `0.2.0`. Their MSRV exceeds the fixed Rust 1.93 toolchain. The compatible pins above are deliberate dependency deviations. wreq-util uses `Emulation` in 0.1.0, and the inventory is copied from that pinned enum. Newer upstream fingerprint choices that are absent in 0.1.0 return an explicit unknown-fingerprint error. Wasmtime 41 memory, linker, fuel and Mach-port configuration APIs were checked against downloaded crate source.
 

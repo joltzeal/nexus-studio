@@ -13,7 +13,7 @@ describe('public application and private local plugin boundary', () => {
   })
 
   it('builds the application without any private plugin workspace dependency', () => {
-    const app = JSON.parse(read('apps/desktop/package.json'))
+    const app = JSON.parse(read('apps/desktop-v2/package.json'))
     const dependencies = Object.keys(app.dependencies)
     expect(dependencies.filter((name) => name.startsWith('@nexus/plugin-'))).toEqual([
       '@nexus/plugin-contracts',

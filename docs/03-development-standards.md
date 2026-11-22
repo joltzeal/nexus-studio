@@ -99,9 +99,8 @@ JSX 不写原始颜色，保留纸白与钴蓝，遵循现代、克制的后台�
 
 ## 页面与持久化
 
-0.2 页面壳层、窗口管理和设置导航以 Tailwind 类维护，颜色与尺度由
-`apps/desktop/src/theme.css` 定义。其余插件业务页现仍有
-`apps/desktop/src/legacy-pages.css` 待逐页迁移；不得继续在其中新增全局壳层覆盖。
+0.2 页面使用 `apps/desktop-v2` 中的 ShardX UI Kit、Tailwind 语义类和主题变量。
+新增插件业务页沿用同一套组件、颜色和尺度。
 AliasMode Chromium 实验室提供官方发行版查询、校验下载与受管窗口接入；
 Firefox 使用单独发行包和窗口生命周期，不接入 CDP 或 Agent 自动化。
 真实 macOS / Windows 安装和代理验收仍须单独完成。

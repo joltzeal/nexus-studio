@@ -2,23 +2,18 @@
 
 ## desktop-v2 原生窗口（2026-11-19）
 
-`apps/desktop-v2` 复用 ShardBrowser Launcher 的 ShardX UI Kit，以下窗口规则只适用于
-该入口；后面的 shadcn、`.dark` 和旧 token 说明仍属于 `apps/desktop/src`。
+`apps/desktop-v2` 复用 ShardBrowser Launcher 的 ShardX UI Kit。下文旧主题章节为 0.1 历史说明。
 
-`tauri.v2.conf.json` 为开发和 v2 构建统一声明 `titleBarStyle: Overlay`、隐藏标题文字、
+`tauri.conf.json` 为开发和发行统一声明 `titleBarStyle: Overlay`、隐藏标题文字、
 原生红绿灯位置和窗口尺寸。macOS 保留系统窗口装饰与原生按钮，WebView 内容延伸到
 标题区，主壳层用上游 `shellPadClass()` 留出 38px 顶部空间；顶部与页面底板均使用
 `--bg-canvas`，不另外画一条固定白色或深色标题栏。空白处拖动和双击缩放沿用上游
 处理，控件、输入框及 portal 菜单不会触发拖动。
 
-Rust 在创建窗口前，从编译时嵌入的 `tauri.v2.conf.json` 将主窗口的 Overlay、
-隐藏标题、红绿灯位置及文件拖放设置写入 Tauri context。该步骤只针对
-`com.raccoon.desktop` 的 `main` 窗口，保留尺寸、可见性与其他窗口配置，避免长期运行的
-开发 CLI 缓存旧 `TAURI_CONFIG` 后，Rust 子进程重启仍创建标准标题栏，而前端 HMR
-已经启用 38px 留白，造成两个标题区域叠加。
+Tauri 配置在创建窗口时生效。修改后重启完整的 `tauri dev` 进程，以重新加载配置。
 
 Windows/Linux 的 v2 主窗口在 Rust setup 中移除系统标题条，并挂载上游
-`ShellWindowControls`，保留最小化、最大化/恢复和关闭语义。旧默认入口保持原配置。
+`ShellWindowControls`，保留最小化、最大化/恢复和关闭语义。
 `capabilities/window-chrome.json` 仅向主窗口与现有自动化辅助窗口授予拖动、最小化、
 切换最大化和主题设置权限；关闭权限沿用现有 capability。
 

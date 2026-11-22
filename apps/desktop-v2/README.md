@@ -8,8 +8,7 @@ and `ui-kit/`. The Inter font retains its own notice in
 `src/app/fonts/LICENSE-Inter.txt`. No ShardBrowser browser binaries, Rust
 backend, team server, or launcher installer are imported.
 
-The frontend source, UI kit, public assets, and Vite configuration remain
-separate from the current Raccoon desktop frontend. Use the root pnpm lockfile:
+This is the Raccoon desktop frontend. Use the root pnpm lockfile:
 
 ```bash
 rtk proxy pnpm install
@@ -17,17 +16,12 @@ rtk proxy pnpm --filter @raccoon/desktop-v2 build
 ```
 
 The native entry uses the Raccoon Rust host at `apps/desktop/src-tauri` with
-`tauri.v2.conf.json` and the application identifier `com.raccoon.desktop`,
-separate from the default 0.1 desktop identifier. Its database lives in the
-corresponding application data directory and uses the `v2/raccoon.sqlite`
-workspace. This keeps normal v2 startup out of the 0.1 data directory without
-migrating or deleting existing files. The Preview configuration has its own
-application identifier. The v2 development server uses port `1422`, separate
-from the original desktop server's port `1420`. The default desktop packaging
-entry still uses `apps/desktop/src`. Start the v2 desktop development entry explicitly with
-`rtk proxy pnpm --filter @raccoon/desktop-v2 run desktop:dev`. This starts
-Tauri and requires Rust compilation, which remains assigned to CI under the
-repository's local development restriction.
+`tauri.conf.json` and the application identifier `com.raccoon.desktop`.
+The database is `v2/raccoon.sqlite` under that application data directory.
+The Preview configuration uses its own application identifier. The development
+server uses port `1422`. From the repository root, `rtk proxy pnpm run desktop:dev`
+starts Tauri and requires Rust compilation. Run it in an environment where
+desktop builds are permitted.
 
 On 2026-11-18, `rtk proxy pnpm --filter @raccoon/desktop-v2 build` completed
 and wrote `dist/index.html` and `ui-kit/dist/index.js`. This is a frontend
@@ -173,13 +167,9 @@ bar, hidden title text, real traffic lights and the original 38 px top inset.
 Windows/Linux remove the v2 main window's system caption and use the imported
 window controls. The native root synchronizes selected/system appearance and
 lets CSS own `color-scheme` after startup. Window movement, caption controls and
-theme calls have explicit Tauri permissions. These settings are shared by v2
-dev and builds that include `tauri.v2.conf.json`; the root's default desktop
-packaging entry still targets the legacy frontend. Before creating windows,
-Rust applies the embedded v2 main-window chrome to the generated Tauri context.
-This also covers a long-running dev CLI whose cached `TAURI_CONFIG` predates
-the overlay settings. Window size, visibility, other windows and non-v2 entries
-are preserved. Native startup changes require a new binary; restart the entire
+theme calls have explicit Tauri permissions. The main window uses the same
+`tauri.conf.json` in native development and release builds. Native startup
+changes require a new binary. Restart the entire
 `tauri dev` CLI when changing configuration, since restarting its Rust child
 alone can retain cached extra configuration. Controlled browser checks do not
 verify AppKit/WebView2 or packaged window appearance.

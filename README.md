@@ -1,7 +1,7 @@
 # Raccoon
 
-面向 macOS / Windows 的电商多窗口管理应用，使用 Tauri 2、Rust、React 与 shadcn/ui。
-窗口页保持紧凑表格，通过“内置浏览器 / AdsPower / 比特浏览器”Tabs 切换接入。
+面向 macOS / Windows 的电商浏览器工作台，使用 Tauri 2、Rust、React 与 ShardX UI Kit。
+每个 Workspace 对应一个已配置的浏览器接入实例，管理其 Profile 和 Folder。
 账号、代理、号码、采集、AI 生图、商品库与Ecom Agent 通过插件扩展。
 
 ## 窗口与浏览器
@@ -15,10 +15,9 @@
 - 写操作保存意图与结果；超时进入重新检查，避免重复创建或启动。
   接口断线保留窗口与插件关系，显示状态未知。
 
-窗口绑定、业务分组、接入、激活码和应用代理由 Rust 明文存入 SQLite，不写 Keychain。
+Profile、Folder、接入、激活码和应用代理由 Rust 存入本地 SQLite。凭据以明文保存。
 外观与工作区偏好使用 localStorage；网页预览不能调用原生浏览器命令。
-已有 SQLite 在启动时事务升级一次，此后只接受窗口 schema 2。
-加密导入导出与设备同步只支持内置窗口和 manifest 3，不接受旧快照。
+0.2 使用 `com.raccoon.desktop` 下独立的 `v2/raccoon.sqlite`。0.1 的数据目录可留作后续显式迁移。
 
 ## 插件
 
@@ -45,20 +44,21 @@ rtk proxy pnpm install --frozen-lockfile
 rtk proxy pnpm run dev
 ```
 
-Vite 默认地址为 `http://localhost:1420`，以实际输出为准。
+Vite 默认地址为 `http://127.0.0.1:1422`，原生开发入口为 `rtk proxy pnpm run desktop:dev`。
 真实窗口操作使用桌面应用。构建工具链仅供开发者使用，最终用户无需配置 Node、Rust 或 `.env`。
 外部指纹浏览器仍需其官方应用处于登录且开放本机 API 的状态。
 
-| 路径                        | 职责                                       |
-| --------------------------- | ------------------------------------------ |
-| `apps/desktop`              | React 页面、Tauri、Rust 窗口服务与插件宿主 |
-| `packages/contracts`        | 共享严格 DTO 与校验                        |
-| `packages/plugin-sdk`       | 插件 manifest、协议与生命周期              |
-| `packages/browser-runtime`  | 内置浏览器运行时、内核与便携站点状态       |
-| `packages/plugin-contracts` | 主应用使用的公开插件数据契约               |
-| `plugins`                   | 本地插件实现，不提交 Git                   |
-| `market`                    | 本地插件发布包和商店索引，不提交 Git       |
-| `docs`                      | 分模块设计、开发规范与验证证据             |
+| 路径                        | 职责                                     |
+| --------------------------- | ---------------------------------------- |
+| `apps/desktop-v2`           | React 工作台、ShardX UI Kit 与原生适配层 |
+| `apps/desktop/src-tauri`    | Tauri 配置、Rust 业务核心与插件宿主      |
+| `packages/contracts`        | 共享严格 DTO 与校验                      |
+| `packages/plugin-sdk`       | 插件 manifest、协议与生命周期            |
+| `packages/browser-runtime`  | 内置浏览器运行时、内核与便携站点状态     |
+| `packages/plugin-contracts` | 主应用使用的公开插件数据契约             |
+| `plugins`                   | 本地插件实现，不提交 Git                 |
+| `market`                    | 本地插件发布包和商店索引，不提交 Git     |
+| `docs`                      | 分模块设计、开发规范与验证证据           |
 
 按当前协作要求，本地不执行应用构建、Rust 编译/测试或 Clippy。
 插件单独在本地编译、调试和打包后直接发布对象存储，主应用 CI 不包含插件源码；
@@ -67,5 +67,5 @@ Vite 默认地址为 `http://localhost:1420`，以实际输出为准。
 具体结果与 CI、厂商集成、Windows 安装的未验证边界见[质量记录](docs/09-quality-and-testing.md)。
 
 先读[文档索引](docs/README.md)、[开发规范](docs/03-development-standards.md)、
-[多浏览器设计](docs/superpowers/specs/2026-11-10-multi-browser-provider-design.md)
-与[执行计划](docs/superpowers/plans/2026-11-10-multi-browser-refactor.md)。
+[0.2 浏览器接入设计](docs/superpowers/specs/2026-11-17-raccoon-02-provider-architecture-design.md)
+与[桌面发行和更新](docs/20-desktop-release-and-updates.md)。

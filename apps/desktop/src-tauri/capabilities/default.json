@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Capability for the main window",
   "windows": ["main", "automation-fleet-*", "automation-helper-*"],
-  "permissions": ["core:default", "core:window:allow-close", "deep-link:allow-get-current", "dialog:allow-save", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "deep-link:allow-get-current",
+    "dialog:allow-save",
+    "dialog:allow-open"
+  ]
 }

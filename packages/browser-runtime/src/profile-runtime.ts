@@ -125,7 +125,10 @@ export async function binaryVersion(binaryPath: string): Promise<string> {
   const options = { timeout: 10_000, windowsHide: true }
   if (process.platform === 'win32') {
     // Windows Chromium can ignore --version and start a licensed session.
-    const env: NodeJS.ProcessEnv = { ...process.env, NEXUS_CLOAK_VERSION_BINARY: binaryPath }
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      NEXUS_CLOAK_VERSION_BINARY: binaryPath,
+    }
     delete env.CLOAKBROWSER_LICENSE_KEY
     const { stdout } = await execFileAsync(
       'powershell.exe',
@@ -271,7 +274,8 @@ async function launchProfileContext(
           }
         : {}),
     }
-    if (sessionId) options.args = [...(options.args ?? []), `--raccoon-session-id=${sessionId}`]
+    if (sessionId)
+      options.args = [...(options.args ?? []), `--raccoon-session-id=${sessionId}`]
     const launch = (async () =>
       launchPersistentContext(
         await prepareBrowserProxy(options, controller.signal),

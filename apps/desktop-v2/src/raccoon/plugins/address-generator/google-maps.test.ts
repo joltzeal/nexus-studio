@@ -60,7 +60,7 @@ test('maps bootstrap retries network failures, ignores late callbacks, shares a 
 test('dev and packaged v2 CSP allow Maps without opening arbitrary HTTPS scripts', () => {
   const config = JSON.parse(
     readFileSync(
-      new URL('../../../../../desktop/src-tauri/tauri.v2.conf.json', import.meta.url),
+      new URL('../../../../../desktop/src-tauri/tauri.conf.json', import.meta.url),
       'utf8',
     ),
   )

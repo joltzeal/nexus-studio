@@ -141,7 +141,7 @@ Maps JavaScript API 由页面脚本加载，Geocoding 在 SDK 内完成。Key �
 - 缺少构建 Key 时提示应用尚未配置地图，已保存地址的查看、复制、导出不受影响。
 - `location_type` 不是 `ROOFTOP` 时标记近似位置；建筑精度同样不代表已验证收件。
 
-`tauri.v2.conf.json` 分别声明生产 CSP 和开发 CSP，允许 Google Maps 脚本、服务连接、
+`tauri.conf.json` 分别声明生产 CSP 和开发 CSP，允许 Google Maps 脚本、服务连接、
 瓦片、字体与样式。脚本来源只增加 `maps.googleapis.com` 和 `maps.gstatic.com`，
 不使用任意 HTTPS 脚本白名单；Maps 脚本执行需要的 `unsafe-eval` 限定在 v2 配置中。
 这属于原生配置修改，应完整重启 `tauri dev` 父 CLI，不能只刷新前端。

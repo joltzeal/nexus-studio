@@ -17,10 +17,8 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
-            tauriArgs: --config src-tauri/tauri.v2.conf.json --config src-tauri/tauri.release.v2.conf.json --config src-tauri/tauri.release.macos.conf.json
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            tauriArgs: --config src-tauri/tauri.v2.conf.json --config src-tauri/tauri.release.v2.conf.json --config src-tauri/tauri.release.macos.conf.json
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +26,7 @@ jobs:
         run: node scripts/check-public-boundary.mjs
       - name: Verify release tag
         run: |
-          version=$(node -p "require('./apps/desktop/src-tauri/tauri.v2.conf.json').version")
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
           test "$GITHUB_REF_NAME" = "v$version"
       - uses: pnpm/action-setup@v4
         with:
@@ -40,7 +38,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build:v2
+      - run: pnpm build
         env:
           VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
       - run: pnpm runtime:stage
@@ -74,10 +72,11 @@ jobs:
             - 插件包独立发布至 R2，应用安装包不内置插件。
 
             当前工作流只构建 macOS，安装包未公证；更新包继续使用固定签名公钥校验。
-            0.2 使用独立数据目录，0.1 数据迁移尚待后续工具。共存安装时请将两个 Raccoon.app 放在不同目录。
           releaseDraft: true
           includeUpdaterJson: true
-          args: ${{ matrix.tauriArgs }}
+          args: >-
+            --config src-tauri/tauri.release.conf.json
+            --config src-tauri/tauri.release.macos.conf.json
       - name: Verify signed macOS runtime
         if: runner.os == 'macOS'
         run: pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Raccoon.app

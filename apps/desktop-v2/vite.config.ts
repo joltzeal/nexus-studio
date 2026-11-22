@@ -59,15 +59,15 @@ export default defineConfig(async () => {
     //
     // 1. prevent Vite from obscuring rust errors
     clearScreen: false,
-      // 2. tauri uses the fixed port from tauri.v2.conf.json. The before-dev
-      // script reuses an existing desktop-v2 server or reports a port conflict.
+    // 2. Tauri uses the fixed port from tauri.conf.json. The before-dev
+    // script reuses an existing desktop-v2 server or reports a port conflict.
     server: {
       port: 1422,
       strictPort: true,
       // Bind the literal IPv4 loopback (not `false`, which lets Node resolve
       // `localhost` to `::1` on Windows and listen IPv6-only — then Tauri's
       // health-check hangs forever at "Waiting for your frontend dev server to
-      // start"). Must match devUrl in tauri.v2.conf.json.
+      // start"). Must match devUrl in tauri.conf.json.
       host: host || "127.0.0.1",
       hmr: host
         ? {

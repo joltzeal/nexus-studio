@@ -32,7 +32,7 @@ flowchart TD
 
 | 目录                                                | 当前职责                                          |
 | --------------------------------------------------- | ------------------------------------------------- |
-| `apps/desktop/src`                                  | 页面、连接和能力入口、统一窗口 DTO 与平台调用     |
+| `apps/desktop-v2/src/raccoon`                       | 原生工作台、接入与 Profile 适配器、插件页面       |
 | `apps/desktop/src-tauri/src/core/window_service.rs` | 窗口编排、状态、操作恢复、迁移和安装互斥          |
 | `apps/desktop/src-tauri/src/core/window_store.rs`   | `WindowRecord` v2 校验与持久化                    |
 | `apps/desktop/src-tauri/src/core/browser`           | Provider、连接、Local API、操作和观察记录         |

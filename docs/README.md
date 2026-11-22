@@ -1,8 +1,7 @@
 # Raccoon 文档索引
 
-> 0.2 重写进行中。Workspace 对应已配置的 connectionId，Profile 和 Folder 按连接隔离。
-> desktop-v2 的 ShardBrowser 原生命令接入已落地源码，并完成受控 IPC 前端验证。
-> Rust 编译、真实内核、代理、重启和双平台验收仍待完成。
+> 主分支使用 desktop-v2 前端和 Raccoon Rust 宿主。Workspace 对应已配置的 connectionId，Profile 和 Folder 按连接隔离。
+> 发行范围与更新通道见桌面发行文档，真实内核、代理、重启及平台验证以质量记录为准。
 > 下文涉及 0.1 页面和旧契约的说明作为历史记录，最新边界以 AGENTS.md 和模块文档为准。
 
 Raccoon 是面向 macOS / Windows 的多环境管理桌面产品。0.2 重写中，
@@ -85,8 +84,8 @@ AliasMode Chromium / Firefox 的受管内核下载和窗口 Provider 已接入�
   Provider 能力适配、Workspace 隔离及恢复逻辑的交付状态见
   [实施记录](superpowers/plans/2026-11-18-raccoon-internal-automation.md)。
   Rust 编译、真实 Provider、重启及双平台验收仍待完成。
-- [ShardBrowser 前端独立基线](../apps/desktop-v2/README.md)：
-  0.2 新前端目录与上游源码版本；当前构建不代表原生命令已接通。
+- [desktop-v2 前端](../apps/desktop-v2/README.md)：
+  0.2 前端入口、上游源码版本和原生命令接入范围。
 - [Raccoon 0.2 浏览器接入重构方案](superpowers/specs/2026-11-17-raccoon-02-provider-architecture-design.md)：
   新分支重写工作台领域核心和页面；AdsPower / 比特浏览器为默认接入，两个
   受管内核由实验室维护。0.2 不读取 0.1 数据，旧数据以后由独立脚本迁移。

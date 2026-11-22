@@ -174,9 +174,7 @@ pub async fn workbench_storage_reveal(app: tauri::AppHandle) -> Result<(), Strin
 
 pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if is_v2_workbench(app)
-        && let Err(error) = initialize_tray(app)
-    {
+    if let Err(error) = initialize_tray(app) {
         eprintln!("无法创建系统托盘：{error}");
     }
 
@@ -194,14 +192,6 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const TRAY_ID: &str = "raccoon-main-tray";
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(crate) fn is_v2_workbench(app: &tauri::AppHandle) -> bool {
-    matches!(
-        app.config().identifier.as_str(),
-        "com.raccoon.desktop" | "com.raccoon.preview"
-    )
-}
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn initialize_tray(app: &tauri::AppHandle) -> Result<(), String> {
@@ -256,21 +246,20 @@ pub fn window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         return;
     };
 
-    let app = window.app_handle();
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if is_v2_workbench(app) {
+    {
         api.prevent_close();
         #[cfg(target_os = "windows")]
-        if app.tray_by_id(TRAY_ID).is_none() {
+        if window.app_handle().tray_by_id(TRAY_ID).is_none() {
             return;
         }
         if let Err(error) = window.hide() {
             eprintln!("无法隐藏应用窗口：{error}");
         }
-        return;
     }
 
-    if workbench_settings_get(app.clone())
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    if workbench_settings_get(window.app_handle().clone())
         .is_ok_and(|settings| settings.close_behavior == "minimize")
         && window.minimize().is_ok()
     {

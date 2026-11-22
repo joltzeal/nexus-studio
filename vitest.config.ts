@@ -25,7 +25,6 @@ export default defineConfig({
       '@nexus/plugin-sdk/agent': fileURLToPath(
         new URL('./packages/plugin-sdk/src/agent.ts', import.meta.url),
       ),
-      '@': fileURLToPath(new URL('./apps/desktop/src', import.meta.url)),
       '@nexus/plugin-sdk/configuration': fileURLToPath(
         new URL('./packages/plugin-sdk/src/configuration.ts', import.meta.url),
       ),
@@ -52,7 +51,6 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.mjs',
-      'apps/desktop/src/**/*.test.ts',
       'apps/license-worker/test/**/*.test.ts',
       'scripts/**/*.test.mjs',
     ],

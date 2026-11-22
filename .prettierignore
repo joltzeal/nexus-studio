@@ -3,6 +3,8 @@ dist
 target
 pnpm-lock.yaml
 Cargo.lock
+# The desktop frontend and its UI Kit follow the imported ShardBrowser style.
+apps/desktop-v2
 apps/desktop/src-tauri/gen
 *.png
 *.ico

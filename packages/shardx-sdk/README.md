@@ -143,8 +143,8 @@ engine.stop().await?;
 
 `list_profiles()` / random launches hand back **library templates** — launch
 one and it re-reads the same template every time. For a profile you can
-**return to** (same fingerprint *and* cookies/cache) or **delete**, create a
-*saved profile*: it freezes a template (or a random one) with randomized
+**return to** (same fingerprint _and_ cookies/cache) or **delete**, create a
+_saved profile_: it freezes a template (or a random one) with randomized
 hardware/platform_version under a fresh unique id in its own folder
 `<cache>/profiles/<id>/`, exactly like the desktop launcher's "create profile".
 
@@ -257,11 +257,11 @@ is enabled and whether WebRTC is forced to `tcp_only`.
 
 Before spawning the engine the SDK reproduces the launcher's pre-flight:
 
-* **auto-resolve** — fills `"auto"` timezone / language / geolocation from a
-  live geo lookup *through the bound proxy* ([`resolve_auto_fields`]).
-* **screen strategy** — `CapToHost` on macOS, `UseHost` on Win/Linux
+- **auto-resolve** — fills `"auto"` timezone / language / geolocation from a
+  live geo lookup _through the bound proxy_ ([`resolve_auto_fields`]).
+- **screen strategy** — `CapToHost` on macOS, `UseHost` on Win/Linux
   ([`apply_screen_strategy`]); override via `LaunchOptions::screen_mode`.
-* **UDP probe** — decides QUIC + WebRTC policy from a live relay probe.
+- **UDP probe** — decides QUIC + WebRTC policy from a live relay probe.
 
 ## Lower-level building blocks
 
@@ -279,8 +279,8 @@ use shardx::{Runtime, FingerprintLibrary, parse_proxy, probe_udp, geo_check_via,
 
 ## Links
 
-* **Site:**  [https://shardx.com](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
-* **Docs:**  [https://docs.shardx.com](https://docs.shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
-* **Usage:** [https://docs.shardx.com/eng/usage-instructions/shardx-browser](https://docs.shardx.com/eng/usage-instructions/shardx-browser?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+- **Site:** [https://shardx.com](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+- **Docs:** [https://docs.shardx.com](https://docs.shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+- **Usage:** [https://docs.shardx.com/eng/usage-instructions/shardx-browser](https://docs.shardx.com/eng/usage-instructions/shardx-browser?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 
 MIT licensed.

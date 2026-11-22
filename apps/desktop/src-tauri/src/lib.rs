@@ -1,30 +1,5 @@
 pub mod core;
 
-fn configure_main_window(config: &mut tauri::Config) {
-    if config.identifier != "com.raccoon.desktop" {
-        return;
-    }
-    let v2: tauri::Config = serde_json::from_str(include_str!("../tauri.v2.conf.json"))
-        .expect("Raccoon v2 must embed a valid window configuration");
-    let chrome = v2
-        .app
-        .windows
-        .into_iter()
-        .find(|window| window.label == "main")
-        .expect("Raccoon v2 must define its main window");
-    if let Some(window) = config
-        .app
-        .windows
-        .iter_mut()
-        .find(|window| window.label == "main")
-    {
-        window.title_bar_style = chrome.title_bar_style;
-        window.hidden_title = chrome.hidden_title;
-        window.traffic_light_position = chrome.traffic_light_position;
-        window.drag_drop_enabled = chrome.drag_drop_enabled;
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use std::sync::{
@@ -36,8 +11,6 @@ pub fn run() {
     const EXIT_BROWSERS_HANDLED: u8 = 2;
     let exit_phase = Arc::new(AtomicU8::new(EXIT_READY));
     use tauri::Manager;
-    let mut context = tauri::generate_context!();
-    configure_main_window(context.config_mut());
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             core::workbench_settings::show_main_window(app);
@@ -271,13 +244,12 @@ pub fn run() {
             core::agent::commands::sales_agent_attention,
             core::agent::commands::sales_agent_related
         ])
-        .build(context)
+        .build(tauri::generate_context!())
         .expect("Raccoon could not initialize its desktop runtime")
         .run(move |app, event| {
             use tauri::Manager;
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::RunEvent::Reopen { .. })
-                && core::workbench_settings::is_v2_workbench(app)
                 && app
                     .get_webview_window("main")
                     .is_some_and(|window| matches!(window.is_visible(), Ok(false)))
@@ -331,68 +303,4 @@ pub fn run() {
                 }
             }
         });
-}
-
-#[cfg(test)]
-mod window_chrome_tests {
-    use super::configure_main_window;
-
-    fn stale_v2_config() -> tauri::Config {
-        let mut config: tauri::Config =
-            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        config.identifier = "com.raccoon.desktop".into();
-        config
-    }
-
-    #[test]
-    fn stale_v2_cli_config_gets_overlay_chrome() {
-        let mut config = stale_v2_config();
-        assert_eq!(
-            config.app.windows[0].title_bar_style,
-            tauri::TitleBarStyle::Visible
-        );
-
-        configure_main_window(&mut config);
-
-        let main = &config.app.windows[0];
-        assert_eq!(main.title_bar_style, tauri::TitleBarStyle::Overlay);
-        assert!(main.hidden_title);
-        assert!(main.decorations);
-        assert!(!main.drag_drop_enabled);
-        let position = main.traffic_light_position.as_ref().unwrap();
-        assert_eq!((position.x, position.y), (14.0, 21.0));
-    }
-
-    #[test]
-    fn v2_chrome_preserves_window_state_and_other_windows() {
-        let mut config = stale_v2_config();
-        config.app.windows[0].width = 1120.0;
-        config.app.windows[0].height = 760.0;
-        config.app.windows[0].visible = false;
-        let mut helper = config.app.windows[0].clone();
-        helper.label = "automation-helper-test".into();
-        config.app.windows.push(helper.clone());
-        let security = config.app.security.clone();
-
-        configure_main_window(&mut config);
-
-        let main = &config.app.windows[0];
-        assert_eq!((main.width, main.height), (1120.0, 760.0));
-        assert!(!main.visible);
-        assert_eq!(config.app.windows[1], helper);
-        assert_eq!(config.app.security, security);
-    }
-
-    #[test]
-    fn other_entries_keep_their_native_chrome() {
-        for identifier in ["com.nexusstudio.desktop", "com.raccoon.preview"] {
-            let mut config = stale_v2_config();
-            config.identifier = identifier.into();
-            let expected = config.clone();
-
-            configure_main_window(&mut config);
-
-            assert_eq!(config, expected);
-        }
-    }
 }

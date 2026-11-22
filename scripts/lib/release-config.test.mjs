@@ -7,7 +7,7 @@ const root = resolve(import.meta.dirname, '../..')
 describe('desktop release configuration', () => {
   it('keeps the v2 app, Rust host, and updater channel on the same release version', () => {
     const appConfig = JSON.parse(
-      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.v2.conf.json'), 'utf8'),
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     )
     const cargoManifest = readFileSync(
       resolve(root, 'apps/desktop/src-tauri/Cargo.toml'),
@@ -24,7 +24,7 @@ describe('desktop release configuration', () => {
     )
 
     expect(config.productName).toBe('Raccoon')
-    expect(config.identifier).toBe('com.nexusstudio.desktop')
+    expect(config.identifier).toBe('com.raccoon.desktop')
     expect(config.bundle.windows.wix.upgradeCode).toBe(
       '2e3e2263-4519-5724-8aaa-441e824cdcc7',
     )
@@ -44,17 +44,11 @@ describe('desktop release configuration', () => {
   })
 
   it('uses the public repository that actually publishes the updater manifest', () => {
-    const legacyConfig = JSON.parse(
+    const config = JSON.parse(
       readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
     )
-    const v2Config = JSON.parse(
-      readFileSync(resolve(root, 'apps/desktop/src-tauri/tauri.v2.conf.json'), 'utf8'),
-    )
 
-    expect(legacyConfig.plugins.updater.endpoints).toEqual([
-      'https://github.com/joltzeal/nexus-studio/releases/latest/download/latest.json',
-    ])
-    expect(v2Config.plugins.updater.endpoints).toEqual([
+    expect(config.plugins.updater.endpoints).toEqual([
       'https://github.com/joltzeal/nexus-studio/releases/download/raccoon-v2/latest.json',
     ])
   })

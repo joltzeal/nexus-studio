@@ -16,21 +16,21 @@ Raccoon 的连接、Profile、Folder、SQLite、操作意图、代理和内核�
 
 ## 当前源码事实
 
-| 核查项 | 当前事实 | 实施影响 |
-| --- | --- | --- |
-| 自动化页面 | `pages/automation` 已包含项目列表、编辑器、步骤详情和运行设置 | 直接在现有组件上接入 |
-| 画布与实时画面 | `BlockCanvas`、`LiveView`、`TrafficPanel`、`FleetMonitor` 等上游组件已存在 | 保留布局、交互和事件语义 |
-| 前端数据层 | `entities/automation` 仍使用上游 `automation_*` 命令和项目状态模型 | 增加显式 Raccoon adapter 与边界校验 |
-| 网页预览 | `dev/mock/handlers.ts` 为自动化命令提供模拟响应 | 预览数据必须保持明确的样例身份 |
-| 原生入口 | `raccoon/Application.tsx` 的自动化栏目仍显示未接入 | 挂载页面并逐项接通真实服务 |
-| 原生调用边界 | `shared/api/invoke.ts` 在 Raccoon 原生模式拒绝上游通用调用 | 按模块显式替换调用，逐项审计副作用 |
-| Provider 接口 | `BrowserProvider` 已存在 `automation_session`，返回 CDP 或受管通道 | 核查并扩展会话契约，满足 Rust runner 的实际需求 |
-| ShardBrowser | 已有运行收据与 CDP 获取实现 | 可作为专有协议的首个接入对象 |
-| AdsPower 与比特 | 现有源码有运行状态查询及 CDP 端点发现 | 核验并适配到 0.2 作用域与新执行器 |
-| AliasMode Chromium | 现有源码可获取运行实例的 CDP | 实施标准 CDP 动作适配 |
-| CloakBrowser | 当前接口返回受管动作通道 | 需要新增供 Rust 执行器使用的受信任 CDP 会话出口 |
-| AliasMode Firefox | 当前明确拒绝自动化 | 显示具体原因，保留未来协议适配入口 |
-| Camoufox | 当前为实验室占位 | 实际 Provider 与协议实现完成后进入自动化验收 |
+| 核查项             | 当前事实                                                                   | 实施影响                                        |
+| ------------------ | -------------------------------------------------------------------------- | ----------------------------------------------- |
+| 自动化页面         | `pages/automation` 已包含项目列表、编辑器、步骤详情和运行设置              | 直接在现有组件上接入                            |
+| 画布与实时画面     | `BlockCanvas`、`LiveView`、`TrafficPanel`、`FleetMonitor` 等上游组件已存在 | 保留布局、交互和事件语义                        |
+| 前端数据层         | `entities/automation` 仍使用上游 `automation_*` 命令和项目状态模型         | 增加显式 Raccoon adapter 与边界校验             |
+| 网页预览           | `dev/mock/handlers.ts` 为自动化命令提供模拟响应                            | 预览数据必须保持明确的样例身份                  |
+| 原生入口           | `raccoon/Application.tsx` 的自动化栏目仍显示未接入                         | 挂载页面并逐项接通真实服务                      |
+| 原生调用边界       | `shared/api/invoke.ts` 在 Raccoon 原生模式拒绝上游通用调用                 | 按模块显式替换调用，逐项审计副作用              |
+| Provider 接口      | `BrowserProvider` 已存在 `automation_session`，返回 CDP 或受管通道         | 核查并扩展会话契约，满足 Rust runner 的实际需求 |
+| ShardBrowser       | 已有运行收据与 CDP 获取实现                                                | 可作为专有协议的首个接入对象                    |
+| AdsPower 与比特    | 现有源码有运行状态查询及 CDP 端点发现                                      | 核验并适配到 0.2 作用域与新执行器               |
+| AliasMode Chromium | 现有源码可获取运行实例的 CDP                                               | 实施标准 CDP 动作适配                           |
+| CloakBrowser       | 当前接口返回受管动作通道                                                   | 需要新增供 Rust 执行器使用的受信任 CDP 会话出口 |
+| AliasMode Firefox  | 当前明确拒绝自动化                                                         | 显示具体原因，保留未来协议适配入口              |
+| Camoufox           | 当前为实验室占位                                                           | 实际 Provider 与协议实现完成后进入自动化验收    |
 
 已逐字节比对的 `BlockCanvas.tsx`、`LiveView.tsx`、`entities/automation/model/api.ts`、`types.ts` 和 `useAutomation.tsx` 与上游一致。当前事实依据源码检查，真实内核、厂商环境和双平台运行证据仍待实施验收。
 
@@ -48,19 +48,19 @@ Raccoon 的连接、Profile、Folder、SQLite、操作意图、代理和内核�
 
 固定基线的 `palette.ts` 是步骤清单与参数定义的来源。所有内置步骤都进入实现与验收矩阵。
 
-| 分组 | 上游步骤 |
-| --- | --- |
-| Profile | `profile.temp`、`profile.create`、`profile.use`、`profile.keep`、`profile.read`、`profile.delete`、`proxy.swap` |
-| 代理 | `proxy.set`、`proxy.residential`、`proxy.generate` |
-| 导航 | `goto`、`back`、`forward`、`reload`、`waitLoad` |
-| 触摸与方向 | `touch.tap`、`touch.longPress`、`touch.swipe`、`touch.drag`、`touch.pinch`、`screen.rotate` |
-| 指针 | `click`、`doubleClick`、`rightClick`、`hover`、`drag`、`swipe`、`scroll` |
-| 键盘 | `type`、`press`、`clear` |
-| 流程控制 | `flow.entry`、`flow.call`、`wait`、`waitFor`、`waitGone`、`waitText`、`waitUrl`、`ifExists`、`if.value`、`if.exists`、`if.text`、`if.url`、`stop` |
-| 脚本与请求 | `script.run`、`http.request`、`http.endSession` |
-| 流量 | `traffic.observe`、`traffic.block`、`traffic.redirect`、`traffic.setHeaders`、`traffic.editResponse`、`traffic.fulfill` |
-| 数据 | `log`、`readText`、`var.set`、`var.math`、`var.autofill`、`count`、`readAttribute`、`screenshot`、`var.random`、`file.readLine`、`file.append` |
-| 数据库 | `db.open`、`db.exec`、`db.query`、`db.close` |
+| 分组       | 上游步骤                                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile    | `profile.temp`、`profile.create`、`profile.use`、`profile.keep`、`profile.read`、`profile.delete`、`proxy.swap`                                   |
+| 代理       | `proxy.set`、`proxy.residential`、`proxy.generate`                                                                                                |
+| 导航       | `goto`、`back`、`forward`、`reload`、`waitLoad`                                                                                                   |
+| 触摸与方向 | `touch.tap`、`touch.longPress`、`touch.swipe`、`touch.drag`、`touch.pinch`、`screen.rotate`                                                       |
+| 指针       | `click`、`doubleClick`、`rightClick`、`hover`、`drag`、`swipe`、`scroll`                                                                          |
+| 键盘       | `type`、`press`、`clear`                                                                                                                          |
+| 流程控制   | `flow.entry`、`flow.call`、`wait`、`waitFor`、`waitGone`、`waitText`、`waitUrl`、`ifExists`、`if.value`、`if.exists`、`if.text`、`if.url`、`stop` |
+| 脚本与请求 | `script.run`、`http.request`、`http.endSession`                                                                                                   |
+| 流量       | `traffic.observe`、`traffic.block`、`traffic.redirect`、`traffic.setHeaders`、`traffic.editResponse`、`traffic.fulfill`                           |
+| 数据       | `log`、`readText`、`var.set`、`var.math`、`var.autofill`、`count`、`readAttribute`、`screenshot`、`var.random`、`file.readLine`、`file.append`    |
+| 数据库     | `db.open`、`db.exec`、`db.query`、`db.close`                                                                                                      |
 
 WASM 自定义步骤另按模块 manifest、动作请求和调用授权检查。现有项目中出现的上游可识别步骤别名也要从 runner 的实际分派中核查，不能仅按可视步骤库判断。
 
@@ -119,29 +119,29 @@ Provider 会话拟包含 Raccoon Profile UUID、`connectionId`、引擎类型、
 
 ### Provider 接入矩阵
 
-| Provider / 引擎 | 会话取得方式 | 目标执行方式 | 当前必须补齐或核验的内容 |
-| --- | --- | --- | --- |
-| ShardBrowser | 验证运行收据、进程身份与调试端点 | Rust CDP，保留原生 `Motion.*`、`Traffic.*`、`Script.*` | 接入完整 runner、事件、资源锁和恢复 |
-| AdsPower Chromium | 已配置连接的本机 API 读取活动 Profile 端点 | Rust 标准 CDP 适配 | 0.2 作用域、厂商版本、实际域能力和生命周期闭环 |
-| 比特浏览器 Chromium | 本机 API 只读发现活动实例端口 | Rust 标准 CDP 适配 | 身份校验、域能力、厂商 API 失败与状态核对 |
-| AliasMode Chromium | 受管实例与运行收据 | Rust 标准 CDP 适配 | 具体内核版本、触摸、拦截与事件行为 |
-| CloakBrowser Chromium | 受管启动链提供受信任 CDP 信息 | Rust 标准 CDP 适配 | 新增并验证 CDP 出口、固定启动参数和进程归属 |
-| AliasMode Firefox | 当前缺少可用的自动化会话 | 进入同一能力与错误模型 | 当前显示不支持原因，真实执行需要实现并验收相应协议适配 |
-| Camoufox | 实际 Provider 尚待实现 | 通过统一 Provider 契约扩展 | 创建启停、连接、协议与能力实现后逐项验收 |
+| Provider / 引擎       | 会话取得方式                               | 目标执行方式                                           | 当前必须补齐或核验的内容                               |
+| --------------------- | ------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------------ |
+| ShardBrowser          | 验证运行收据、进程身份与调试端点           | Rust CDP，保留原生 `Motion.*`、`Traffic.*`、`Script.*` | 接入完整 runner、事件、资源锁和恢复                    |
+| AdsPower Chromium     | 已配置连接的本机 API 读取活动 Profile 端点 | Rust 标准 CDP 适配                                     | 0.2 作用域、厂商版本、实际域能力和生命周期闭环         |
+| 比特浏览器 Chromium   | 本机 API 只读发现活动实例端口              | Rust 标准 CDP 适配                                     | 身份校验、域能力、厂商 API 失败与状态核对              |
+| AliasMode Chromium    | 受管实例与运行收据                         | Rust 标准 CDP 适配                                     | 具体内核版本、触摸、拦截与事件行为                     |
+| CloakBrowser Chromium | 受管启动链提供受信任 CDP 信息              | Rust 标准 CDP 适配                                     | 新增并验证 CDP 出口、固定启动参数和进程归属            |
+| AliasMode Firefox     | 当前缺少可用的自动化会话                   | 进入同一能力与错误模型                                 | 当前显示不支持原因，真实执行需要实现并验收相应协议适配 |
+| Camoufox              | 实际 Provider 尚待实现                     | 通过统一 Provider 契约扩展                             | 创建启停、连接、协议与能力实现后逐项验收               |
 
 所有 Provider 都纳入统一工作台、项目、能力与错误模型。真实执行的完成度按 Provider 和步骤逐项记录。Firefox 和 Camoufox 的不可用反馈只满足状态呈现，真实执行部分仍计为待实现。
 
 ### ShardBrowser 专有协议的转换
 
-| 动作类别 | ShardBrowser 原生方式 | 其他 Chromium Provider 的拟定适配 |
-| --- | --- | --- |
-| 鼠标与键盘 | `Motion.*` | 标准 CDP `Input.*`，保持点击目标、按键、顺序和取消语义 |
-| 导航与 DOM | `Page.*`、`DOM.*` 等 | 复用标准 CDP，核查 iframe、shadow DOM 和目标选择行为 |
-| 实时画面 | `Page.startScreencast` | 支持该域时复用，对帧确认、缩放和坐标转换做一致性验证 |
-| 脚本 | `Script.run` 的 isolated / main world | 按实际能力映射到 CDP Runtime 与隔离 world |
-| 流量观察与规则 | `Traffic.*` | 以 Network / Fetch 实现可等价的规则，对时序、响应体和规则作用域逐项验证 |
-| 代理热切换 | `Traffic.setProxy` | 仅在 Provider 有真实热切换能力时开放 |
-| 触摸、缩放、方向 | `Motion` 触摸与方向扩展 | 按 Input / Emulation 及具体内核能力逐项实现 |
+| 动作类别         | ShardBrowser 原生方式                 | 其他 Chromium Provider 的拟定适配                                       |
+| ---------------- | ------------------------------------- | ----------------------------------------------------------------------- |
+| 鼠标与键盘       | `Motion.*`                            | 标准 CDP `Input.*`，保持点击目标、按键、顺序和取消语义                  |
+| 导航与 DOM       | `Page.*`、`DOM.*` 等                  | 复用标准 CDP，核查 iframe、shadow DOM 和目标选择行为                    |
+| 实时画面         | `Page.startScreencast`                | 支持该域时复用，对帧确认、缩放和坐标转换做一致性验证                    |
+| 脚本             | `Script.run` 的 isolated / main world | 按实际能力映射到 CDP Runtime 与隔离 world                               |
+| 流量观察与规则   | `Traffic.*`                           | 以 Network / Fetch 实现可等价的规则，对时序、响应体和规则作用域逐项验证 |
+| 代理热切换       | `Traffic.setProxy`                    | 仅在 Provider 有真实热切换能力时开放                                    |
+| 触摸、缩放、方向 | `Motion` 触摸与方向扩展               | 按 Input / Emulation 及具体内核能力逐项实现                             |
 
 转换成功要以动作结果和语义验证为依据。标准 Input 的动作完成不代表复现了 ShardBrowser 原生 Motion 的轨迹、节奏和内核行为。相应差异通过既有参数说明、禁用原因和运行详情表达。
 
@@ -206,14 +206,14 @@ HTTP 步骤保留上游 host、profile 或指定代理的路由语义与会话�
 
 以固定基线的同页面、同状态截图为参考，直接复用页面、组件、UI Kit、图标、字体、token、尺寸和布局规则。先建立参考截图，再接真实数据。所有视觉变化都需能对应到 Raccoon 的连接作用域或真实能力反馈。
 
-| 验收对象 | 核对内容 |
-| --- | --- |
-| 项目列表 | 卡片与表格、工具栏、空状态、排序、菜单、导入导出 |
-| 编辑器 | 画布比例、节点与连线、参数区、运行设置、浏览器列宽、滚动和窗口缩放 |
-| 交互 | 拖拽、框选、停靠、快捷键、撤销、缩放、起点、分支和自动整理 |
-| 浏览器区域 | 画面比例、导航、输入、元素拾取、录制、流量面板和截图 |
-| 模块与辅助窗口 | 安装、授权、审查、HelperPanel、Fleet 的结构与状态 |
-| 错误与中间状态 | 保存失败、连接断开、不支持步骤、运行冲突、停止中和重启核对 |
+| 验收对象       | 核对内容                                                           |
+| -------------- | ------------------------------------------------------------------ |
+| 项目列表       | 卡片与表格、工具栏、空状态、排序、菜单、导入导出                   |
+| 编辑器         | 画布比例、节点与连线、参数区、运行设置、浏览器列宽、滚动和窗口缩放 |
+| 交互           | 拖拽、框选、停靠、快捷键、撤销、缩放、起点、分支和自动整理         |
+| 浏览器区域     | 画面比例、导航、输入、元素拾取、录制、流量面板和截图               |
+| 模块与辅助窗口 | 安装、授权、审查、HelperPanel、Fleet 的结构与状态                  |
+| 错误与中间状态 | 保存失败、连接断开、不支持步骤、运行冲突、停止中和重启核对         |
 
 截图比较固定视口、设备像素比、缩放、语言、主题、字体和数据。动态时间、浏览器内容和系统窗口装饰使用明确的差异说明。平台原生装饰按各平台单独建立参考。
 
@@ -221,15 +221,15 @@ HTTP 步骤保留上游 host、profile 或指定代理的路由语义与会话�
 
 ## 实施顺序与完成条件
 
-| 阶段 | 实施内容 | 完成条件 |
-| --- | --- | --- |
-| 1 | 固定上游来源、步骤与命令清单，建立项目、会话、能力和运行契约 | 每个上游入口均映射到明确的 Raccoon 服务或待实现能力 |
-| 2 | 引入 Rust runner、CDP 与 WASM 核心，接通 SQLite 和统一生命周期 | 受控协议测试覆盖流程、锁、状态、写入失败和恢复 |
-| 3 | 接通 ShardBrowser 完整自动化 | 原生页面、真实专有协议、录制、流程、模块和重启记录闭环 |
-| 4 | 接通 AdsPower、比特、AliasMode Chromium、CloakBrowser | 每个 Provider 独立完成能力矩阵和真实运行验收 |
-| 5 | 完成前端全部入口、附属窗口及像素对照 | 逐页面截图和交互对照通过，原生路径的预览响应全部排除 |
-| 6 | 接通并验收 HTTP / MCP 的自动化服务入口 | 同一项目、运行、授权和作用域行为从各入口一致执行 |
-| 持续补齐 | Firefox、Camoufox 及 Provider 专有能力差距 | 相应协议与实际 Provider 完成后逐项补充证据 |
+| 阶段     | 实施内容                                                       | 完成条件                                               |
+| -------- | -------------------------------------------------------------- | ------------------------------------------------------ |
+| 1        | 固定上游来源、步骤与命令清单，建立项目、会话、能力和运行契约   | 每个上游入口均映射到明确的 Raccoon 服务或待实现能力    |
+| 2        | 引入 Rust runner、CDP 与 WASM 核心，接通 SQLite 和统一生命周期 | 受控协议测试覆盖流程、锁、状态、写入失败和恢复         |
+| 3        | 接通 ShardBrowser 完整自动化                                   | 原生页面、真实专有协议、录制、流程、模块和重启记录闭环 |
+| 4        | 接通 AdsPower、比特、AliasMode Chromium、CloakBrowser          | 每个 Provider 独立完成能力矩阵和真实运行验收           |
+| 5        | 完成前端全部入口、附属窗口及像素对照                           | 逐页面截图和交互对照通过，原生路径的预览响应全部排除   |
+| 6        | 接通并验收 HTTP / MCP 的自动化服务入口                         | 同一项目、运行、授权和作用域行为从各入口一致执行       |
+| 持续补齐 | Firefox、Camoufox 及 Provider 专有能力差距                     | 相应协议与实际 Provider 完成后逐项补充证据             |
 
 阶段 3 的前端接入与阶段 5 的视觉核对可随实现推进。其他 Chromium Provider 的标准 CDP 适配应在阶段 1 明确接口，在阶段 4 完成全部已支持步骤。
 
@@ -266,18 +266,18 @@ HTTP 步骤保留上游 host、profile 或指定代理的路由语义与会话�
 
 上游仓库地址为 `https://github.com/ProxyShard/ShardBrowser`，以下路径均相对于固定基线 `99e780e2e685e5b3b5357c5baee8796e10b3ce1e`。
 
-| 来源证据 | 核查结果 | Raccoon 实施定位 |
-| --- | --- | --- |
-| `src/entities/automation/model/types.ts`、`palette.ts` | 项目、分支、参数及完整步骤库 | 保留有效负载与语义，增加领域适配 |
-| `src/widgets/BlockCanvas/BlockCanvas.tsx` | 自研 DOM / SVG 画布和交互 | 原组件复用与截图对照 |
-| `src/widgets/LiveView/LiveView.tsx` | 实时画面、输入与录制交互 | 原组件与 Rust 会话事件对接 |
-| `src-tauri/src/lib.rs` | 自动化 Tauri 命令与事件 | 显式迁入 Raccoon 命令边界 |
-| `src-tauri/src/runner.rs` | Rust 流程执行、并发、步骤和模块分派 | 引入 runner，替换领域服务与动作出口 |
-| `src-tauri/src/cdp.rs` | Rust WebSocket CDP、目标与实时帧 | 受信任会话与多 Provider 动作适配 |
-| `src-tauri/src/wasm.rs`、`modguard.rs` | Wasmtime 宿主与模块调用授权 | 保留 ABI 与检查，接入 Raccoon 作用域 |
-| `src-tauri/src/space/local/automation.rs` | 项目存储、导入导出与模块文件 | 转为 Rust 持有的 v2 存储 |
-| `src-tauri/src/api.rs`、`mcp/` | HTTP 与 MCP 自动化入口 | 统一路由内部服务 |
-| 本仓库 `apps/desktop-v2/src/raccoon/` | 原生前端和显式 adapter 模式 | 增加自动化 adapter 与页面挂载 |
-| 本仓库 `apps/desktop/src-tauri/src/core/browser/provider.rs` 及 `providers/` | Registry、Provider 会话与生命周期 | 扩展能力、会话、身份和恢复契约 |
+| 来源证据                                                                     | 核查结果                            | Raccoon 实施定位                     |
+| ---------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------ |
+| `src/entities/automation/model/types.ts`、`palette.ts`                       | 项目、分支、参数及完整步骤库        | 保留有效负载与语义，增加领域适配     |
+| `src/widgets/BlockCanvas/BlockCanvas.tsx`                                    | 自研 DOM / SVG 画布和交互           | 原组件复用与截图对照                 |
+| `src/widgets/LiveView/LiveView.tsx`                                          | 实时画面、输入与录制交互            | 原组件与 Rust 会话事件对接           |
+| `src-tauri/src/lib.rs`                                                       | 自动化 Tauri 命令与事件             | 显式迁入 Raccoon 命令边界            |
+| `src-tauri/src/runner.rs`                                                    | Rust 流程执行、并发、步骤和模块分派 | 引入 runner，替换领域服务与动作出口  |
+| `src-tauri/src/cdp.rs`                                                       | Rust WebSocket CDP、目标与实时帧    | 受信任会话与多 Provider 动作适配     |
+| `src-tauri/src/wasm.rs`、`modguard.rs`                                       | Wasmtime 宿主与模块调用授权         | 保留 ABI 与检查，接入 Raccoon 作用域 |
+| `src-tauri/src/space/local/automation.rs`                                    | 项目存储、导入导出与模块文件        | 转为 Rust 持有的 v2 存储             |
+| `src-tauri/src/api.rs`、`mcp/`                                               | HTTP 与 MCP 自动化入口              | 统一路由内部服务                     |
+| 本仓库 `apps/desktop-v2/src/raccoon/`                                        | 原生前端和显式 adapter 模式         | 增加自动化 adapter 与页面挂载        |
+| 本仓库 `apps/desktop/src-tauri/src/core/browser/provider.rs` 及 `providers/` | Registry、Provider 会话与生命周期   | 扩展能力、会话、身份和恢复契约       |
 
 引入和改写上游 Rust 文件时保留 MIT 许可证与来源记录。实现后的源码范围、支持矩阵及真实验证结果分别同步到对应模块文档和质量记录。

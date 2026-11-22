@@ -10,14 +10,10 @@ ShardBrowser 原生入口，数据保存到 Preview 独立应用目录。使用 
 
 ## 当前交付状态
 
-desktop-v2 的 ShardBrowser 原生开发入口使用
-`rtk proxy pnpm --filter @raccoon/desktop-v2 run desktop:dev`，通过独立
-`tauri.v2.conf.json` 指向 v2 前端，并设置与旧桌面端分开的
-`com.raccoon.desktop` 应用标识。其 `v2/raccoon.sqlite` 位于独立应用数据目录，
-不打开或迁移旧桌面端数据。开发服务使用 `1422` 端口，与旧版的 `1420` 分开；
-Preview 配置继续使用单独标识。该命令会启动 Tauri
-并触发 Rust 编译，仍遵循本地禁止应用/Rust 构建的约定，由允许的 CI 或验收环境执行。
-现有默认发行脚本保留旧前端入口，v2 原生开发配置尚未作为正式发行验证。
+主分支的开发与发行使用 `apps/desktop-v2` 和 `apps/desktop/src-tauri/tauri.conf.json`。
+原生开发命令为 `rtk proxy pnpm run desktop:dev`，开发服务使用 `1422` 端口。
+`com.raccoon.desktop` 的 `v2/raccoon.sqlite` 位于独立的应用数据目录，
+Preview 配置使用单独的应用标识。原生开发命令会触发 Rust 编译，由允许构建的环境执行。
 
 当前桌面开发构件已有 Rust 原生窗口、插件宿主与 SQLite 授权，
 分组及外观/工作区偏好仍使用 localStorage；授权密钥在未加密数据库中明文保存。
@@ -94,17 +90,15 @@ macOS 结果不能代表 Windows，也不能由跨平台框架名称推定通过
 
 Tauri updater 使用独立签名密钥；0.2 启动后静默检查并在后台下载，下载完成后才在
 侧边栏版本行显示升级按钮，点击并二次确认后安装并重启；
-0.1 的关于页检查、下载、安装和重启入口仍保留在旧前端；
 发布版始终初始化 updater，因此基础 `tauri.conf.json` 必须包含公钥与更新地址，
 不能只放在 release 覆盖配置中；本地打包也必须叠加 release 和对应平台配置，
 否则安装包可能缺少插件宿主的 Node helper 与 runtime。未提供签名私钥的本地
 打包可仅关闭更新产物生成，应用内更新仍使用相同的公钥和地址。
-安装前要求停止所有运行中的窗口。发行工作流当前用 `tauri.v2.conf.json` 与
-`tauri.release.v2.conf.json` 构建 0.2，并生成 updater 清单与签名产物。
-工作流暂只构建 macOS arm64 与 x64，Windows 矩阵在恢复 Windows 验收前不运行。
-旧版 updater 继续读取 GitHub Latest 的 `latest.json`；v2 从 `raccoon-v2` 预发布
-Release 读取独立 updater 清单。版本化 v2 Release 显式不设为 GitHub Latest，发布完成后
-工作流将其中的 `latest.json` 复制到 `raccoon-v2`，使旧版客户端继续留在 0.1 更新通道。
+安装前要求停止所有运行中的窗口。发行工作流在基础配置上叠加
+`tauri.release.conf.json` 与 `tauri.release.macos.conf.json`，生成 macOS arm64 与 x64
+的 updater 清单和签名产物。`raccoon-v2` Release 提供固定的清单地址。
+两个架构完成打包与签名检查后，工作流才将版本化 Release 的 `latest.json`
+上传到该通道。Windows 当前没有 0.2 更新产物。
 地址生成器的浏览器 Key 由仓库 Secret `VITE_GOOGLE_MAPS_API_KEY` 注入前端构建；
 Secret 未配置时构建仍可完成，但地图选点会提示未配置。
 版本化 v2 Release 与 updater 通道均位于公开 GitHub 仓库。
@@ -123,7 +117,6 @@ Windows 0.2 安装包尚未进入工作流。
 ```bash
 rtk proxy pnpm --config.verify-deps-before-run=false --filter @raccoon/desktop-v2 run build && \
 rtk proxy pnpm --config.verify-deps-before-run=false --filter @nexus/desktop exec tauri build \
-  --config src-tauri/tauri.v2.conf.json \
   --config src-tauri/tauri.release.conf.json \
   --config src-tauri/tauri.release.macos.conf.json \
   --config src-tauri/tauri.preview.conf.json \

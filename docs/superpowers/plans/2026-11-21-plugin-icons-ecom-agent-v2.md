@@ -22,17 +22,17 @@ UI 按 unslop 的保留产品功能原则适配现有 ShardX UI Kit，不另建�
 
 ## 功能保留核对
 
-| 模块 | v2 路径（`src/pages/plugins/sales-agent/` 下） |
-| --- | --- |
-| 主界面与原生契约 | `index.tsx`、`api.ts`、`completion-api.ts`、`native-boundary.ts` |
-| 商品与 Profile 分配 | `batch-composer.tsx`、`assignment.ts`、`product-picker.tsx`、`product-editor.tsx` |
-| 商品与冻结素材 | `product-cover.tsx`、`artifact-cover.tsx`、`product-picker-metadata.ts` |
-| 草稿模板与运行前检查 | `workspace-library.tsx`、`workspace-state.ts`、`preflight-panel.tsx` |
-| 任务与恢复 | `batch-runs.tsx`、`batch-detail.tsx`、`run-controls.tsx`、`state.ts`、`retry-countdown.tsx` |
-| 事件、审查、用量 | `agent-events.tsx`、`job-items.tsx`、`review-workbench.tsx`、`usage-panel.tsx` |
-| 设置和清理 | `settings-dialog.tsx`、`execution-settings.tsx`、`retention-dialog.tsx` |
-| 公共呈现和异步读取 | `presentation.ts`、`agent-pagination.tsx`、`use-query.ts` |
-| 新 UI 组件适配及依赖 | `controls.tsx`、`icons.tsx`、`dependencies.ts`、`scope.tsx` |
+| 模块                 | v2 路径（`src/pages/plugins/sales-agent/` 下）                                              |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| 主界面与原生契约     | `index.tsx`、`api.ts`、`completion-api.ts`、`native-boundary.ts`                            |
+| 商品与 Profile 分配  | `batch-composer.tsx`、`assignment.ts`、`product-picker.tsx`、`product-editor.tsx`           |
+| 商品与冻结素材       | `product-cover.tsx`、`artifact-cover.tsx`、`product-picker-metadata.ts`                     |
+| 草稿模板与运行前检查 | `workspace-library.tsx`、`workspace-state.ts`、`preflight-panel.tsx`                        |
+| 任务与恢复           | `batch-runs.tsx`、`batch-detail.tsx`、`run-controls.tsx`、`state.ts`、`retry-countdown.tsx` |
+| 事件、审查、用量     | `agent-events.tsx`、`job-items.tsx`、`review-workbench.tsx`、`usage-panel.tsx`              |
+| 设置和清理           | `settings-dialog.tsx`、`execution-settings.tsx`、`retention-dialog.tsx`                     |
+| 公共呈现和异步读取   | `presentation.ts`、`agent-pagination.tsx`、`use-query.ts`                                   |
+| 新 UI 组件适配及依赖 | `controls.tsx`、`icons.tsx`、`dependencies.ts`、`scope.tsx`                                 |
 
 Agent 页面通过 connectionId 和插件安装身份隔离的 React Activity 保留，跳转商品、账号或同连接的
 Profile 后返回仍保留草稿、批次编辑、分配、分页和原创建请求标识。
