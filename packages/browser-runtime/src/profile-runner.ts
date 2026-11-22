@@ -3,9 +3,7 @@ import { validatePortableStateFiles } from './portable-state.js'
 import { createInterface } from 'node:readline'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { format, promisify } from 'node:util'
-import { execFile } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { format } from 'node:util'
 import { inspectKernelCache } from './kernel-cache.js'
 import {
   kernelFailure,
@@ -80,20 +78,19 @@ async function main(): Promise<void> {
     if (!key) throw new Error('License key is required')
     process.stdout.write(`${JSON.stringify(await validateBrowserLicense(key))}\n`)
   } else if (action === 'license-seats') {
-    if (!process.env.CLOAKBROWSER_LICENSE_KEY) throw new Error('ACTIVATION_REQUIRED')
-    const cli = fileURLToPath(new URL('./cli.js', import.meta.resolve('cloakbrowser')))
+    const key = process.env.CLOAKBROWSER_LICENSE_KEY
+    if (!key) throw new Error('ACTIVATION_REQUIRED')
     try {
-      // Inherit the Node preload that applies Raccoon's application proxy.
-      const { stdout } = await promisify(execFile)(
-        process.execPath,
-        [...process.execArgv, cli, 'info', '--json'],
-        { timeout: 12_000, maxBuffer: 128 * 1024, windowsHide: true },
-      )
-      const seats: unknown = JSON.parse(stdout)?.license?.sessions
+      // The pinned SDK's CLI uses this same read-only lookup. Full `info`
+      // also probes the installed binary, which can interfere with sessions.
+      const licenseModule = new URL('./license.js', import.meta.resolve('cloakbrowser'))
+      const { getSessionSeats } = (await import(licenseModule.href)) as {
+        getSessionSeats: (key: string) => Promise<{ active: unknown; limit: unknown }>
+      }
+      const seats = await getSessionSeats(key)
       const count = (value: unknown) =>
         typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
-      const result = seats as { active?: unknown; limit?: unknown } | null | undefined
-      process.stdout.write(`${JSON.stringify({ active: count(result?.active), limit: count(result?.limit) })}\n`)
+      process.stdout.write(`${JSON.stringify({ active: count(seats.active), limit: count(seats.limit) })}\n`)
     } catch {
       throw new Error('LICENSE_SEATS_UNAVAILABLE')
     }

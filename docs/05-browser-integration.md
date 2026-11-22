@@ -413,7 +413,7 @@ SOCKS5 地址校验接受普通 `socks5://host:port` 的空 path（含 IPv4/IPv6
 内置 Provider 负责受管目录和进程，`WindowService` 负责业务锁、状态与操作协调；
 Node.js 适配器封装内置官方 SDK。外部环境由厂商应用持有，通过 Local API 控制和观察。
 不同 Profile 的启动和停止可并行；Raccoon 不自行猜测或固定 CloakBrowser 并发席位。
-超额由 CloakBrowser 启动错误裁决。「检查授权席位」按需查询官方 CLI，并报告本机会话。
+超额由 CloakBrowser 启动错误裁决。「检查授权席位」按需读取官方实时席位计数和本机会话。
 UI 只接受稳定 DTO，不持有进程句柄或调试端口。启动前生成不可变、经过验证的快照；
 修改窗口配置不静默改变已运行会话，重启后才应用。
 代理必需时，配置无效、不可用或鉴权失败必须阻断启动和敏感流量，

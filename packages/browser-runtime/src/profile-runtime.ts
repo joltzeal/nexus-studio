@@ -122,10 +122,24 @@ export function assertBinaryVersion(expected: string, actual: string): void {
 }
 
 export async function binaryVersion(binaryPath: string): Promise<string> {
-  const { stdout } = await execFileAsync(binaryPath, ['--version'], {
-    timeout: 10_000,
-    windowsHide: true,
-  })
+  const options = { timeout: 10_000, windowsHide: true }
+  if (process.platform === 'win32') {
+    // Windows Chromium can ignore --version and start a licensed session.
+    const env: NodeJS.ProcessEnv = { ...process.env, NEXUS_CLOAK_VERSION_BINARY: binaryPath }
+    delete env.CLOAKBROWSER_LICENSE_KEY
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$ErrorActionPreference = "Stop"; [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:NEXUS_CLOAK_VERSION_BINARY).ProductVersion',
+      ],
+      { ...options, env },
+    )
+    return parseBrowserVersion(stdout)
+  }
+  const { stdout } = await execFileAsync(binaryPath, ['--version'], options)
   return parseBrowserVersion(stdout)
 }
 

@@ -1,10 +1,13 @@
-import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runtimeWindow } from '../fixtures/runtime-window.js'
+
+const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
 
 let directory: string
 let preload: string
@@ -24,7 +27,12 @@ beforeEach(async () => {
   await mkdir(dirname(binary), { recursive: true })
   await writeFile(
     binary,
-    `#!${process.execPath}\nconsole.log('CloakBrowser 155.0.8059.39.2')\n`,
+    `#!${process.execPath}
+if (process.env.NEXUS_TEST_SEAT_QUERY)
+  require('node:fs').appendFileSync(${JSON.stringify(join(directory, 'seat-requests'))}, 'kernel-probe\\n');
+if (process.env.NEXUS_TEST_WINDOWS_VERSION) process.exit(76);
+console.log('CloakBrowser 155.0.8059.39.2');
+`,
     {
       mode: 0o700,
     },
@@ -134,9 +142,28 @@ beforeEach(async () => {
     preload,
     `
     import {registerHooks} from 'node:module';
+    import {appendFileSync} from 'node:fs';
+    if (process.env.NEXUS_TEST_WINDOWS_VERSION)
+      Object.defineProperty(process, 'platform', {value: 'win32'});
+    if (process.env.NEXUS_TEST_SEAT_QUERY) {
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(input);
+        appendFileSync(${JSON.stringify(join(directory, 'seat-requests'))}, url.pathname + '\\n');
+        if (url.origin !== 'https://cloakbrowser.dev') throw new Error('Unexpected host');
+        const key = JSON.parse(init?.body ?? '{}').license_key;
+        if (url.pathname === '/api/license/session/count' &&
+            init?.method === 'POST' && key === 'synthetic-runner-key')
+          return Response.json({active: 0, limit: 1});
+        if (url.pathname === '/api/license/validate')
+          return Response.json({valid: true, plan: 'free', expires: null});
+        if (url.pathname === '/api/download/version')
+          return Response.json({version: '155.0.8059.39.2'});
+        throw new Error('Unexpected network request');
+      };
+    }
     registerHooks({
       resolve(specifier,context,nextResolve) {
-        if(specifier==='cloakbrowser')return{
+        if(specifier==='cloakbrowser' && !process.env.NEXUS_TEST_SEAT_QUERY)return{
           url:${JSON.stringify(pathToFileURL(sdk).href)},shortCircuit:true
         };
         if(specifier==='playwright-core')return{
@@ -171,13 +198,13 @@ async function run(
   }),
   automationCommands: Record<string, unknown>[] = [],
 ) {
-  const runner = fileURLToPath(new URL('./profile-runner.ts', import.meta.url))
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     CLOAKBROWSER_CACHE_DIR: directory,
     CLOAKBROWSER_LICENSE_KEY: activated ? 'synthetic-runner-key' : '',
     ...(sdkFailure ? { NEXUS_TEST_SDK_FAILURE: '1' } : {}),
     ...(automationCommands.length ? { NEXUS_TEST_AUTOMATION: '1' } : {}),
+    ...(action === 'license-seats' ? { NEXUS_TEST_SEAT_QUERY: '1' } : {}),
     ...(action === 'automation-cdp' && !automationCommands.length
       ? { NEXUS_TEST_CDP_DISCONNECT: '1' }
       : {}),
@@ -237,6 +264,54 @@ async function run(
 }
 
 describe('profile runner subprocess', () => {
+  it('reports available seats using only the official seat count request', async () => {
+    const result = await run('license-seats', '', true)
+    expect(result).toEqual({
+      exit: 0,
+      stdout: '{"active":0,"limit":1}\n',
+      stderr: '',
+      timedOut: false,
+    })
+    expect(await readFile(join(directory, 'seat-requests'), 'utf8')).toBe(
+      '/api/license/session/count\n',
+    )
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'reads Windows version metadata without executing Chromium',
+    async () => {
+      await writeFile(
+        join(directory, 'powershell.exe'),
+        `#!${process.execPath}
+if (!process.argv.some(arg => arg.includes('GetVersionInfo')) ||
+    process.env.NEXUS_CLOAK_VERSION_BINARY !== ${JSON.stringify(binary)} ||
+    process.env.CLOAKBROWSER_LICENSE_KEY)
+  process.exit(1);
+console.log('155.0.8059.39.2');
+`,
+        { mode: 0o700 },
+      )
+      const { stdout, stderr } = await promisify(execFile)(
+        process.execPath,
+        ['--import', preload, runner, 'version', binary],
+        {
+          timeout: 2_000,
+          env: {
+            ...process.env,
+            NEXUS_TEST_WINDOWS_VERSION: '1',
+            CLOAKBROWSER_LICENSE_KEY: 'synthetic-runner-key',
+            PATH: [directory, process.env.PATH].filter(Boolean).join(delimiter),
+          },
+        },
+      )
+      expect(stderr).toBe('')
+      expect(JSON.parse(stdout)).toEqual({
+        version: '155.0.8059.39.2',
+        binary_path: binary,
+      })
+    },
+  )
+
   it('executes commands inside the original builtin persistent context and preserves stop/proxy', async () => {
     const result = await run(
       'launch',

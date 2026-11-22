@@ -1,6 +1,6 @@
 {
   "identifier": "com.raccoon.desktop",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "build": {
     "beforeDevCommand": "pnpm --filter @raccoon/desktop-v2 exec node scripts/ensure-vite.mjs",
     "devUrl": "http://127.0.0.1:1422",
