@@ -1,0 +1,24 @@
+{
+  "id": "raccoon-official",
+  "catalogUrl": "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog-v2.json",
+  "licensedPluginIds": [
+    "studio.address-generator",
+    "studio.ai-image",
+    "studio.email",
+    "studio.products",
+    "studio.proxy-pool",
+    "studio.sales-agent",
+    "studio.shared-supply",
+    "studio.sim8",
+    "studio.vinted-accounts",
+    "studio.vinted-monitor",
+    "studio.window-sync"
+  ],
+  "licensing": {
+    "issuerId": "raccoon-official",
+    "protocolVersion": 1,
+    "baseUrl": "https://raccoon-license.bravesfly.workers.dev",
+    "keyId": "2026-11-15-1",
+    "publicKey": "G1n0ENTS9/9G+qhFrFPzwR2NxFvWhcFql7e6Pw0o7S4="
+  }
+}

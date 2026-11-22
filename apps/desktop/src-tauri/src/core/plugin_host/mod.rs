@@ -528,7 +528,9 @@ impl PluginHost {
             .license
             .activate(target, card, self.network.as_ref().map(|(store, _)| store))
             .map_err(HostError::License)?;
-        if market_selection.is_none() || binding == self.installed_market(plugin_id)? {
+        if market_selection.is_none()
+            || same_market_origin(self.installed_market(plugin_id)?.as_ref(), binding.as_ref())
+        {
             let _ = self.ensure_started(plugin_id);
         }
         Ok(status)
@@ -1918,7 +1920,12 @@ fn installation_generation(plugin: &InstalledPlugin) -> String {
 }
 
 fn same_install_source(plugin: &InstalledPlugin, binding: Option<&MarketBinding>) -> bool {
-    plugin.market.as_ref() == binding
+    same_market_origin(plugin.market.as_ref(), binding)
+}
+
+fn same_market_origin(left: Option<&MarketBinding>, right: Option<&MarketBinding>) -> bool {
+    left == right
+        || matches!((left, right), (Some(left), Some(right)) if left.official() && right.official())
 }
 
 #[cfg(test)]

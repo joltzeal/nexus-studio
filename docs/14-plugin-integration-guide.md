@@ -13,7 +13,7 @@ Raccoon UUID 是插件关联的 `windowId`，不以厂商环境 ID 代替。
 宿主侧已实现发现、安装、登记表、受管进程、权限检查点与窗口启动阻断，
 代码位于 `apps/desktop/src-tauri/src/core/plugin_host`，实际边界与限制见
 [插件宿主](17-plugin-host.md)。第 7 节协议按此实现；操作系统级隔离和包签名
-仍属后续边界，见第 13 节。商店安装与更新另见[插件商店](25-plugin-market.md)。
+仍属后续边界，见第 13 节。签名目录、授权和交付契约见[插件与插件仓库规范](55-plugin-and-marketplace-standard.md)。
 
 仓库内 `plugins/proxy-pool` 已按第 7 节实现插件侧服务端、私有存储与密钥引用，
 安装后可作为具备 `proxyPlugin` 能力的窗口代理来源；

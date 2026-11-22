@@ -2781,6 +2781,101 @@ fn signed_catalog_binds_the_license_service_to_the_configured_market() {
 }
 
 #[test]
+fn official_v2_catalog_keeps_the_existing_first_party_device_and_data() {
+    use super::market::{Catalog, LEGACY_CATALOG_URL};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::{
+        rand::SystemRandom,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+
+    let source = "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog-v2.json";
+    let authority: serde_json::Value =
+        serde_json::from_str(include_str!("license-public-key.json")).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&MANIFEST.replace("test.fixture-plugin", "studio.proxy-pool"))
+            .unwrap();
+    let entry = serde_json::json!({
+        "manifest": manifest,
+        "package": { "url": "plugin.nexuspkg", "size": 1, "sha256": "a".repeat(64) },
+    });
+    let legacy = serde_json::json!({"schemaVersion": 1, "plugins": [entry.clone()]});
+    let legacy = Catalog::parse(legacy.to_string().as_bytes(), LEGACY_CATALOG_URL, None).unwrap();
+
+    let mut paid = entry;
+    paid["requiresLicense"] = serde_json::json!(true);
+    let mut payload = serde_json::json!({
+        "schemaVersion": 2,
+        "market": {
+            "id": "raccoon-official",
+            "catalogUrl": source,
+            "licensing": {
+                "issuerId": "raccoon-official",
+                "protocolVersion": 1,
+                "baseUrl": "https://raccoon-license.bravesfly.workers.dev",
+                "keyId": authority["keyId"],
+                "publicKey": authority["publicKey"],
+            },
+        },
+        "plugins": [paid],
+    });
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+    let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let envelope = |payload: &serde_json::Value| {
+        let bytes = serde_json::to_vec(payload).unwrap();
+        serde_json::json!({
+            "schemaVersion": 2,
+            "signed": {
+                "publicKey": STANDARD.encode(key.public_key().as_ref()),
+                "payload": STANDARD.encode(&bytes),
+                "signature": STANDARD.encode(key.sign(&bytes).as_ref()),
+            },
+        })
+        .to_string()
+    };
+    let catalog = Catalog::parse(envelope(&payload).as_bytes(), source, None).unwrap();
+    let id = "studio.proxy-pool";
+    let old_binding = legacy.binding(legacy.find(id).unwrap());
+    let binding = catalog.binding(catalog.find(id).unwrap());
+    let temporary = tempfile::tempdir().unwrap();
+    let host = PluginHost::open(temporary.path().join("host"), Vec::new()).unwrap();
+    let old_device = host
+        .license
+        .status(LicenseTarget::for_plugin(id, Some(&old_binding)).unwrap())
+        .unwrap();
+    let new_device = host
+        .license
+        .status(LicenseTarget::for_plugin(id, Some(&binding)).unwrap())
+        .unwrap();
+    assert_eq!(old_device.device_code, new_device.device_code);
+    let mut installed = InstalledPlugin {
+        id: id.into(),
+        version: "1.2.0".into(),
+        manifest: catalog.find(id).unwrap().manifest.clone(),
+        directory: temporary.path().join("plugin"),
+        entry: "index.js".into(),
+        manifest_digest: String::new(),
+        enabled: true,
+        granted_capabilities: Vec::new(),
+        granted_domains: Vec::new(),
+        installed_at: "0".into(),
+        market: Some(old_binding),
+    };
+    assert!(super::same_install_source(&installed, Some(&binding)));
+    installed.market = Some(binding);
+    assert_eq!(
+        installed.storage_directory(host.root()),
+        host.root().join("data/studio.proxy-pool")
+    );
+
+    payload["plugins"][0]["requiresLicense"] = serde_json::json!(false);
+    assert!(Catalog::parse(envelope(&payload).as_bytes(), source, None).is_err());
+    payload["plugins"][0]["requiresLicense"] = serde_json::json!(true);
+    payload["market"]["licensing"]["baseUrl"] = serde_json::json!("https://elsewhere.example");
+    assert!(Catalog::parse(envelope(&payload).as_bytes(), source, None).is_err());
+}
+
+#[test]
 fn a_newer_package_replaces_the_installed_version() {
     let _slot = NodeSlot::acquire();
     let temporary = tempfile::tempdir().unwrap();

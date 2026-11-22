@@ -15,6 +15,10 @@ pub const SETTINGS_FILE: &str = "store.json";
 pub const CATALOG_NAME: &str = "catalog.json";
 pub const LEGACY_CATALOG_URL: &str =
     "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog.json";
+const OFFICIAL_V2_CATALOG_URL: &str =
+    "https://pub-7a28fdded53a4aa1874d914af7aa06ad.r2.dev/catalog-v2.json";
+const OFFICIAL_MARKET_ID: &str = "raccoon-official";
+pub(super) const LEGACY_WORKER_URL: &str = "https://raccoon-license.bravesfly.workers.dev";
 pub const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
 pub const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 256;
@@ -106,6 +110,19 @@ impl LicenseAuthority {
                     && url.origin().ascii_serialization() == self.base_url.trim_end_matches('/')
             })
     }
+
+    fn is_official_issuer(&self) -> bool {
+        let Ok(pinned) =
+            serde_json::from_str::<serde_json::Value>(include_str!("license-public-key.json"))
+        else {
+            return false;
+        };
+        self.protocol_version == 1
+            && self.issuer_id == OFFICIAL_MARKET_ID
+            && self.base_url.trim_end_matches('/') == LEGACY_WORKER_URL
+            && pinned["keyId"].as_str() == Some(self.key_id.as_str())
+            && pinned["publicKey"].as_str() == Some(self.public_key.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +138,18 @@ impl MarketBinding {
         self.catalog_url == LEGACY_CATALOG_URL
             && self.identity == digest(LEGACY_CATALOG_URL.as_bytes())
             && self.authority.is_none()
+    }
+
+    pub(super) fn official_v2(&self) -> bool {
+        self.catalog_url == OFFICIAL_V2_CATALOG_URL
+            && self
+                .authority
+                .as_ref()
+                .is_some_and(LicenseAuthority::is_official_issuer)
+    }
+
+    pub(super) fn official(&self) -> bool {
+        self.legacy_official() || self.official_v2()
     }
 
     pub fn valid(&self) -> bool {
@@ -267,6 +296,19 @@ impl Catalog {
         if document.plugins.len() > MAX_ENTRIES {
             return Err(MarketError::Malformed);
         }
+        let official_v2 = source_url == OFFICIAL_V2_CATALOG_URL;
+        if official_v2
+            && (signing_pin.is_none()
+                || !document.market.as_ref().is_some_and(|market| {
+                    market.id == OFFICIAL_MARKET_ID
+                        && market
+                            .licensing
+                            .as_ref()
+                            .is_some_and(LicenseAuthority::is_official_issuer)
+                }))
+        {
+            return Err(MarketError::Untrusted);
+        }
         let licensing = document.market.and_then(|market| market.licensing);
         let mut entries: Vec<Entry> = Vec::new();
         for value in document.plugins {
@@ -278,10 +320,13 @@ impl Catalog {
             if entry.manifest.validate().is_err() || entry.package.sha256.len() != 64 {
                 continue;
             }
-            if source_url != LEGACY_CATALOG_URL
-                && super::license::FIRST_PARTY_PLUGIN_IDS.contains(&entry.manifest.id.as_str())
-            {
-                continue;
+            if super::license::FIRST_PARTY_PLUGIN_IDS.contains(&entry.manifest.id.as_str()) {
+                if source_url != LEGACY_CATALOG_URL && !official_v2 {
+                    continue;
+                }
+                if signing_pin.is_some() && entry.requires_license != Some(true) {
+                    return Err(MarketError::Malformed);
+                }
             }
             match (signing_pin.is_some(), entry.requires_license) {
                 (true, Some(false)) | (false, None) => {}

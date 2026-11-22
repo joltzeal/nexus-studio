@@ -1,5 +1,13 @@
 # 插件商店与在线更新
 
+开发插件、运营市场或部署授权服务时，使用[插件与插件仓库规范](55-plugin-and-marketplace-standard.md)。
+官方目录分别使用 `catalog.json`（v1）和 `catalog-v2.json`（签名 v2）。
+desktop-v2 0.2.7 和 0.2.8 只允许官方 v1 地址列出第一方插件，
+因此填写官方 v2 地址会得到空列表。使用 0.2.9 或更高版本加载官方 v2 目录。
+发布时先按官方市场配置生成签名目录，
+再用 `market:publish --catalog catalog-v2.json` 指定发布文件。`catalogs.json` 是
+[Vinted 商品分类源数据](48-vinted-catalog-data.md)，由 Ecom Agent 的分类资源生成流程处理。
+
 ## 0.2.7 市场授权与替换
 
 支持通过 HTTPS 分发的 `schemaVersion: 2` 签名目录。宿主读取 `signed.payload`
@@ -27,9 +35,9 @@
 }
 ```
 
-免费市场填写空 `licensedPluginIds` 并省略 `licensing`。v2 目录需要 Raccoon
+免费市场填写空 `licensedPluginIds` 并省略 `licensing`。第三方 v2 目录需要 Raccoon
 0.2.7 或更高版本。现有 Raccoon v1 目录仍可用。第三方未签名目录继续承载免费插件。
-内置插件的 `studio.*` 保留 ID 仅由官方目录发布，避免第三方包取得按这些 ID
+宿主清单中的 11 个第一方保留 ID 仅由官方目录发布，避免第三方包取得按这些 ID
 绑定的主程序能力。其他插件 ID 可在不同市场重复发布，安装时由用户选择唯一来源。
 
 切换商店仅改变当前目录。安装记录保存实际来源、授权发行方和服务地址。
@@ -631,7 +639,7 @@ plugins/studio.vinted-monitor/1.0.0.nexuspkg
 }
 ```
 
-宿主对 catalog 的容错规则：
+宿主对 v1 catalog 的容错规则：
 
 - `schemaVersion` 必须是 `1`，`plugins` 最多 256 条。
 - 单条解析失败或 manifest 校验失败时**跳过该条**，其余照常显示，不会整份清单作废。
@@ -852,7 +860,7 @@ https://market.example.com
 
 ## 7. 已知边界
 
-- 没有签名验证。完整性靠 catalog 里的 SHA-256，可信度等于商店地址本身；商店被接管就能推任意插件（但密钥仍由应用侧推导，攻击者只能发布自己打包的插件，无法读出你的源码）。
+- v1 目录的完整性依赖 HTTPS 来源及目录所列的包 SHA-256。v2 目录还验证 Ed25519 签名和已记录的市场身份。
 - 没有增量下载，每次升级下载完整包（当前单包 100 KB 量级）。
 - 不支持多商店，也不支持私有商店鉴权头。需要时再加。
 - 降级只能手工：把 catalog 的版本改低后应用会拒绝安装，必须先卸载。

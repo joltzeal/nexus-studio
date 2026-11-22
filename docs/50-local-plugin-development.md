@@ -66,6 +66,8 @@ rtk proxy pnpm run market:publish
 
 `market:publish` 按本地目录中完整的 `catalog.json` 上传：先包、后索引。发布单个插件时先读取线上索引，仅替换目标条目，保留其他插件；不要用只有一个条目的目录覆盖线上完整商店。包上传后回读 SHA-256，再更新并回读索引。对象存储账户属于开发发布环境，不要求最终用户配置。
 
+签名市场发布使用 `market:publish --catalog catalog-v2.json`。配置、签名及兼容条件见[插件与插件仓库规范](55-plugin-and-marketplace-standard.md)。
+
 加密包是现有分发格式，不能将它描述成不可逆的源码保护：应用运行插件时必须能够解密和执行。这里的源码保密边界是“不提交实现源码到 Git”，不承诺阻止取得应用和插件包的人分析运行代码。
 
 ## 主应用 CI

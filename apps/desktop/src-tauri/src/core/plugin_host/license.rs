@@ -1,4 +1,4 @@
-use super::market::{LicenseAuthority, MarketBinding};
+use super::market::{LEGACY_WORKER_URL, LicenseAuthority, MarketBinding};
 use super::registry::digest;
 use crate::core::network_proxy::NetworkProxyStore;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -28,7 +28,6 @@ pub const FIRST_PARTY_PLUGIN_IDS: &[&str] = &[
     "studio.vinted-monitor",
     "studio.window-sync",
 ];
-const LEGACY_WORKER_URL: &str = "https://raccoon-license.bravesfly.workers.dev";
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 const REFRESH_RETRY_INITIAL: Duration = Duration::from_secs(30);
 const REFRESH_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
@@ -37,6 +36,7 @@ const REFRESH_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 pub struct LicenseTarget<'a> {
     plugin_id: &'a str,
     market: Option<(&'a str, &'a LicenseAuthority)>,
+    official_alias: bool,
 }
 
 impl<'a> LicenseTarget<'a> {
@@ -50,6 +50,8 @@ impl<'a> LicenseTarget<'a> {
             return Some(Self {
                 plugin_id,
                 market: Some((&binding.identity, authority)),
+                official_alias: binding.official_v2()
+                    && FIRST_PARTY_PLUGIN_IDS.contains(&plugin_id),
             });
         }
         (source.is_none_or(MarketBinding::legacy_official)
@@ -57,11 +59,12 @@ impl<'a> LicenseTarget<'a> {
         .then_some(Self {
             plugin_id,
             market: None,
+            official_alias: false,
         })
     }
 
     fn storage_key(self) -> String {
-        match self.market {
+        match self.market.filter(|_| !self.official_alias) {
             None => self.plugin_id.into(),
             Some((market, authority)) => format!(
                 "market:{}",
@@ -472,7 +475,9 @@ impl PluginLicenseStore {
         now: i64,
     ) -> Result<(), LicenseError> {
         if let Some((_, authority)) = target.market {
-            if lease.payload.issuer_id.as_deref() != Some(authority.issuer_id.as_str()) {
+            // Both official catalogs use the deployed worker's legacy lease format.
+            let expected_issuer = (!target.official_alias).then_some(authority.issuer_id.as_str());
+            if lease.payload.issuer_id.as_deref() != expected_issuer {
                 return Err(LicenseError::Denied);
             }
             return verify_lease(lease, device, now, &authority.key_id, &authority.public_key);

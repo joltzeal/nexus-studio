@@ -39,11 +39,7 @@ impl InstalledPlugin {
 
     pub fn storage_directory(&self, plugins_root: &Path) -> PathBuf {
         let data = plugins_root.join("data");
-        match self
-            .market
-            .as_ref()
-            .filter(|source| !source.legacy_official())
-        {
+        match self.market.as_ref().filter(|source| !source.official()) {
             Some(source) => data.join("markets").join(&source.identity).join(&self.id),
             None => data.join(&self.id),
         }
