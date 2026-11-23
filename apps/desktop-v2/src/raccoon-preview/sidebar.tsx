@@ -25,7 +25,7 @@ import { useRailKey } from '../widgets/Sidebar/useRailKey'
 import { usePluginSidebarBadge } from '../raccoon/plugins/sidebar-badge'
 import { PluginNavigationIcon } from '../raccoon/plugins/PluginNavigationIcon'
 import { APP_NAME, useAppVersion, useLabUnlock } from '../raccoon/app-meta'
-import { useAppUpdate } from '../raccoon/update'
+import { formatDownloadRate, useAppUpdate } from '../raccoon/update'
 import type { PluginView } from '../raccoon/plugins/types'
 import {
   ClockIcon,
@@ -43,6 +43,7 @@ import {
   NavShopIcon,
   NavTrashIcon,
   PlayIcon,
+  UploadIcon,
   SearchIcon,
   SidebarIcon,
   UnfoldMoreIcon,
@@ -248,6 +249,8 @@ export function PreviewSidebar({
   const folderMenu = useContextMenu()
   const updatePhase = useAppUpdate((state) => state.phase)
   const updateVersion = useAppUpdate((state) => state.version)
+  const updateProgress = useAppUpdate((state) => state.progress)
+  const updateSpeed = useAppUpdate((state) => state.speedBytesPerSecond)
   const installUpdate = useAppUpdate((state) => state.install)
   const tapVersion = useLabUnlock((state) => state.tap)
   const version = useAppVersion((state) => state.version)
@@ -600,38 +603,62 @@ export function PreviewSidebar({
               aria-hidden="true"
               className="mx-2 my-1.5 border-t border-stroke-soft-200"
             />
-            <div className="flex h-8 min-w-0 items-center justify-between gap-1.5 px-2 text-secondary text-text-sub-600">
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span className="size-[7px] shrink-0 rounded-full bg-success-base" />
-                <span className="truncate">{APP_NAME}</span>
-              </span>
-              <span className="flex shrink-0 items-center gap-1.5">
-                <Tooltip content="连续点击 6 次打开实验室" side="top">
-                  <span
-                    className="tabular-nums text-text-soft-400"
-                    data-version
-                    onClick={() => {
-                      if (tapVersion()) void useNav.getState().openSettings('laboratory')
-                    }}
-                  >
-                    {`v${version}`}
+            {updatePhase === 'checking' || updatePhase === 'downloading' ? (
+              <div className="flex h-9 min-w-0 items-center justify-center">
+                <span
+                  role="status"
+                  aria-label={
+                    updatePhase === 'checking'
+                      ? '正在检查应用更新'
+                      : `正在下载 Raccoon ${updateVersion ?? ''}，${updateProgress === null ? '进度未知' : `${Math.round(updateProgress * 100)}%`}，${formatDownloadRate(updateSpeed)}`
+                  }
+                  className="flex h-8 max-w-full items-center gap-1.5 rounded-full border border-primary-base/20 bg-primary-tint px-2.5 text-ui text-primary-text"
+                >
+                  <UploadIcon className="size-3.5 shrink-0" />
+                  <span className="min-w-0 truncate whitespace-nowrap">
+                    {updatePhase === 'checking'
+                      ? '正在检查更新'
+                      : `正在下载… ${updateProgress === null ? '' : `${Math.round(updateProgress * 100)}% · `}${formatDownloadRate(updateSpeed)}`}
                   </span>
-                </Tooltip>
-                {(updatePhase === 'ready' || updatePhase === 'installing') && (
-                  <Button
-                    size="2xsmall"
-                    mode="lighter"
-                    variant="neutral"
-                    aria-label="升级 Raccoon"
-                    className="!bg-warning-tint !text-micro !text-warning-text"
-                    isLoading={updatePhase === 'installing'}
-                    onClick={() => void upgrade()}
-                  >
-                    升级
-                  </Button>
-                )}
-              </span>
-            </div>
+                </span>
+              </div>
+            ) : (
+              <div className="flex h-8 min-w-0 items-center justify-between gap-1.5 px-2 text-secondary text-text-sub-600">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="size-[7px] shrink-0 rounded-full bg-success-base" />
+                  <span className="truncate">{APP_NAME}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <Tooltip content="连续点击 6 次打开实验室" side="top">
+                    <span
+                      className="tabular-nums text-text-soft-400"
+                      data-version
+                      onClick={() => {
+                        if (tapVersion())
+                          void useNav.getState().openSettings('laboratory')
+                      }}
+                    >
+                      {`v${version}`}
+                    </span>
+                  </Tooltip>
+                  {(updatePhase === 'ready' || updatePhase === 'installing') && (
+                    <Button
+                      size="3xsmall"
+                      mode="lighter"
+                      variant="neutral"
+                      aria-label={`Raccoon ${updateVersion ?? ''} 已下载，点击安装更新`}
+                      className="rounded-full border border-primary-base/20 !bg-primary-tint !text-ui !text-primary-text"
+                      isLoading={updatePhase === 'installing'}
+                      onClick={() => void upgrade()}
+                    >
+                      {updatePhase === 'installing'
+                        ? '正在安装…'
+                        : `安装 v${updateVersion ?? '更新'}`}
+                    </Button>
+                  )}
+                </span>
+              </div>
+            )}
           </>
         )}
       </div>

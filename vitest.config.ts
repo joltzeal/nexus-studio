@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url'
 export default defineConfig({
   resolve: {
     alias: {
+      '@nexus/plugin-contracts/mail-style': fileURLToPath(
+        new URL('./packages/plugin-contracts/src/mail-style.ts', import.meta.url),
+      ),
       '@nexus/plugin-contracts/proxy-pool': fileURLToPath(
         new URL('./packages/plugin-contracts/src/proxy-pool.ts', import.meta.url),
       ),

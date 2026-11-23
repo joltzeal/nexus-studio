@@ -13,6 +13,7 @@ type UpdateState = {
   phase: UpdatePhase
   version: string | null
   progress: number | null
+  speedBytesPerSecond: number | null
   error: string | null
   install: () => Promise<void>
 }
@@ -69,6 +70,7 @@ export const useAppUpdate = create<UpdateState>((set, get) => ({
   phase: 'idle',
   version: null,
   progress: null,
+  speedBytesPerSecond: null,
   error: null,
   install: async () => {
     const update = candidate
@@ -119,9 +121,12 @@ async function checkAndDownload() {
       phase: 'downloading',
       version: update.version,
       progress: 0,
+      speedBytesPerSecond: null,
     })
     let downloaded = 0
     let total: number | null = null
+    let lastSampleAt = Date.now()
+    let lastSampleBytes = 0
     await update.download((event) => {
       if (event.event === 'Started') {
         total = event.data.contentLength ?? null
@@ -129,8 +134,19 @@ async function checkAndDownload() {
       } else if (event.event === 'Progress') {
         downloaded += event.data.chunkLength
       }
+      const now = Date.now()
+      const elapsed = now - lastSampleAt
+      let speedBytesPerSecond = useAppUpdate.getState().speedBytesPerSecond
+      if (event.event === 'Progress' && elapsed >= 500) {
+        speedBytesPerSecond = Math.round(
+          ((downloaded - lastSampleBytes) * 1000) / elapsed,
+        )
+        lastSampleAt = now
+        lastSampleBytes = downloaded
+      }
       useAppUpdate.setState({
         progress: total ? Math.min(1, downloaded / total) : null,
+        speedBytesPerSecond,
       })
     })
     candidate = update
@@ -148,4 +164,13 @@ export function startAppUpdateChecks() {
   started = true
   window.setTimeout(() => void checkAndDownload(), CHECK_DELAY)
   window.setInterval(() => void checkAndDownload(), CHECK_INTERVAL)
+}
+
+export function formatDownloadRate(bytesPerSecond: number | null): string {
+  if (bytesPerSecond === null || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) {
+    return '速度未知'
+  }
+  return bytesPerSecond >= 1024 * 1024
+    ? `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`
+    : `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`
 }

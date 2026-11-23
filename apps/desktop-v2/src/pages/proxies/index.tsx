@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { PageBody, PageHeader } from "../../widgets/PageHeader";
+import { PageHeader } from "../../widgets/PageHeader";
 import { useStoreChanged } from "../../shared/hooks/useStoreChanged";
 import { useHeldLoading } from "../../shared/hooks/useHeldLoading";
 import { countActiveProxyFilters, useFilteredProxies, useProxy } from "../../entities/proxy";
@@ -12,10 +12,10 @@ import { useOnboarding } from "../../features/onboarding";
 import { ProxyBulkImporter, ProxyFilterChips } from "../../features/manage-proxies";
 import { ProxyList } from "../../widgets/ProxyList";
 import { ProxyToolbar } from "../../widgets/ProxyList/ProxyToolbar";
+import { ProxyPageLayout } from "../../widgets/ProxyList/ProxyPageLayout";
 import { ProxyPeek } from "../../widgets/ProxyPeek";
 import { ProxyBulkBar } from "../../widgets/ProxyBulkBar";
 import { useT } from "../../shared/i18n";
-import { ListColumn } from "../../shared/ui/ListColumn";
 import { showMeAround } from "../../features/tour";
 import { isNativeRaccoon } from "../../raccoon/runtime";
 
@@ -56,19 +56,16 @@ export function ProxiesPage() {
         filter={empty ? undefined : { value: search, onChange: setSearch }}
         actions={<ProxyToolbar empty={empty} />}
       />
-      <PageBody scroll={false} className="relative">
-        <ProxyFilterChips />
-        {/* Peek always pushes the list: it never lies over it. */}
-        <div className="relative flex min-h-0 flex-1 gap-panel">
-          {/* The list's own column: its bar and the toasts stay off Peek (F2). */}
-          <ListColumn>
-            {/* Before the list in Tab order; it floats over the list's bottom edge. */}
+      <ProxyPageLayout
+        filters={<ProxyFilterChips />}
+        list={
+          <>
             <ProxyBulkBar />
             <ProxyList loading={loading} />
-          </ListColumn>
-          <ProxyPeek />
-        </div>
-      </PageBody>
+          </>
+        }
+        peek={<ProxyPeek />}
+      />
       {bulkLife.mounted && (
         <ProxyBulkImporter
           key={bulkLife.session}

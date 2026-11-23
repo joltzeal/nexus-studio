@@ -2,6 +2,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { emailApi } from '../../../raccoon/plugins/email/api'
+import { graphReadMarks, markGraphMessages } from '../../../raccoon/plugins/email/graph-read-state'
+import { markAllMailboxRead } from '../../../raccoon/plugins/email/mark-all-read'
 import type {
   MailboxView,
   MailMessage,
@@ -123,7 +125,7 @@ async function selectOption(label: string, option: string) {
 it('renders themed HTML elements in the reader and removes active content', async () => {
   vi.mocked(emailApi.getMessage).mockResolvedValue({
     ...detail,
-    html: `${detail.html}<style>blocked</style><script>blocked</script><img src="https://tracker.test"><iframe src="https://tracker.test"></iframe>`,
+    html: `${detail.html}<p style="background: url(https://tracker.test); border: 1px solid #abc; padding: 10px 20px">样式边界</p><style>blocked</style><script>blocked</script><img src="https://tracker.test"><iframe src="https://tracker.test"></iframe>`,
   })
   await renderReader()
   await clickButton(message.subject)
@@ -136,15 +138,48 @@ it('renders themed HTML elements in the reader and removes active content', asyn
   expect(body?.querySelector('table td')?.textContent).toBe('表格内容')
   expect(body?.textContent).toContain('链接文字')
   expect(body?.textContent).not.toContain('blocked')
+  expect(body?.querySelector('p')?.getAttribute('style')).toBe('color: red;')
+  expect(body?.querySelectorAll('p')[1]?.style.padding).toBe('10px 20px')
+  expect(body?.querySelectorAll('p')[1]?.style.background).toBe('')
   expect(
-    body?.querySelector(
-      'a, iframe, img, script, style, [onclick], [style], [href], [src]',
-    ),
+    body?.querySelector('a, iframe, img, script, style, [onclick], [href], [src]'),
   ).toBeNull()
   expect(document.querySelector('iframe')).toBeNull()
 
   await clickButton('查看纯文本')
   expect(document.querySelector('textarea')?.value).toBe(detail.body)
+})
+
+it('marks messages based on their effective Graph state without writing to Outlook', async () => {
+  const locallyRead = { ...message, id: 'locally-read' }
+  const locallyUnread = { ...message, id: 'locally-unread', isRead: true }
+  markGraphMessages(mailbox, 'inbox', [locallyRead], true)
+  markGraphMessages(mailbox, 'inbox', [locallyUnread], false)
+  vi.mocked(emailApi.listMessages)
+    .mockResolvedValueOnce({ items: [locallyRead], total: 3, unread: 2, nextCursor: 'next' })
+    .mockResolvedValueOnce({ items: [locallyUnread, message], total: 3, unread: 2, nextCursor: null })
+    .mockResolvedValueOnce({ items: [], total: 0, unread: 0, nextCursor: null })
+
+  await expect(markAllMailboxRead(mailbox, emailApi, () => true)).resolves.toEqual({ updated: 2, failed: 0, incomplete: [] })
+  expect(graphReadMarks(mailbox, 'inbox')).toEqual(new Map([[locallyRead.id, true], [message.id, true]]))
+  expect(emailApi.setMessagesRead).not.toHaveBeenCalled()
+})
+
+it('reports confirmed IMAP writes and incomplete pagination separately', async () => {
+  const imap = { ...mailbox, transport: 'imap' } as const
+  const failed = { ...message, id: 'second' }
+  vi.mocked(emailApi.listMessages)
+    .mockResolvedValueOnce({ items: [message, failed], total: 2, unread: 2, nextCursor: 'next' })
+    .mockResolvedValueOnce({ items: [message], total: 2, unread: 2, nextCursor: 'next' })
+    .mockResolvedValueOnce({ items: [], total: 0, unread: 0, nextCursor: null })
+  vi.mocked(emailApi.setMessagesRead).mockResolvedValueOnce({
+    updatedIds: [message.id], failures: [{ messageId: failed.id, code: 'TIMEOUT' }], isRead: true,
+  })
+
+  await expect(markAllMailboxRead(imap, emailApi, () => true)).resolves.toEqual({
+    updated: 1, failed: 1, incomplete: ['收件箱 · 邮箱服务返回了重复分页位置'],
+  })
+  expect(emailApi.setMessagesRead).toHaveBeenCalledOnce()
 })
 
 it('falls back to plain text when the provider has no HTML', async () => {

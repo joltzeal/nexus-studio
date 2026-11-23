@@ -55,7 +55,7 @@ describe('desktop release configuration', () => {
       'https://github.com/joltzeal/nexus-studio/releases/latest/download/latest.json',
     ])
     expect(v2Config.plugins.updater.endpoints).toEqual([
-      'https://github.com/joltzeal/nexus-studio/releases/download/raccoon-v2/latest.json',
+      'https://github.com/joltzeal/nexus-studio/releases/latest/download/latest.json',
     ])
   })
 

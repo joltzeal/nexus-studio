@@ -15,13 +15,14 @@ const ranked = () => true;
 /// Backspace in an empty search, or Back,
 /// returns to the fields. A pick closes the menu and the button keeps the
 /// keyboard. The list's own chips (`FilterChips`) show what is applied.
-export function FilterMenu({ open, onOpenChange, fields, activeCount, label, footer }: {
+export function FilterMenu({ open, onOpenChange, fields, activeCount, label, disabled, footer }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Built only while the menu is open; the menu keeps the last ones while it fades out. */
   fields: FilterField[];
   activeCount: number;
   label: string;
+  disabled?: boolean;
   /** Under the list of fields: the way to change a locked one (Edit view). */
   footer?: ReactNode;
 }) {
@@ -54,6 +55,7 @@ export function FilterMenu({ open, onOpenChange, fields, activeCount, label, foo
           leftIcon={<FilterIcon className="size-3.5" />}
           aria-haspopup="dialog"
           aria-expanded={open}
+          disabled={disabled}
           onClick={() => setOpen(!open)}
         >
           {words}

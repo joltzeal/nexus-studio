@@ -95,7 +95,11 @@ function record(
     ...overrides,
   }
 }
-function fixture(overrides: Partial<ProfileBatchPorts> = {}, setup = config()) {
+function fixture(
+  overrides: Partial<ProfileBatchPorts> = {},
+  setup = config(),
+  randomSeed: () => number = () => 10_000,
+) {
   const calls: CreateBrowserWindowInput[] = []
   const bound: string[] = []
   const ports: ProfileBatchPorts = {
@@ -104,6 +108,7 @@ function fixture(overrides: Partial<ProfileBatchPorts> = {}, setup = config()) {
       calls.push(structuredClone(input))
       return record(input, { providerId: setup.connection.providerId })
     },
+    operationStatus: async () => null,
     reconcile: async () => null,
     onBind: async (targetId) => {
       bound.push(targetId)
@@ -111,7 +116,7 @@ function fixture(overrides: Partial<ProfileBatchPorts> = {}, setup = config()) {
     ...overrides,
   }
   return {
-    job: new ProfileBatchController(setup, [], ports, () => 10),
+    job: new ProfileBatchController(setup, [], ports, randomSeed),
     calls,
     bound,
     ports,
@@ -130,7 +135,7 @@ test('freezes names, settings, unique seeds, operation IDs, and the resolved man
   )
   assert.deepEqual(
     calls.map((input) => input.settings.fingerprintSeed),
-    [10, 11],
+    [10_000, 10_001],
   )
   assert.deepEqual(
     calls.map((input) => input.settings.note),
@@ -197,6 +202,38 @@ test('a reconciled success is bound without submitting a second create', async (
   })
   await job.run(() => {}, new Set(['one']))
   assert.deepEqual(bound, ['one'])
+  assert.equal(job.items[0].status, 'complete')
+})
+
+test('reports a native rejection before intent creation without trying to reconcile', async () => {
+  const { job } = fixture({
+    create: async () => { throw Object.assign(new Error('种子不在允许范围'), { code: 'invalid_config' }) },
+    reconcile: async () => { assert.fail('a rejected draft has no intent to reconcile') },
+  })
+  await job.run(() => {}, new Set(['one']))
+  assert.equal(job.items[0].status, 'create_failed')
+  assert.equal(job.items[0].error, '种子不在允许范围')
+})
+
+test('uses the recorded rejection and keeps the original input for a retry', async () => {
+  const attempts: CreateBrowserWindowInput[] = []
+  const { job } = fixture({
+    create: async (input) => {
+      attempts.push(input)
+      if (attempts.length === 1) throw new Error('response interrupted')
+      return record(input)
+    },
+    operationStatus: async (id) => ({
+      id, connectionId: config().connection.id, windowId: 'profile', kind: 'create',
+      phase: 'failed', message: '接入拒绝创建', createdAt: 1, updatedAt: 1,
+    }),
+    reconcile: async () => { assert.fail('a terminal rejection does not need reconciliation') },
+  })
+  await job.run(() => {}, new Set(['one']))
+  assert.equal(job.items[0].status, 'create_failed')
+  assert.equal(job.items[0].error, '接入拒绝创建')
+  await job.run(() => {}, new Set(['one']))
+  assert.deepEqual(attempts[0], attempts[1])
   assert.equal(job.items[0].status, 'complete')
 })
 
@@ -309,8 +346,23 @@ test('AliasMode uses the existing engine-specific exact version and independent 
   )
   assert.deepEqual(
     calls.map((input) => input.settings.fingerprintSeed),
-    [10, 11],
+    [10_000, 10_001],
   )
+})
+
+test('CloakBrowser batch seeds stay unique when collisions wrap at the upper bound', async () => {
+  const setup = config()
+  const values = [99_999, 99_999]
+  const random = () => values.shift() ?? 10_000
+  const { job: seeded, calls } = fixture({}, setup, random)
+  await seeded.run(() => {})
+  assert.deepEqual(
+    calls.map((input) => input.settings.fingerprintSeed),
+    [99_999, 10_000],
+  )
+  const firstInput = calls[0]
+  await seeded.run(() => {}, new Set(['one']))
+  assert.deepEqual(calls[0], firstInput)
 })
 
 test('pending create gates only allow the exact retry ID and reject cross-Workspace operation lists', () => {
@@ -378,6 +430,7 @@ test('closing and opening a fresh batch cannot bypass an unresolved persisted cr
       pending.delete(input.operationId)
       return record(input)
     },
+    operationStatus: async () => null,
     reconcile: async () => null,
     onBind: async () => {},
   }
@@ -411,6 +464,7 @@ for (const phase of ['connection', 'profiles']) {
         writes++
         return record(input)
       },
+      operationStatus: async () => null,
       reconcile: async () => null,
       onBind: async () => {},
     }

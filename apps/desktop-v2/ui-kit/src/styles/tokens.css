@@ -491,6 +491,7 @@
      shadow; its first layer is a 1 px blur, not a ring.
      No lit top edge in dark either (owner, 2026-10-02: "remove it all"). */
   --shadow-float: 0 0 1px 0 #0e121b33, 0 4px 10px -2px #0e121b14, 0 18px 36px -10px #0e121b2e;
+  --shadow-dialog: 0 4px 10px -2px #0e121b14, 0 18px 36px -10px #0e121b2e;
   /* Light flip (owner, 2026-10-01): a white tile on the gray ground carries
      the softest shadow, no line (the dashboard's cards); hovered, the same
      shadow: its fill turns a slightly dusky white instead, with no lift and
@@ -517,6 +518,7 @@
   --shadow-lg: 0 16px 40px -8px #00000099;
   --shadow-tooltip: 0 12px 24px 0 #00000066;
   --shadow-float: 0 4px 10px -2px #00000080, 0 18px 40px -8px #000000bf; /* stronger since owner item 10: with the lighter popover surface the shadow is the edge, there is no border */
+  --shadow-dialog: 0 4px 10px -2px #00000080, 0 18px 40px -8px #000000bf;
   /* Dark keeps step 1: no tile shadow, the raised segment's own, the header flush. */
   --shadow-tile: 0 0 #0000;
   --shadow-tile-hover: 0 0 #0000;

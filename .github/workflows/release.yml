@@ -69,8 +69,10 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Raccoon v__VERSION__'
           releaseBody: |
-            - Raccoon 0.2 工作台：比特浏览器官网接入常开，实验室接入需手动开启。
-            - 应用启动后静默检查并下载更新，下载完成后在侧边栏显示升级按钮。
+            - 代理池沿用主程序代理页面布局。可在详情中检测出口，也可批量检测选中或当前页启用的代理。
+            - 邮箱支持每页数量选择和按邮箱标记全部已读，阅读器显示安全的内联格式。
+            - Vinted 账号池批量创建按接入范围生成指纹种子，并显示确认失败或待核对结果。
+            - 插件操作常驻显示，实验室按接入分标签，侧边栏显示更新进度和下载速度。
             - 插件包独立发布至 R2，应用安装包不内置插件。
 
             当前工作流只构建 macOS，安装包未公证；更新包继续使用固定签名公钥校验。
@@ -96,13 +98,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          gh release edit "$RELEASE_TAG" --draft=false --latest
           mkdir -p "$RUNNER_TEMP/v2-update-channel"
           gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/v2-update-channel"
           if ! gh release view raccoon-v2 >/dev/null 2>&1; then
             gh release create raccoon-v2 \
               --title 'Raccoon v2 updater channel' \
-              --notes 'Stable updater manifest for Raccoon 0.2 releases.' \
+              --notes 'Updater manifest for installed Raccoon 0.2 versions.' \
               --prerelease \
               --latest=false
           fi

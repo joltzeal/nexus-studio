@@ -40,6 +40,7 @@ import { useInterfaceSize, INTERFACE_SIZES } from '../shared/model/interfaceSize
 import { useMotion } from '../shared/model/motion'
 import { NativeAutomationApiSettings } from './automation/ApiSettings'
 import { CloakBrowserLab } from './CloakBrowserLab'
+import { AliasModeLab } from './AliasModeLab'
 import { BitBrowserGuide, useBitBrowserLauncher } from './BitBrowserGuide'
 import { useLabUnlock } from './app-meta'
 
@@ -167,12 +168,13 @@ export function NativeSettingsPage() {
   const cloakConnection = state.connections.find(
     (row) => row.providerId === 'cloakbrowser',
   )
+  const aliasConnection = state.connections.find((row) => row.providerId === 'aliasmode')
   const bitConnection = state.connections.find((row) => row.providerId === 'bitbrowser')
   const workspaceBitProbe =
     bitConnection && state.connectionId === bitConnection.id ? state.probe : null
   const savedCloakEnabled = cloakConnection?.enabled ?? false
   const savedEnabled = connection?.enabled ?? false
-  const [labTab, setLabTab] = useState<'cloakbrowser' | 'shardbrowser'>('cloakbrowser')
+  const [labTab, setLabTab] = useState<'cloakbrowser' | 'aliasmode' | 'shardbrowser' | 'camoufox'>('cloakbrowser')
   const tab = useNav((state) => state.settingsTab) as SettingsTab
   const labUnlocked = useLabUnlock((state) => state.unlocked)
   const unlockLab = useLabUnlock((state) => state.unlock)
@@ -187,6 +189,7 @@ export function NativeSettingsPage() {
   }, [tab, labUnlocked, unlockLab])
   const [draftEnabled, setDraftEnabled] = useState<boolean | null>(null)
   const [draftCloakEnabled, setDraftCloakEnabled] = useState<boolean | null>(null)
+  const [draftAliasEnabled, setDraftAliasEnabled] = useState<boolean | null>(null)
   const [deleteBlocked, setDeleteBlocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -204,6 +207,8 @@ export function NativeSettingsPage() {
   const savingLock = useRef(false)
   const enabled = draftEnabled ?? savedEnabled
   const cloakEnabled = draftCloakEnabled ?? savedCloakEnabled
+  const savedAliasEnabled = aliasConnection?.enabled ?? false
+  const aliasEnabled = draftAliasEnabled ?? savedAliasEnabled
   // A failed save can already have persisted the switch before its readback
   // fails. Keep the draft and Save bar until a complete save succeeds.
   const settingsDirty =
@@ -218,6 +223,8 @@ export function NativeSettingsPage() {
     networkDirty ||
     (draftEnabled !== null &&
       (enabled !== savedEnabled || saveError !== null || saving)) ||
+    (draftAliasEnabled !== null &&
+      (aliasEnabled !== savedAliasEnabled || saveError !== null || saving)) ||
     cloakDirty
   const currentSettings = draftSettings ?? settings
   const currentNetwork = draftNetwork ?? network
@@ -381,6 +388,14 @@ export function NativeSettingsPage() {
         await workspace.enable('cloakbrowser', cloakEnabled)
         setDraftCloakEnabled(null)
       }
+      if (draftAliasEnabled !== null) {
+        const result = await nativeApi.call('browser_managed_aliasmode_set', { enabled: aliasEnabled })
+        if (!result || typeof result !== 'object' || !('id' in result) || typeof result.id !== 'string') {
+          throw new Error('AliasMode 接入保存回执无效')
+        }
+        await workspace.initialize(aliasEnabled ? result.id : null)
+        setDraftAliasEnabled(null)
+      }
       if (draftEnabled !== null) {
         await workspace.enable('shardbrowser', enabled)
         setDraftEnabled(null)
@@ -399,6 +414,7 @@ export function NativeSettingsPage() {
     if (savingLock.current) return
     setDraftEnabled(null)
     setDraftCloakEnabled(null)
+    setDraftAliasEnabled(null)
     setDraftSettings(null)
     setDraftNetwork(null)
     setSaveError(null)
@@ -617,16 +633,12 @@ export function NativeSettingsPage() {
                   onChange={(value) => setLabTab(value as typeof labTab)}
                   items={[
                     { value: 'cloakbrowser', label: 'CloakBrowser' },
-                    {
-                      value: 'aliasmode',
-                      label: 'AliasMode（暂不可用）',
-                      disabled: true,
-                    },
+                    { value: 'aliasmode', label: 'AliasMode' },
                     { value: 'shardbrowser', label: 'ShardBrowser' },
-                    { value: 'camoufox', label: 'Camoufox（暂不可用）', disabled: true },
+                    { value: 'camoufox', label: 'Camoufox' },
                   ]}
                 />
-                <TabPanel
+                {labTab === 'cloakbrowser' && <TabPanel
                   tabsId="native-laboratory"
                   value="cloakbrowser"
                   className="flex min-w-0 flex-col gap-3.5"
@@ -645,8 +657,34 @@ export function NativeSettingsPage() {
                     }}
                     onBlockChange={setDeleteBlocked}
                   />
-                </TabPanel>
-                <TabPanel
+                </TabPanel>}
+                {labTab === 'aliasmode' && <TabPanel
+                  tabsId="native-laboratory"
+                  value="aliasmode"
+                  className="flex min-w-0 flex-col gap-3.5"
+                >
+                  <AliasModeLab
+                    connectionEnabled={savedAliasEnabled}
+                    enabled={aliasEnabled}
+                    saving={saving}
+                    probe={state.connectionId === aliasConnection?.id ? state.probe : null}
+                    onToggle={(value) => {
+                      setDraftAliasEnabled(value)
+                      setSaveError(null)
+                    }}
+                  />
+                </TabPanel>}
+                {labTab === 'camoufox' && <TabPanel
+                  tabsId="native-laboratory"
+                  value="camoufox"
+                  className="flex min-w-0 flex-col gap-3.5"
+                >
+                  <SettingsGroup title="Camoufox">
+                    <SettingRow id="native-camoufox-status" title="Provider 状态" help="Camoufox 是占位 Provider。连接、内核和 Profile 生命周期完成接入后才会开放。" control={() => <span className="text-help text-text-soft-400">暂不可用</span>} />
+                    <SettingRow id="native-camoufox-create" title="Profile 创建" help="当前不会创建或启动 Camoufox Profile。" control={() => <span className="text-help text-text-soft-400">未开放</span>} />
+                  </SettingsGroup>
+                </TabPanel>}
+                {labTab === 'shardbrowser' && <TabPanel
                   tabsId="native-laboratory"
                   value="shardbrowser"
                   className="flex min-w-0 flex-col gap-3.5"
@@ -816,7 +854,7 @@ export function NativeSettingsPage() {
                       />
                     )}
                   </SettingsGroup>
-                </TabPanel>
+                </TabPanel>}
               </>
             )}
           </TabPanel>

@@ -9,6 +9,12 @@ import {
 
 export const MAX_BATCH_PROFILES = 100
 const MAX_SEED = 2_147_483_647
+const CLOAK_MIN_SEED = 10_000
+const CLOAK_MAX_SEED = 99_999
+const REJECTED_BEFORE_CREATE = new Set([
+  'invalid_config', 'unsupported', 'auth_required', 'permission_denied',
+  'not_submitted', 'rate_limited', 'profile_busy', 'profile_missing',
+])
 
 export type ProfileBatchTarget = { id: string; name: string }
 export type ProfileBatchStatus =
@@ -45,6 +51,7 @@ export type ProfileBatchConfig = {
 export type ProfileBatchPorts = {
   checkConnection(connection: BrowserConnection, operationId?: string): Promise<void>
   create(input: CreateBrowserWindowInput): Promise<BrowserWindow>
+  operationStatus(operationId: string): Promise<BrowserOperation | null>
   reconcile(operationId: string): Promise<BrowserWindow | null>
   onBind(targetId: string, profileId: string): Promise<void>
 }
@@ -71,6 +78,12 @@ function uniqueName(value: string, used: Set<string>): string {
   }
   used.add(name.toLocaleLowerCase())
   return name
+}
+
+function seedBounds(provider: BrowserConnection['providerId']) {
+  return provider === 'cloakbrowser'
+    ? { min: CLOAK_MIN_SEED, max: CLOAK_MAX_SEED }
+    : { min: 1, max: MAX_SEED }
 }
 
 export function batchConnectionProblem(connection: BrowserConnection): string | null {
@@ -123,7 +136,7 @@ export class ProfileBatchController {
     config: ProfileBatchConfig,
     existing: readonly BrowserWindow[],
     ports: ProfileBatchPorts,
-    randomSeed = () => (crypto.getRandomValues(new Uint32Array(1))[0] % MAX_SEED) + 1,
+    randomSeed?: () => number,
   ) {
     this.ports = ports
     if (!config.targets.length || config.targets.length > MAX_BATCH_PROFILES)
@@ -144,17 +157,27 @@ export class ProfileBatchController {
     const names = new Set(
       existing.map((profile) => profile.name.trim().toLocaleLowerCase()),
     )
-    const seeds = new Set(existing.map((profile) => profile.settings.fingerprintSeed))
+    const bounds = seedBounds(config.connection.providerId)
+    const seedRange = bounds.max - bounds.min + 1
+    const seeds = new Set(existing.flatMap((profile) => {
+      const seed = profile.settings.fingerprintSeed
+      return seed !== null && seed >= bounds.min && seed <= bounds.max ? [seed] : []
+    }))
     const managed = ['shardbrowser', 'cloakbrowser', 'aliasmode'].includes(
       config.connection.providerId,
     )
+    const generateSeed =
+      randomSeed ??
+      (() => bounds.min + (crypto.getRandomValues(new Uint32Array(1))[0] % seedRange))
     this.rows = config.targets.map((target, index) => {
       let seed: number | null = null
       if (managed && config.connection.capabilities.fingerprintSeed) {
-        seed = randomSeed()
-        if (!Number.isInteger(seed) || seed < 1 || seed > MAX_SEED)
+        if (seeds.size >= seedRange) throw new Error('此 Workspace 的指纹种子已用完')
+        seed = generateSeed()
+        if (!Number.isInteger(seed) || seed < bounds.min || seed > bounds.max)
           throw new Error('指纹种子生成失败')
-        while (seeds.has(seed)) seed = (seed % MAX_SEED) + 1
+        while (seeds.has(seed))
+          seed = seed >= bounds.max ? bounds.min : seed + 1
         seeds.add(seed)
       }
       const base = config.namePrefix.trim()
@@ -233,6 +256,21 @@ export class ProfileBatchController {
     )
   }
 
+  private async recoverCreate(operationId: string, cause: unknown) {
+    const operation = await this.ports.operationStatus(operationId).catch(() => undefined)
+    const code = cause instanceof Error && 'code' in cause ? String(cause.code) : ''
+    if (code === 'operation_conflict') return null
+    if (operation === null && REJECTED_BEFORE_CREATE.has(code)) throw cause
+    if (operation && (
+      operation.id !== operationId ||
+      operation.connectionId !== this.config.connection.id ||
+      operation.kind !== 'create'
+    )) return null
+    if (operation?.phase === 'failed' || operation?.phase === 'cancelled')
+      throw new Error(operation.message ?? batchError(cause))
+    return this.ports.reconcile(operationId).catch(() => null)
+  }
+
   private async execute(
     onChange: (items: readonly ProfileBatchItem[]) => void,
     selected: ReadonlySet<string> | null,
@@ -279,9 +317,7 @@ export class ProfileBatchController {
             // whether it may submit or must reconcile a previous write.
             created = await this.ports.create(structuredClone(input))
           } catch (cause) {
-            const recovered = await this.ports
-              .reconcile(item.operationId)
-              .catch(() => null)
+            const recovered = await this.recoverCreate(item.operationId, cause)
             if (!recovered) {
               this.patch(
                 item.targetId,

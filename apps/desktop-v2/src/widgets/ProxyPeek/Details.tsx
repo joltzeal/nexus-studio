@@ -18,34 +18,72 @@ const KIND = { socks5: "SOCKS5", http: "HTTP", https: "HTTPS" } as const;
 /// it (and then it is on the screen, not just in the page).
 export function Details({ proxy: p }: { proxy: ProxyEntry }) {
   const t = useT();
-  const [shown, setShown] = useState(false);
-  const none = t("proxyPeek.none");
-  const row = (id: string, label: string, value: ReactNode, opts: { empty?: boolean; wrap?: boolean; mono?: boolean; selectable?: boolean } = {}) => (
+  return (
+    <ProxyConnectionDetails
+      protocol={KIND[p.kind]}
+      host={p.host}
+      port={p.port}
+      username={p.username}
+      hasPassword={!!p.password}
+      password={p.password}
+      country={p.country}
+      extra={<ProxyDetailRow id="notes" label={t("proxyPeek.notes")} value={p.notes || t("peek.noNotes")} empty={!p.notes} wrap selectable={!!p.notes} />}
+      footer={!isNativeRaccoon() && <Signature proxy={p} />}
+    />
+  );
+}
+
+export function ProxyDetailRow({ id, label, value, empty, wrap, mono, selectable }: {
+  id: string;
+  label: string;
+  value: ReactNode;
+  empty?: boolean;
+  wrap?: boolean;
+  mono?: boolean;
+  selectable?: boolean;
+}) {
+  return (
     <PropertyRow id={id} label={label}>
       {() => (
-        <PropertyValue empty={opts.empty} wrap={opts.wrap}>
-          <span {...(opts.selectable ? { "data-selectable": "" } : {})} className={opts.mono ? "mono min-w-0 truncate" : opts.wrap ? "min-w-0 whitespace-pre-wrap break-words" : "min-w-0 truncate"}>{value}</span>
+        <PropertyValue empty={empty} wrap={wrap}>
+          <span data-selectable={selectable ? "" : undefined} className={mono ? "mono min-w-0 truncate" : wrap ? "min-w-0 whitespace-pre-wrap break-words" : "min-w-0 truncate"}>{value}</span>
         </PropertyValue>
       )}
     </PropertyRow>
   );
+}
+
+export function ProxyConnectionDetails({ protocol, host, port, username, country, hasPassword, password, extra, footer }: {
+  protocol: ReactNode;
+  host: string;
+  port: number;
+  username: string;
+  country: string | null;
+  hasPassword: boolean;
+  password?: string;
+  extra?: ReactNode;
+  footer?: ReactNode;
+}) {
+  const t = useT();
+  const [shown, setShown] = useState(false);
+  const none = t("proxyPeek.none");
   return (
     <PropertySheet>
-      {/* 2 px between 32 px rows, as the profile panel's. */}
       <div className="flex flex-col gap-[2px]">
-        {row("type", t("proxyEditor.typeLabel"), KIND[p.kind])}
-        {row("host", t("proxyEditor.hostLabel"), p.host, { mono: true, selectable: true })}
-        {row("port", t("proxyEditor.portLabel"), p.port, { mono: true, selectable: true })}
-        {row("username", t("proxyEditor.usernameLabel"), p.username || none, { empty: !p.username, selectable: !!p.username })}
+        <ProxyDetailRow id="type" label={t("proxyEditor.typeLabel")} value={protocol} />
+        <ProxyDetailRow id="host" label={t("proxyEditor.hostLabel")} value={host} mono selectable />
+        <ProxyDetailRow id="port" label={t("proxyEditor.portLabel")} value={port} mono selectable />
+        <ProxyDetailRow id="username" label={t("proxyEditor.usernameLabel")} value={username || none} empty={!username} selectable={!!username} wrap />
         <PropertyRow id="password" label={t("proxyEditor.passwordLabel")}>
           {() => (
             <>
-              <PropertyValue empty={!p.password}>
-                {!p.password ? <span className="truncate">{none}</span>
-                  : shown ? <span data-selectable className="mono min-w-0 truncate">{p.password}</span>
+              <PropertyValue empty={!hasPassword}>
+                {!hasPassword ? <span className="truncate">{none}</span>
+                  : shown && password ? <span data-selectable className="mono min-w-0 truncate">{password}</span>
+                  : !password ? <span className="min-w-0 truncate">••••••••</span>
                   : <span aria-hidden="true" className="min-w-0 truncate">••••••••</span>}
               </PropertyValue>
-              {p.password && (
+              {password && (
                 // One name, "Show password"; whether it is shown is `aria-pressed` (PC-073).
                 <IconButton
                   size="3xsmall"
@@ -60,19 +98,19 @@ export function Details({ proxy: p }: { proxy: ProxyEntry }) {
         </PropertyRow>
         <PropertyRow id="country" label={t("proxyEditor.countryLabel")}>
           {() => (
-            <PropertyValue empty={!p.country}>
-              {p.country ? (
+            <PropertyValue empty={!country}>
+              {country ? (
                 <>
-                  <CountryFlag cc={p.country} height={14} />
-                  <span className="truncate">{p.country}</span>
+                  <CountryFlag cc={country} height={14} />
+                  <span className="truncate">{country}</span>
                 </>
               ) : <span className="truncate">{none}</span>}
             </PropertyValue>
           )}
         </PropertyRow>
-        {row("notes", t("proxyPeek.notes"), p.notes || t("peek.noNotes"), { empty: !p.notes, wrap: true, selectable: !!p.notes })}
+        {extra}
       </div>
-      {!isNativeRaccoon() && <Signature proxy={p} />}
+      {footer}
     </PropertySheet>
   );
 }

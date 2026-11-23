@@ -112,7 +112,7 @@ export function useListLayout<Id extends string, Row>({ storageKey, defs, items,
   /** The header row's height, px: `LIST_HEADER_HEIGHT` unless the list's
    *  own was shorter before Phase B (owner: nothing grows). */
   headerHeight?: number;
-}): { columns: DataListColumn<Row>[]; layout: DataListLayout; items: readonly Row[] } {
+}) {
   const t = useT();
   const [saved, setSaved] = useState(() => load(storageKey, defs));
   // The latest choices (every change goes through `save`), so two widths set
@@ -222,5 +222,8 @@ export function useListLayout<Id extends string, Row>({ storageKey, defs, items,
     pin: { lead: "list-pin-check", first: pinsName ? "list-pin-name" : undefined, end: "list-pin-end" },
   };
 
-  return { columns, layout, items: sorted };
+  return {
+    columns, layout, items: sorted, api, table, sort: saved.sort,
+    setSort: (sort: ListSort<Id>) => save({ ...latest.current, sort }),
+  };
 }

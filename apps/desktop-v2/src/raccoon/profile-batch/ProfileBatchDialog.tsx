@@ -290,6 +290,7 @@ function BatchSession(props: ProfileBatchDialogProps) {
             checkConnection: (connection, operationId) =>
               profileBatchApi.checkConnection(connection, operationId),
             create: (input) => profileBatchApi.create(input),
+            operationStatus: (id) => profileBatchApi.operationStatus(id),
             reconcile: (id) => profileBatchApi.reconcile(id),
             onBind: (targetId, profileId) =>
               callbacks.current.onBind(targetId, profileId),

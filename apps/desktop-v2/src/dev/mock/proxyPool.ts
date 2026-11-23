@@ -3,7 +3,7 @@ import { EMPTY_QUERY, PROXY_PLUGIN_ID } from "../../raccoon/plugins/proxy-pool/m
 import type { Handler } from "./handlers";
 
 const methods = [
-  "proxy.list", "proxy.create", "proxy.update", "proxy.delete", "proxy.check", "proxy.import",
+  "proxy.list", "proxy.get", "proxy.create", "proxy.update", "proxy.delete", "proxy.check", "proxy.import",
   "proxy.groups.list", "proxy.groups.create", "proxy.config.get", "proxy.config.set", "proxy.exportUrls",
   "proxy.subscriptions.list", "proxy.subscriptions.create", "proxy.subscriptions.delete",
   "proxy.subscriptions.preview", "proxy.subscriptions.export", "proxy.subscriptions.append",
@@ -19,6 +19,7 @@ const rows: ProxyRow[] = [
   enabled: index !== 3, udp: true, hasPassword: index !== 3,
   checkStatus: index === 2 ? "failed" : index === 3 ? "unknown" : "ok", checkedScheme: index === 1 ? "socks5" : "http",
   checkedAt: index === 3 ? null : "2026-11-18T10:30:00Z", exitIp: index === 3 ? null : `203.0.113.${14 + index}`,
+  exitIpCheckedAt: index === 3 ? null : index === 2 ? "2026-11-17T10:30:00Z" : "2026-11-18T10:30:00Z",
   previousExitIp: null, previousExitIpCheckedAt: null, exitIpChanged: false,
   geo: { status: "ok", country: ["美国", "德国", "英国", "法国", "美国"][index], countryCode: null, region: null, city: null, isp: null, error: null },
   reputation: index === 3 ? null : { status: "ok", risk: [4, 12, 78, 0, 8][index], proxy: true, vpn: false, hosting: false, networkType: "Residential", provider: null, asn: null, error: null },
@@ -60,6 +61,11 @@ function previewCall(input: Record<string, unknown>) {
       return { total: filtered.length, limit: query.limit, offset: query.offset, items: filtered.slice(query.offset, query.offset + query.limit) };
     }
     case "proxy.groups.list": return { items: groups };
+    case "proxy.get": {
+      const row = rows.find((item) => item.id === String(payload.id));
+      if (!row) throw new Error("示例端点不存在");
+      return row;
+    }
     case "proxy.groups.create": {
       const group = { id: nextId++, name: String(payload.name), createdAt: new Date().toISOString() };
       groups.push(group);

@@ -139,7 +139,7 @@ export default function Modal({
         // forced colors keep a system edge.
         panelClassName={cn(
           // A white surface: a tile in it is the weak fill, its fields too.
-          'w-full max-h-[calc(var(--viewport-h)-2rem)] overflow-hidden rounded-dialog bg-bg-raised shadow-(--shadow-float) forced-edge white-surface',
+          'w-full max-h-[calc(var(--viewport-h)-2rem)] overflow-hidden rounded-dialog bg-bg-raised shadow-(--shadow-dialog) forced-edge white-surface',
           maxWidthClassName ?? WIDTH[size],
           className,
         )}

@@ -115,6 +115,7 @@ export function VintedMonitorPage({ onManage }: { onManage: () => void }) {
   const [busy, setBusy] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [reading, setReading] = useState(true)
+  const hasRead = useRef(false)
   const [readError, setReadError] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const [selection, setSelection] = useState<string[]>([])
@@ -125,8 +126,9 @@ export function VintedMonitorPage({ onManage }: { onManage: () => void }) {
   useEffect(() => {
     if (!ready) return
     const sequence = ++refreshSequence.current
+    const initialRead = !hasRead.current
     let timer: ReturnType<typeof setTimeout>
-    async function read(initial: boolean) {
+    async function read() {
       let delay = 15000
       try {
         const query = itemFilterParams(filters)
@@ -145,6 +147,7 @@ export function VintedMonitorPage({ onManage }: { onManage: () => void }) {
         setItems(itemPage.items)
         setTotal(itemPage.total)
         setLoaded(true)
+        hasRead.current = true
         setReadError(null)
         if (page > 0 && page >= itemPage.totalPages) {
           setSelection([])
@@ -154,13 +157,13 @@ export function VintedMonitorPage({ onManage }: { onManage: () => void }) {
         if (sequence === refreshSequence.current) setReadError(message(cause))
       } finally {
         if (sequence === refreshSequence.current) {
-          if (initial) setReading(false)
-          timer = setTimeout(() => void read(false), delay)
+          if (initialRead) setReading(false)
+          timer = setTimeout(() => void read(), delay)
         }
       }
     }
-    setReading(true)
-    timer = setTimeout(() => void read(true), 180)
+    if (initialRead) setReading(true)
+    timer = setTimeout(() => void read(), 180)
     return () => {
       refreshSequence.current += 1
       clearTimeout(timer)
@@ -541,7 +544,6 @@ export function VintedMonitorPage({ onManage }: { onManage: () => void }) {
               </thead>
               <tbody>
                 {!reading &&
-                  !readError &&
                   items.map((item) => (
                     <tr
                       key={item.id}

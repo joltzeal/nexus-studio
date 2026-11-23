@@ -50,6 +50,48 @@ export const ProviderSubscriptionListInputSchema = z.strictObject({ accountId: i
 export const ProxyEndpointOriginSchema = z.strictObject({ accountId: id, subscriptionId: id })
 export type ProxyEndpointOrigin = z.infer<typeof ProxyEndpointOriginSchema>
 
+export const PROXY_IP_HISTORY_LIMIT = 20
+export const ProxyIpObservationSchema = z.strictObject({
+  ip: z.union([z.ipv4(), z.ipv6()]),
+  countryCode: z.string().nullable(),
+  city: z.string().nullable(),
+  firstSeen: z.iso.datetime({ offset: true }),
+  lastSeen: z.iso.datetime({ offset: true }),
+}).refine((value) => Date.parse(value.firstSeen) <= Date.parse(value.lastSeen))
+export type ProxyIpObservation = z.infer<typeof ProxyIpObservationSchema>
+export const ProxyIpHistorySchema = z.array(ProxyIpObservationSchema).max(PROXY_IP_HISTORY_LIMIT)
+
+export function previousProxyIpObservations(row: {
+  exitIp: string | null
+  exitIpCheckedAt?: string | null
+  previousExitIp: string | null
+  previousExitIpCheckedAt: string | null
+  checkStatus: string
+  checkedAt: string | null
+  geo: { countryCode: string | null; city: string | null } | null
+}): ProxyIpObservation[] {
+  const current = ProxyIpObservationSchema.safeParse({
+    ip: row.exitIp,
+    countryCode: row.geo?.countryCode ?? null,
+    city: row.geo?.city ?? null,
+    firstSeen: row.exitIp === row.previousExitIp && row.previousExitIpCheckedAt
+      ? row.previousExitIpCheckedAt
+      : row.exitIpCheckedAt ?? (row.checkStatus === 'ok' ? row.checkedAt : null),
+    lastSeen: row.exitIpCheckedAt ?? (row.checkStatus === 'ok' ? row.checkedAt : null),
+  })
+  const previous = ProxyIpObservationSchema.safeParse({
+    ip: row.previousExitIp,
+    countryCode: null,
+    city: null,
+    firstSeen: row.previousExitIpCheckedAt,
+    lastSeen: row.previousExitIpCheckedAt,
+  })
+  const observations = current.success ? [current.data] : []
+  if (previous.success && (!current.success || previous.data.ip !== current.data.ip || previous.data.lastSeen !== current.data.lastSeen))
+    observations.push(previous.data)
+  return observations
+}
+
 export const ProxyPickerInputSchema = z.strictObject({
   accountId: id.nullable().default(null), subscriptionId: id.nullable().default(null),
   keyword: z.string().max(128).default(''),

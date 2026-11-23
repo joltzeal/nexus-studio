@@ -81,17 +81,18 @@ export interface MailboxView {
   createdAt: string
   updatedAt: string
 }
+export type MailboxPageSize = 20 | 50
 export interface MailboxQuery {
   query?: string
   status?: MailboxStatus
   page: number
-  pageSize: 20 | 50
+  pageSize: MailboxPageSize
 }
 export interface MailboxPage {
   items: MailboxView[]
   total: number
   page: number
-  pageSize: 20 | 50
+  pageSize: MailboxPageSize
   storageDurable: boolean
 }
 export interface MailboxInput {

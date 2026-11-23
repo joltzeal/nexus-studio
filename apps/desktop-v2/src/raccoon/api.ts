@@ -169,6 +169,8 @@ export const nativeApi = {
           return BrowserConnectionSchema.parse(value)
         case 'browser_managed_shardbrowser_set':
           return BrowserConnectionSchema.parse(value)
+        case 'browser_managed_aliasmode_set':
+          return BrowserConnectionSchema.parse(value)
         case 'browser_connection_probe':
           return BrowserConnectionProbeSchema.parse(value)
         case 'browser_bitbrowser_launch':

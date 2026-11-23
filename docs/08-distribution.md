@@ -92,9 +92,8 @@ macOS 结果不能代表 Windows，也不能由跨平台框架名称推定通过
 
 ## 后续更新与数据
 
-Tauri updater 使用独立签名密钥；0.2 启动后静默检查并在后台下载，下载完成后才在
-侧边栏版本行显示升级按钮，点击并二次确认后安装并重启；
-0.1 的关于页检查、下载、安装和重启入口仍保留在旧前端；
+Tauri updater 使用独立签名密钥；0.2 启动后静默检查并在后台下载，侧边栏版本行显示下载进度和速度，
+下载完成后显示升级按钮，点击并确认后安装并重启。
 发布版始终初始化 updater，因此基础 `tauri.conf.json` 必须包含公钥与更新地址，
 不能只放在 release 覆盖配置中；本地打包也必须叠加 release 和对应平台配置，
 否则安装包可能缺少插件宿主的 Node helper 与 runtime。未提供签名私钥的本地
@@ -104,9 +103,8 @@ Tauri updater 使用独立签名密钥；0.2 启动后静默检查并在后台�
 工作流暂只构建 macOS arm64 与 x64，Windows 矩阵在恢复 Windows 验收前不运行。
 GitHub Actions 打包时使用 ThinLTO 和 16 个 Rust 代码生成单元，以减少正式编译耗时。
 两种架构各自执行原生回归、Clippy 和包内签名运行时验证，完成后才公开 Release。
-旧版 updater 继续读取 GitHub Latest 的 `latest.json`；v2 从 `raccoon-v2` 预发布
-Release 读取独立 updater 清单。版本化 v2 Release 显式不设为 GitHub Latest，发布完成后
-工作流将其中的 `latest.json` 复制到 `raccoon-v2`，使旧版客户端继续留在 0.1 更新通道。
+新 v2 updater 读取 GitHub Latest Release 中的 `latest.json`。完整打包成功后，发布工作流
+将版本化 0.2 Release 标记为 Latest，并把同一份清单同步到已安装的早期 0.2 客户端使用的 `raccoon-v2` 地址。
 地址生成器的浏览器 Key 由仓库 Secret `VITE_GOOGLE_MAPS_API_KEY` 注入前端构建；
 Secret 未配置时构建仍可完成，但地图选点会提示未配置。
 版本化 v2 Release 与 updater 通道均位于公开 GitHub 仓库。

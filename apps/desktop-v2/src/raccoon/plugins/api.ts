@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { PluginUiDeclarationSchema } from '@nexus/plugin-sdk/ui';
+import { normalizePluginCard } from './license-card'
 import type {
   MarketEntry, MarketEntryState, MarketStatus, PluginLicenseState,
   PluginLicenseStatus, PluginPermissions, PluginState, PluginView,
@@ -159,7 +160,7 @@ export const pluginApi = {
   }),
   licenseStatus: () => call("plugin_license_status", undefined, licenses),
   activate: (pluginId: string, card: string, marketSelection?: string, installedSelection?: string) =>
-    call("plugin_license_activate", { pluginId, card, marketSelection, installedSelection }, license),
+    call("plugin_license_activate", { pluginId, card: normalizePluginCard(card), marketSelection, installedSelection }, license),
   installLocal: (source: string) => call("plugin_install", { source }, plugin),
   async uninstall(id: string): Promise<void> {
     try {

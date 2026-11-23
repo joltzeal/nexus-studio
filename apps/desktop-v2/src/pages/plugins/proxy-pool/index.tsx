@@ -1,50 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Alert,
-  AlertModal,
-  Button,
-  Checkbox,
-  DataList,
-  EmptyState,
-  Input,
-  Modal,
-  Select,
-  Textarea,
-  type DataListColumn,
-  type MenuItem,
-} from '@proxyshard/shardx-ui-kit'
+import { Alert, AlertModal, Button, DataList, EmptyState, IconButton, Select, useLatched, type MenuItem } from '@proxyshard/shardx-ui-kit'
+import { BrowserWindowSchema, type BrowserWindow } from '@nexus/contracts/browser'
 import { HeaderMenu, PageHeader } from '../../../widgets/PageHeader'
-import { MorePluginFilters, PluginFilterRow, PluginSearch } from '../PluginFilterRow'
-import { PluginWorkspace } from '../PluginWorkspace'
-import { ListColumn } from '../../../shared/ui/ListColumn'
-import {
-  AddIcon,
-  CopyIcon,
-  DeleteIcon,
-  EditIcon,
-  NavProxiesIcon,
-  RefreshIcon,
-} from '../../../shared/icons'
-import { clip } from '../../../shared/lib/clipboard'
+import { ProxyPageLayout } from '../../../widgets/ProxyList/ProxyPageLayout'
+import { ProxyToolbarLayout } from '../../../widgets/ProxyList/ProxyToolbar'
+import { useProfileUi } from '../../../entities/profile'
+import { useHeldLoading } from '../../../shared/hooks/useHeldLoading'
+import { AddIcon, CloseIcon, CopyIcon, DeleteIcon, EditIcon, NavProxiesIcon, RefreshIcon, SearchIcon } from '../../../shared/icons'
+import { useT } from '../../../shared/i18n'
+import { refocusPageFilter } from '../../../shared/lib/focus'
 import { toast } from '../../../shared/model/toast'
+import { useNav } from '../../../shared/model/navigation'
+import { BulkBarFrame } from '../../../shared/ui/BulkBarFrame'
+import { FilterChips } from '../../../shared/ui/filters'
+import { useListEndRoom } from '../../../shared/ui/ListColumn'
+import { LoadError, LoadingRows } from '../../../shared/ui/ListStates'
+import { LIST_ROW_HEIGHT } from '../../../shared/ui/listMetrics'
+import { nativeApi } from '../../../raccoon/api'
 import { isNativeRaccoon } from '../../../raccoon/runtime'
+import { workspace } from '../../../raccoon/store'
 import { usePluginCatalog } from '../../../raccoon/plugins/catalog'
 import { proxyPoolApi } from '../../../raccoon/plugins/proxy-pool/api'
 import { supportsProxyPoolPage } from '../../../raccoon/plugins/proxy-pool/page-contract'
 import { PROVIDER_MANAGEMENT_METHODS } from '../../../raccoon/plugins/proxy-pool/providers'
-import {
-  activeFilterCount,
-  addressOf,
-  EMPTY_QUERY,
-  errorMessage,
-  PROXY_PLUGIN_ID,
-  SCHEMES,
-  type ProxyConfig,
-  type ProxyGroup,
-  type ProxyQuery,
-  type ProxyRow,
-  type Scheme,
-} from '../../../raccoon/plugins/proxy-pool/model'
+import { activeFilterCount, EMPTY_QUERY, errorMessage, PROXY_PLUGIN_ID, type ProxyConfig, type ProxyGroup, type ProxyQuery, type ProxyRow, type Scheme } from '../../../raccoon/plugins/proxy-pool/model'
 import { ProxyFormDialog } from './FormDialog'
 import { ProxyBatchDialog } from './BatchDialog'
 import { ProxyConfigDialog } from './ConfigDialog'
@@ -52,104 +31,79 @@ import { ProxySubscriptionDialog } from './SubscriptionDialog'
 import { ProxyDetails } from './Details'
 import { ProxyAssignDialog } from './AssignDialog'
 import { ProvidersDialog } from './ProvidersDialog'
+import { ProxyPoolFilterMenu, proxyPoolFilters } from './Filters'
+import { useProxyPoolList } from './List'
+import { ProxyUrlsDialog, type ProxyUrlsRequest } from './UrlsDialog'
 
-type ColumnId =
-  | 'name'
-  | 'address'
-  | 'username'
-  | 'group'
-  | 'protocol'
-  | 'status'
-  | 'exit'
-  | 'risk'
-  | 'password'
-const OPTIONAL_COLUMNS: { id: ColumnId; label: string }[] = [
-  { id: 'username', label: '用户名' },
-  { id: 'group', label: '分组' },
-  { id: 'protocol', label: '协议' },
-  { id: 'status', label: '状态' },
-  { id: 'exit', label: '出口与延迟' },
-  { id: 'risk', label: 'IP 风险' },
-  { id: 'password', label: '密码' },
-]
-function RiskValue({ row }: { row: ProxyRow }) {
-  const reputation = row.reputation
-  if (!reputation) return <span className="text-text-soft-400">未检测</span>
-  if (reputation.status !== 'ok') {
-    const labels: Record<string, string> = {
-      disabled: '检测已关闭',
-      unavailable: '查询失败',
-      rate_limited: '查询限流',
-      non_public: '非公网 IP',
-    }
+type Progress = { done: number; ids: ReadonlySet<string> }
+
+export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
+  const plugin = usePluginCatalog((state) => state.plugins.find((item) => item.id === PROXY_PLUGIN_ID))
+  const native = isNativeRaccoon()
+  const running = plugin?.state === 'running' && plugin.enabled
+  if (!running || !supportsProxyPoolPage(plugin.methods)) {
+    const heading = running
+      ? '代理池接口需要更新'
+      : plugin?.state === 'unlicensed' ? '代理池需要激活' : '代理池尚未就绪'
     return (
-      <span className="text-text-soft-400">{labels[reputation.status] ?? '未知'}</span>
+      <>
+        <PageHeader title="代理池" actions={<Button size="xsmall" mode="stroke" variant="neutral" onClick={onManage}>管理插件</Button>} />
+        <ProxyPageLayout
+          list={<div className="list-tile flex flex-1 items-center justify-center">
+            <EmptyState
+              icon={<NavProxiesIcon />}
+              title={heading}
+              hint={plugin?.state === 'retrying' ? '宿主正在重试启动，请稍候' : plugin?.state === 'starting' ? '宿主正在启动插件' : '在插件中心检查安装、授权和版本'}
+              action={{ label: '前往插件中心', onClick: onManage }}
+            />
+          </div>}
+          peek={null}
+        />
+      </>
     )
   }
+
   return (
-    <span className="flex flex-col gap-1">
-      <span
-        className={
-          reputation.risk !== null && reputation.risk >= 66
-            ? 'tabular-nums text-error-text'
-            : 'tabular-nums text-text-sub-600'
-        }
-      >
-        {reputation.risk === null ? '风险未知' : `${reputation.risk} / 100`}
-      </span>
-      <span className="truncate text-micro text-text-soft-400">
-        {row.geo?.country || reputation.networkType || '属地未知'}
-      </span>
-    </span>
+    <ProxyPoolInventory
+      key={JSON.stringify([plugin.installation, plugin.runtimeGeneration])}
+      native={native}
+      canReadHistory={plugin.methods.includes('proxy.get')}
+      providersAvailable={native && PROVIDER_MANAGEMENT_METHODS.every((method) => plugin.methods.includes(method))}
+    />
   )
 }
 
-export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
-  const plugin = usePluginCatalog((state) =>
-    state.plugins.find((item) => item.id === PROXY_PLUGIN_ID),
-  )
-  const running = plugin?.state === 'running' && plugin.enabled
-  const compatible = running && supportsProxyPoolPage(plugin.methods)
-  const providersAvailable =
-    compatible &&
-    isNativeRaccoon() &&
-    PROVIDER_MANAGEMENT_METHODS.every((method) => plugin.methods.includes(method))
-  const [query, setQuery] = useState<ProxyQuery>({ ...EMPTY_QUERY })
+function ProxyPoolInventory({ native, canReadHistory, providersAvailable }: {
+  native: boolean
+  canReadHistory: boolean
+  providersAvailable: boolean
+}) {
+  const t = useT()
+  const [query, setQuery] = useState<ProxyQuery>(EMPTY_QUERY)
   const [search, setSearch] = useState('')
   const [rows, setRows] = useState<ProxyRow[]>([])
   const [total, setTotal] = useState(0)
+  const [unfilteredTotal, setUnfilteredTotal] = useState<number | null>(null)
   const [groups, setGroups] = useState<ProxyGroup[]>([])
   const [config, setConfig] = useState<ProxyConfig | null>(null)
+  const [profiles, setProfiles] = useState<BrowserWindow[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
-  const [columnsOpen, setColumnsOpen] = useState(false)
-  const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
-    new Set([
-      'name',
-      'address',
-      'username',
-      'group',
-      'protocol',
-      'status',
-      'exit',
-      'risk',
-    ]),
-  )
-  const [sort, setSort] = useState({ key: 'name', descending: false })
+  const [progress, setProgress] = useState<Progress | null>(null)
   const [form, setForm] = useState<{ editing: ProxyRow | null } | null>(null)
   const [batchOpen, setBatchOpen] = useState(false)
   const [configOpen, setConfigOpen] = useState(false)
   const [subscriptionsOpen, setSubscriptionsOpen] = useState(false)
   const [providerPanel, setProviderPanel] = useState<{ accountId?: string } | null>(null)
-  const [details, setDetails] = useState<ProxyRow | null>(null)
+  const [opened, setOpened] = useState<ProxyRow | null>(null)
   const [assigning, setAssigning] = useState<ProxyRow | null>(null)
   const [deleting, setDeleting] = useState<string[]>([])
-  const [urls, setUrls] = useState<{ ids: string[]; scheme: Scheme | null } | null>(null)
+  const [urls, setUrls] = useState<ProxyUrlsRequest | null>(null)
   const sequence = useRef(0)
-  const mounted = useRef(true)
+  const profileRead = useRef(0)
+  const mounted = useRef(false)
   const mutation = useRef(false)
 
   useEffect(() => {
@@ -157,24 +111,34 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
     return () => {
       mounted.current = false
       sequence.current++
+      profileRead.current++
     }
   }, [])
 
   useEffect(() => {
+    if (query.keyword === search.trim()) return
     const timer = window.setTimeout(() => {
-      setQuery((current) =>
-        current.keyword === search.trim()
-          ? current
-          : { ...current, keyword: search.trim(), offset: 0 },
-      )
+      sequence.current++
+      setLoading(true)
       setSelected(new Set())
+      setQuery((current) => ({ ...current, keyword: search.trim(), offset: 0 }))
     }, 250)
     return () => clearTimeout(timer)
-  }, [search])
+  }, [query.keyword, search])
+
+  const refreshProfiles = useCallback(async () => {
+    if (!native) return
+    const request = ++profileRead.current
+    try {
+      const result = BrowserWindowSchema.array().parse(await nativeApi.call('browser_window_list', { connectionId: null }))
+      if (mounted.current && profileRead.current === request) setProfiles(result)
+    } catch {
+      if (mounted.current && profileRead.current === request) setProfiles(null)
+    }
+  }, [native])
 
   const refresh = useCallback(async () => {
-    if (!compatible) return
-    const current = ++sequence.current
+    const request = ++sequence.current
     setLoading(true)
     setError(null)
     try {
@@ -183,40 +147,40 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
         proxyPoolApi.groups(),
         proxyPoolApi.config(),
       ])
-      if (!mounted.current || current !== sequence.current) return
+      if (!mounted.current || request !== sequence.current) return
       if (page.offset > 0 && page.items.length === 0 && page.total <= page.offset) {
         setQuery((previous) => ({
           ...previous,
-          offset:
-            Math.max(0, Math.ceil(page.total / previous.limit) - 1) * previous.limit,
+          offset: Math.max(0, Math.ceil(page.total / previous.limit) - 1) * previous.limit,
         }))
         return
       }
       setRows(page.items)
       setTotal(page.total)
+      if (!activeFilterCount(query)) setUnfilteredTotal(page.total)
       setGroups(nextGroups)
       setConfig(nextConfig)
-      setSelected(
-        (previous) =>
-          new Set([...previous].filter((id) => page.items.some((row) => row.id === id))),
-      )
+      setSelected((previous) => new Set([...previous].filter((id) => page.items.some((row) => row.id === id))))
     } catch (cause) {
-      if (mounted.current && current === sequence.current) setError(errorMessage(cause))
+      if (mounted.current && request === sequence.current) {
+        const message = errorMessage(cause)
+        setError(message)
+        return message
+      }
     } finally {
-      if (mounted.current && current === sequence.current) setLoading(false)
+      if (mounted.current && request === sequence.current) setLoading(false)
     }
-  }, [compatible, query])
+  }, [query])
 
   const latestRefresh = useRef(refresh)
   useEffect(() => {
     latestRefresh.current = refresh
-  }, [refresh])
-
-  useEffect(() => {
     void refresh()
   }, [refresh])
+  useEffect(() => { void refreshProfiles() }, [refreshProfiles])
 
   function patchQuery(patch: Partial<ProxyQuery>) {
+    if (mutation.current) return
     sequence.current++
     setLoading(true)
     setSelected(new Set())
@@ -225,17 +189,17 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
 
   async function saved() {
     toast.saved('代理池已保存')
-    await refresh()
+    await latestRefresh.current()
   }
 
-  async function run(action: () => Promise<void>, success?: string) {
+  async function run(action: () => Promise<void>, success: string) {
     if (mutation.current) return
     mutation.current = true
     setBusy(true)
     setError(null)
     try {
       await action()
-      if (success) toast.ok(success)
+      toast.ok(success)
       if (mounted.current) await latestRefresh.current()
     } catch (cause) {
       if (mounted.current) setError(errorMessage(cause))
@@ -245,236 +209,136 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
     }
   }
 
-  async function check(ids: string[], scheme: Scheme | null = null) {
-    if (mutation.current || ids.length === 0) return
+  async function check(candidates: readonly ProxyRow[], scheme: Scheme | null = null) {
+    if (mutation.current || locked) return
+    const ids = [...new Set(candidates.filter((row) => row.enabled).map((row) => row.id))]
+    if (ids.length === 0) return
+    if (!native) {
+      toast.warn({ title: '请在桌面应用中检测代理', detail: '网页预览提供示例库存' })
+      return
+    }
     mutation.current = true
     setBusy(true)
     setError(null)
-    setProgress({ done: 0, total: ids.length })
+    const checkingIds = new Set(ids)
+    setProgress({ done: 0, ids: checkingIds })
     let cursor = 0
     let done = 0
     let failed = 0
+    let unconfirmed = 0
+    let lastError = ''
     const worker = async () => {
       while (mounted.current && cursor < ids.length) {
         const id = ids[cursor++]
         try {
           const result = await proxyPoolApi.check(id, scheme)
-          if (!result.ok || !result.saved) failed++
-        } catch {
-          failed++
+          if (!result.saved) unconfirmed++
+          else if (!result.ok) failed++
+        } catch (cause) {
+          unconfirmed++
+          lastError = errorMessage(cause)
         }
         done++
-        if (mounted.current) setProgress({ done, total: ids.length })
+        if (mounted.current) setProgress({ done, ids: checkingIds })
       }
     }
-    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker))
-    mutation.current = false
-    if (!mounted.current) return
-    setBusy(false)
-    setProgress(null)
-    if (failed > 0)
-      toast.warn({
-        title: `已检测 ${done} 条代理，${failed} 条未通过`,
-        detail: '可在连接详情中查看检测原因',
-      })
-    else toast.ok(`已检测 ${done} 条代理`)
-    await latestRefresh.current()
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker))
+      if (!mounted.current) return
+      const readError = await latestRefresh.current()
+      if (!mounted.current) return
+      const passed = done - failed - unconfirmed
+      const title = `代理检测完成 · ${passed} 条通过${failed ? ` · ${failed} 条失败` : ''}${unconfirmed ? ` · ${unconfirmed} 条结果未确认` : ''}`
+      if (failed || unconfirmed || readError)
+        toast.warn({ title, detail: lastError || readError || (failed ? '打开代理详情查看失败原因' : '部分检测结果未保存，可重新检测') })
+      else toast.ok(title)
+    } finally {
+      mutation.current = false
+      if (mounted.current) {
+        setBusy(false)
+        setProgress(null)
+      }
+    }
   }
 
   const locked = busy || loading || search.trim() !== query.keyword
-  const selectedIds = rows.filter((row) => selected.has(row.id)).map((row) => row.id)
-  const hasProviderSelection = rows.some((row) => selected.has(row.id) && row.origin)
-  const orderedRows = useMemo(
-    () =>
-      [...rows].sort((left, right) => {
-        let comparison: number
-        if (sort.key === 'risk')
-          comparison = (left.reputation?.risk ?? 101) - (right.reputation?.risk ?? 101)
-        else if (sort.key === 'latency')
-          comparison =
-            (left.latencyMs ?? Number.MAX_SAFE_INTEGER) -
-            (right.latencyMs ?? Number.MAX_SAFE_INTEGER)
-        else {
-          const field = sort.key as 'name' | 'host' | 'username'
-          comparison = left[field].localeCompare(right[field])
-        }
-        return sort.descending ? -comparison : comparison
-      }),
-    [rows, sort],
-  )
-  const groupName = (row: ProxyRow) =>
-    row.origin
-      ? '服务商订阅'
-      : row.groupId === null
-        ? '未分组'
-        : (groups.find((group) => String(group.id) === row.groupId)?.name ?? '分组未知')
-  const columns: DataListColumn<ProxyRow>[] = [
-    {
-      id: 'name',
-      header: '名称',
-      width: 'minmax(128px,1fr)',
-      cell: (row) => (
-        <span className="flex min-w-0 flex-col gap-1">
-          <span className="truncate font-medium">{row.name}</span>
-          {config?.defaultEndpointId === row.id && (
-            <span className="text-micro text-primary-text">默认代理</span>
-          )}
-        </span>
-      ),
-    },
-    {
-      id: 'address',
-      header: '连接地址',
-      width: 'minmax(156px,1.25fr)',
-      cell: (row) => (
-        <code className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-mono text-text-sub-600">
-          {addressOf(row)}
-        </code>
-      ),
-    },
-    {
-      id: 'username',
-      header: '用户名',
-      width: 'minmax(100px,.9fr)',
-      cell: (row) => (
-        <Button
-          size="3xsmall"
-          mode="ghost"
-          variant="neutral"
-          className="w-full min-w-0 max-w-full overflow-hidden"
-          contentAlign="start"
-          onClick={() => setDetails(row)}
-        >
-          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-            {row.username || '未设置'}
-          </span>
-        </Button>
-      ),
-    },
-    {
-      id: 'group',
-      header: '分组',
-      width: 'minmax(72px,.6fr)',
-      cell: (row) => (
-        <span className="block truncate text-secondary text-text-sub-600">
-          {groupName(row)}
-        </span>
-      ),
-    },
-    {
-      id: 'protocol',
-      header: '协议',
-      width: '112px',
-      cell: (row) => (
-        <span className="block truncate text-mono text-text-sub-600">
-          {row.schemes.map((scheme) => scheme.toUpperCase()).join(' / ')}
-        </span>
-      ),
-    },
-    {
-      id: 'status',
-      header: '状态',
-      width: '80px',
-      cell: (row) => (
-        <span className="flex items-center gap-2 text-secondary text-text-sub-600">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${row.enabled ? 'bg-success-base' : 'bg-text-soft-400'}`}
-          />
-          {row.enabled ? '启用' : '停用'}
-        </span>
-      ),
-    },
-    {
-      id: 'exit',
-      header: '出口 / 延迟',
-      width: 'minmax(128px,1fr)',
-      cell: (row) => (
-        <span className="flex flex-col gap-1">
-          <code className="truncate text-mono text-text-sub-600">
-            {row.exitIp || (row.checkStatus === 'failed' ? '检测失败' : '未检测')}
-          </code>
-          <span
-            className={`text-micro tabular-nums ${row.checkStatus === 'failed' ? 'text-error-text' : 'text-text-soft-400'}`}
-          >
-            {row.checkStatus === 'failed'
-              ? '查看连接详情'
-              : row.latencyMs === null
-                ? '—'
-                : `${row.latencyMs} ms`}
-            {row.exitIpChanged ? ' · IP 已变化' : ''}
-          </span>
-        </span>
-      ),
-    },
-    {
-      id: 'risk',
-      header: 'IP 风险',
-      width: '104px',
-      cell: (row) => <RiskValue row={row} />,
-    },
-    {
-      id: 'password',
-      header: '密码',
-      width: '80px',
-      cell: (row) => (
-        <span className="text-secondary text-text-sub-600">
-          {row.hasPassword ? '已配置' : '未配置'}
-        </span>
-      ),
-    },
-  ]
+  const selectedRows = rows.filter((row) => selected.has(row.id))
+  const selectedIds = selectedRows.map((row) => row.id)
+  const canDeleteSelection = selectedRows.every((row) => !row.origin)
+  const batchRows = selected.size > 0 ? selectedRows : rows
+  const canCheckBatch = batchRows.some((row) => row.enabled)
+  const shownSelection = useLatched(selectedIds.length > 0 ? selectedIds.length : null)
+  const bottomInset = useListEndRoom(selectedIds.length > 0)
+  const firstLoad = useHeldLoading(loading && config === null)
+  const empty = !loading && !error && total === 0 && activeFilterCount(query) === 0 && !search.trim()
+  const activeRow = rows.find((row) => row.id === opened?.id) ?? opened
+  const defaultId = config?.defaultEndpointId ?? null
+  const profileLinks = useMemo(() => {
+    if (!profiles) return null
+    const byEndpoint = new Map<string, { id: string; name: string; connectionId: string; followsDefault: boolean }[]>()
+    for (const profile of profiles) {
+      if (profile.proxyMode !== 'plugin' || profile.proxyPlugin !== PROXY_PLUGIN_ID) continue
+      const endpoint = profile.proxyEndpoint === null ? defaultId : String(profile.proxyEndpoint)
+      if (!endpoint) continue
+      const link = { id: profile.id, name: profile.name, connectionId: profile.connectionId, followsDefault: profile.proxyEndpoint === null }
+      const using = byEndpoint.get(endpoint)
+      if (using) using.push(link)
+      else byEndpoint.set(endpoint, [link])
+    }
+    return byEndpoint
+  }, [defaultId, profiles])
+  const profileCounts = useMemo(() => profileLinks && new Map([...profileLinks].map(([id, list]) => [id, list.length])), [profileLinks])
+  const groupName = useCallback((row: ProxyRow) => row.origin
+    ? '服务商订阅'
+    : row.groupId === null ? '未分组' : groups.find((group) => String(group.id) === row.groupId)?.name ?? '分组未知', [groups])
+  const list = useProxyPoolList({ rows, defaultId, groupName, profileCounts, checking: progress?.ids })
+  const { fields, chips } = proxyPoolFilters(query, groups, patchQuery)
+
+  function edit(row: ProxyRow) {
+    if (row.origin) {
+      if (providersAvailable) setProviderPanel({ accountId: row.origin.accountId })
+    } else setForm({ editing: row })
+  }
+
+  function focusList(id?: string) {
+    requestAnimationFrame(() => {
+      const target = id ? list.layout.scrollRef.current?.querySelector<HTMLElement>(`[data-row-id="${id}"]`) : null
+      if (target) target.focus({ preventScroll: true })
+      else list.layout.scrollRef.current?.querySelector<HTMLElement>('[data-row-id][tabindex="0"]')?.focus({ preventScroll: true })
+    })
+  }
 
   function rowMenu(row: ProxyRow): MenuItem[] {
     return [
-      { label: '连接详情', onSelect: () => setDetails(row) },
       {
         label: row.origin ? '管理服务商订阅' : '编辑代理',
         icon: <EditIcon className="size-3.5" />,
         disabled: locked || (!!row.origin && !providersAvailable),
-        onSelect: () => {
-          if (row.origin) setProviderPanel({ accountId: row.origin.accountId })
-          else setForm({ editing: row })
-        },
+        onSelect: () => edit(row),
       },
-      ...(isNativeRaccoon()
-        ? [
-            {
-              label: '分配给 Profile',
-              disabled: locked || !row.enabled,
-              onSelect: () => setAssigning(row),
-            },
-          ]
-        : []),
+      ...(native ? [{ label: '分配给 Profile', disabled: locked || !row.enabled, onSelect: () => setAssigning(row) }] : []),
       ...row.schemes.map((scheme) => ({
         label: `检测 ${scheme.toUpperCase()}`,
         disabled: locked || !row.enabled,
-        onSelect: () => {
-          void check([row.id], scheme)
-        },
+        onSelect: () => { void check([row], scheme) },
       })),
       {
         label: '复制代理 URL',
         icon: <CopyIcon className="size-3.5" />,
         disabled: locked,
-        onSelect: () =>
-          setUrls({
-            ids: [row.id],
-            scheme: row.schemes.length === 1 ? row.schemes[0] : null,
-          }),
+        onSelect: () => setUrls({ ids: [row.id], scheme: row.schemes.length === 1 ? row.schemes[0] : null }),
       },
       {
         label: '设为默认代理',
-        disabled:
-          locked || !row.enabled || !config || config.defaultEndpointId === row.id,
+        disabled: locked || !row.enabled || !config || defaultId === row.id,
         onSelect: () => {
-          if (config)
-            void run(async () => {
-              await proxyPoolApi.saveConfig({
-                defaultEndpointId: row.id,
-                riskEnabled: config.risk.enabled,
-                riskCacheSeconds: config.risk.cacheSeconds,
-              })
-            }, '默认代理已保存')
+          if (config) void run(async () => {
+            await proxyPoolApi.saveConfig({
+              defaultEndpointId: row.id,
+              riskEnabled: config.risk.enabled,
+              riskCacheSeconds: config.risk.cacheSeconds,
+            })
+          }, '默认代理已保存')
         },
       },
       { type: 'separator' },
@@ -488,428 +352,140 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
     ]
   }
 
-  if (!compatible) {
-    const heading = !running
-      ? plugin?.state === 'unlicensed'
-        ? '代理池需要激活'
-        : '代理池尚未就绪'
-      : '代理池接口需要更新'
-    return (
-      <>
-        <PageHeader
-          title="代理池"
-          actions={
-            <Button size="xsmall" mode="stroke" variant="neutral" onClick={onManage}>
-              管理插件
-            </Button>
-          }
-        />
-        <PluginWorkspace>
-          <EmptyState
-            icon={<NavProxiesIcon />}
-            title={heading}
-            hint={
-              plugin?.state === 'retrying'
-                ? '宿主正在重试启动，请稍候'
-                : plugin?.state === 'starting'
-                  ? '宿主正在启动插件'
-                  : '在插件中心检查安装、授权和版本'
-            }
-            action={{ label: '前往插件中心', onClick: onManage }}
-          />
-        </PluginWorkspace>
-      </>
-    )
-  }
+  const noRows = inventoryEmptyState({
+    query,
+    clearSearch: () => { setSearch(''); refocusPageFilter() },
+    clearFilters: () => patchQuery({ ...EMPTY_QUERY, keyword: query.keyword, limit: query.limit }),
+    add: () => setForm({ editing: null }),
+  })
 
   return (
     <>
       <PageHeader
         title="代理池"
-        count={loading ? undefined : total}
+        count={firstLoad || empty ? undefined : activeFilterCount(query) && unfilteredTotal !== null && total <= unfilteredTotal ? { shown: total, total: unfilteredTotal } : total}
+        filter={empty ? undefined : { value: search, onChange: setSearch, placeholder: '名称或主机' }}
         actions={
-          <>
-            {isNativeRaccoon() && (
+          <ProxyToolbarLayout>
+            {!empty && <ProxyPoolFilterMenu fields={fields} count={chips.length} query={query} disabled={busy} onChange={patchQuery} />}
+            {!empty && list.display}
+            {!empty && (
               <Button
                 size="xsmall"
                 mode="stroke"
                 variant="neutral"
-                aria-label={
-                  providersAvailable ? '代理服务商' : '代理服务商（需更新插件）'
-                }
-                disabled={busy || !providersAvailable}
-                onClick={() => setProviderPanel({})}
+                disabled={locked || !canCheckBatch}
+                isLoading={progress !== null}
+                aria-description={selected.size > 0 ? '检测选中的启用代理' : '检测当前页的启用代理'}
+                leftIcon={<RefreshIcon className="size-3.5" />}
+                onClick={() => { void check(batchRows) }}
               >
-                {providersAvailable ? '代理服务商' : '代理服务商（需更新插件）'}
+                批量检测
               </Button>
             )}
-            <Button
-              size="xsmall"
-              mode="ghost"
-              variant="neutral"
-              disabled={locked}
-              onClick={() => {
-                void refresh()
-              }}
-              leftIcon={<RefreshIcon className="size-3.5" />}
-            >
-              刷新
-            </Button>
-            <Button
-              size="xsmall"
-              mode="stroke"
-              variant="neutral"
-              disabled={locked}
-              onClick={() => setBatchOpen(true)}
-            >
-              批量添加
-            </Button>
-            <Button
-              size="xsmall"
-              disabled={locked}
-              onClick={() => setForm({ editing: null })}
-              leftIcon={<AddIcon className="size-3.5" />}
-            >
-              新增代理
-            </Button>
             <HeaderMenu
               label="代理池选项"
               items={[
-                { label: '显示列', onSelect: () => setColumnsOpen(true) },
-                {
-                  label: 'Clash 订阅',
-                  disabled: locked,
-                  onSelect: () => setSubscriptionsOpen(true),
-                },
-                {
-                  label: '配置',
-                  disabled: locked || !config,
-                  onSelect: () => setConfigOpen(true),
-                },
+                { label: '刷新', icon: <RefreshIcon className="size-3.5" />, disabled: locked, onSelect: () => { void refresh(); void refreshProfiles() } },
+                ...(native ? [{ label: providersAvailable ? '代理服务商' : '代理服务商（需更新插件）', disabled: locked || !providersAvailable, onSelect: () => setProviderPanel({}) }] : []),
+                { label: '批量添加', disabled: locked, onSelect: () => setBatchOpen(true) },
+                { label: 'Clash 订阅', disabled: locked, onSelect: () => setSubscriptionsOpen(true) },
+                { label: '配置', disabled: locked || !config, onSelect: () => setConfigOpen(true) },
               ]}
+            />
+            <Button size="xsmall" mode="filled" variant="primary" leftIcon={<AddIcon className="size-3.5" />} disabled={locked} onClick={() => setForm({ editing: null })}>添加代理</Button>
+          </ProxyToolbarLayout>
+        }
+      />
+      <ProxyPageLayout
+        filters={<FilterChips chips={chips} onClear={() => patchQuery({ ...EMPTY_QUERY, keyword: query.keyword, limit: query.limit })} />}
+        notice={
+          <>
+            {!native && <p className="m-0 mb-2 text-secondary text-text-soft-400">网页预览 · 示例库存仅用于界面演示</p>}
+            {progress && <p role="status" className="m-0 mb-2 text-secondary tabular-nums text-text-sub-600">正在检测 {progress.done} / {progress.ids.size}</p>}
+            {error && rows.length > 0 && <Alert status="error" variant="lighter" className="mb-2" onClose={() => setError(null)}>{error}</Alert>}
+          </>
+        }
+        list={
+          <>
+            <BulkBarFrame open={selectedIds.length > 0} label={t('bulkActionsBar.selectedCount', { n: shownSelection ?? 0 })} onClosedWithFocus={() => focusList()}>
+              {(narrow) => (
+                <>
+                  <span className="mr-1.5 text-secondary font-medium text-text-strong-950 tabular-nums">{t('bulkActionsBar.selectedCount', { n: shownSelection ?? 0 })}</span>
+                  <BulkAction label="检测选中" icon={<RefreshIcon className="size-3.5" />} narrow={narrow} disabled={locked || !canCheckBatch} onClick={() => { void check(selectedRows) }} />
+                  <BulkAction label="复制 URL" icon={<CopyIcon className="size-3.5" />} narrow={narrow} disabled={locked} onClick={() => setUrls({ ids: selectedIds, scheme: null })} />
+                  <BulkAction label="加入订阅" icon={<AddIcon className="size-3.5" />} narrow={narrow} disabled={locked} onClick={() => setSubscriptionsOpen(true)} />
+                  <BulkAction label={canDeleteSelection ? '删除' : '服务商代理请从对应订阅中删除'} icon={<DeleteIcon className="size-3.5" />} narrow={narrow} danger disabled={locked || !canDeleteSelection} onClick={() => setDeleting(selectedIds)} />
+                  <IconButton label="取消选择" icon={<CloseIcon className="size-3.5" />} size="3xsmall" onClick={() => setSelected(new Set())} />
+                </>
+              )}
+            </BulkBarFrame>
+            <DataList
+              aria-label="代理池库存"
+              items={list.items}
+              columns={list.columns}
+              layout={list.layout}
+              getId={({ proxy }) => proxy.id}
+              getName={({ proxy }) => proxy.name}
+              rowHeight={LIST_ROW_HEIGHT}
+              status={firstLoad ? 'loading' : error && rows.length === 0 ? 'error' : 'ready'}
+              loading={<LoadingRows inGrid />}
+              error={<LoadError what="代理库存" error={error} onRetry={() => { void refresh() }} />}
+              empty={noRows}
+              selected={selected}
+              currentId={activeRow?.id}
+              bottomInset={bottomInset}
+              onSelectedChange={(next) => { if (!locked) setSelected(next) }}
+              onOpen={({ proxy }) => setOpened(proxy)}
+              openOnClick
+              onDelete={(ids) => {
+                if (!locked && ids.every((id) => rows.some((row) => row.id === id && !row.origin))) setDeleting(ids)
+              }}
+              menuItems={({ proxy }) => [{ label: '连接详情', onSelect: () => setOpened(proxy) }, ...rowMenu(proxy)]}
+              labels={{
+                selectAll: '选择当前页',
+                select: (name) => t('proxyList.select', { name }),
+                more: t('profileRowActions.moreActions'),
+                actions: t('proxyList.colActions'),
+                selectedCount: (n) => t('bulkActionsBar.selectedCount', { n }),
+                selectionCleared: '已取消选择',
+              }}
             />
           </>
         }
-      />
-      <PluginWorkspace>
-        <div className="flex min-h-0 flex-1 flex-col gap-3">
-          {!isNativeRaccoon() && (
-            <p className="text-secondary text-text-soft-400">
-              网页预览 · 示例库存仅用于界面演示
-            </p>
-          )}
-          <PluginFilterRow label="代理筛选">
-            <PluginSearch
-              pageShortcut
-              label="搜索代理"
-              placeholder="名称或主机"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              onClear={() => setSearch('')}
-            />
-            <ProxyFilters
-              query={query}
-              groups={groups}
-              disabled={busy}
-              onChange={patchQuery}
-              onReset={() => {
-                setSearch('')
-                patchQuery({ ...EMPTY_QUERY, limit: query.limit })
-              }}
-            />
-            <div className="w-[104px]">
-              <Select
-                label="当前页排序"
-                size="xsmall"
-                value={`${sort.key}:${sort.descending ? 'desc' : 'asc'}`}
-                onChange={(value) => {
-                  const [key, direction] = value.split(':')
-                  setSort({ key, descending: direction === 'desc' })
-                }}
-                options={[
-                  ['name', '名称'],
-                  ['host', '主机'],
-                  ['username', '用户名'],
-                  ['risk', 'IP 风险'],
-                  ['latency', '延迟'],
-                ].flatMap(([key, label]) => [
-                  { value: `${key}:asc`, label: `${label} ↑`, hint: '升序' },
-                  { value: `${key}:desc`, label: `${label} ↓`, hint: '降序' },
-                ])}
-              />
-            </div>
-          </PluginFilterRow>
-          {error && (
-            <Alert status="error" variant="lighter" onClose={() => setError(null)}>
-              {error}
-              <Button
-                size="xsmall"
-                mode="ghost"
-                variant="neutral"
-                disabled={busy}
-                onClick={() => {
-                  void refresh()
-                }}
-              >
-                重新读取
-              </Button>
-            </Alert>
-          )}
-          {progress && (
-            <p role="status" className="text-secondary tabular-nums text-text-sub-600">
-              正在检测 {progress.done} / {progress.total}
-            </p>
-          )}
-          {selectedIds.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 rounded-control bg-bg-weak-50 px-3 py-2">
-              <span className="mr-2 text-secondary tabular-nums text-text-sub-600">
-                已选 {selectedIds.length} 条
-              </span>
-              <Button
-                size="xsmall"
-                mode="stroke"
-                variant="neutral"
-                disabled={locked}
-                onClick={() => {
-                  void check(selectedIds)
-                }}
-              >
-                检测选中
-              </Button>
-              <Button
-                size="xsmall"
-                mode="ghost"
-                variant="neutral"
-                disabled={locked}
-                onClick={() => setUrls({ ids: selectedIds, scheme: null })}
-              >
-                复制 URL
-              </Button>
-              <Button
-                size="xsmall"
-                mode="ghost"
-                variant="neutral"
-                disabled={locked}
-                onClick={() => setSubscriptionsOpen(true)}
-              >
-                加入订阅
-              </Button>
-              <Button
-                size="xsmall"
-                mode="ghost"
-                variant="error"
-                disabled={locked || hasProviderSelection}
-                onClick={() => setDeleting(selectedIds)}
-              >
-                删除
-              </Button>
-              {hasProviderSelection && (
-                <span className="text-secondary text-text-sub-600">
-                  服务商代理请从对应订阅中删除
-                </span>
-              )}
-              <Button
-                size="xsmall"
-                mode="ghost"
-                variant="neutral"
-                disabled={busy}
-                onClick={() => setSelected(new Set())}
-              >
-                取消选择
-              </Button>
-            </div>
-          )}
-          <ListColumn className="[&_[role=treegrid]]:min-w-[1080px]">
-            <DataList<ProxyRow>
-              aria-label="代理池库存"
-              items={orderedRows}
-              columns={columns.filter((column) =>
-                visibleColumns.has(column.id as ColumnId),
-              )}
-              getId={(row) => row.id}
-              getName={(row) => row.name}
-              rowHeight={58}
-              status={loading ? 'loading' : 'ready'}
-              selected={selected}
-              onSelectedChange={(next) => {
-                if (!locked) setSelected(next)
-              }}
-              onOpen={setDetails}
-              openOnClick
-              onDelete={(ids) => {
-                if (!locked) setDeleting(ids)
-              }}
-              menuItems={rowMenu}
-              labels={{
-                selectAll: '选择当前页',
-                select: (name) => `选择 ${name}`,
-                more: '代理操作',
-                actions: '操作',
-              }}
-              loading={
-                <p className="p-4 text-secondary text-text-sub-600">正在读取代理库存</p>
-              }
-              empty={
-                <EmptyState
-                  icon={<NavProxiesIcon />}
-                  title={
-                    error
-                      ? '代理库存读取失败'
-                      : activeFilterCount(query)
-                        ? '没有符合条件的代理'
-                        : '尚未添加代理'
-                  }
-                  hint={
-                    error
-                      ? '请重新读取代理库存'
-                      : '可单条添加、批量导入代理 URL 或添加代理服务商'
-                  }
-                  action={{
-                    label: error ? '重新读取' : '新增代理',
-                    onClick: () => {
-                      if (error) void refresh()
-                      else setForm({ editing: null })
-                    },
-                  }}
-                />
-              }
-            />
-          </ListColumn>
-          <div className="flex flex-wrap items-center justify-between gap-3 text-secondary text-text-sub-600">
-            <span className="tabular-nums">
-              共 {total} 条 · 第 {Math.floor(query.offset / query.limit) + 1} /{' '}
-              {Math.max(1, Math.ceil(total / query.limit))} 页
-            </span>
-            <div className="flex items-center gap-2">
-              <div className="w-28">
-                <Select
-                  aria-label="每页条数"
-                  size="xsmall"
-                  disabled={locked}
-                  value={String(query.limit)}
-                  onChange={(value) => patchQuery({ limit: Number(value) })}
-                  options={[10, 50, 100, 200, 500].map((size) => ({
-                    value: String(size),
-                    label: `每页 ${size} 条`,
-                  }))}
-                />
-              </div>
-              <Button
-                size="xsmall"
-                mode="stroke"
-                variant="neutral"
-                disabled={locked || query.offset === 0}
-                onClick={() => patchQuery({ offset: query.offset - query.limit })}
-              >
-                上一页
-              </Button>
-              <Button
-                size="xsmall"
-                mode="stroke"
-                variant="neutral"
-                disabled={locked || query.offset + query.limit >= total}
-                onClick={() => patchQuery({ offset: query.offset + query.limit })}
-              >
-                下一页
-              </Button>
-            </div>
-          </div>
-        </div>
-      </PluginWorkspace>
-      {form && (
-        <ProxyFormDialog
-          editing={form.editing}
-          groups={groups}
-          onClose={() => setForm(null)}
-          onSaved={saved}
-        />
-      )}
-      {batchOpen && (
-        <ProxyBatchDialog
-          groups={groups}
-          onClose={() => setBatchOpen(false)}
-          onSaved={saved}
-        />
-      )}
-      {configOpen && config && (
-        <ProxyConfigDialog
-          config={config}
-          onClose={() => setConfigOpen(false)}
-          onSaved={saved}
-        />
-      )}
-      {subscriptionsOpen && (
-        <ProxySubscriptionDialog
-          groups={groups}
-          selectedIds={selectedIds}
-          onClose={() => setSubscriptionsOpen(false)}
-        />
-      )}
-      {providerPanel && providersAvailable && (
-        <ProvidersDialog
-          key={JSON.stringify([plugin.installation, plugin.runtimeGeneration])}
-          initialAccountId={providerPanel.accountId}
-          onClose={() => setProviderPanel(null)}
-          onInventoryChanged={() => {
-            void latestRefresh.current()
-          }}
-        />
-      )}
-      {details && (
-        <ProxyDetails
-          row={details}
-          groupName={groupName(details)}
-          onClose={() => setDetails(null)}
-          onEdit={
-            details.origin && !providersAvailable
-              ? undefined
-              : () => {
-                  if (details.origin) {
-                    if (!providersAvailable) return
-                    setProviderPanel({ accountId: details.origin.accountId })
-                  } else setForm({ editing: details })
-                  setDetails(null)
-                }
-          }
-        />
-      )}
-      {assigning && (
-        <ProxyAssignDialog row={assigning} onClose={() => setAssigning(null)} />
-      )}
-      {urls && <ProxyUrlsDialog request={urls} onClose={() => setUrls(null)} />}
-      <Modal
-        open={columnsOpen}
-        title="显示列"
-        onOpenChange={setColumnsOpen}
-        footer={
-          <Button
-            size="xsmall"
-            mode="stroke"
-            variant="neutral"
-            onClick={() => setColumnsOpen(false)}
-          >
-            完成
-          </Button>
+        footer={config && total > 0 && <ProxyPagination query={query} total={total} locked={locked} onChange={patchQuery} />}
+        peek={
+          <ProxyDetails
+            row={activeRow}
+            inventory={rows}
+            canReadHistory={canReadHistory}
+            groupName={groupName}
+            checking={!!activeRow && (progress?.ids.has(activeRow.id) ?? false)}
+            locked={locked}
+            canEdit={(row) => !row.origin || providersAvailable}
+            profiles={profileLinks && activeRow ? profileLinks.get(activeRow.id) ?? [] : null}
+            onSelectProfile={(id) => {
+              const link = activeRow && profileLinks?.get(activeRow.id)?.find((item) => item.id === id)
+              if (!link) return
+              void workspace.select(link.connectionId).then(async () => {
+                await useNav.getState().setSection('profiles')
+                await useProfileUi.getState().showInList(id)
+              }).catch((cause) => toast.fail({ title: 'Profile 加载失败', detail: cause }))
+            }}
+            menuItems={rowMenu}
+            onClose={() => { setOpened(null); focusList(activeRow?.id) }}
+            onEdit={edit}
+            onCheck={(row) => { void check([row]) }}
+          />
         }
-      >
-        <div className="grid grid-cols-2 gap-4">
-          {OPTIONAL_COLUMNS.map((column) => (
-            <Checkbox
-              key={column.id}
-              label={column.label}
-              checked={visibleColumns.has(column.id)}
-              onCheckedChange={(checked) =>
-                setVisibleColumns((current) => {
-                  const next = new Set(current)
-                  if (checked) next.add(column.id)
-                  else next.delete(column.id)
-                  return next
-                })
-              }
-            />
-          ))}
-        </div>
-      </Modal>
+      />
+      {form && <ProxyFormDialog editing={form.editing} groups={groups} onClose={() => setForm(null)} onSaved={saved} />}
+      {batchOpen && <ProxyBatchDialog groups={groups} onClose={() => setBatchOpen(false)} onSaved={saved} />}
+      {configOpen && config && <ProxyConfigDialog config={config} onClose={() => setConfigOpen(false)} onSaved={saved} />}
+      {subscriptionsOpen && <ProxySubscriptionDialog groups={groups} selectedIds={selectedIds} onClose={() => setSubscriptionsOpen(false)} />}
+      {providerPanel && providersAvailable && <ProvidersDialog initialAccountId={providerPanel.accountId} onClose={() => setProviderPanel(null)} onInventoryChanged={() => { void latestRefresh.current() }} />}
+      {assigning && <ProxyAssignDialog row={assigning} onClose={() => { setAssigning(null); void refreshProfiles() }} />}
+      {urls && <ProxyUrlsDialog request={urls} onClose={() => setUrls(null)} />}
       <AlertModal
         open={deleting.length > 0}
         status="error"
@@ -917,12 +493,11 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
         description="代理记录及密码会从插件库存移除。已引用这些端点的 Profile 需要重新选择代理"
         confirmLabel="删除代理"
         isLoading={busy}
-        onOpenChange={(open) => {
-          if (!open && !busy) setDeleting([])
-        }}
+        onOpenChange={(open) => { if (!open && !busy) setDeleting([]) }}
         onConfirm={() => {
           void run(async () => {
             await proxyPoolApi.remove(deleting)
+            if (opened && deleting.includes(opened.id)) setOpened(null)
             setDeleting([])
             setSelected(new Set())
           }, '代理已删除')
@@ -932,266 +507,54 @@ export function ProxyPoolPage({ onManage }: { onManage: () => void }) {
   )
 }
 
-function ProxyFilters({
-  query,
-  groups,
-  disabled,
-  onChange,
-  onReset,
-}: {
-  query: ProxyQuery
-  groups: ProxyGroup[]
+function BulkAction({ label, icon, narrow, disabled, danger, onClick }: {
+  label: string
+  icon: React.ReactNode
+  narrow: boolean
   disabled: boolean
-  onChange: (patch: Partial<ProxyQuery>) => void
-  onReset: () => void
+  danger?: boolean
+  onClick: () => void
 }) {
-  const [riskMin, setRiskMin] = useState(query.riskMin?.toString() ?? '')
-  const [riskMax, setRiskMax] = useState(query.riskMax?.toString() ?? '')
-  const [error, setError] = useState<string | null>(null)
-  const advancedCount = [
-    query.isProxy !== null,
-    query.isVpn !== null,
-    query.isHosting !== null,
-    query.riskMin !== null || query.riskMax !== null,
-  ].filter(Boolean).length
+  const variant = danger ? 'error' : 'neutral'
+  return narrow
+    ? <IconButton label={label} icon={icon} size="3xsmall" variant={variant} mode="ghost" disabled={disabled} onClick={onClick} />
+    : <Button size="3xsmall" variant={variant} mode="ghost" leftIcon={icon} disabled={disabled} onClick={onClick}>{danger ? '删除' : label}</Button>
+}
+
+function ProxyPagination({ query, total, locked, onChange }: {
+  query: ProxyQuery
+  total: number
+  locked: boolean
+  onChange: (patch: Partial<ProxyQuery>) => void
+}) {
   return (
-    <>
-      <Select
-        className="w-[88px]!"
-        disabled={disabled}
-        size="xsmall"
-        label="协议"
-        value={query.scheme ?? 'all'}
-        onChange={(value) =>
-          onChange({ scheme: value === 'all' ? null : (value as Scheme) })
-        }
-        options={[
-          { value: 'all', label: '全部协议' },
-          ...SCHEMES.map((scheme) => ({ value: scheme, label: scheme.toUpperCase() })),
-        ]}
-      />
-      <Select
-        className="w-[88px]!"
-        disabled={disabled}
-        size="xsmall"
-        label="状态"
-        value={query.enabled === null ? 'all' : String(query.enabled)}
-        onChange={(value) =>
-          onChange({ enabled: value === 'all' ? null : value === 'true' })
-        }
-        options={[
-          { value: 'all', label: '全部状态' },
-          { value: 'true', label: '启用' },
-          { value: 'false', label: '停用' },
-        ]}
-      />
-      <Select
-        className="w-[96px]!"
-        disabled={disabled}
-        size="xsmall"
-        label="分组"
-        value={query.ungrouped ? 'none' : (query.groupId?.toString() ?? 'all')}
-        onChange={(value) =>
-          onChange({
-            groupId: value === 'none' || value === 'all' ? null : Number(value),
-            ungrouped: value === 'none',
-          })
-        }
-        options={[
-          { value: 'all', label: '全部分组' },
-          { value: 'none', label: '未分组' },
-          ...groups.map((group) => ({ value: String(group.id), label: group.name })),
-        ]}
-      />
-      <MorePluginFilters
-        label="代理识别与风险范围"
-        count={advancedCount}
-        disabled={disabled}
-      >
-        <fieldset
-          disabled={disabled}
-          className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0"
-        >
-          <PluginFilterRow label="代理识别与风险筛选">
-            {(
-              [
-                ['isProxy', '代理识别'],
-                ['isVpn', 'VPN 识别'],
-                ['isHosting', '数据中心'],
-              ] as const
-            ).map(([key, label]) => (
-              <div key={key} className="w-[88px]">
-                <Select
-                  disabled={disabled}
-                  size="xsmall"
-                  label={label}
-                  value={query[key] === null ? 'all' : String(query[key])}
-                  onChange={(value) =>
-                    onChange({ [key]: value === 'all' ? null : value === 'true' })
-                  }
-                  options={[
-                    { value: 'all', label: '全部' },
-                    { value: 'true', label: '是' },
-                    { value: 'false', label: '否' },
-                  ]}
-                />
-              </div>
-            ))}
-            <div className="w-[88px]">
-              <Input
-                wrapperClassName="min-w-0"
-                label="最低风险"
-                inputSize="xsmall"
-                inputMode="numeric"
-                value={riskMin}
-                onChange={(event) => setRiskMin(event.target.value)}
-              />
-            </div>
-            <div className="w-[88px]">
-              <Input
-                wrapperClassName="min-w-0"
-                label="最高风险"
-                inputSize="xsmall"
-                inputMode="numeric"
-                value={riskMax}
-                onChange={(event) => setRiskMax(event.target.value)}
-              />
-            </div>
-            <Button
-              size="xsmall"
-              mode="stroke"
-              variant="neutral"
-              className="shrink-0"
-              onClick={() => {
-                const min = riskMin.trim() === '' ? null : Number(riskMin)
-                const max = riskMax.trim() === '' ? null : Number(riskMax)
-                if (
-                  [min, max].some(
-                    (value) =>
-                      value !== null &&
-                      (!Number.isInteger(value) || value < 0 || value > 100),
-                  ) ||
-                  (min !== null && max !== null && min > max)
-                ) {
-                  setError('风险范围需为 0–100 的整数，最低值应小于或等于最高值')
-                  return
-                }
-                setError(null)
-                onChange({ riskMin: min, riskMax: max })
-              }}
-            >
-              应用
-            </Button>
-          </PluginFilterRow>
-          {error && (
-            <p role="alert" className="m-0 text-secondary text-error-text">
-              {error}
-            </p>
-          )}
-        </fieldset>
-      </MorePluginFilters>
-      <Button
-        size="xsmall"
-        mode="ghost"
-        variant="neutral"
-        disabled={disabled}
-        onClick={() => {
-          setRiskMin('')
-          setRiskMax('')
-          setError(null)
-          onReset()
-        }}
-      >
-        清除
-      </Button>
-    </>
+    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-secondary text-text-sub-600">
+      <span className="tabular-nums">共 {total} 条 · 第 {Math.floor(query.offset / query.limit) + 1} / {Math.max(1, Math.ceil(total / query.limit))} 页</span>
+      <div className="flex items-center gap-2">
+        <div className="w-28">
+          <Select
+            aria-label="每页条数"
+            size="xsmall"
+            disabled={locked}
+            value={String(query.limit)}
+            onChange={(value) => onChange({ limit: Number(value) })}
+            options={[10, 50, 100, 200, 500].map((size) => ({ value: String(size), label: `每页 ${size} 条` }))}
+          />
+        </div>
+        <Button size="xsmall" mode="stroke" variant="neutral" disabled={locked || query.offset === 0} onClick={() => onChange({ offset: query.offset - query.limit })}>上一页</Button>
+        <Button size="xsmall" mode="stroke" variant="neutral" disabled={locked || query.offset + query.limit >= total} onClick={() => onChange({ offset: query.offset + query.limit })}>下一页</Button>
+      </div>
+    </div>
   )
 }
 
-function ProxyUrlsDialog({
-  request,
-  onClose,
-}: {
-  request: { ids: string[]; scheme: Scheme | null }
-  onClose: () => void
+function inventoryEmptyState({ query, clearSearch, clearFilters, add }: {
+  query: ProxyQuery
+  clearSearch: () => void
+  clearFilters: () => void
+  add: () => void
 }) {
-  const [scheme, setScheme] = useState(request.scheme ?? 'auto')
-  const [text, setText] = useState('')
-  const [busy, setBusy] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    let active = true
-    setBusy(true)
-    setText('')
-    setError(null)
-    void proxyPoolApi
-      .exportUrls(request.ids, scheme === 'auto' ? null : (scheme as Scheme))
-      .then((data) => {
-        if (active) setText(data.urls.join('\n'))
-      })
-      .catch((cause) => {
-        if (active) setError(errorMessage(cause))
-      })
-      .finally(() => {
-        if (active) setBusy(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [request, scheme])
-  return (
-    <Modal
-      open
-      title="复制代理 URL"
-      size="lg"
-      onOpenChange={(open) => {
-        if (!open) onClose()
-      }}
-      footer={
-        <>
-          <Button size="xsmall" mode="stroke" variant="neutral" onClick={onClose}>
-            关闭
-          </Button>
-          <Button
-            size="xsmall"
-            disabled={busy || !text}
-            onClick={() => {
-              void clip.write(text).then(
-                () => toast.ok('已复制代理 URL'),
-                () => setError('剪贴板写入失败'),
-              )
-            }}
-          >
-            复制 URL
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        <Select
-          label="协议"
-          size="xsmall"
-          value={scheme}
-          onChange={setScheme}
-          options={[
-            { value: 'auto', label: '自动选择' },
-            ...SCHEMES.map((value) => ({ value, label: value.toUpperCase() })),
-          ]}
-        />
-        {error && (
-          <Alert status="error" variant="lighter">
-            {error}
-          </Alert>
-        )}
-        <Textarea
-          label="代理 URL"
-          technical
-          rows={8}
-          readOnly
-          value={text}
-          hint="URL 隐去密码，使用前需要补入密码"
-        />
-      </div>
-    </Modal>
-  )
+  if (query.keyword) return <EmptyState icon={<SearchIcon />} title={`未找到“${query.keyword}”`} action={{ label: '清除搜索', onClick: clearSearch }} />
+  if (activeFilterCount(query)) return <EmptyState icon={<NavProxiesIcon />} title="没有符合条件的代理" action={{ label: '清除筛选', onClick: clearFilters }} />
+  return <EmptyState icon={<NavProxiesIcon />} title="尚未添加代理" action={{ label: '新增代理', icon: <AddIcon />, onClick: add }} />
 }

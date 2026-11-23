@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   AlertModal,
@@ -31,6 +31,7 @@ import { PluginWorkspace } from './PluginWorkspace'
 import { PluginConfigurationDialog } from './PluginConfigurationDialog'
 import { PluginNavigationIcon } from '../../raccoon/plugins/PluginNavigationIcon'
 import { pluginApi } from '../../raccoon/plugins/api'
+import { validatePluginCard } from '../../raccoon/plugins/license-card'
 import { hasUsablePluginLicense } from '../../raccoon/plugins/licensing'
 import type {
   MarketEntry,
@@ -111,6 +112,10 @@ function licenseText(status: PluginLicenseStatus | undefined): string {
     : '已激活'
 }
 
+function pluginCardError(value: string): string | null {
+  return validatePluginCard(value)
+}
+
 export function PluginsPage({
   onOpenPlugin,
 }: { onOpenPlugin?: (id: string) => void } = {}) {
@@ -141,18 +146,47 @@ export function PluginsPage({
   } | null>(null)
   const [cardDraft, setCardDraft] = useState('')
   const [licenseError, setLicenseError] = useState<string | null>(null)
+  const [catalogRevision, setCatalogRevision] = useState(0)
+  const lastCatalog = useRef<string | null>(null)
+  const lastMarket = useRef<string | null>(null)
+  const lastLicenses = useRef<string | null>(null)
+  const loadRequest = useRef<Promise<void> | null>(null)
 
   const load = useCallback(async () => {
-    const [catalog, store, entitlement] = await Promise.all([
+    if (loadRequest.current) return loadRequest.current
+    const request = Promise.all([
       pluginApi.list(),
       pluginApi.marketStatus(),
       pluginApi.licenseStatus(),
-    ])
-    setPlugins(catalog)
-    setMarket(store)
-    setLicenses(entitlement)
-    window.dispatchEvent(new Event('raccoon:plugin-catalog-changed'))
+    ]).then(([catalog, store, entitlement]) => {
+      const catalogSnapshot = JSON.stringify(catalog)
+      const marketSnapshot = JSON.stringify(store)
+      const licenseSnapshot = JSON.stringify(entitlement)
+      if (lastCatalog.current !== catalogSnapshot) {
+        lastCatalog.current = catalogSnapshot
+        setPlugins(catalog)
+        setCatalogRevision((revision) => revision + 1)
+      }
+      if (lastMarket.current !== marketSnapshot) {
+        lastMarket.current = marketSnapshot
+        setMarket(store)
+      }
+      if (lastLicenses.current !== licenseSnapshot) {
+        lastLicenses.current = licenseSnapshot
+        setLicenses(entitlement)
+      }
+    })
+    loadRequest.current = request
+    try {
+      await request
+    } finally {
+      if (loadRequest.current === request) loadRequest.current = null
+    }
   }, [])
+
+  useEffect(() => {
+    window.dispatchEvent(new Event('raccoon:plugin-catalog-changed'))
+  }, [catalogRevision])
 
   const initialize = useCallback(async () => {
     setStatus('loading')
@@ -333,13 +367,18 @@ export function PluginsPage({
   }
 
   async function activate() {
-    if (!licenseTarget || !cardDraft.trim() || busy !== null) return
+    if (!licenseTarget || busy !== null) return
+    const validationError = pluginCardError(cardDraft)
+    if (validationError) {
+      setLicenseError(validationError)
+      return
+    }
     setBusy(`license:${licenseTarget.id}`)
     setLicenseError(null)
     try {
       const activated = await pluginApi.activate(
         licenseTarget.id,
-        cardDraft.trim(),
+        cardDraft,
         licenseTarget.marketSelection,
         licenseTarget.installedSelection,
       )
@@ -594,6 +633,7 @@ export function PluginsPage({
         id: 'plugin',
         header: '插件',
         width: 'minmax(250px,1.35fr)',
+        className: 'text-left',
         cell: (row) => (
           <div className="flex min-w-0 items-center gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-control bg-bg-weak-50 text-icon-sub-600">
@@ -612,6 +652,7 @@ export function PluginsPage({
         id: 'capabilities',
         header: '能力',
         width: 'minmax(170px,1fr)',
+        className: 'text-left',
         cell: (row) => (
           <span className="line-clamp-2 text-secondary text-text-sub-600">
             {capabilityText(row.capabilities)}
@@ -622,6 +663,7 @@ export function PluginsPage({
         id: 'version',
         header: '版本',
         width: 'minmax(110px,.55fr)',
+        className: 'text-left',
         cell: (row) => (
           <span className="flex flex-wrap items-center gap-1.5 text-secondary tabular-nums">
             v{row.version}
@@ -639,6 +681,7 @@ export function PluginsPage({
         id: 'status',
         header: tab === 'installed' ? '状态' : '说明',
         width: 'minmax(210px,1.2fr)',
+        className: 'text-left',
         cell: (row) =>
           row.kind === 'installed' && row.plugin ? (
             <div className="flex min-w-0 flex-col items-start gap-1">
@@ -893,6 +936,7 @@ export function PluginsPage({
               empty={empty}
               rowActions={primaryAction}
               menuItems={(row) => menuItems(row)}
+              className="[&_[data-cell=actions]>span]:!visible"
               onOpen={(row) => {
                 if (row.plugin) setInspecting(row.plugin)
                 else if (row.market) setMarketInspecting(row.market)
@@ -907,6 +951,7 @@ export function PluginsPage({
       )}
 
       <Modal
+        className="shadow-(--shadow-dialog)"
         open={inspecting !== null}
         onOpenChange={(open) => {
           if (!open) setInspecting(null)
@@ -958,6 +1003,7 @@ export function PluginsPage({
       </Modal>
 
       <Modal
+        className="shadow-(--shadow-dialog)"
         open={marketInspecting !== null}
         onOpenChange={(open) => {
           if (!open) setMarketInspecting(null)
@@ -1009,6 +1055,7 @@ export function PluginsPage({
       </Modal>
 
       <DialogModal
+        className="shadow-(--shadow-dialog)"
         open={licenseTarget !== null}
         onOpenChange={(open) => {
           if (!open && busy?.startsWith('license:') !== true) closeLicense()
@@ -1021,7 +1068,7 @@ export function PluginsPage({
         }
         dirty={cardDraft.trim() !== ''}
         isLoading={busy?.startsWith('license:') === true}
-        isDisabled={!cardDraft.trim()}
+        isDisabled={pluginCardError(cardDraft) !== null}
         confirmLabel="激活"
         onConfirm={() => void activate()}
         onCancel={closeLicense}
@@ -1038,14 +1085,22 @@ export function PluginsPage({
             placeholder="RAC-..."
             secret
             type="password"
+            maxLength={128}
             value={cardDraft}
+            error={
+              cardDraft.trim() ? (pluginCardError(cardDraft) ?? undefined) : undefined
+            }
             disabled={busy?.startsWith('license:') === true}
-            onChange={(event) => setCardDraft(event.target.value)}
+            onChange={(event) => {
+              setCardDraft(event.target.value)
+              setLicenseError(null)
+            }}
           />
         </div>
       </DialogModal>
 
       <DialogModal
+        className="shadow-(--shadow-dialog)"
         open={storeOpen}
         onOpenChange={(open) => {
           if (!open && busy !== 'store') setStoreOpen(false)
@@ -1090,6 +1145,7 @@ export function PluginsPage({
       </DialogModal>
 
       <AlertModal
+        className="shadow-(--shadow-dialog)"
         open={replacing !== null}
         onOpenChange={(open) => {
           if (!open && !busy?.startsWith('market:')) setReplacing(null)
@@ -1132,6 +1188,7 @@ export function PluginsPage({
       />
 
       <AlertModal
+        className="shadow-(--shadow-dialog)"
         open={removing !== null}
         onOpenChange={(open) => {
           if (!open && busy?.startsWith('uninstall:') !== true) setRemoving(null)

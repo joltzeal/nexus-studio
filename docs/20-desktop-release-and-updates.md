@@ -1,5 +1,12 @@
 # 桌面发行与应用内更新
 
+## 0.2.13 代理池和插件工作台（2026-11-24）
+
+桌面版发布包含代理页布局统一、代理池出口检测、邮箱阅读与已读操作、Vinted 批量
+创建修复、插件中心与实验室调整。GitHub Actions 为两个 macOS 架构生成安装包和
+签名更新资源，通过发布门禁后把本次 Release 标记为 Latest。
+代理池完整 IP 历史和邮箱插件内联样式依赖各自独立发布的插件包。
+
 ## 0.1.43 AliasMode 实验性接入与商品流程（2026-11-17）
 
 实验室开关显示 AliasMode 连接和首页窗口 Tab；受限的本机 API Provider 支持创建、
@@ -558,9 +565,10 @@ Node 专用的 JIT entitlement 授予 Rust 主程序。
 macOS x64，使用 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` 签名更新包。
 构建阶段先创建草稿 Release，两个架构上传构件与签名后的 `latest.json`，
 macOS 继续执行最终包内运行时检查。`publish` 作业依赖整个 `package` 矩阵；
-只有全部成功后，才公开版本化 Release 并更新 `raccoon-v2` updater 清单。
-版本化 v2 Release 不设为 GitHub Latest，以保留 v1 的 latest 更新通道。
-任一平台失败时保留草稿，不发布不完整版本。无需用户手动将草稿转为正式发布。
+两个架构都通过后，工作流公开版本化 Release 并设为 GitHub Latest，
+新客户端从这个端点读取 `latest.json`。同一份清单也同步到早期 0.2 客户端
+已配置的 `raccoon-v2` 下载地址。任一架构失败时保留草稿。
+无需用户手动将草稿转为正式发布。
 签名密钥不进入源码。本地备份位于开发机的
 `~/Library/Application Support/Nexus Studio Release/updater.key`；丢失密钥后，
 现有安装无法无缝接受新签名。发版前同步根 `package.json`、

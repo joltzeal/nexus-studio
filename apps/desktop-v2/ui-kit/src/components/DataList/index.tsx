@@ -70,6 +70,7 @@ type Common<T> = {
   onSelectedChange?: (next: Set<string>) => void
   activeId?: string | null
   onActiveChange?: (id: string | null) => void
+  currentId?: string | null
   onOpen?: (item: T) => void
   /** A selecting table whose rows still open on a plain click, as Profiles':
    *  the box, Cmd/Ctrl+click and Shift+click select. */
@@ -100,9 +101,6 @@ type GridProps<T> = {
   minCardWidth?: number
   groupOf?: (item: T) => string
   groupHeader?: (group: string, count: number) => ReactNode
-  /** The card shown elsewhere (in Peek): it, not the active card, is
-   *  `aria-current` (the active one carries `data-active`). */
-  currentId?: string | null
   /** The grid's scroll box, for a caller that keeps its place (scroll memory). */
   scrollRef?: React.RefObject<HTMLDivElement | null>
 }
@@ -563,7 +561,7 @@ export default function DataList<T>(props: DataListProps<T>) {
                     data-row-id={id}
                     data-active={isActive || undefined}
                     data-selected={isSel || undefined}
-                    aria-current={grid.currentId === id || undefined}
+                    aria-current={props.currentId === id || undefined}
                     tabIndex={tabbable ? 0 : -1}
                     // The item is the tile (the weak fill, no border, no shadow, no
                     // lift) and, when it acts, steps to the active fill on hover and
@@ -685,6 +683,7 @@ export default function DataList<T>(props: DataListProps<T>) {
                 const id = ids[i]
                 const active = i === activeIndex
                 const isSel = sel.has(id)
+                const inPeek = props.currentId === id
                 const tabbable = i === stop
                 return (
                   <div
@@ -693,8 +692,10 @@ export default function DataList<T>(props: DataListProps<T>) {
                     aria-rowindex={i + 2}
                     aria-level={1}
                     aria-selected={selectable ? isSel : undefined}
+                    aria-current={inPeek || undefined}
                     data-row-id={id}
                     data-active={active || undefined}
+                    data-peek-open={inPeek || undefined}
                     tabIndex={tabbable ? 0 : -1}
                     className={cn(
                       'group focus-ring-inset absolute inset-x-0 grid items-center gap-[10px] text-ui text-text-strong-950',
@@ -705,7 +706,7 @@ export default function DataList<T>(props: DataListProps<T>) {
                       // darker; the target and a checked row lie over the panel
                       // (`row-fill-*`, tokens.css `list-tile`): one opaque token
                       // the row and its pinned cells both paint.
-                      isSel ? 'row-fill-selected' : active ? 'row-target:row-fill-active' : 'hover:row-fill-active',
+                      isSel ? 'row-fill-selected' : inPeek ? 'row-fill-active' : active ? 'row-target:row-fill-active' : 'hover:row-fill-active',
                       arriving.has(id) && 'slide-in',
                     )}
                     style={{ top: offsetOf(i), height: rowHeight, gridTemplateColumns: template }}

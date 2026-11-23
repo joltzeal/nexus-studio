@@ -211,6 +211,10 @@ export const profileBatchApi = {
       await nativeApi.call('browser_window_create', { input }),
     )
   },
+  async operationStatus(operationId: string): Promise<BrowserOperation | null> {
+    const result = await nativeApi.call('browser_operation_get', { operationId })
+    return result === null ? null : BrowserOperationSchema.parse(result)
+  },
   async reconcile(operationId: string): Promise<BrowserWindow | null> {
     const result = await nativeApi.call('browser_operation_reconcile', { operationId })
     return result === null ? null : BrowserWindowSchema.parse(result)

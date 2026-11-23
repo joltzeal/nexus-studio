@@ -1,5 +1,17 @@
 # 质量门禁与验证记录
 
+## 2026-11-24 desktop-v2 0.2.13 发行候选
+
+- 代理池页面 Vitest 6 项通过，覆盖共享 Peek 布局、当前行、单条和批量检测、检测结果与 IP 历史回读。
+- 邮件阅读器 9 项、Vinted 账号池 17 项、批量 Profile 和激活码 Node 回归 26 项通过。
+- 插件、公开契约、updater 和发行工作流 Vitest 共 34 个文件、420 项通过。HTTP 与 SOCKS5 传输使用本机回环夹具。
+- desktop-v2 无产物 TypeScript、ESLint、allowlist、发行工作流 actionlint 及公开源码边界检查通过。
+- GitHub Actions 负责双架构 macOS 打包、原生回归和发布。0.2 完整 Release 会成为 Latest，
+  同一更新清单同步到已安装的早期 0.2 客户端使用的地址。
+
+未在本机编译应用或插件，也未验收真实代理、邮箱、原生 WebView 或安装包。代理池完整 IP 历史
+和原始邮件样式解析需要独立插件包，当前记录覆盖源码检查和受控回归。
+
 ## 2026-11-22 desktop-v2 安装版响应优化
 
 - `NativeWorkspace` 对原生快照做结构比较，相同响应不再广播；Profile 表投影只在 Profile、Folder、代理或加载/错误状态变化时更新。插件目录内容相同则保留原数组引用。

@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./mail-style": {
+      "development": "./src/mail-style.ts",
+      "types": "./dist/mail-style.d.ts",
+      "import": "./dist/mail-style.js"
+    },
     "./proxy-pool": {
       "development": "./src/proxy-pool.ts",
       "types": "./dist/proxy-pool.d.ts",

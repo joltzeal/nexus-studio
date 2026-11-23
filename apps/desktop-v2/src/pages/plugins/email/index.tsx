@@ -16,13 +16,23 @@ import { PageHeader } from '../../../widgets/PageHeader/PageHeader'
 import { PluginFilterRow, PluginSearch } from '../PluginFilterRow'
 import { PluginWorkspace } from '../PluginWorkspace'
 import { ListColumn } from '../../../shared/ui/ListColumn'
-import { DeleteIcon, EditIcon, KeyIcon, ReadMailIcon, ReceiveMailIcon, RefreshIcon, SyncIcon } from '../../../shared/icons'
+import {
+  DeleteIcon,
+  EditIcon,
+  CheckCircleIcon,
+  KeyIcon,
+  ReadMailIcon,
+  ReceiveMailIcon,
+  RefreshIcon,
+  SyncIcon,
+} from '../../../shared/icons'
 import { PluginRowAction } from '../PluginRowAction'
 import { toast } from '../../../shared/model/toast'
 import { usePluginCatalog } from '../../../raccoon/plugins/catalog'
 import { isNativeRaccoon } from '../../../raccoon/runtime'
 import {
   EMAIL_PLUGIN_ID,
+  type MailboxPageSize,
   type MailboxView,
   type MailboxInput,
   type MailboxStatus,
@@ -31,6 +41,7 @@ import {
 import { readMailboxImportFile } from '../../../raccoon/plugins/email/bulk'
 import { emailApi, supportsEmailBase } from '../../../raccoon/plugins/email/api'
 import { mailboxUnread } from '../../../raccoon/plugins/email/graph-read-state'
+import { markAllMailboxRead } from '../../../raccoon/plugins/email/mark-all-read'
 import { formatMailTime, STATUS_LABELS } from '../../../raccoon/plugins/email/model'
 import { MailboxForm } from './MailboxForm'
 import { AuthorizationDialog } from './AuthorizationDialog'
@@ -64,8 +75,10 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
   const task = usePluginTask()
   const reads = useRef(0)
   const [items, setItems] = useState<MailboxView[]>([])
+  const [hasLoaded, setHasLoaded] = useState(false)
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<MailboxPageSize>(20)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<MailboxStatus | 'all'>('all')
   const [error, setError] = useState<string | null>(null)
@@ -86,10 +99,10 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
   const [importText, setImportText] = useState('')
   const [importTransport, setImportTransport] = useState<'graph' | 'imap'>('graph')
   const [notice, setNotice] = useState<string | null>(null)
-  const filters = useRef({ query, status, page })
+  const filters = useRef({ query, status, page, pageSize })
   useEffect(() => {
-    filters.current = { query, status, page }
-  }, [query, status, page])
+    filters.current = { query, status, page, pageSize }
+  }, [query, status, page, pageSize])
 
   const refresh = useCallback(
     async (nextPage?: number) => {
@@ -104,10 +117,11 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
           query: latest.query,
           ...(latest.status === 'all' ? {} : { status: latest.status }),
           page: nextPage ?? latest.page,
-          pageSize: 20,
+          pageSize: latest.pageSize,
         })
         if (!task.current(token) || request !== reads.current) return
         setItems(result.items)
+        setHasLoaded(true)
         setDurable(result.storageDurable)
         setTotal(result.total)
         setPage(result.page)
@@ -118,14 +132,17 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
         if (task.current(token) && request === reads.current) setBusy(false)
       }
     },
-    [compatible, page, query, status],
+    [compatible, page, pageSize, query, status],
   )
   useEffect(() => {
     void refresh(1)
     return () => {
       reads.current++
     }
-  }, [query, status, compatible])
+  }, [query, status, pageSize, compatible])
+  useEffect(() => {
+    setPage(1)
+  }, [query, status, pageSize])
   useEffect(() => {
     if (!compatible) return
     const timer = window.setInterval(() => {
@@ -157,7 +174,36 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
     creatingAccounts,
     refresh,
   ])
-  const pages = Math.max(1, Math.ceil(total / 20))
+  const pages = Math.max(1, Math.ceil(total / pageSize))
+
+  async function markAllRead(row: MailboxView) {
+    if (!row.enabled || !task.acquire()) return
+    const token = task.begin()
+    reads.current++
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await markAllMailboxRead(row, emailApi, () => task.current(token))
+      if (!result) return
+      await refresh()
+      if (!task.current(token)) return
+      setNotice(`${row.email} · 已标记 ${result.updated} 封为已读${row.transport === 'graph' ? '（本机）' : ''}`)
+      if (result.failed || result.incomplete.length) {
+        const problems = [
+          ...(result.failed ? [`${result.failed} 封未更新`] : []),
+          ...result.incomplete,
+        ]
+        setError((previous) => [previous, ...problems].filter(Boolean).join('；'))
+      }
+    } catch (cause) {
+      if (task.current(token))
+        setError(cause instanceof Error ? cause.message : '全部已读操作失败')
+    } finally {
+      task.release()
+      if (task.current(token)) setBusy(false)
+    }
+  }
   const columns: DataListColumn<MailboxView>[] = [
     {
       id: 'email',
@@ -239,6 +285,12 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
             icon={<ReadMailIcon className="size-3.5" />}
             disabled={!row.enabled}
             onClick={() => setReader(row)}
+          />
+          <PluginRowAction
+            label="全部标记为已读"
+            icon={<CheckCircleIcon className="size-3.5" />}
+            disabled={!row.enabled || busy}
+            onClick={() => void markAllRead(row)}
           />
           {canAssociate && (
             <PluginRowAction
@@ -533,6 +585,17 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
                 { value: 'paused', label: '已暂停' },
               ]}
             />
+            <Select
+              className="w-[128px]!"
+              label="每页数量"
+              size="xsmall"
+              value={String(pageSize)}
+              disabled={busy}
+              onChange={(value) => {
+                if (value === '20' || value === '50') setPageSize(Number(value) as MailboxPageSize)
+              }}
+              options={[20, 50].map((size) => ({ value: String(size), label: `${size} 条/页` }))}
+            />
           </PluginFilterRow>
           <div className="flex flex-wrap items-center gap-2">
             {selected.size > 0 && (
@@ -630,7 +693,7 @@ export function EmailPage({ onManage }: { onManage: () => void }) {
                 more: '更多邮箱操作',
                 actions: '操作',
               }}
-              status={busy ? 'loading' : 'ready'}
+              status={busy && !hasLoaded ? 'loading' : 'ready'}
               selected={selected}
               onSelectedChange={(ids) => {
                 if (busy) return

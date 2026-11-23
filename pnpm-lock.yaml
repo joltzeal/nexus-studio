@@ -595,6 +595,9 @@ importers:
 
   plugins/email:
     dependencies:
+      '@nexus/plugin-contracts':
+        specifier: workspace:*
+        version: link:../../packages/plugin-contracts
       '@nexus/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk

@@ -1,4 +1,4 @@
-import type { ProxyEndpointOrigin } from '@nexus/plugin-contracts/proxy-pool'
+import type { ProxyEndpointOrigin, ProxyIpObservation } from '@nexus/plugin-contracts/proxy-pool'
 
 export const PROXY_PLUGIN_ID = 'studio.proxy-pool'
 export const SCHEMES = ['http', 'https', 'socks5', 'socks5h'] as const
@@ -40,8 +40,10 @@ export type ProxyRow = {
   checkedScheme: Scheme | null
   checkedAt: string | null
   exitIp: string | null
+  exitIpCheckedAt?: string | null
   previousExitIp: string | null
   previousExitIpCheckedAt: string | null
+  ipHistory?: ProxyIpObservation[]
   exitIpChanged: boolean
   geo: Geo | null
   reputation: Reputation | null

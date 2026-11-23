@@ -1,7 +1,7 @@
 import { cn } from "@proxyshard/shardx-ui-kit";
 import type { ProxyEntry } from "../../entities/proxy";
 
-type Kind = ProxyEntry["kind"];
+type Kind = ProxyEntry["kind"] | "socks5h";
 
 /// A proxy's protocol as a neutral chip (owner, 2026-10-01): the plain Folder
 /// chip's look, the weak fill and sub text, no border. The protocol is not a

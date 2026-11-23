@@ -1,4 +1,4 @@
-import { ProxyEndpointOriginSchema } from '@nexus/plugin-contracts/proxy-pool'
+import { ProxyEndpointOriginSchema, ProxyIpHistorySchema } from '@nexus/plugin-contracts/proxy-pool'
 import {
   SCHEMES,
   type ProxyRow,
@@ -80,8 +80,10 @@ export function parseProxy(value: unknown): ProxyRow {
     checkedScheme: nullable(row.checkedScheme, scheme),
     checkedAt: nullable(row.checkedAt, text),
     exitIp: nullable(row.exitIp, text),
+    exitIpCheckedAt: row.exitIpCheckedAt === undefined ? null : nullable(row.exitIpCheckedAt, text),
     previousExitIp: nullable(row.previousExitIp, text),
     previousExitIpCheckedAt: nullable(row.previousExitIpCheckedAt, text),
+    ...(row.ipHistory === undefined ? {} : { ipHistory: ProxyIpHistorySchema.parse(row.ipHistory) }),
     exitIpChanged: boolean(row.exitIpChanged),
     latencyMs: nullable(row.latencyMs, (input) => integer(input)),
     checkError: nullable(row.checkError, text),
