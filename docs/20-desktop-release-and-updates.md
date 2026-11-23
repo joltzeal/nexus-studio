@@ -563,9 +563,10 @@ Node 专用的 JIT entitlement 授予 Rust 主程序。
 `.github/workflows/ci.yml` 在 macOS/Windows 和 Linux 上运行源码检查。
 `.github/workflows/release.yml` 仅在 `v*` 标签触发，构建 macOS arm64 与
 macOS x64，使用 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` 签名更新包。
-构建阶段先创建草稿 Release，两个架构上传构件与签名后的 `latest.json`，
+`prepare` 先核对应用版本和已存在的远端标签，再创建 Release 草稿。
+两个架构向同一草稿上传安装包、签名更新归档和 `latest.json`，
 macOS 继续执行最终包内运行时检查。`publish` 作业依赖整个 `package` 矩阵；
-两个架构都通过后，工作流公开版本化 Release 并设为 GitHub Latest，
+两个架构都通过并出现在更新清单后，工作流公开版本化 Release 并设为 GitHub Latest，
 新客户端从这个端点读取 `latest.json`。同一份清单也同步到早期 0.2 客户端
 已配置的 `raccoon-v2` 下载地址。任一架构失败时保留草稿。
 无需用户手动将草稿转为正式发布。

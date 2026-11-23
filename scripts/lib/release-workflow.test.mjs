@@ -40,9 +40,20 @@ describe('desktop release workflow', () => {
     const publish = workflow.split('  publish:\n')[1]
     expect(publish).toContain('needs: [package]')
     expect(publish).toContain('gh release edit "$RELEASE_TAG" --draft=false --latest')
-    expect(workflow).toContain('releaseDraft: true')
+    expect(publish).toContain('has("darwin-aarch64") and has("darwin-x86_64")')
     expect(workflow).toContain('includeUpdaterJson: true')
     expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY')
+  })
+
+  it('prepares a draft for the verified remote tag before starting the build matrix', () => {
+    const [prepare, packageJob] = workflow.split('  package:\n')
+    expect(prepare).toContain('test "$GITHUB_REF_NAME" = "v$version"')
+    expect(prepare).toContain('gh release create "$RELEASE_TAG" --verify-tag --draft')
+    expect(prepare).not.toContain('--target')
+    expect(packageJob).toContain('needs: [prepare]')
+    expect(packageJob).toContain('releaseId: ${{ needs.prepare.outputs.release-id }}')
+    expect(packageJob).toContain('tagName: ${{ github.ref_name }}')
+    expect(packageJob).not.toContain('releaseName:')
   })
 
   it('also serves the new manifest to previously installed 0.2 versions', () => {

@@ -6,6 +6,8 @@
 - 邮件阅读器 9 项、Vinted 账号池 17 项、批量 Profile 和激活码 Node 回归 26 项通过。
 - 插件、公开契约、updater 和发行工作流 Vitest 共 34 个文件、420 项通过。HTTP 与 SOCKS5 传输使用本机回环夹具。
 - desktop-v2 无产物 TypeScript、ESLint、allowlist、发行工作流 actionlint 及公开源码边界检查通过。
+- `v0.2.12` 两个 macOS 任务均在构建后创建 Release 时收到 GitHub 403。新流程在打包前用已推送的标签创建草稿，
+  以同一个 Release ID 接收两架构产物，并核对更新清单。最后复跑发行配置、工作流及 updater 回归 15 项通过。
 - GitHub Actions 负责双架构 macOS 打包、原生回归和发布。0.2 完整 Release 会成为 Latest，
   同一更新清单同步到已安装的早期 0.2 客户端使用的地址。
 

@@ -8,9 +8,46 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_NOTES: |
+    - 代理池沿用主程序代理页面布局。可在详情中检测出口，也可批量检测选中或当前页启用的代理。
+    - 邮箱支持每页数量选择和按邮箱标记全部已读，阅读器显示安全的内联格式。
+    - Vinted 账号池批量创建按接入范围生成指纹种子，并显示确认失败或待核对结果。
+    - 插件操作常驻显示，实验室按接入分标签，侧边栏显示更新进度和下载速度。
+    - 插件包独立发布至 R2，应用安装包不内置插件。
+
+    当前工作流只构建 macOS，安装包未公证；更新包继续使用固定签名公钥校验。
+    0.2 使用独立数据目录，0.1 数据迁移尚待后续工具。共存安装时请将两个 Raccoon.app 放在不同目录。
+
 jobs:
+  prepare:
+    if: github.repository == 'joltzeal/nexus-studio'
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release tag
+        run: |
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.v2.conf.json').version")
+          test "$GITHUB_REF_NAME" = "v$version"
+      - name: Prepare a draft for the existing tag
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Raccoon $RELEASE_TAG" --notes "$RELEASE_NOTES"
+          fi
+          release_id=$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)
+          test -n "$release_id"
+          echo "id=$release_id" >> "$GITHUB_OUTPUT"
+
   package:
     if: github.repository == 'joltzeal/nexus-studio'
+    needs: [prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -24,10 +61,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check public source boundary
         run: node scripts/check-public-boundary.mjs
-      - name: Verify release tag
-        run: |
-          version=$(node -p "require('./apps/desktop/src-tauri/tauri.v2.conf.json').version")
-          test "$GITHUB_REF_NAME" = "v$version"
       - uses: pnpm/action-setup@v4
         with:
           version: 11.17.0
@@ -66,18 +99,9 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm exec tauri
-          tagName: v__VERSION__
-          releaseName: 'Raccoon v__VERSION__'
-          releaseBody: |
-            - 代理池沿用主程序代理页面布局。可在详情中检测出口，也可批量检测选中或当前页启用的代理。
-            - 邮箱支持每页数量选择和按邮箱标记全部已读，阅读器显示安全的内联格式。
-            - Vinted 账号池批量创建按接入范围生成指纹种子，并显示确认失败或待核对结果。
-            - 插件操作常驻显示，实验室按接入分标签，侧边栏显示更新进度和下载速度。
-            - 插件包独立发布至 R2，应用安装包不内置插件。
-
-            当前工作流只构建 macOS，安装包未公证；更新包继续使用固定签名公钥校验。
-            0.2 使用独立数据目录，0.1 数据迁移尚待后续工具。共存安装时请将两个 Raccoon.app 放在不同目录。
-          releaseDraft: true
+          releaseId: ${{ needs.prepare.outputs.release-id }}
+          tagName: ${{ github.ref_name }}
+          releaseBody: ${{ env.RELEASE_NOTES }}
           includeUpdaterJson: true
           args: >-
             --config src-tauri/tauri.v2.conf.json
@@ -98,9 +122,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release edit "$RELEASE_TAG" --draft=false --latest
           mkdir -p "$RUNNER_TEMP/v2-update-channel"
           gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/v2-update-channel"
+          jq -e --arg version "${RELEASE_TAG#v}" '
+            .version == $version and (.platforms | has("darwin-aarch64") and has("darwin-x86_64"))
+          ' "$RUNNER_TEMP/v2-update-channel/latest.json" >/dev/null
+          gh release edit "$RELEASE_TAG" --draft=false --latest
           if ! gh release view raccoon-v2 >/dev/null 2>&1; then
             gh release create raccoon-v2 \
               --title 'Raccoon v2 updater channel' \
