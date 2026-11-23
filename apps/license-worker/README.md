@@ -44,6 +44,14 @@ to a new file with mode `0600`, and never prints the codes or admin token:
 rtk proxy node apps/license-worker/scripts/issue-cards.mjs https://licenses.example.com ai-image-month 1 /private/path/ai-image-cards.txt socks5h://127.0.0.1:7890
 ```
 
+Use `all-year` to issue the requested number of annual cards for each plugin
+into one TSV file with `sku` and `code` columns. The script preserves rows
+already written if a later SKU fails.
+
+```sh
+rtk proxy node apps/license-worker/scripts/issue-cards.mjs https://licenses.example.com all-year 1 /private/path/all-plugins-year.tsv socks5h://127.0.0.1:7890
+```
+
 The proxy argument is optional if direct HTTPS works. Each plugin has `-month`,
 `-quarter`, and `-year` SKUs, for example `vinted-accounts-year`. The full list is
 documented in `~/.config/raccoon/license-worker/ISSUE-CARDS.md`. Cards appear in the

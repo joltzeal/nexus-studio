@@ -102,6 +102,8 @@ Tauri updater 使用独立签名密钥；0.2 启动后静默检查并在后台�
 安装前要求停止所有运行中的窗口。发行工作流当前用 `tauri.v2.conf.json` 与
 `tauri.release.v2.conf.json` 构建 0.2，并生成 updater 清单与签名产物。
 工作流暂只构建 macOS arm64 与 x64，Windows 矩阵在恢复 Windows 验收前不运行。
+GitHub Actions 打包时使用 ThinLTO 和 16 个 Rust 代码生成单元，以减少正式编译耗时。
+两种架构各自执行原生回归、Clippy 和包内签名运行时验证，完成后才公开 Release。
 旧版 updater 继续读取 GitHub Latest 的 `latest.json`；v2 从 `raccoon-v2` 预发布
 Release 读取独立 updater 清单。版本化 v2 Release 显式不设为 GitHub Latest，发布完成后
 工作流将其中的 `latest.json` 复制到 `raccoon-v2`，使旧版客户端继续留在 0.1 更新通道。

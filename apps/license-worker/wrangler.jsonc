@@ -8,7 +8,7 @@
     {
       "binding": "DB",
       "database_name": "raccoon-license",
-      "database_id": "7415a89e-6f43-4f53-b410-f80874450d6f",
+      "database_id": "7966696b-f801-4cac-9f20-9b0c4d02a657",
       "migrations_dir": "migrations",
     },
   ],

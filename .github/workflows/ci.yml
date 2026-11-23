@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   javascript:
     runs-on: ubuntu-latest
@@ -25,10 +29,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build:v2
-      - run: pnpm runtime:check
+      - run: pnpm build:packages
+      - run: pnpm -r typecheck && pnpm exec tsc -p tsconfig.tests.json
+      - run: pnpm exec vitest run
+      - run: pnpm --filter @raccoon/desktop-v2 run build
+      - run: node packages/browser-runtime/dist/healthcheck.js
 
   native:
     env:
@@ -58,6 +63,5 @@ jobs:
       - name: Restore development dependencies after production runtime deploy
         if: runner.os == 'Windows'
         run: pnpm install --frozen-lockfile --prod=false
-      - run: pnpm rust:check
       - run: pnpm rust:test
       - run: pnpm rust:lint

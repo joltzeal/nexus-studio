@@ -17,10 +17,8 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
-            tauriArgs: --config src-tauri/tauri.v2.conf.json --config src-tauri/tauri.release.v2.conf.json --config src-tauri/tauri.release.macos.conf.json
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            tauriArgs: --config src-tauri/tauri.v2.conf.json --config src-tauri/tauri.release.v2.conf.json --config src-tauri/tauri.release.macos.conf.json
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -46,10 +44,6 @@ jobs:
       - run: pnpm runtime:stage
       - name: Restore desktop build dependencies after production runtime deploy
         run: pnpm install --frozen-lockfile --prod=false
-      - name: Run native regression tests
-        run: pnpm rust:test
-      - name: Check native formatting and lint
-        run: pnpm rust:lint
       - name: Verify desktop build CLI
         run: pnpm --dir apps/desktop exec tauri --version
       - name: Verify staged runtime
@@ -57,9 +51,15 @@ jobs:
         run: |
           test -f apps/desktop/src-tauri/runtime/browser-runtime/dist/profile-runner.js
           test -f apps/desktop/src-tauri/runtime/browser-runtime/dist/network-preload.js
-          test -f "apps/desktop/src-tauri/binaries/node-${{ matrix.target }}${{ runner.os == 'Windows' && '.exe' || '' }}"
+          test -f "apps/desktop/src-tauri/binaries/node-${{ matrix.target }}"
+      - name: Run native regression tests
+        run: pnpm rust:test
+      - name: Check native formatting and lint
+        run: pnpm rust:lint
       - uses: tauri-apps/tauri-action@v0
         env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
@@ -77,7 +77,10 @@ jobs:
             0.2 使用独立数据目录，0.1 数据迁移尚待后续工具。共存安装时请将两个 Raccoon.app 放在不同目录。
           releaseDraft: true
           includeUpdaterJson: true
-          args: ${{ matrix.tauriArgs }}
+          args: >-
+            --config src-tauri/tauri.v2.conf.json
+            --config src-tauri/tauri.release.v2.conf.json
+            --config src-tauri/tauri.release.macos.conf.json
       - name: Verify signed macOS runtime
         if: runner.os == 'macOS'
         run: pnpm run runtime:verify-packaged apps/desktop/src-tauri/target/release/bundle/macos/Raccoon.app
